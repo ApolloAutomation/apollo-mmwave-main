@@ -1,0 +1,2701 @@
+const pending = /* @__PURE__ */ new Map();
+let reassertHooked = false;
+function safeDefine(tag, ctor) {
+  try {
+    if (!window.customElements.get(tag)) {
+      window.customElements.define(tag, ctor);
+    }
+  } catch {
+  }
+}
+function reassertAll() {
+  for (const [tag, ctor] of pending) safeDefine(tag, ctor);
+}
+function registerElement(tag, ctor) {
+  pending.set(tag, ctor);
+  safeDefine(tag, ctor);
+  if (reassertHooked) return;
+  reassertHooked = true;
+  for (const marker of ["home-assistant", "hc-main"]) {
+    window.customElements.whenDefined(marker).then(reassertAll, () => void 0);
+  }
+}
+const DOMAIN = "apollo_mmwave";
+const ZONES_GET = `${DOMAIN}/zones/get`;
+const ZONES_SUBSCRIBE = `${DOMAIN}/zones/subscribe`;
+const CONFIG_ENTRIES_SUBSCRIBE = "config_entries/subscribe";
+const RETRY_DELAYS_MS = [1e3, 2e3, 5e3, 1e4, 2e4];
+async function fetchZones(hass, deviceId) {
+  return hass.callWS({ type: ZONES_GET, device_id: deviceId });
+}
+async function subscribeZones(hass, deviceId, callback) {
+  return hass.connection.subscribeMessage(callback, {
+    type: ZONES_SUBSCRIBE,
+    device_id: deviceId
+  });
+}
+async function subscribeEntryLoads(hass, callback) {
+  try {
+    return await hass.connection.subscribeMessage(
+      (changes) => {
+        const list = Array.isArray(changes) ? changes : [changes];
+        if (list.some(
+          (change) => {
+            var _a, _b;
+            return ((change == null ? void 0 : change.type) === "updated" || (change == null ? void 0 : change.type) === "added") && ((_a = change == null ? void 0 : change.entry) == null ? void 0 : _a.domain) === DOMAIN && ((_b = change == null ? void 0 : change.entry) == null ? void 0 : _b.state) === "loaded";
+          }
+        )) {
+          callback();
+        }
+      },
+      { type: CONFIG_ENTRIES_SUBSCRIBE }
+    );
+  } catch {
+    return null;
+  }
+}
+const ERR_NOT_LOADED = "not_loaded";
+const ERR_NOT_FOUND = "not_found";
+function describeError(error, deviceId, willRetry) {
+  const code = error == null ? void 0 : error.code;
+  if (code === ERR_NOT_FOUND) {
+    return `Home Assistant has no device with id ${deviceId}. The radar was probably removed and re-added; pick it again in this card's settings.`;
+  }
+  if (code === ERR_NOT_LOADED) {
+    return willRetry ? "Apollo mmWave is not loaded, so this radar's zones cannot be read. They will come back on their own once the integration finishes loading." : "Apollo mmWave is still not loaded, so this radar's zones cannot be read. Reload the page once the integration is back.";
+  }
+  return (error == null ? void 0 : error.message) ? String(error.message) : "Could not read this radar's zone configuration.";
+}
+async function connectZones(hass, deviceId, handlers) {
+  let disposed = false;
+  let unsubscribeZones = null;
+  let retryTimer = null;
+  let retryIndex = 0;
+  const cancelRetry = () => {
+    if (retryTimer === null) return;
+    clearTimeout(retryTimer);
+    retryTimer = null;
+  };
+  const closeZones = async () => {
+    const current = unsubscribeZones;
+    unsubscribeZones = null;
+    if (!current) return;
+    try {
+      await current();
+    } catch {
+    }
+  };
+  const open = async () => {
+    cancelRetry();
+    await closeZones();
+    let pushed = false;
+    try {
+      const unsubscribe = await subscribeZones(hass, deviceId, (config2) => {
+        if (disposed) return;
+        pushed = true;
+        handlers.onConfig(config2);
+      });
+      if (disposed) {
+        try {
+          await unsubscribe();
+        } catch {
+        }
+        return;
+      }
+      unsubscribeZones = unsubscribe;
+      const config = await fetchZones(hass, deviceId);
+      retryIndex = 0;
+      if (disposed || pushed) return;
+      handlers.onConfig(config);
+    } catch (error) {
+      if (disposed) return;
+      const willRetry = (error == null ? void 0 : error.code) === ERR_NOT_LOADED && retryIndex < RETRY_DELAYS_MS.length;
+      handlers.onError(describeError(error, deviceId, willRetry));
+      if (willRetry) scheduleRetry();
+    }
+  };
+  let queue = Promise.resolve();
+  const requestOpen = () => {
+    queue = queue.then(open);
+    return queue;
+  };
+  const scheduleRetry = () => {
+    if (disposed || retryIndex >= RETRY_DELAYS_MS.length) return;
+    const delay = RETRY_DELAYS_MS[retryIndex];
+    retryIndex += 1;
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      void requestOpen();
+    }, delay);
+  };
+  await requestOpen();
+  const unsubscribeEntries = await subscribeEntryLoads(hass, () => {
+    if (disposed) return;
+    void requestOpen();
+  });
+  return async () => {
+    disposed = true;
+    cancelRetry();
+    await closeZones();
+    if (unsubscribeEntries) {
+      try {
+        await unsubscribeEntries();
+      } catch {
+      }
+    }
+  };
+}
+const TARGET_X = /(?:_ld2450)?_target_(\d+)_x(?:_\d+)?$/;
+function hasLd2450Device(hass, deviceId) {
+  for (const [id, e] of Object.entries(hass.entities)) {
+    if (e.device_id !== deviceId || !id.startsWith("sensor.")) continue;
+    if (TARGET_X.test(id.slice(id.indexOf(".") + 1))) return true;
+  }
+  return false;
+}
+function emptyZones() {
+  return {
+    zone_1_start: void 0,
+    end_zone_1: void 0,
+    end_zone_2: void 0,
+    end_zone_3: void 0,
+    zone_1_occupancy: void 0,
+    zone_2_occupancy: void 0,
+    zone_3_occupancy: void 0
+  };
+}
+const LD2410_PROFILE = {
+  key: "ld2410",
+  label: "LD2410",
+  maxBarLabels: ["Max Move", "Max Still"],
+  rangeLabels: ["Max Move Gate", "Max Still Gate"],
+  gateSizeLabel: "Gate Size",
+  rangeTip: "💡 **Gate Size** sets how far each gate reaches (e.g. 0.75 m). **Max Move / Still Gate** cap the farthest gate used to detect moving vs. still targets — lower them to ignore distant motion.",
+  gateTip: "💡 Each gate's **move / still threshold** is how strong a signal must be to count as presence at that distance. Lower = more sensitive (more false triggers), higher = less. Turn on **Radar Engineering Mode** and watch the Gate Energy chart while you move around to pick values.",
+  wikiUrl: "https://wiki.apolloautomation.com/products/msr2/setup/zones-ha/",
+  entityMap(base) {
+    const gates = [0, 1, 2, 3, 4, 5, 6, 7, 8];
+    const g = (suffix) => gates.map((n) => suffix(n));
+    return {
+      engineering_mode: `switch.${base}_radar_engineering_mode`,
+      bluetooth: `switch.${base}_ld2410_bluetooth`,
+      restart_radar: `button.${base}_restart_radar`,
+      factory_reset_radar: `button.${base}_factory_reset_radar`,
+      esp_reboot: `button.${base}_esp_reboot`,
+      radar_timeout: `number.${base}_radar_timeout`,
+      zone_1_start: `number.${base}_radar_zone_1_start`,
+      end_zone_1: `number.${base}_radar_end_zone_1`,
+      end_zone_2: `number.${base}_radar_end_zone_2`,
+      end_zone_3: `number.${base}_radar_end_zone_3`,
+      max_move_distance: `number.${base}_radar_max_move_distance`,
+      max_still_distance: `number.${base}_radar_max_still_distance`,
+      gate_size: `select.${base}_ld2410_gate_size`,
+      move_threshold: g((n) => `number.${base}_g${n}_move_threshold`),
+      still_threshold: g((n) => `number.${base}_g${n}_still_threshold`),
+      move_energy: g((n) => `sensor.${base}_g${n}_move_energy`),
+      still_energy: g((n) => `sensor.${base}_g${n}_still_energy`),
+      still_distance: `sensor.${base}_radar_still_distance`,
+      moving_distance: `sensor.${base}_radar_moving_distance`,
+      detection_distance: `sensor.${base}_radar_detection_distance`,
+      radar_target: `binary_sensor.${base}_radar_target`,
+      moving_target: `binary_sensor.${base}_radar_moving_target`,
+      still_target: `binary_sensor.${base}_radar_still_target`,
+      zone_1_occupancy: `binary_sensor.${base}_radar_zone_1_occupancy`,
+      zone_2_occupancy: `binary_sensor.${base}_radar_zone_2_occupancy`,
+      zone_3_occupancy: `binary_sensor.${base}_radar_zone_3_occupancy`
+    };
+  }
+};
+const LD2412_PROFILE = {
+  key: "ld2412",
+  label: "LD2412",
+  maxBarLabels: ["Max Gate", "Min Gate"],
+  rangeLabels: ["Max Gate", "Min Gate"],
+  gateSizeLabel: "Distance Resolution",
+  rangeTip: "💡 **Distance Resolution** sets gate spacing — smaller (0.5 m) gives finer tuning over a shorter range, larger (0.75 m) reaches farther. **Min / Max Gate** limit which gates are used for detection.",
+  gateTip: "💡 Each gate's **move / still threshold** is how strong a signal must be to count as presence at that distance. Lower = more sensitive (more false triggers), higher = less. Turn on **Radar Engineering Mode** and watch the Gate Energy chart while you move around to pick values.",
+  wikiUrl: "https://wiki.apolloautomation.com/products/rpro1/setup/zones-ha/#ld2412-configuration",
+  entityMap(base) {
+    const gates = Array.from({ length: 14 }, (_, i) => i);
+    const pad = (n) => String(n).padStart(2, "0");
+    const g = (suffix) => gates.map((n) => suffix(pad(n)));
+    return {
+      engineering_mode: `switch.${base}_ld2412_engineering_mode`,
+      bluetooth: `switch.${base}_ld2412_bluetooth`,
+      restart_radar: `button.${base}_ld2412_restart`,
+      factory_reset_radar: `button.${base}_ld2412_factory_reset`,
+      esp_reboot: `button.${base}_esp_reboot`,
+      radar_timeout: `number.${base}_ld2412_timeout`,
+      ...emptyZones(),
+      max_move_distance: `number.${base}_ld2412_max_distance_gate`,
+      max_still_distance: `number.${base}_ld2412_min_distance_gate`,
+      gate_size: `select.${base}_ld2412_distance_resolution`,
+      move_threshold: g((p) => `number.${base}_ld2412_g${p}_move_threshold`),
+      still_threshold: g((p) => `number.${base}_ld2412_g${p}_still_threshold`),
+      move_energy: g((p) => `sensor.${base}_ld2412_g${p}_move_energy`),
+      still_energy: g((p) => `sensor.${base}_ld2412_g${p}_still_energy`),
+      // LD2412 distance sensors don't report usable values, so no distance bars
+      // are shown — the chart is the gate range + min/max gate only.
+      still_distance: void 0,
+      moving_distance: void 0,
+      detection_distance: void 0,
+      radar_target: `binary_sensor.${base}_ld2412_presence`,
+      moving_target: `binary_sensor.${base}_ld2412_moving_target`,
+      still_target: `binary_sensor.${base}_ld2412_still_target`
+    };
+  }
+};
+const APOLLO_MODELS = [
+  { prefix: "msr-1", profile: LD2410_PROFILE, ld2450: false },
+  { prefix: "msr-2", profile: LD2410_PROFILE, ld2450: false },
+  { prefix: "mtr-1", ld2450: true },
+  { prefix: "r-pro-1", profile: LD2412_PROFILE, ld2450: true }
+];
+function apolloModelInfo(device) {
+  if (!(device == null ? void 0 : device.manufacturer) || !device.model) return void 0;
+  if (device.manufacturer.toLowerCase() !== "apolloautomation") return void 0;
+  const model = device.model.toLowerCase();
+  const hit = APOLLO_MODELS.find((m) => model.startsWith(m.prefix));
+  return hit ? { profile: hit.profile, ld2450: hit.ld2450 } : void 0;
+}
+function isEsphomeDevice(hass, deviceId) {
+  let sawEntity = false;
+  let sawPlatform = false;
+  for (const e of Object.values(hass.entities)) {
+    if (e.device_id !== deviceId) continue;
+    sawEntity = true;
+    if (e.platform === void 0) continue;
+    sawPlatform = true;
+    if (e.platform === "esphome") return true;
+  }
+  return sawEntity && !sawPlatform;
+}
+const ZONE_MAP_CARD_TYPE = "custom:apollo-radar-zone-map-card";
+const ZONE_MAP_EDITOR_TAG = "apollo-radar-zone-map-card-editor";
+function themeChoiceFromConfig(config) {
+  if (config.dark_mode === void 0) return "auto";
+  return config.dark_mode ? "dark" : "light";
+}
+function lockChoiceFromConfig(config) {
+  if (config.start_locked === void 0) return "auto";
+  return config.start_locked ? "locked" : "unlocked";
+}
+const THEME_SELECTOR = {
+  select: {
+    mode: "dropdown",
+    options: [
+      { value: "auto", label: "Follow Home Assistant theme" },
+      { value: "light", label: "Light" },
+      { value: "dark", label: "Dark" }
+    ]
+  }
+};
+const LOCK_SELECTOR = {
+  select: {
+    mode: "dropdown",
+    options: [
+      { value: "auto", label: "Locked once zones exist (remembers the toggle)" },
+      { value: "locked", label: "Always start locked" },
+      { value: "unlocked", label: "Always start unlocked" }
+    ]
+  }
+};
+function firstLd2450DeviceId(hass) {
+  if (!hass) return void 0;
+  const fromRegistry = Object.keys(hass.devices ?? {});
+  const candidates = fromRegistry.length ? fromRegistry : Array.from(
+    new Set(
+      Object.values(hass.entities ?? {}).map((entry) => entry == null ? void 0 : entry.device_id).filter((id) => !!id)
+    )
+  );
+  return candidates.find((id) => hasLd2450Device(hass, id));
+}
+const STYLE = `
+  :host { display: block; }
+  .form { display: flex; flex-direction: column; gap: 16px; padding: 8px 0; }
+  .hint { font-size: 12px; color: var(--secondary-text-color); }
+`;
+class ZoneMapCardEditor extends HTMLElement {
+  constructor() {
+    super();
+    this._config = { type: ZONE_MAP_CARD_TYPE };
+    this.attachShadow({ mode: "open" });
+  }
+  setConfig(config) {
+    this._config = { ...config };
+    this._render();
+  }
+  set hass(hass) {
+    this._hass = hass;
+    this._render();
+  }
+  get hass() {
+    return this._hass;
+  }
+  _render() {
+    this._build();
+    if (!this._picker || !this._title || !this._theme || !this._lock) return;
+    this._picker.hass = this._hass;
+    this._theme.hass = this._hass;
+    this._lock.hass = this._hass;
+    const deviceId = String(this._config.device_id ?? "");
+    const title = String(this._config.title ?? "");
+    const theme = themeChoiceFromConfig(this._config);
+    const lock = lockChoiceFromConfig(this._config);
+    if (this._picker.value !== deviceId) this._picker.value = deviceId;
+    if (this._title.value !== title) this._title.value = title;
+    if (this._theme.value !== theme) this._theme.value = theme;
+    if (this._lock.value !== lock) this._lock.value = lock;
+  }
+  /** The DOM is built once and then updated. HA sets `hass` on every state
+   *  tick, and rebuilding under the user would drop focus mid-word. */
+  _build() {
+    if (this._picker || !this.shadowRoot) return;
+    const style = document.createElement("style");
+    style.textContent = STYLE;
+    const form = document.createElement("div");
+    form.className = "form";
+    const picker = document.createElement("ha-device-picker");
+    picker.label = "Radar";
+    picker.deviceFilter = (device) => {
+      var _a, _b;
+      return !!this._hass && !!(device == null ? void 0 : device.id) && (hasLd2450Device(this._hass, device.id) || isEsphomeDevice(this._hass, device.id) && (((_b = apolloModelInfo((_a = this._hass.devices) == null ? void 0 : _a[device.id])) == null ? void 0 : _b.ld2450) ?? false));
+    };
+    picker.addEventListener("value-changed", (event) => {
+      var _a;
+      const value = (_a = event.detail) == null ? void 0 : _a.value;
+      this._commit("device_id", typeof value === "string" ? value : "");
+    });
+    const title = document.createElement("ha-textfield");
+    title.label = "Title (optional)";
+    title.addEventListener("input", () => {
+      var _a;
+      this._commit("title", String(((_a = this._title) == null ? void 0 : _a.value) ?? ""));
+    });
+    const theme = document.createElement("ha-selector");
+    theme.label = "Appearance";
+    theme.selector = THEME_SELECTOR;
+    theme.addEventListener("value-changed", (event) => {
+      var _a;
+      event.stopPropagation();
+      const value = (_a = event.detail) == null ? void 0 : _a.value;
+      this._commitTheme(
+        value === "light" || value === "dark" ? value : "auto"
+      );
+    });
+    const lock = document.createElement("ha-selector");
+    lock.label = "Drawing lock on load";
+    lock.selector = LOCK_SELECTOR;
+    lock.addEventListener("value-changed", (event) => {
+      var _a;
+      event.stopPropagation();
+      const value = (_a = event.detail) == null ? void 0 : _a.value;
+      this._commitLock(
+        value === "locked" || value === "unlocked" ? value : "auto"
+      );
+    });
+    const hint = document.createElement("div");
+    hint.className = "hint";
+    hint.textContent = "The card tracks this radar's own detected targets. To point it at other X/Y sensors, call the apollo_mmwave.update_zone service with an entities list.";
+    form.append(picker, title, theme, lock, hint);
+    this.shadowRoot.append(style, form);
+    this._picker = picker;
+    this._title = title;
+    this._theme = theme;
+    this._lock = lock;
+  }
+  /** Fold the lock choice into `start_locked`: "auto" drops the key so the
+   *  card decides from its zones and the remembered toggle again. */
+  _commitLock(choice) {
+    if (lockChoiceFromConfig(this._config) === choice) return;
+    const config = { ...this._config };
+    if (choice === "auto") delete config.start_locked;
+    else config.start_locked = choice === "locked";
+    this._config = config;
+    this._emit(config);
+  }
+  /** Fold the appearance choice into `dark_mode`: "auto" drops the key so the
+   *  card follows the Home Assistant theme again. */
+  _commitTheme(choice) {
+    if (themeChoiceFromConfig(this._config) === choice) return;
+    const config = { ...this._config };
+    if (choice === "auto") delete config.dark_mode;
+    else config.dark_mode = choice === "dark";
+    this._config = config;
+    this._emit(config);
+  }
+  /**
+   * Fold one field into the config and hand the whole thing to Lovelace.
+   *
+   * An empty title is dropped rather than written as `title: ""`, and a value
+   * equal to the one already held emits nothing: HA re-renders the editor from
+   * every `config-changed`, and the pickers echo their value back on re-render.
+   */
+  _commit(key, value) {
+    const current = this._config[key];
+    if (current === value || value === "" && current === void 0) return;
+    const config = { ...this._config, [key]: value };
+    if (key === "title" && value === "") delete config.title;
+    this._config = config;
+    this._emit(config);
+  }
+  _emit(config) {
+    this.dispatchEvent(
+      new CustomEvent("config-changed", {
+        detail: { config },
+        bubbles: true,
+        composed: true
+      })
+    );
+  }
+}
+registerElement(ZONE_MAP_EDITOR_TAG, ZoneMapCardEditor);
+const COLOR = Object.freeze({
+  ui: {
+    lightCanvasBackground: "#ffffff",
+    darkContainerBackground: "#1e1f23",
+    darkContainerText: "#eceff4",
+    darkCanvasBorder: "#3a3d45",
+    darkCanvasBackground: "#121316",
+    overlayButtonLightBg: "rgba(0, 0, 0, 0.50)",
+    overlayButtonLightBorder: "rgba(255, 255, 255, 0.25)",
+    overlayButtonDarkBg: "rgba(255, 255, 255, 0.16)",
+    overlayButtonDarkBorder: "rgba(255, 255, 255, 0.25)",
+    overlayButtonText: "#ffffff",
+    overlayButtonActiveOutline: "#4caf50",
+    darkPrimaryButton: "#2d7dd2",
+    darkZoneButtonBg: "#2a2c31",
+    darkZoneButtonText: "#e5e9f0",
+    darkZoneButtonBorder: "#3a3d45",
+    darkZoneButtonActiveBg: "#2d7dd2",
+    darkZoneButtonActiveBorder: "#2d7dd2",
+    infoDarkText: "#b0b6c2",
+    zoneItemDarkBg: "#2a2c31",
+    zoneItemDarkText: "#d8dee9",
+    darkSelectBg: "#202226",
+    darkSelectBorder: "#3a3d45",
+    darkSelectText: "#e5e9f0",
+    primaryButtonText: "#ffffff"
+  },
+  canvas: {
+    defaultTarget: "#ff6b6b",
+    targetStroke: "#ffffff",
+    gridLine: "#e0e0e0",
+    axisLight: "#000000",
+    axisDark: "#ffffff",
+    polygonPreviewLight: "rgba(100,100,100,0.75)",
+    polygonPreviewDark: "rgba(255,255,255,0.75)",
+    polygonVertexFillLight: "#000000",
+    polygonVertexFillDark: "#ffffff",
+    polygonVertexStrokeLight: "rgba(255,255,255,0.6)",
+    polygonVertexStrokeDark: "rgba(0,0,0,0.6)",
+    polygonStrokeLight: "rgba(33,33,33,0.85)",
+    polygonStrokeDark: "rgba(255,255,255,0.85)",
+    drawStrokeLight: "rgba(100, 100, 100, 0.5)",
+    drawStrokeDark: "rgba(255,255,255,0.75)",
+    deviceConeFill: "rgba(128, 233, 31, 0.06)",
+    deviceConeStroke: "rgba(117, 243, 33, 0.6)",
+    zonePalette: [
+      "rgba(244, 67, 54, 0.30)",
+      "rgba(33, 150, 243, 0.30)",
+      "rgba(76, 175, 80, 0.30)",
+      "rgba(255, 193, 7, 0.30)",
+      "rgba(156, 39, 176, 0.30)"
+    ],
+    targetPalette: ["#f44336", "#2196f3", "#4caf50", "#ffc107", "#9c27b0"]
+  }
+});
+const DRAW_MODES = Object.freeze({
+  RECT: "rect",
+  ELLIPSE: "ellipse",
+  POLYGON: "polygon"
+});
+const DEFAULT_GRID = Object.freeze({
+  xMin: -5e3,
+  xMax: 5e3,
+  yMin: 0,
+  yMax: 1e4
+});
+const DEFAULT_CONE = Object.freeze({
+  yMax: 6e3,
+  fovDeg: 120,
+  angleDeg: 0
+});
+const POLYGON_MAX_POINTS = 32;
+const LOCK_STORAGE_PREFIX = "apollo-mmwave.zone-map.lock";
+function lockStorageKey(deviceId) {
+  return `${LOCK_STORAGE_PREFIX}.${deviceId}`;
+}
+function readStoredLock(deviceId) {
+  try {
+    const raw = window.localStorage.getItem(lockStorageKey(deviceId));
+    if (raw === "1") return true;
+    if (raw === "0") return false;
+    return null;
+  } catch {
+    return null;
+  }
+}
+function writeStoredLock(deviceId, locked) {
+  try {
+    window.localStorage.setItem(lockStorageKey(deviceId), locked ? "1" : "0");
+  } catch {
+  }
+}
+const LENGTH_UNITS = Object.freeze({
+  mm: 1,
+  cm: 10,
+  m: 1e3,
+  in: 25.4,
+  ft: 304.8
+});
+const GRID_STEP_CANDIDATES = Object.freeze({
+  in: Object.freeze([1, 2, 3, 6, 12, 24, 36, 48, 60, 72, 96, 120]),
+  ft: Object.freeze([0.25, 0.5, 1, 2, 5, 10, 20, 50, 100]),
+  default: Object.freeze([0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100])
+});
+const UNIT_ALIASES = Object.freeze({
+  mm: "mm",
+  millimeter: "mm",
+  millimeters: "mm",
+  millimetre: "mm",
+  millimetres: "mm",
+  cm: "cm",
+  centimeter: "cm",
+  centimeters: "cm",
+  centimetre: "cm",
+  centimetres: "cm",
+  m: "m",
+  meter: "m",
+  meters: "m",
+  metre: "m",
+  metres: "m",
+  in: "in",
+  inch: "in",
+  inches: "in",
+  ft: "ft",
+  foot: "ft",
+  feet: "ft"
+});
+class ZoneMapCard extends HTMLElement {
+  static get GRID_MIN_SPACING_PX() {
+    return 40;
+  }
+  constructor() {
+    super();
+    this.attachShadow({ mode: "open" });
+    this.darkMode = false;
+    this._darkModeConfigured = false;
+    this.isDrawing = false;
+    this.startPoint = null;
+    this._cursorPoint = null;
+    this._activeInput = null;
+    this.trackedEntities = [];
+    this.showZones = false;
+    this.showConfig = false;
+    this._polyPoints = [];
+    this.zones = [];
+    this.zoneConfig = [];
+    this.selectedZone = null;
+    this._zoneConfigPayload = null;
+    this._loadError = null;
+    this._zoneConnection = null;
+    this._deviceLabel = null;
+    this._usingSuggestedEntities = false;
+    this.xMin = DEFAULT_GRID.xMin;
+    this.xMax = DEFAULT_GRID.xMax;
+    this.yMin = DEFAULT_GRID.yMin;
+    this.yMax = DEFAULT_GRID.yMax;
+    this.coneYMax = DEFAULT_CONE.yMax;
+    this.coneFovDeg = DEFAULT_CONE.fovDeg;
+    this.coneAngleDeg = DEFAULT_CONE.angleDeg;
+    this.coneAngleDefault = DEFAULT_CONE.angleDeg;
+    this.polyMaxPoints = POLYGON_MAX_POINTS;
+    this.drawMode = DRAW_MODES.RECT;
+    this.showModeMenu = false;
+    this.isLocked = false;
+    this._lastLockWarningTs = 0;
+    this.showUndo = true;
+    this._undoSnapshot = null;
+    this.inputUnits = "mm";
+    this.gridUnits = "mm";
+    this.inputUnitMultiplier = LENGTH_UNITS.mm;
+    this.gridUnitMultiplier = LENGTH_UNITS.mm;
+    this.unitDisplay = false;
+    this.unitLabelSize = 18;
+    this._gridCache = null;
+    this._coneRingsCache = null;
+  }
+  /** The card's config UI, an `ha-device-picker` and a title field. */
+  static getConfigElement() {
+    return document.createElement(ZONE_MAP_EDITOR_TAG);
+  }
+  // Default stub config
+  static getStubConfig(hass) {
+    return {
+      type: "custom:apollo-radar-zone-map-card",
+      // Deliberately no dark_mode key: an explicit key here would ship every
+      // manually added card as a light-mode override, following the theme
+      // is the point of this key being absent. Same for start_locked: absent
+      // means the card locks itself once the radar has zones.
+      show_undo: true,
+      unit_display: false,
+      // unit_label_size: 18,
+      // optional, px label size override
+      input_units: "mm",
+      grid_units: "mm",
+      // A card dragged out of the Lovelace picker opened straight onto the
+      // "device_id required" error while this was blank. Empty only when the
+      // system has no tracking radar at all, and then the error is the truth.
+      device_id: firstLd2450DeviceId(hass) ?? "",
+      title: "",
+      // Units support: 'mm', 'cm', 'm', 'in', 'ft' converts to millimeters internally
+      // Zones can be managed in-card; you can optionally pre-seed a list here:
+      // zones: [ { id: 1, name: 'Zone 1' } ],
+      grid: {
+        x_min: -6e3,
+        x_max: 6e3,
+        y_min: 0,
+        y_max: 12e3
+      },
+      // Grid is y-down oriented, so y_min is top, y_max is bottom
+      cone: {
+        y_max: 6e3,
+        fov_deg: 120,
+        angle_deg: 0
+      }
+    };
+  }
+  setConfig(config) {
+    var _a;
+    if (!config.device_id) {
+      throw new Error(
+        "The Apollo Zone Map card needs a device_id. Set `device_id:` to the Home Assistant device id of your radar (Settings > Devices, the id in the URL), or add the card from the Apollo mmWave dashboard, which fills it in for you."
+      );
+    }
+    this.config = config;
+    const previousDeviceId = this.deviceId;
+    this.deviceId = String(config.device_id);
+    if (previousDeviceId !== this.deviceId) {
+      this._resetDeviceState();
+    }
+    this.cardTitle = config.title === void 0 ? "" : String(config.title);
+    this._lockConfigured = config.start_locked !== void 0;
+    if (this._lockConfigured) {
+      this.isLocked = !!config.start_locked;
+    }
+    if (config.show_undo !== void 0) {
+      this.showUndo = !!config.show_undo;
+    }
+    this.inputUnits = this._normalizeUnit(config.input_units);
+    this.gridUnits = this._normalizeUnit(config.grid_units);
+    this.inputUnitMultiplier = this._unitMultiplier(this.inputUnits);
+    this.gridUnitMultiplier = this._unitMultiplier(this.gridUnits);
+    this.unitDisplay = !!config.unit_display;
+    if (config.unit_label_size !== void 0) {
+      const s = Number(config.unit_label_size);
+      if (Number.isFinite(s)) {
+        this.unitLabelSize = Math.max(8, Math.min(24, Math.round(s)));
+      }
+    }
+    this.zoneConfig = Array.isArray(config.zones) ? [...config.zones] : [];
+    this.trackedEntities = this.buildTrackedEntities(config);
+    this._darkModeConfigured = config.dark_mode !== void 0;
+    if (this._darkModeConfigured) {
+      this.darkMode = !!config.dark_mode;
+    } else if (this._hass) {
+      this.darkMode = !!((_a = this._hass.themes) == null ? void 0 : _a.darkMode);
+    }
+    this._applyGridConfig(config.grid);
+    this._applyConeConfig(config.cone);
+    this._invalidateGridCache();
+    this._invalidateConeCache();
+    this.render();
+    this._connectZones();
+  }
+  /**
+   * Send one update_zone call and say whether it landed.
+   *
+   * Fire and forget told users a save had happened when it had not. The call is
+   * rejected while the config entry is reloading and when the radar has left
+   * the device registry, and the next payload then reverts what they were
+   * looking at, with no error anywhere. Nothing here reports success before
+   * Home Assistant has accepted the change.
+   */
+  async _saveZoneUpdate(payload, successMessage) {
+    if (!this._hass) return false;
+    const request = { ...payload, input_units: this.inputUnits };
+    try {
+      await this._hass.callService("apollo_mmwave", "update_zone", request);
+    } catch (error) {
+      const reason = (error == null ? void 0 : error.message) ? String(error.message) : "Home Assistant rejected it.";
+      this._notify(`Could not save: ${reason}`);
+      return false;
+    }
+    if (successMessage) this._notify(successMessage);
+    return true;
+  }
+  /** Drop everything that belonged to the radar this card used to show. */
+  _resetDeviceState() {
+    this._disconnectZones();
+    this._zoneConfigPayload = null;
+    this._loadError = null;
+    this._deviceLabel = null;
+    this._usingSuggestedEntities = false;
+    this.zones = [];
+    this.trackedEntities = [];
+    this.selectedZone = null;
+    this._undoSnapshot = null;
+    this.coneAngleDeg = DEFAULT_CONE.angleDeg;
+    this._invalidateConeCache();
+    this.isLocked = false;
+    this._autoLockApplied = false;
+  }
+  set hass(hass) {
+    var _a;
+    const firstTime = !this._hass;
+    this._hass = hass;
+    if (!this._darkModeConfigured) {
+      const themeDark = !!((_a = hass == null ? void 0 : hass.themes) == null ? void 0 : _a.darkMode);
+      if (themeDark !== this.darkMode) {
+        this.darkMode = themeDark;
+        if (this.canvas) {
+          this._invalidateGridCache();
+          this._invalidateConeCache();
+          this.render();
+        }
+      }
+    }
+    if (this.canvas) {
+      this.drawGrid();
+    }
+    if (firstTime && this._hass) {
+      this._connectZones();
+    }
+  }
+  connectedCallback() {
+    this._connectZones();
+    if (this.canvas && !this._onKeyDown) this._attachGlobalListeners();
+  }
+  _connectZones() {
+    if (this._zoneConnection || !this._hass || !this.deviceId) return;
+    const connection = connectZones(this._hass, this.deviceId, {
+      onConfig: (config) => {
+        if (this._zoneConnection === connection) this._applyZoneConfig(config);
+      },
+      onError: (message) => {
+        if (this._zoneConnection === connection) this._setLoadError(message);
+      }
+    });
+    this._zoneConnection = connection;
+  }
+  _disconnectZones() {
+    const pending2 = this._zoneConnection;
+    this._zoneConnection = null;
+    if (!pending2) return;
+    pending2.then((dispose) => dispose()).catch(() => {
+    });
+  }
+  _setLoadError(message) {
+    if (this._loadError === message) return;
+    this._loadError = message;
+    this.render();
+  }
+  /** Apply one payload from the zone API. */
+  _applyZoneConfig(config) {
+    if (!config) return;
+    this._zoneConfigPayload = config;
+    if (this._loadError !== null) {
+      this._loadError = null;
+      this.render();
+      return;
+    }
+    this._applyZones(config);
+    this._applyRotation(config);
+    this._applyTrackedEntities(config);
+    this._deviceLabel = typeof config.label === "string" ? config.label : null;
+    this._renderTitle();
+    this._applyAutoLock();
+    this.renderZoneButtons();
+    this._renderZoneManager();
+    this.drawGrid();
+  }
+  _applyZones(config) {
+    var _a;
+    const zones = config.zones && typeof config.zones === "object" ? config.zones : {};
+    const ids = Object.keys(zones).map((id) => Number(id)).filter((id) => Number.isFinite(id)).sort((a, b) => a - b);
+    this.zones = [];
+    ids.forEach((id) => {
+      const entry = zones[String(id)] || {};
+      if (entry.shape && entry.shape !== "none" && entry.data) {
+        this.zones.push({ id, shape: entry.shape, data: entry.data });
+      }
+    });
+    const seeded = Array.isArray((_a = this.config) == null ? void 0 : _a.zones) ? this.config.zones : [];
+    const names = /* @__PURE__ */ new Map();
+    seeded.forEach((zone) => {
+      const id = Number(zone == null ? void 0 : zone.id);
+      if (Number.isFinite(id)) names.set(id, zone.name || `Zone ${id}`);
+    });
+    ids.forEach((id) => {
+      var _a2;
+      const name = (_a2 = zones[String(id)]) == null ? void 0 : _a2.name;
+      names.set(id, typeof name === "string" && name.trim() ? name : `Zone ${id}`);
+    });
+    this.zoneConfig = Array.from(names.keys()).sort((a, b) => a - b).map((id) => ({ id, name: names.get(id) }));
+  }
+  _applyRotation(config) {
+    if (typeof config.rotation_deg !== "number") return;
+    const nextAngle = this._clampConeAngle(Math.round(config.rotation_deg));
+    if (nextAngle !== this.coneAngleDeg) {
+      this.coneAngleDeg = nextAngle;
+      this._invalidateConeCache();
+    }
+    const angleSlider = this.shadowRoot.getElementById("coneAngleSlider");
+    const angleLabel = this.shadowRoot.getElementById("coneAngleLabel");
+    if (angleSlider) angleSlider.value = String(this.coneAngleDeg);
+    if (angleLabel) angleLabel.textContent = `${this.coneAngleDeg}°`;
+  }
+  /** Take the store's answer. Nothing in the card edits the pair list, so
+   *  there is never an unsaved edit here to protect. */
+  _applyTrackedEntities(config) {
+    const suggested = Array.isArray(config.suggested_entities) ? config.suggested_entities : [];
+    if (config.entities === null || config.entities === void 0) {
+      this._usingSuggestedEntities = true;
+      this.trackedEntities = suggested.map((pair) => ({ ...pair }));
+    } else {
+      this._usingSuggestedEntities = false;
+      this.trackedEntities = (Array.isArray(config.entities) ? config.entities : []).map(
+        (pair) => ({ ...pair })
+      );
+    }
+    this._renderEntityStatus();
+  }
+  processEntityConfig(entityConfig) {
+    if (!entityConfig || !Array.isArray(entityConfig)) {
+      return [];
+    }
+    const entityPairs = {};
+    entityConfig.forEach((item) => {
+      const key = Object.keys(item)[0];
+      const value = item[key];
+      const match = key.match(/([xy])(\d+)/);
+      if (match) {
+        const axis = match[1];
+        const index = match[2];
+        if (!entityPairs[index]) entityPairs[index] = {};
+        entityPairs[index][axis] = value;
+      }
+    });
+    return Object.values(entityPairs).filter((pair) => pair.x && pair.y);
+  }
+  buildTrackedEntities(cfg) {
+    if (cfg && cfg.direct_entity) {
+      return this.processEntityConfig(cfg.entities);
+    }
+    return [];
+  }
+  /**
+   * The heading: the card's own title, else the label the store holds.
+   *
+   * Assigned as text rather than interpolated into the template, because both
+   * of those are strings a user typed.
+   */
+  _renderTitle() {
+    const host = this.shadowRoot.getElementById("deviceTitle");
+    if (!host) return;
+    host.textContent = this.cardTitle || this._deviceLabel || "";
+  }
+  /**
+   * What the card shows when the store could not answer.
+   *
+   * Deliberately not a blank map: an empty canvas is indistinguishable from a
+   * radar nobody has drawn on yet, and that ambiguity is what let the old card
+   * save an empty configuration over a real one.
+   */
+  _errorTemplate() {
+    return `
+      <style>
+        :host { display: block; padding: 16px; }
+        .container { background: var(--card-background-color); border-radius: var(--ha-card-border-radius, 12px); box-shadow: var(--ha-card-box-shadow); padding: 16px; }
+        .container.dark { background: ${COLOR.ui.darkContainerBackground}; color: ${COLOR.ui.darkContainerText}; }
+        .device-title { font-size: 1.2em; font-weight: bold; margin-bottom: 8px; }
+        .load-error { font-size: 14px; color: var(--error-color, ${COLOR.canvas.defaultTarget}); }
+      </style>
+      <div class="container ${this.darkMode ? "dark" : ""}">
+        <div class="device-title" id="deviceTitle"></div>
+        <div class="load-error" id="loadError"></div>
+      </div>
+    `;
+  }
+  _template() {
+    if (this._loadError) {
+      return this._errorTemplate();
+    }
+    const gridUnitLabel = this._unitLabel(this.gridUnits);
+    const inputUnitLabel = this._unitLabel(this.inputUnits);
+    const displayXMin = this._formatGridValue(this.xMin);
+    const displayXMax = this._formatGridValue(this.xMax);
+    const displayYMin = this._formatGridValue(this.yMin);
+    const displayYMax = this._formatGridValue(this.yMax);
+    const displayConeRange = this._formatGridValue(this.coneYMax);
+    return `
+      <style>
+        :host { display: block; padding: 16px; }
+        /* Theme tokens */
+        :host {
+          --zm-gap: 8px;
+          --zm-radius: 10px;
+          --zm-chip-bg: var(--secondary-background-color);
+          --zm-chip-active: var(--primary-color);
+          --zm-chip-color: var(--primary-text-color);
+        }
+        .container { background: var(--card-background-color); border-radius: var(--ha-card-border-radius, 12px); box-shadow: var(--ha-card-box-shadow); padding: 16px; }
+        .container.dark { background: ${COLOR.ui.darkContainerBackground}; color: ${COLOR.ui.darkContainerText}; }
+        .container.dark .canvas-container { border-color: ${COLOR.ui.darkCanvasBorder}; background: ${COLOR.ui.darkCanvasBackground}; }
+        .canvas-container { position: relative; width: 100%; aspect-ratio: 1; border: 1px solid var(--divider-color); border-radius: var(--zm-radius); overflow: hidden; background: ${COLOR.ui.lightCanvasBackground}; isolation: isolate; }
+        canvas { width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
+        .overlay-controls { position: absolute; bottom: 4px; display: flex; gap: 4px; z-index: 1; }
+        .overlay-controls-left { left: 4px; flex-direction: column; align-items: flex-start; }
+        .overlay-controls-right { right: 4px; }
+        .overlay-controls button { background: ${COLOR.ui.overlayButtonLightBg}; color: ${COLOR.ui.overlayButtonText}; border: none; border-radius: 6px; font-size: 11px; line-height: 1; cursor: pointer; backdrop-filter: blur(4px); display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 6px; min-height: 32px; }
+        #modeGroup button { font-size: 16px; width: 32px; height: 32px; min-width: 32px; min-height: 32px; padding: 0; }
+        #btnModeMenu { font-size: 16px; width: 32px; height: 32px; min-width: 32px; min-height: 32px; padding: 0; }
+        .overlay-controls button span { font-size: 13px; line-height: 1; }
+        .overlay-controls button.lock-toggle { padding: 6px; }
+        .overlay-controls button.undo-toggle { padding: 6px; font-size: 1.1em; line-height: 1; }
+        .overlay-controls button.undo-toggle:disabled { opacity: 0.35; cursor: not-allowed; }
+        .overlay-controls button.lock-toggle .icon { font-size: 1.35em; line-height: 1; }
+        .container.dark .overlay-controls button { background: ${COLOR.ui.overlayButtonDarkBg}; color: ${COLOR.ui.overlayButtonText}; border-color: ${COLOR.ui.overlayButtonDarkBorder}; }
+        .overlay-controls button.active { outline: 2px solid ${COLOR.ui.overlayButtonActiveOutline}; }
+        .overlay-controls button:disabled { opacity: 0.4; cursor: default; }
+        .controls { margin: 12px 0; display: flex; gap: var(--zm-gap); flex-wrap: wrap; }
+        #cone-controls { align-items: center; padding-top: 8px; }
+        #coneAngleSlider { flex: 1; min-width: 160px; }
+        button { padding: 8px 16px; background: var(--primary-color); color: ${COLOR.ui.primaryButtonText}; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; }
+        .container.dark button { background: ${COLOR.ui.darkPrimaryButton}; }
+        button:hover { opacity: 0.9; }
+        button.zone-btn {
+          padding: 6px 10px;
+          border-radius: 999px;
+          background: var(--zm-chip-bg);
+          color: var(--zm-chip-color);
+          border: 1px solid var(--divider-color);
+        }
+        button.zone-btn.active {
+          background: var(--zm-chip-active);
+          color: ${COLOR.ui.overlayButtonText};
+          border-color: var(--zm-chip-active);
+        }
+        .container.dark button.zone-btn {
+          background: ${COLOR.ui.darkZoneButtonBg};
+          color: ${COLOR.ui.darkZoneButtonText};
+          border-color: ${COLOR.ui.darkZoneButtonBorder};
+        }
+        .container.dark button.zone-btn.active {
+          /* Match other buttons' dark color */
+          background: ${COLOR.ui.darkZoneButtonActiveBg};
+          color: ${COLOR.ui.overlayButtonText};
+          border-color: ${COLOR.ui.darkZoneButtonActiveBorder};
+        }
+        .info { margin-top: 12px; font-size: 14px; color: var(--secondary-text-color); }
+        .container.dark .info { color: ${COLOR.ui.infoDarkText}; }
+        .container.dark .zone-item { background: ${COLOR.ui.zoneItemDarkBg}; color: ${COLOR.ui.zoneItemDarkText}; }
+        .entity-selection { margin: 4px 0; padding: 0; background: transparent; border-radius: 0; }
+        .entity-row { display: grid; grid-template-columns: auto 1fr 1fr auto; gap: 6px; align-items: center; margin: 6px 0; }
+        .entity-row label { font-weight: 600; opacity: 0.95; }
+        .entity-row select, .entity-row input { width: 100%; padding: 2px 6px; border: 1px solid var(--divider-color); border-radius: 6px; background: var(--card-background-color); color: var(--primary-text-color); font-size: 12px; height: 28px; box-sizing: border-box; }
+        .container.dark .entity-row select, .container.dark .entity-row input { background: ${COLOR.ui.darkSelectBg}; border-color: ${COLOR.ui.darkSelectBorder}; color: ${COLOR.ui.darkSelectText}; }
+        .device-title { font-size: 1.2em; font-weight: bold; margin-bottom: 8px; }
+        .entity-controls { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+        .entity-controls select, .entity-controls input { width: 100%; }
+        .pair-actions { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+        .subtle { opacity: 0.85; font-size: 0.92em; }
+        .config { margin-top: 0; }
+        .config-header { display: flex; align-items: center; justify-content: space-between; cursor: pointer; padding: 4px 0; background: transparent; border-radius: 0; }
+        .config-title { font-weight: 600; }
+        .config-content { max-height: 0; overflow: hidden; transition: max-height 200ms ease, padding 200ms ease; padding: 0; }
+        .config-content.open { max-height: 1200px; padding: 4px 0; }
+        .subsection-header { display: flex; align-items: center; justify-content: space-between; cursor: pointer; padding: 4px 0; background: transparent; border-radius: 0; margin-top: 4px; }
+        .subsection-title { font-weight: 600; }
+        @media (max-width: 520px) { .entity-row { grid-template-columns: 1fr; } }
+      </style>
+      <div class="container ${this.darkMode ? "dark" : ""}">
+        <div class="device-title" id="deviceTitle"></div>
+        <div class="canvas-container">
+          <canvas id="zoneCanvas"></canvas>
+          <div class="overlay-controls overlay-controls-left" id="overlayControlsLeft">
+            <div id="modeGroup" style="display: ${this.showModeMenu ? "flex" : "none"}; flex-direction: column; gap: 4px;">
+              <button id="btnPolyFinish" title="Finish polygon">✓</button>
+              <button id="btnPolyUndo" title="Undo last point">↺</button>
+              <button id="btnModePolygon" title="Polygon">⬠</button>
+              <button id="btnModeEllipse" title="Ellipse">◯</button>
+              <button id="btnModeRect" title="Rectangle">▭</button>
+            </div>
+            <button id="btnModeMenu" title="Drawing modes">✎</button>
+          </div>
+          <div class="overlay-controls overlay-controls-right" id="overlayControlsRight">
+            <button id="btnUndo" class="undo-toggle" title="Undo last zone change" disabled>↶</button>
+            <button id="btnLock" class="lock-toggle" title="Lock drawing">🔓</button>
+          </div>
+        </div>
+        <div class="controls" id="zone-buttons">
+        </div>
+        <div class="config">
+          <div id="btnConfigToggle" class="config-header">
+            <span class="config-title">Configure</span>
+            <span>${this.showConfig ? "▾" : "▸"}</span>
+          </div>
+          <div id="configContent" class="config-content ${this.showConfig ? "open" : ""}">
+            <div class="controls" id="cone-controls">
+              <label for="coneAngleSlider">Cone rotation: </label>
+              <input type="range" id="coneAngleSlider" min="-180" max="180" step="1" value="${this.coneAngleDeg}" />
+              <span id="coneAngleLabel">${this.coneAngleDeg}°</span>
+            </div>
+            <!-- Read only. The radar's X/Y targets are resolved by the
+                 integration, and the DIY override is the update_zone
+                 service, not a second pair picker in here. -->
+            <div class="info subtle" id="entityStatus"></div>
+            <div class="subsection-header" id="toggleZones">
+              <span class="subsection-title">Zones</span>
+              <span id="caretZones">${this.showZones ? "▾" : "▸"}</span>
+            </div>
+            <div class="config-content ${this.showZones ? "open" : ""}" id="sectionZones">
+              <div class="entity-selection">
+                <div class="entity-controls">
+                  <div class="pair-actions">
+                    <button id="btnAddZone" title="Add new zone">Add Zone</button>
+                  </div>
+                  <div id="zoneManager"></div>
+                </div>
+              </div>
+            </div>
+            <div class="info">
+              Click & drag for Rectangle/Ellipse. Polygon: click points, double-click to finish (max ${this.polyMaxPoints} pts). Grid units: ${gridUnitLabel} (X: ${displayXMin}..${displayXMax}, Y: ${displayYMin}..${displayYMax}). Input units: ${inputUnitLabel}. Cone range: ${displayConeRange} ${gridUnitLabel}
+            </div>
+          </div>
+
+        </div>
+      </div>
+    `;
+  }
+  render() {
+    this._detachGlobalListeners();
+    this.shadowRoot.innerHTML = this._template();
+    this._renderTitle();
+    if (this._loadError) {
+      const host = this.shadowRoot.getElementById("loadError");
+      if (host) host.textContent = this._loadError;
+      this.canvas = null;
+      this.ctx = null;
+      return;
+    }
+    this.renderZoneButtons();
+    this.setupCanvas();
+    this.attachEventListeners();
+    this._renderEntityStatus();
+    this._renderZoneManager();
+    if (this._zoneConfigPayload) {
+      this._applyZoneConfig(this._zoneConfigPayload);
+    }
+  }
+  renderZoneButtons() {
+    const container = this.shadowRoot.getElementById("zone-buttons");
+    if (!container) return;
+    container.innerHTML = "";
+    if (!this.zoneConfig || this.zoneConfig.length === 0) {
+      this.selectedZone = null;
+    }
+    this.zoneConfig.forEach((zone) => {
+      const btn = document.createElement("button");
+      btn.className = "zone-btn";
+      btn.dataset.zoneId = zone.id;
+      btn.textContent = this._zoneLabel(zone.id);
+      btn.addEventListener("click", () => this._setSelectedZone(zone.id));
+      btn.addEventListener("dblclick", (e) => {
+        e.preventDefault();
+        this._clearZone(zone.id, true);
+      });
+      container.appendChild(btn);
+    });
+    const clearBtn = document.createElement("button");
+    clearBtn.id = "clearBtn";
+    clearBtn.className = "zone-btn clear-all";
+    clearBtn.textContent = "Clear All Zones";
+    container.appendChild(clearBtn);
+    const firstZone = container.querySelector(".zone-btn[data-zone-id]");
+    if (this.selectedZone !== null && this.selectedZone !== void 0) {
+      const existingSelection = container.querySelector(
+        `.zone-btn[data-zone-id="${this.selectedZone}"]`
+      );
+      if (existingSelection) {
+        this._setSelectedZone(this.selectedZone);
+        return;
+      }
+    }
+    if (firstZone) {
+      this._setSelectedZone(Number(firstZone.dataset.zoneId));
+    }
+  }
+  drawCurrentPosition(x, y, color = COLOR.canvas.defaultTarget) {
+    if (!this.ctx || !this.canvas) return;
+    const ctx = this.ctx;
+    const pixelX = this.valueToPixels(x, "x");
+    const pixelY = this.valueToPixels(y, "y");
+    if (pixelX >= 0 && pixelX <= this.canvas.width && pixelY >= 0 && pixelY <= this.canvas.height) {
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(pixelX, pixelY, 10, 0, 2 * Math.PI);
+      ctx.fill();
+      ctx.strokeStyle = COLOR.canvas.targetStroke;
+      ctx.lineWidth = 3;
+      ctx.stroke();
+    }
+  }
+  attachEventListeners() {
+    this._attachZoneListEvents();
+    this._attachCanvasEvents();
+    this._attachConeControls();
+    this._attachDrawingModeControls();
+    this._attachConfigEvents();
+  }
+  _attachZoneListEvents() {
+    const zoneButtons = this.shadowRoot.getElementById("zone-buttons");
+    if (!zoneButtons) return;
+    zoneButtons.addEventListener("click", (event) => {
+      const target = event.target;
+      if (!target || target.id !== "clearBtn") {
+        return;
+      }
+      this._clearAllZones();
+    });
+  }
+  _attachCanvasEvents() {
+    if (!this.canvas) return;
+    const handleMouseDown = (event) => this.startDrawing(event);
+    const handleMouseMove = (event) => this.draw(event);
+    const handleMouseUp = (event) => this.endDrawing(event);
+    this.canvas.addEventListener("mousedown", handleMouseDown);
+    this.canvas.addEventListener("mousemove", handleMouseMove);
+    this.canvas.addEventListener("mouseup", handleMouseUp);
+    this.canvas.addEventListener(
+      "touchstart",
+      (event) => {
+        event.preventDefault();
+        this.startDrawing(event);
+      },
+      { passive: false }
+    );
+    this.canvas.addEventListener(
+      "touchmove",
+      (event) => {
+        event.preventDefault();
+        this.draw(event);
+      },
+      { passive: false }
+    );
+    this.canvas.addEventListener(
+      "touchend",
+      (event) => {
+        event.preventDefault();
+        this.endDrawing(event);
+      },
+      { passive: false }
+    );
+    this.canvas.addEventListener("dblclick", () => {
+      if (this.drawMode === DRAW_MODES.POLYGON) {
+        this.finishPolygon();
+      }
+    });
+    this._attachGlobalListeners();
+    const canvasContainer = this.canvas.parentElement;
+    if (canvasContainer) {
+      canvasContainer.addEventListener("mouseleave", () => {
+        if (this.isDrawing) this.cancelDrawing();
+      });
+    }
+  }
+  /** The window and document listeners. Separate from the canvas ones because
+   *  `disconnectedCallback` removes exactly these, and a re-attached card has
+   *  to get them back without re-wiring a canvas that never lost its own. */
+  _attachGlobalListeners() {
+    if (!this.canvas) return;
+    this._detachGlobalListeners();
+    this._onKeyDown = (event) => {
+      if (this.drawMode !== DRAW_MODES.POLYGON) return;
+      if (event.key === "Escape") {
+        this._polyPoints = [];
+        this.isDrawing = false;
+        this.drawGrid();
+      } else if (event.key === "Backspace" && this._polyPoints.length > 0) {
+        this._polyPoints.pop();
+        this.drawGrid();
+      }
+    };
+    window.addEventListener("keydown", this._onKeyDown);
+    const canvasContainer = this.canvas.parentElement;
+    this._outsideClickHandler = (event) => {
+      if (!this.canvas) return;
+      if (canvasContainer && canvasContainer.contains(event.target)) return;
+      if (!this.shadowRoot.contains(event.target)) return;
+      if (this.isDrawing) this.cancelDrawing();
+    };
+    document.addEventListener("mousedown", this._outsideClickHandler, true);
+    document.addEventListener("touchstart", this._outsideClickHandler, true);
+  }
+  _attachConeControls() {
+    const angleSlider = this.shadowRoot.getElementById("coneAngleSlider");
+    const angleLabel = this.shadowRoot.getElementById("coneAngleLabel");
+    if (!angleSlider || !angleLabel) return;
+    const updateDisplay = () => {
+      angleLabel.textContent = `${this.coneAngleDeg}°`;
+      angleSlider.value = String(this.coneAngleDeg);
+    };
+    angleSlider.addEventListener("input", () => {
+      const value = parseInt(angleSlider.value, 10);
+      if (Number.isNaN(value)) return;
+      this.coneAngleDeg = this._clampConeAngle(value);
+      this._invalidateConeCache();
+      updateDisplay();
+      this.drawGrid();
+    });
+    angleSlider.addEventListener("change", () => {
+      this._persistRotation();
+    });
+    angleSlider.addEventListener("dblclick", () => {
+      this.coneAngleDeg = this.coneAngleDefault;
+      this._invalidateConeCache();
+      updateDisplay();
+      this.drawGrid();
+      this._persistRotation();
+    });
+    updateDisplay();
+  }
+  _attachDrawingModeControls() {
+    const btnModeMenu = this.shadowRoot.getElementById("btnModeMenu");
+    const modeGroup = this.shadowRoot.getElementById("modeGroup");
+    const btnModeRect = this.shadowRoot.getElementById("btnModeRect");
+    const btnModeEllipse = this.shadowRoot.getElementById("btnModeEllipse");
+    const btnModePolygon = this.shadowRoot.getElementById("btnModePolygon");
+    const btnPolyUndo = this.shadowRoot.getElementById("btnPolyUndo");
+    const btnPolyFinish = this.shadowRoot.getElementById("btnPolyFinish");
+    const btnLock = this.shadowRoot.getElementById("btnLock");
+    if (btnModeMenu && modeGroup) {
+      btnModeMenu.addEventListener("click", () => {
+        this.showModeMenu = !this.showModeMenu;
+        modeGroup.style.display = this.showModeMenu ? "flex" : "none";
+      });
+    }
+    if (btnModeRect)
+      btnModeRect.addEventListener("click", () => this._setDrawMode(DRAW_MODES.RECT));
+    if (btnModeEllipse)
+      btnModeEllipse.addEventListener("click", () => this._setDrawMode(DRAW_MODES.ELLIPSE));
+    if (btnModePolygon)
+      btnModePolygon.addEventListener("click", () => this._setDrawMode(DRAW_MODES.POLYGON));
+    if (btnPolyUndo) {
+      btnPolyUndo.addEventListener("click", () => {
+        if (this.drawMode === DRAW_MODES.POLYGON && this._polyPoints.length) {
+          this._polyPoints.pop();
+          this.drawGrid();
+        }
+      });
+    }
+    if (btnPolyFinish) {
+      btnPolyFinish.addEventListener("click", () => {
+        if (this.drawMode === DRAW_MODES.POLYGON) this.finishPolygon();
+      });
+    }
+    if (btnLock) {
+      const updateLockVisual = () => {
+        btnLock.innerHTML = this.isLocked ? '<span>Locked</span><span class="icon">🔒</span>' : '<span>Unlocked</span><span class="icon">🔓</span>';
+        btnLock.title = this.isLocked ? "Unlock drawing" : "Lock drawing";
+        if (this.canvas) {
+          this.canvas.style.cursor = this.isLocked ? "not-allowed" : "crosshair";
+        }
+      };
+      btnLock.addEventListener("click", () => {
+        this.isLocked = !this.isLocked;
+        writeStoredLock(this.deviceId, this.isLocked);
+        updateLockVisual();
+        this._lastLockWarningTs = 0;
+        if (this.isLocked) {
+          if (this.isDrawing) this.cancelDrawing();
+          this._notify("Drawing locked. Unlock the grid to edit zones.");
+        } else {
+          this._notify("Drawing unlocked. You can edit zones now.");
+        }
+      });
+      this._updateLockVisual = updateLockVisual;
+      updateLockVisual();
+    }
+    const btnUndo = this.shadowRoot.getElementById("btnUndo");
+    if (btnUndo) {
+      if (!this.showUndo) {
+        btnUndo.style.display = "none";
+      } else {
+        btnUndo.addEventListener("click", () => this._performUndo());
+      }
+      this._refreshUndoButton();
+    }
+    this._setDrawMode(this.drawMode || DRAW_MODES.RECT);
+  }
+  _attachConfigEvents() {
+    const btnConfigToggle = this.shadowRoot.getElementById("btnConfigToggle");
+    const configContent = this.shadowRoot.getElementById("configContent");
+    if (btnConfigToggle && configContent) {
+      btnConfigToggle.addEventListener("click", () => {
+        this.showConfig = !this.showConfig;
+        configContent.classList.toggle("open", this.showConfig);
+        const caret = btnConfigToggle.querySelector("span:last-child");
+        if (caret) caret.textContent = this.showConfig ? "▾" : "▸";
+      });
+    }
+    const btnAddZone = this.shadowRoot.getElementById("btnAddZone");
+    if (btnAddZone) {
+      btnAddZone.addEventListener("click", () => this._handleAddZone());
+    }
+    const toggleZones = this.shadowRoot.getElementById("toggleZones");
+    const caretZones = this.shadowRoot.getElementById("caretZones");
+    const sectionZones = this.shadowRoot.getElementById("sectionZones");
+    if (toggleZones && caretZones && sectionZones) {
+      toggleZones.addEventListener("click", () => {
+        this.showZones = !this.showZones;
+        sectionZones.classList.toggle("open", this.showZones);
+        caretZones.textContent = this.showZones ? "▾" : "▸";
+      });
+    }
+  }
+  _applyGridConfig(grid) {
+    if (!grid || typeof grid !== "object") return;
+    const convert = (value) => {
+      const mmValue = this._convertToMm(value, this.gridUnits);
+      return mmValue === null ? null : mmValue;
+    };
+    const next = {
+      xMin: convert(grid.x_min),
+      xMax: convert(grid.x_max),
+      yMin: convert(grid.y_min),
+      yMax: convert(grid.y_max)
+    };
+    if (next.xMin !== null) this.xMin = next.xMin;
+    if (next.xMax !== null) this.xMax = next.xMax;
+    if (next.yMin !== null) this.yMin = next.yMin;
+    if (next.yMax !== null) this.yMax = next.yMax;
+    if (this.xMin > this.xMax) {
+      [this.xMin, this.xMax] = [this.xMax, this.xMin];
+    }
+    if (this.yMin > this.yMax) {
+      [this.yMin, this.yMax] = [this.yMax, this.yMin];
+    }
+    if (this.xMin === this.xMax) {
+      this.xMax = this.xMin + 1;
+    }
+    if (this.yMin === this.yMax) {
+      this.yMax = this.yMin + 1;
+    }
+    this._invalidateGridCache();
+    this._invalidateConeCache();
+  }
+  _applyConeConfig(cone) {
+    if (!cone || typeof cone !== "object") return;
+    if (cone.y_max !== void 0) {
+      const mmValue = this._convertToMm(cone.y_max, this.gridUnits);
+      if (mmValue !== null) {
+        this.coneYMax = Math.max(0, mmValue);
+      }
+    }
+    if (cone.fov_deg !== void 0) {
+      const fov = Number(cone.fov_deg);
+      this.coneFovDeg = Number.isFinite(fov) ? Math.min(360, Math.max(1, fov)) : this.coneFovDeg;
+    }
+    if (cone.angle_deg !== void 0) {
+      const angle = this._clampConeAngle(Number(cone.angle_deg));
+      this.coneAngleDefault = angle;
+      this.coneAngleDeg = angle;
+    }
+    this._invalidateConeCache();
+  }
+  _clampConeAngle(angle) {
+    if (Number.isNaN(angle)) return 0;
+    return Math.max(-180, Math.min(180, angle));
+  }
+  _clampValue(value, min, max) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return min;
+    if (min > max) return numeric;
+    return Math.max(min, Math.min(max, numeric));
+  }
+  _clampAndRound(value, min, max) {
+    return Math.round(this._clampValue(value, min, max));
+  }
+  _normalizeUnit(unit) {
+    if (unit === null || unit === void 0) return "mm";
+    const key = String(unit).trim().toLowerCase();
+    if (!key) return "mm";
+    const normalized = UNIT_ALIASES[key] || (LENGTH_UNITS[key] ? key : null);
+    return normalized || "mm";
+  }
+  _unitMultiplier(unit) {
+    return LENGTH_UNITS[unit] || LENGTH_UNITS.mm;
+  }
+  _unitLabel(unit) {
+    return this._normalizeUnit(unit);
+  }
+  _convertToMm(value, unit) {
+    if (value === null || value === void 0) return null;
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return null;
+    return numeric * this._unitMultiplier(unit);
+  }
+  _mmToUnit(value, unit) {
+    if (value === null || value === void 0) return null;
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return null;
+    const multiplier = this._unitMultiplier(unit);
+    if (!multiplier) return numeric;
+    return numeric / multiplier;
+  }
+  _formatNumber(value) {
+    if (!Number.isFinite(value)) return "0";
+    const abs = Math.abs(value);
+    const decimals = abs >= 1e3 ? 0 : abs >= 100 ? 1 : 2;
+    const rounded = Number(value.toFixed(decimals));
+    return rounded.toString();
+  }
+  _formatGridValue(mmValue) {
+    const converted = this._mmToUnit(mmValue, this.gridUnits);
+    if (converted === null) return "0";
+    return this._formatNumber(converted);
+  }
+  _gridDisplayUnit(unit) {
+    const normalized = this._normalizeUnit(unit);
+    if (normalized === "mm") return "m";
+    if (normalized === "in") return "ft";
+    return normalized;
+  }
+  _gridStepCandidates(unit) {
+    if (unit === "in") return GRID_STEP_CANDIDATES.in;
+    if (unit === "ft") return GRID_STEP_CANDIDATES.ft;
+    return GRID_STEP_CANDIDATES.default;
+  }
+  _countSteps(endInclusive, start, step) {
+    if (!(step > 0) || !Number.isFinite(step)) return 0;
+    return Math.floor((endInclusive - start) / step + 1e-6) + 1;
+  }
+  _roundKeyValue(value, precision = 1e6) {
+    if (!Number.isFinite(value)) return 0;
+    return Math.round(value * precision) / precision;
+  }
+  _invalidateGridCache() {
+    this._gridCache = null;
+  }
+  _invalidateConeCache() {
+    this._coneRingsCache = null;
+  }
+  _clampGridPixel(value, size) {
+    if (!Number.isFinite(value)) return 0;
+    const limit = Math.max(size - 1, 0);
+    if (value <= 0) return 0;
+    if (value >= limit) return limit;
+    return value;
+  }
+  _computeGridMetrics() {
+    const unit = this.gridUnits;
+    const unitMm = this._unitMultiplier(unit);
+    const pxPerMmX = this.pxPerX || 0;
+    const pxPerMmY = this.pxPerY || 0;
+    const spanX = Math.max(1, this.xMax - this.xMin);
+    const spanY = Math.max(1, this.yMax - this.yMin);
+    const candidates = this._gridStepCandidates(unit);
+    const minPxSpacing = ZoneMapCard.GRID_MIN_SPACING_PX;
+    const chooseStep = (pxPerMm, spanMm) => {
+      for (let scale = 0; scale < 4; scale++) {
+        for (const stepUnits of candidates) {
+          if (stepUnits <= 0) continue;
+          const stepMm = stepUnits * unitMm * Math.pow(10, scale);
+          const px = stepMm * pxPerMm;
+          if (px >= minPxSpacing) return stepMm;
+        }
+      }
+      const fallback = Math.max(unitMm, spanMm / 10);
+      return fallback;
+    };
+    const stepX = chooseStep(pxPerMmX, spanX);
+    const stepY = chooseStep(pxPerMmY, spanY);
+    const startX = Math.floor(this.xMin / stepX) * stepX;
+    const startY = Math.floor(this.yMin / stepY) * stepY;
+    const endX = Math.ceil(this.xMax / stepX) * stepX;
+    const endY = Math.ceil(this.yMax / stepY) * stepY;
+    const countX = this._countSteps(endX, startX, stepX);
+    const countY = this._countSteps(endY, startY, stepY);
+    return {
+      unit,
+      labelUnit: this._gridDisplayUnit(unit),
+      stepX,
+      stepY,
+      startX,
+      startY,
+      endX,
+      endY,
+      pxPerMmX,
+      pxPerMmY,
+      countX,
+      countY,
+      pixelStartX: this.valueToPixels(startX, "x"),
+      pixelStartY: this.valueToPixels(startY, "y"),
+      skipTolX: stepX * 1e-3,
+      skipTolY: stepY * 1e-3,
+      pixelStepX: stepX * pxPerMmX,
+      pixelStepY: stepY * pxPerMmY
+    };
+  }
+  _getGridRenderState() {
+    var _a, _b;
+    const canvasWidth = ((_a = this.canvas) == null ? void 0 : _a.width) || 0;
+    const canvasHeight = ((_b = this.canvas) == null ? void 0 : _b.height) || 0;
+    const keyParts = [
+      this._normalizeUnit(this.gridUnits),
+      this._roundKeyValue(this.xMin),
+      this._roundKeyValue(this.xMax),
+      this._roundKeyValue(this.yMin),
+      this._roundKeyValue(this.yMax),
+      this._roundKeyValue(this.pxPerX),
+      this._roundKeyValue(this.pxPerY),
+      canvasWidth,
+      canvasHeight,
+      this.unitDisplay ? 1 : 0,
+      this.unitLabelSize
+    ];
+    const key = keyParts.join("|");
+    if (this._gridCache && this._gridCache.key === key) {
+      return this._gridCache;
+    }
+    const metrics = this._computeGridMetrics();
+    const hasPath2D = typeof Path2D === "function";
+    const gridPath = hasPath2D ? new Path2D() : null;
+    const xLines = [];
+    const yLines = [];
+    let pixelX = metrics.pixelStartX;
+    for (let i = 0, x = metrics.startX; i < metrics.countX; i += 1, x += metrics.stepX) {
+      const drawX = metrics.pixelStepX ? pixelX : this.valueToPixels(x, "x");
+      if (Number.isFinite(drawX)) {
+        xLines.push({ pixel: drawX, value: x });
+        if (gridPath) {
+          gridPath.moveTo(drawX, 0);
+          gridPath.lineTo(drawX, canvasHeight);
+        }
+      }
+      if (metrics.pixelStepX) {
+        pixelX += metrics.pixelStepX;
+      }
+    }
+    let pixelY = metrics.pixelStartY;
+    for (let i = 0, y = metrics.startY; i < metrics.countY; i += 1, y += metrics.stepY) {
+      const drawY = metrics.pixelStepY ? pixelY : this.valueToPixels(y, "y");
+      if (Number.isFinite(drawY)) {
+        yLines.push({ pixel: drawY, value: y });
+        if (gridPath) {
+          gridPath.moveTo(0, drawY);
+          gridPath.lineTo(canvasWidth, drawY);
+        }
+      }
+      if (metrics.pixelStepY) {
+        pixelY += metrics.pixelStepY;
+      }
+    }
+    const labels = this._buildGridLabels(metrics, xLines, yLines, canvasWidth, canvasHeight);
+    this._gridCache = { key, metrics, gridPath, xLines, yLines, labels };
+    return this._gridCache;
+  }
+  _buildGridLabels(metrics, xLines, yLines, canvasWidth, canvasHeight) {
+    const labelData = { x: [], y: [] };
+    if (!this.unitDisplay) return labelData;
+    const y0 = this.valueToPixels(0, "y");
+    let xLabelY;
+    let xBaseline;
+    if (Number.isFinite(y0) && y0 >= 0 && y0 <= canvasHeight) {
+      const margin = 2;
+      if (y0 > this.unitLabelSize + margin) {
+        xLabelY = y0 - margin;
+        xBaseline = "bottom";
+      } else {
+        xLabelY = y0 + margin;
+        xBaseline = "top";
+      }
+    } else {
+      xLabelY = canvasHeight - 2;
+      xBaseline = "bottom";
+    }
+    const width = canvasWidth;
+    const height = canvasHeight;
+    xLines.forEach(({ pixel, value }) => {
+      if (!Number.isFinite(pixel) || pixel < -40 || pixel > width + 40) return;
+      if (Math.abs(value) < metrics.skipTolX) return;
+      const label = this._formatTickLabel(value, metrics.stepX, metrics.labelUnit);
+      labelData.x.push({
+        x: pixel,
+        y: xLabelY,
+        text: label,
+        align: "center",
+        baseline: xBaseline
+      });
+    });
+    const x0 = this.valueToPixels(0, "x");
+    let yLabelX;
+    let yAlign;
+    if (Number.isFinite(x0) && x0 >= 0 && x0 <= width) {
+      const margin = 4;
+      if (x0 > this.unitLabelSize + margin * 2) {
+        yLabelX = x0 - margin;
+        yAlign = "right";
+      } else {
+        yLabelX = x0 + margin;
+        yAlign = "left";
+      }
+    } else {
+      yLabelX = 2;
+      yAlign = "left";
+    }
+    yLines.forEach(({ pixel, value }) => {
+      if (!Number.isFinite(pixel) || pixel < -40 || pixel > height + 40) return;
+      if (Math.abs(value) < metrics.skipTolY) return;
+      const label = this._formatTickLabel(value, metrics.stepY, metrics.labelUnit);
+      labelData.y.push({
+        x: yLabelX,
+        y: pixel,
+        text: label,
+        align: yAlign,
+        baseline: "middle"
+      });
+    });
+    return labelData;
+  }
+  _formatTickLabel(mmValue, stepMm, displayUnit) {
+    const unitMm = this._unitMultiplier(displayUnit);
+    const stepUnits = stepMm / unitMm;
+    const isIntegerStep = Math.abs(stepUnits - Math.round(stepUnits)) < 1e-6;
+    let decimals = 0;
+    if (!isIntegerStep && stepUnits >= 1) decimals = 1;
+    else if (stepUnits < 1 && stepUnits >= 0.5) decimals = 1;
+    else if (stepUnits < 0.5) decimals = 2;
+    const valUnits = this._mmToUnit(mmValue, displayUnit) || 0;
+    const rounded = Number(valUnits.toFixed(decimals));
+    return `${rounded}${this._unitLabel(displayUnit)}`;
+  }
+  _persistRotation() {
+    return this._saveZoneUpdate(
+      { device_id: this.deviceId, rotation_deg: this.coneAngleDeg },
+      null
+    );
+  }
+  _setDrawMode(mode) {
+    const nextMode = mode || DRAW_MODES.RECT;
+    if (this.drawMode === nextMode && !this.isDrawing) {
+      this._highlightActiveModeButton();
+      this._updatePolygonButtonsVisibility();
+      return;
+    }
+    this.drawMode = nextMode;
+    if (this.drawMode !== DRAW_MODES.POLYGON) {
+      this._polyPoints = [];
+    }
+    this._cursorPoint = null;
+    this.startPoint = null;
+    this.isDrawing = false;
+    this._highlightActiveModeButton();
+    this._updatePolygonButtonsVisibility();
+    this._invalidateGridCache();
+    this.drawGrid();
+  }
+  _highlightActiveModeButton() {
+    var _a, _b, _c;
+    const rectBtn = (_a = this.shadowRoot) == null ? void 0 : _a.getElementById("btnModeRect");
+    const ellipseBtn = (_b = this.shadowRoot) == null ? void 0 : _b.getElementById("btnModeEllipse");
+    const polyBtn = (_c = this.shadowRoot) == null ? void 0 : _c.getElementById("btnModePolygon");
+    [rectBtn, ellipseBtn, polyBtn].forEach((btn) => {
+      if (!btn) return;
+      const shouldActivate = btn === rectBtn && this.drawMode === DRAW_MODES.RECT || btn === ellipseBtn && this.drawMode === DRAW_MODES.ELLIPSE || btn === polyBtn && this.drawMode === DRAW_MODES.POLYGON;
+      btn.classList.toggle("active", shouldActivate);
+    });
+  }
+  _setSelectedZone(zoneId) {
+    var _a;
+    if (zoneId === null || zoneId === void 0) {
+      this.selectedZone = null;
+      return;
+    }
+    this.selectedZone = Number(zoneId);
+    const buttons = (_a = this.shadowRoot) == null ? void 0 : _a.querySelectorAll(".zone-btn[data-zone-id]");
+    if (!buttons) return;
+    buttons.forEach((btn) => {
+      const targetId = Number(btn.dataset.zoneId);
+      btn.classList.toggle("active", targetId === this.selectedZone);
+    });
+  }
+  _resetDrawingState() {
+    this.isDrawing = false;
+    this._polyPoints = [];
+    this._cursorPoint = null;
+    this.startPoint = null;
+    this._lastPolyTap = 0;
+    this._activeInput = null;
+  }
+  _getZone(zoneId) {
+    return this.zones.find((zone) => Number(zone.id) === Number(zoneId)) || null;
+  }
+  _zoneLabel(zoneId) {
+    if (zoneId === null || zoneId === void 0) {
+      return "Zone";
+    }
+    const numericId = Number(zoneId);
+    const configZone = (this.zoneConfig || []).find(
+      (zone) => Number(zone.id) === Number(numericId)
+    );
+    const name = typeof (configZone == null ? void 0 : configZone.name) === "string" ? configZone.name.trim() : "";
+    if (name) {
+      return name;
+    }
+    if (!Number.isNaN(numericId)) {
+      return `Zone ${numericId}`;
+    }
+    return `Zone ${zoneId}`;
+  }
+  _upsertZone(zoneId, shape, data) {
+    const index = this.zones.findIndex((zone) => Number(zone.id) === Number(zoneId));
+    const entry = { id: Number(zoneId), shape, data };
+    if (index === -1) {
+      this.zones.push(entry);
+    } else {
+      this.zones[index] = entry;
+    }
+  }
+  _removeZone(zoneId) {
+    const index = this.zones.findIndex((zone) => Number(zone.id) === Number(zoneId));
+    if (index !== -1) {
+      this.zones.splice(index, 1);
+    }
+  }
+  _clearZone(zoneId, notifyBackend = false) {
+    if (notifyBackend) {
+      this._setUndoSnapshot(this._snapshotZones([zoneId]));
+    }
+    this._removeZone(zoneId);
+    if (notifyBackend) {
+      this.updateHomeAssistantShape(zoneId, "none", null, `${this._zoneLabel(zoneId)} cleared`);
+    }
+    if (Number(this.selectedZone) === Number(zoneId)) {
+      this._resetDrawingState();
+    }
+    this.drawGrid();
+  }
+  _clearAllZones() {
+    const zoneIds = (this.zoneConfig || []).map((zone) => zone.id);
+    this._setUndoSnapshot(this._snapshotZones(zoneIds));
+    this.zones = [];
+    this._resetDrawingState();
+    this.drawGrid();
+    if (!zoneIds.length) return;
+    Promise.all(zoneIds.map((id) => this.updateHomeAssistantShape(id, "none", null))).then(
+      (saved) => {
+        if (saved.every(Boolean)) this._notify("All zones cleared");
+      }
+    );
+  }
+  endDrawing(e) {
+    if (!this.isDrawing) return;
+    const isTouch = !!(e.changedTouches || e.touches);
+    if (this._activeInput && (isTouch && this._activeInput !== "touch" || !isTouch && this._activeInput !== "mouse")) {
+      return;
+    }
+    if (this.drawMode === DRAW_MODES.POLYGON) {
+      const p = this._getPointFromEvent(e);
+      const vx = this._clampAndRound(this.pixelsToValue(p.x, "x"), this.xMin, this.xMax);
+      const vy = this._clampAndRound(this.pixelsToValue(p.y, "y"), this.yMin, this.yMax);
+      if (this._polyPoints.length < this.polyMaxPoints) {
+        this._polyPoints.push({ x: vx, y: vy });
+        if (this._polyPoints.length === this.polyMaxPoints && this._polyPoints.length >= 3) {
+          this.finishPolygon();
+          return;
+        }
+        const now = Date.now();
+        if (this._lastPolyTap && now - this._lastPolyTap < 350) {
+          if (this._polyPoints.length >= 3) {
+            this.finishPolygon();
+            this._lastPolyTap = 0;
+            return;
+          }
+        }
+        this._lastPolyTap = now;
+      } else {
+        if (this._polyPoints.length >= 3) this.finishPolygon();
+        return;
+      }
+      this.drawGrid();
+      return;
+    }
+    this.isDrawing = false;
+    if (!this.startPoint) {
+      this._activeInput = null;
+      return;
+    }
+    const endPoint = this._getPointFromEvent(e);
+    let payload = null;
+    if (this.drawMode === DRAW_MODES.RECT) {
+      const x1 = this.pixelsToValue(this.startPoint.x, "x");
+      const x2 = this.pixelsToValue(endPoint.x, "x");
+      const y1 = this.pixelsToValue(this.startPoint.y, "y");
+      const y2 = this.pixelsToValue(endPoint.y, "y");
+      const xMinRounded = this._clampAndRound(Math.min(x1, x2), this.xMin, this.xMax);
+      const xMaxRounded = this._clampAndRound(Math.max(x1, x2), this.xMin, this.xMax);
+      const yMinRounded = this._clampAndRound(Math.min(y1, y2), this.yMin, this.yMax);
+      const yMaxRounded = this._clampAndRound(Math.max(y1, y2), this.yMin, this.yMax);
+      payload = {
+        shape: DRAW_MODES.RECT,
+        data: {
+          x_min: xMinRounded,
+          x_max: xMaxRounded,
+          y_min: yMinRounded,
+          y_max: yMaxRounded
+        }
+      };
+    } else if (this.drawMode === DRAW_MODES.ELLIPSE) {
+      const x1 = this.pixelsToValue(this.startPoint.x, "x");
+      const y1 = this.pixelsToValue(this.startPoint.y, "y");
+      const x2 = this.pixelsToValue(endPoint.x, "x");
+      const y2 = this.pixelsToValue(endPoint.y, "y");
+      const cx = this._clampAndRound((x1 + x2) / 2, this.xMin, this.xMax);
+      const cy = this._clampAndRound((y1 + y2) / 2, this.yMin, this.yMax);
+      const rx = Math.max(1, Math.round(Math.abs(x2 - x1) / 2));
+      const ry = Math.max(1, Math.round(Math.abs(y2 - y1) / 2));
+      payload = { shape: DRAW_MODES.ELLIPSE, data: { cx, cy, rx, ry } };
+    } else if (this.drawMode === DRAW_MODES.POLYGON) ;
+    if (!payload) return;
+    const zoneId = this.selectedZone;
+    this._setUndoSnapshot(this._snapshotZones([zoneId]));
+    this._upsertZone(zoneId, payload.shape, payload.data);
+    this.drawGrid();
+    const savedMessage = zoneId === null || zoneId === void 0 ? null : `${this._zoneLabel(zoneId)} saved`;
+    this.updateHomeAssistantShape(zoneId, payload.shape, payload.data, savedMessage);
+    this._activeInput = null;
+    this.startPoint = null;
+    this._cursorPoint = null;
+  }
+  _getPointFromEvent(e) {
+    if (!this.canvas) return { x: 0, y: 0 };
+    const rect = this.canvas.getBoundingClientRect();
+    const scaleX = this.canvas.width / rect.width;
+    const scaleY = this.canvas.height / rect.height;
+    let clientX, clientY;
+    if (e.touches && e.touches.length) {
+      clientX = e.touches[0].clientX;
+      clientY = e.touches[0].clientY;
+    } else if (e.changedTouches && e.changedTouches.length) {
+      clientX = e.changedTouches[0].clientX;
+      clientY = e.changedTouches[0].clientY;
+    } else {
+      clientX = e.clientX;
+      clientY = e.clientY;
+    }
+    return {
+      x: (clientX - rect.left) * scaleX,
+      y: (clientY - rect.top) * scaleY
+    };
+  }
+  _snapshotZones(zoneIds) {
+    const snap = [];
+    (zoneIds || []).forEach((rawId) => {
+      const id = Number(rawId);
+      if (!Number.isFinite(id) || id <= 0) return;
+      const existing = (this.zones || []).find((z) => Number(z.id) === id);
+      if (existing) {
+        snap.push({ zoneId: id, shape: existing.shape, data: existing.data });
+      } else {
+        snap.push({ zoneId: id, shape: "none", data: null });
+      }
+    });
+    return snap;
+  }
+  _setUndoSnapshot(snap) {
+    this._undoSnapshot = snap && snap.length ? snap : null;
+    this._refreshUndoButton();
+  }
+  _refreshUndoButton() {
+    var _a;
+    const btn = (_a = this.shadowRoot) == null ? void 0 : _a.getElementById("btnUndo");
+    if (!btn) return;
+    btn.disabled = !(this._undoSnapshot && this._undoSnapshot.length);
+  }
+  _performUndo() {
+    if (!this._undoSnapshot || !this._undoSnapshot.length) return;
+    const snap = this._undoSnapshot;
+    this._undoSnapshot = null;
+    const writes = snap.map(({ zoneId, shape, data }) => {
+      if (shape === "none" || !data) {
+        this._removeZone(zoneId);
+      } else {
+        this._upsertZone(zoneId, shape, data);
+      }
+      return this.updateHomeAssistantShape(
+        zoneId,
+        shape || "none",
+        data == null ? null : data
+      );
+    });
+    this.drawGrid();
+    Promise.all(writes).then((saved) => {
+      if (saved.every(Boolean)) this._notify("Undid last zone change");
+    });
+    this._refreshUndoButton();
+  }
+  /**
+   * Save one zone's geometry.
+   *
+   * The pair list is deliberately absent. Sending the card's in-memory copy on
+   * every zone edit is what erased two customers' configuration: a card that
+   * had not finished loading sent an empty one, and the service took it.
+   */
+  updateHomeAssistantShape(zoneId, shape, data, successMessage = null) {
+    if (!this._hass) return Promise.resolve(false);
+    const numericZoneId = Number(zoneId);
+    if (!Number.isFinite(numericZoneId) || numericZoneId <= 0) {
+      return Promise.resolve(false);
+    }
+    return this._saveZoneUpdate(
+      {
+        device_id: this.deviceId,
+        zone_id: numericZoneId,
+        shape,
+        data
+      },
+      successMessage
+    );
+  }
+  _applyAutoLock() {
+    if (this._autoLockApplied) return;
+    if (this._lockConfigured) {
+      this._autoLockApplied = true;
+      return;
+    }
+    const stored = readStoredLock(this.deviceId);
+    this.isLocked = stored !== null ? stored : (this.zones || []).length > 0;
+    this._autoLockApplied = true;
+    if (typeof this._updateLockVisual === "function") {
+      this._updateLockVisual();
+    }
+  }
+  _renderZoneManager() {
+    var _a;
+    const host = (_a = this.shadowRoot) == null ? void 0 : _a.getElementById("zoneManager");
+    if (!host) return;
+    host.innerHTML = "";
+    const zones = (this.zoneConfig || []).slice().sort((a, b) => Number(a.id) - Number(b.id));
+    zones.forEach((z) => {
+      const row = document.createElement("div");
+      row.className = "entity-row";
+      const label = document.createElement("label");
+      label.textContent = `Zone ${z.id}`;
+      const input = document.createElement("input");
+      input.type = "text";
+      input.value = z.name || `Zone ${z.id}`;
+      input.placeholder = `Zone ${z.id}`;
+      const saveBtn = document.createElement("button");
+      saveBtn.textContent = "Save";
+      const delBtn = document.createElement("button");
+      delBtn.textContent = "Delete";
+      saveBtn.addEventListener("click", () => {
+        var _a2;
+        const newName = ((_a2 = input.value) == null ? void 0 : _a2.trim()) || `Zone ${z.id}`;
+        z.name = newName;
+        if (this._hass) {
+          const zoneId = Number(z.id);
+          if (!Number.isFinite(zoneId) || zoneId <= 0) {
+            this._notify("Unable to save name: invalid zone id");
+            return;
+          }
+          this._saveZoneUpdate(
+            { device_id: this.deviceId, zone_id: zoneId, name: newName },
+            `${this._zoneLabel(z.id)} saved`
+          );
+        }
+        this.renderZoneButtons();
+        this.drawGrid();
+      });
+      delBtn.addEventListener("click", () => {
+        const label2 = this._zoneLabel(z.id);
+        if (this._hass) {
+          const zoneId = Number(z.id);
+          if (!Number.isFinite(zoneId) || zoneId <= 0) {
+            this._notify("Unable to delete: invalid zone id");
+            return;
+          }
+          this._saveZoneUpdate(
+            { device_id: this.deviceId, zone_id: zoneId, delete: true },
+            `${label2} deleted`
+          );
+        }
+        this.zoneConfig = (this.zoneConfig || []).filter((zz) => String(zz.id) !== String(z.id));
+        this.zones = (this.zones || []).filter((zz) => String(zz.id) !== String(z.id));
+        if (String(this.selectedZone) === String(z.id)) this.selectedZone = null;
+        this.renderZoneButtons();
+        this._renderZoneManager();
+        this.drawGrid();
+      });
+      row.appendChild(label);
+      row.appendChild(input);
+      row.appendChild(saveBtn);
+      row.appendChild(delBtn);
+      host.appendChild(row);
+    });
+  }
+  _handleAddZone() {
+    const ids = /* @__PURE__ */ new Set([
+      ...(this.zoneConfig || []).map((z) => Number(z.id)),
+      ...(this.zones || []).map((z) => Number(z.id))
+    ]);
+    let next = 1;
+    while (ids.has(next)) next += 1;
+    const newZone = { id: next, name: `Zone ${next}` };
+    this.zoneConfig = [...this.zoneConfig || [], newZone];
+    this.selectedZone = next;
+    this._saveZoneUpdate(
+      {
+        device_id: this.deviceId,
+        zone_id: next,
+        shape: "none",
+        data: null,
+        name: newZone.name
+      },
+      null
+    );
+    this.renderZoneButtons();
+    this._renderZoneManager();
+  }
+  finishPolygon() {
+    if (this._polyPoints.length >= 3 && this.selectedZone !== null) {
+      if (this._polyPoints.length > this.polyMaxPoints) {
+        this._polyPoints = this._polyPoints.slice(0, this.polyMaxPoints);
+      }
+      const zoneId = this.selectedZone;
+      const points = this._polyPoints.slice(0, this.polyMaxPoints).map((pt) => ({
+        x: this._clampAndRound(pt.x, this.xMin, this.xMax),
+        y: this._clampAndRound(pt.y, this.yMin, this.yMax)
+      }));
+      const payload = {
+        shape: DRAW_MODES.POLYGON,
+        data: { points }
+      };
+      this._setUndoSnapshot(this._snapshotZones([zoneId]));
+      this._upsertZone(zoneId, payload.shape, payload.data);
+      this.updateHomeAssistantShape(
+        zoneId,
+        payload.shape,
+        payload.data,
+        `${this._zoneLabel(zoneId)} saved`
+      );
+    }
+    this._resetDrawingState();
+    this.drawGrid();
+  }
+  drawGrid() {
+    if (!this.ctx || !this.canvas) return;
+    const ctx = this.ctx;
+    ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    const gridState = this._getGridRenderState();
+    const gridMetrics = gridState == null ? void 0 : gridState.metrics;
+    if (gridState) {
+      this._drawGridLines(ctx, gridState);
+    }
+    this._drawAxes(ctx);
+    if (this.unitDisplay && gridState) {
+      this._drawGridLabels(ctx, gridState.labels);
+    }
+    this.drawDeviceCone(gridMetrics);
+    this.drawZones();
+    this._drawInProgress();
+    this._drawTrackedTargets();
+  }
+  _drawGridLines(ctx, gridState) {
+    if (!gridState) return;
+    ctx.strokeStyle = COLOR.canvas.gridLine;
+    ctx.lineWidth = 1;
+    if (gridState.gridPath) {
+      ctx.stroke(gridState.gridPath);
+      return;
+    }
+    const { xLines, yLines } = gridState;
+    if ((!xLines || !xLines.length) && (!yLines || !yLines.length)) return;
+    ctx.beginPath();
+    if (xLines && xLines.length) {
+      xLines.forEach(({ pixel }) => {
+        ctx.moveTo(pixel, 0);
+        ctx.lineTo(pixel, this.canvas.height);
+      });
+    }
+    if (yLines && yLines.length) {
+      yLines.forEach(({ pixel }) => {
+        ctx.moveTo(0, pixel);
+        ctx.lineTo(this.canvas.width, pixel);
+      });
+    }
+    ctx.stroke();
+  }
+  _drawAxes(ctx) {
+    const originColor = this.darkMode ? COLOR.canvas.axisDark : COLOR.canvas.axisLight;
+    ctx.strokeStyle = originColor;
+    ctx.lineWidth = 1.5;
+    const y0 = this.valueToPixels(0, "y");
+    ctx.beginPath();
+    ctx.moveTo(0, y0);
+    ctx.lineTo(this.canvas.width, y0);
+    ctx.stroke();
+    const x0 = this.valueToPixels(0, "x");
+    ctx.beginPath();
+    ctx.moveTo(x0, 0);
+    ctx.lineTo(x0, this.canvas.height);
+    ctx.stroke();
+    ctx.fillStyle = originColor;
+    ctx.beginPath();
+    ctx.arc(x0, y0, 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  _drawGridLabels(ctx, labels) {
+    if (!labels) return;
+    const axisColor = this.darkMode ? COLOR.canvas.axisDark : COLOR.canvas.axisLight;
+    ctx.save();
+    ctx.fillStyle = axisColor;
+    ctx.font = `${this.unitLabelSize}px sans-serif`;
+    if (labels.x && labels.x.length) {
+      labels.x.forEach((item) => {
+        ctx.textAlign = item.align;
+        ctx.textBaseline = item.baseline;
+        ctx.fillText(item.text, item.x, item.y);
+      });
+    }
+    if (labels.y && labels.y.length) {
+      labels.y.forEach((item) => {
+        ctx.textAlign = item.align;
+        ctx.textBaseline = item.baseline;
+        ctx.fillText(item.text, item.x, item.y);
+      });
+    }
+    ctx.restore();
+  }
+  _drawTrackedTargets() {
+    if (!this._hass) return;
+    const colors = COLOR.canvas.targetPalette;
+    const theta = (this.coneAngleDeg || 0) * Math.PI / 180;
+    const cosTheta = Math.cos(theta);
+    const sinTheta = Math.sin(theta);
+    const rotatePoint = (x, y) => ({
+      x: x * cosTheta + y * sinTheta,
+      y: -x * sinTheta + y * cosTheta
+    });
+    const multiplier = this.inputUnitMultiplier || 1;
+    this.trackedEntities.forEach((pair, idx) => {
+      if (!pair.x || !pair.y) return;
+      const stateX = this._hass.states[pair.x];
+      const stateY = this._hass.states[pair.y];
+      if (!stateX || !stateY) return;
+      const xRaw = parseFloat(stateX.state);
+      const yRaw = parseFloat(stateY.state);
+      if (Number.isNaN(xRaw) || Number.isNaN(yRaw)) return;
+      if (Math.abs(xRaw) < 1e-6 && Math.abs(yRaw) < 1e-6) return;
+      const xVal = xRaw * multiplier;
+      const yVal = yRaw * multiplier;
+      const rotated = rotatePoint(xVal, yVal);
+      this.drawCurrentPosition(rotated.x, rotated.y, colors[idx % colors.length]);
+    });
+  }
+  drawZones() {
+    const ctx = this.ctx;
+    const colors = COLOR.canvas.zonePalette;
+    const orderedZones = [...this.zones].sort((a, b) => Number(a.id) - Number(b.id));
+    orderedZones.forEach((zone, idx) => {
+      if (!zone || !zone.shape || !zone.data) return;
+      const color = colors[(Number(zone.id) - 1) % colors.length] || colors[idx % colors.length];
+      ctx.strokeStyle = color.replace("0.30", "1");
+      ctx.fillStyle = color;
+      ctx.lineWidth = 3;
+      let bbox = null;
+      if (zone.shape === DRAW_MODES.RECT) {
+        const { x_min, x_max, y_min, y_max } = zone.data;
+        const x1 = this.valueToPixels(x_min, "x");
+        const y1 = this.valueToPixels(y_min, "y");
+        const x2 = this.valueToPixels(x_max, "x");
+        const y2 = this.valueToPixels(y_max, "y");
+        const x = Math.min(x1, x2);
+        const y = Math.min(y1, y2);
+        const width = Math.abs(x2 - x1);
+        const height = Math.abs(y2 - y1);
+        ctx.fillRect(x, y, width, height);
+        ctx.strokeRect(x, y, width, height);
+        bbox = { x, y, width, height };
+      } else if (zone.shape === DRAW_MODES.ELLIPSE) {
+        const { cx, cy, rx, ry } = zone.data;
+        const cxPix = this.valueToPixels(cx, "x");
+        const cyPix = this.valueToPixels(cy, "y");
+        const rxPix = Math.abs(this.valueToPixels(cx + rx, "x") - this.valueToPixels(cx, "x"));
+        const ryPix = Math.abs(this.valueToPixels(cy + ry, "y") - this.valueToPixels(cy, "y"));
+        ctx.beginPath();
+        ctx.ellipse(cxPix, cyPix, rxPix, ryPix, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        bbox = { x: cxPix - rxPix, y: cyPix - ryPix, width: rxPix * 2, height: ryPix * 2 };
+      } else if (zone.shape === DRAW_MODES.POLYGON && Array.isArray(zone.data.points)) {
+        const pts = zone.data.points.map((point) => ({
+          x: this.valueToPixels(point.x, "x"),
+          y: this.valueToPixels(point.y, "y")
+        }));
+        if (pts.length >= 3) {
+          ctx.beginPath();
+          ctx.moveTo(pts[0].x, pts[0].y);
+          for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+          let minX = pts[0].x, minY = pts[0].y, maxX = pts[0].x, maxY = pts[0].y;
+          for (let i = 1; i < pts.length; i++) {
+            if (pts[i].x < minX) minX = pts[i].x;
+            if (pts[i].y < minY) minY = pts[i].y;
+            if (pts[i].x > maxX) maxX = pts[i].x;
+            if (pts[i].y > maxY) maxY = pts[i].y;
+          }
+          bbox = { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+        }
+      }
+      if (bbox && bbox.width > 20 && bbox.height > 14) {
+        this._drawZoneLabel(zone, bbox);
+      }
+    });
+  }
+  _drawInProgress() {
+    var _a, _b;
+    const ctx = this.ctx;
+    if (this.drawMode === DRAW_MODES.POLYGON && this.isDrawing) {
+      const pts = (this._polyPoints || []).map((p) => ({
+        x: this.valueToPixels(p.x, "x"),
+        y: this.valueToPixels(p.y, "y")
+      }));
+      if (pts.length >= 2) {
+        ctx.save();
+        ctx.strokeStyle = this.darkMode ? COLOR.canvas.polygonStrokeDark : COLOR.canvas.polygonStrokeLight;
+        ctx.lineWidth = 3;
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.moveTo(pts[0].x, pts[0].y);
+        for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+        ctx.stroke();
+        ctx.restore();
+      }
+      if (this._cursorPoint && (pts.length || this.startPoint)) {
+        const cur = this._cursorPoint;
+        const previewColor = this.darkMode ? COLOR.canvas.polygonPreviewDark : COLOR.canvas.polygonPreviewLight;
+        ctx.save();
+        ctx.strokeStyle = previewColor;
+        ctx.lineWidth = 2;
+        ctx.setLineDash([6, 6]);
+        ctx.beginPath();
+        const anchor = pts.length ? pts[pts.length - 1] : { x: ((_a = this.startPoint) == null ? void 0 : _a.x) ?? null, y: ((_b = this.startPoint) == null ? void 0 : _b.y) ?? null };
+        if (anchor.x != null && anchor.y != null) {
+          ctx.moveTo(anchor.x, anchor.y);
+          ctx.lineTo(cur.x, cur.y);
+        }
+        if (pts.length >= 1) {
+          const first = pts[0];
+          ctx.moveTo(cur.x, cur.y);
+          ctx.lineTo(first.x, first.y);
+        }
+        ctx.stroke();
+        ctx.restore();
+      }
+      ctx.save();
+      const fill = this.darkMode ? COLOR.canvas.polygonVertexFillDark : COLOR.canvas.polygonVertexFillLight;
+      const stroke = this.darkMode ? COLOR.canvas.polygonVertexStrokeDark : COLOR.canvas.polygonVertexStrokeLight;
+      for (const pt of pts) {
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, 3.5, 0, Math.PI * 2);
+        ctx.fillStyle = fill;
+        ctx.fill();
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = stroke;
+        ctx.stroke();
+      }
+      if (!pts.length && this.startPoint) {
+        ctx.beginPath();
+        ctx.arc(this.startPoint.x, this.startPoint.y, 3.5, 0, Math.PI * 2);
+        ctx.fillStyle = fill;
+        ctx.fill();
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = stroke;
+        ctx.stroke();
+      }
+      ctx.restore();
+    } else if (this.isDrawing && this.startPoint && (this.drawMode === DRAW_MODES.RECT || this.drawMode === DRAW_MODES.ELLIPSE)) {
+      const pt = this.startPoint;
+      ctx.save();
+      const fill = this.darkMode ? COLOR.canvas.polygonVertexFillDark : COLOR.canvas.polygonVertexFillLight;
+      const stroke = this.darkMode ? COLOR.canvas.polygonVertexStrokeDark : COLOR.canvas.polygonVertexStrokeLight;
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, 3.5, 0, Math.PI * 2);
+      ctx.fillStyle = fill;
+      ctx.fill();
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = stroke;
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+  _drawZoneLabel(zone, bbox) {
+    var _a;
+    const ctx = this.ctx;
+    const label = this._zoneLabel(zone.id);
+    if (!label) return;
+    ctx.save();
+    ctx.font = "24px sans-serif";
+    ctx.fillStyle = this.darkMode ? COLOR.canvas.axisDark : COLOR.canvas.axisLight;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.shadowColor = this.darkMode ? COLOR.canvas.polygonVertexStrokeDark : COLOR.canvas.polygonVertexStrokeLight;
+    ctx.shadowBlur = 2;
+    ctx.shadowOffsetX = 0;
+    ctx.shadowOffsetY = 0;
+    let cx = bbox.x + bbox.width / 2;
+    let cy = bbox.y + bbox.height / 2;
+    if (zone.shape === DRAW_MODES.POLYGON && Array.isArray((_a = zone.data) == null ? void 0 : _a.points) && zone.data.points.length >= 3) {
+      let A = 0, Cx = 0, Cy = 0;
+      for (let i = 0, j = zone.data.points.length - 1; i < zone.data.points.length; j = i++) {
+        const xi = this.valueToPixels(zone.data.points[i].x, "x");
+        const yi = this.valueToPixels(zone.data.points[i].y, "y");
+        const xj = this.valueToPixels(zone.data.points[j].x, "x");
+        const yj = this.valueToPixels(zone.data.points[j].y, "y");
+        const cross = xi * yj - xj * yi;
+        A += cross;
+        Cx += (xi + xj) * cross;
+        Cy += (yi + yj) * cross;
+      }
+      A *= 0.5;
+      if (Math.abs(A) > 1e-6) {
+        cx = Cx / (6 * A);
+        cy = Cy / (6 * A);
+      }
+    }
+    ctx.fillText(label, cx, cy);
+    ctx.restore();
+  }
+  drawDeviceCone(gridMetrics) {
+    if (!this.ctx || !this.canvas) return;
+    const ctx = this.ctx;
+    const apex = { x: 0, y: 0 };
+    const halfFovRad = this.coneFovDeg / 2 * Math.PI / 180;
+    const phiL = -halfFovRad;
+    const phiR = halfFovRad;
+    const rotRad = this.coneAngleDeg * Math.PI / 180;
+    let thetaStart = phiL + rotRad;
+    let thetaEnd = phiR + rotRad;
+    if (thetaStart > thetaEnd) {
+      const tmp = thetaStart;
+      thetaStart = thetaEnd;
+      thetaEnd = tmp;
+    }
+    const radius = Math.max(0, this.coneYMax);
+    const ax = this.valueToPixels(apex.x, "x");
+    const ay = this.valueToPixels(apex.y, "y");
+    const pAt = (ang) => ({ x: radius * Math.sin(ang), y: radius * Math.cos(ang) });
+    const L = pAt(thetaStart);
+    const lx = this.valueToPixels(L.x, "x");
+    const ly = this.valueToPixels(L.y, "y");
+    const segments = 48;
+    const step = (thetaEnd - thetaStart) / segments;
+    ctx.save();
+    ctx.fillStyle = COLOR.canvas.deviceConeFill;
+    ctx.strokeStyle = COLOR.canvas.deviceConeStroke;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(ax, ay);
+    ctx.lineTo(lx, ly);
+    for (let i = 1; i <= segments; i++) {
+      const ang = thetaStart + step * i;
+      const pt = pAt(ang);
+      const px = this.valueToPixels(pt.x, "x");
+      const py = this.valueToPixels(pt.y, "y");
+      ctx.lineTo(px, py);
+    }
+    ctx.lineTo(ax, ay);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+    if (this.unitDisplay) {
+      this._drawConeRings(thetaStart, thetaEnd, radius, gridMetrics);
+    }
+  }
+  _getConeRingsRenderState(thetaStart, thetaEnd, radius, gridMetrics) {
+    var _a, _b;
+    if (!this.unitDisplay) return null;
+    if (!Number.isFinite(radius) || radius <= 0) return null;
+    const angleSpan = thetaEnd - thetaStart;
+    if (!Number.isFinite(angleSpan) || Math.abs(angleSpan) < 1e-6) return null;
+    const gridUnit = gridMetrics ? gridMetrics.unit : this.gridUnits;
+    const imperial = gridUnit === "in" || gridUnit === "ft";
+    const labelUnit = imperial ? "ft" : "m";
+    const stepUnits = imperial ? 4 : 1;
+    const stepMm = stepUnits * this._unitMultiplier(labelUnit);
+    if (!Number.isFinite(stepMm) || stepMm <= 0) return null;
+    const pxPerMmX = gridMetrics ? gridMetrics.pxPerMmX : this.pxPerX || 0;
+    const pxPerMmY = gridMetrics ? gridMetrics.pxPerMmY : this.pxPerY || 0;
+    if (!pxPerMmX || !pxPerMmY) return null;
+    const keyParts = [
+      this._roundKeyValue(thetaStart),
+      this._roundKeyValue(thetaEnd),
+      this._roundKeyValue(radius),
+      this._roundKeyValue(pxPerMmX),
+      this._roundKeyValue(pxPerMmY),
+      this._roundKeyValue(this.xMin),
+      this._roundKeyValue(this.yMin),
+      labelUnit,
+      stepMm,
+      ((_a = this.canvas) == null ? void 0 : _a.width) || 0,
+      ((_b = this.canvas) == null ? void 0 : _b.height) || 0
+    ];
+    const key = keyParts.join("|");
+    if (this._coneRingsCache && this._coneRingsCache.key === key) {
+      return this._coneRingsCache;
+    }
+    const hasPath2D = typeof Path2D === "function";
+    const ringsPath = hasPath2D ? new Path2D() : null;
+    const rings = [];
+    const labels = [];
+    const segments = 48;
+    const angStep = angleSpan / segments;
+    const sinStep = Math.sin(angStep);
+    const cosStep = Math.cos(angStep);
+    const sinStart = Math.sin(thetaStart);
+    const cosStart = Math.cos(thetaStart);
+    const offsetX = -this.xMin * pxPerMmX;
+    const offsetY = -this.yMin * pxPerMmY;
+    for (let r = stepMm; r <= radius + 1e-6; r += stepMm) {
+      let sinAng = sinStart;
+      let cosAng = cosStart;
+      const points = [];
+      for (let i = 0; i <= segments; i++) {
+        const x = r * sinAng;
+        const y = r * cosAng;
+        const px = x * pxPerMmX + offsetX;
+        const py = y * pxPerMmY + offsetY;
+        points.push([px, py]);
+        if (i < segments) {
+          const nextSin = sinAng * cosStep + cosAng * sinStep;
+          const nextCos = cosAng * cosStep - sinAng * sinStep;
+          sinAng = nextSin;
+          cosAng = nextCos;
+        }
+      }
+      if (ringsPath && points.length) {
+        ringsPath.moveTo(points[0][0], points[0][1]);
+        for (let idx = 1; idx < points.length; idx += 1) {
+          ringsPath.lineTo(points[idx][0], points[idx][1]);
+        }
+      }
+      rings.push(points);
+      const mid = (thetaStart + thetaEnd) / 2;
+      const lx = r * Math.sin(mid) * pxPerMmX + offsetX;
+      const ly = r * Math.cos(mid) * pxPerMmY + offsetY;
+      labels.push({
+        x: lx,
+        y: ly,
+        text: this._formatTickLabel(r, stepMm, labelUnit)
+      });
+    }
+    this._coneRingsCache = { key, path: ringsPath, rings, labels };
+    return this._coneRingsCache;
+  }
+  _drawConeRings(thetaStart, thetaEnd, radius, gridMetrics) {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    const state = this._getConeRingsRenderState(thetaStart, thetaEnd, radius, gridMetrics);
+    if (!state) return;
+    const axisColor = this.darkMode ? COLOR.canvas.axisDark : COLOR.canvas.axisLight;
+    ctx.save();
+    ctx.strokeStyle = COLOR.canvas.deviceConeStroke;
+    ctx.lineWidth = 1;
+    ctx.font = `${this.unitLabelSize}px sans-serif`;
+    ctx.fillStyle = axisColor;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    if (state.path) {
+      ctx.stroke(state.path);
+    } else if (state.rings && state.rings.length) {
+      ctx.beginPath();
+      state.rings.forEach((points) => {
+        if (!points.length) return;
+        ctx.moveTo(points[0][0], points[0][1]);
+        for (let idx = 1; idx < points.length; idx += 1) {
+          ctx.lineTo(points[idx][0], points[idx][1]);
+        }
+      });
+      ctx.stroke();
+    }
+    if (state.labels && state.labels.length) {
+      state.labels.forEach((label) => {
+        ctx.fillText(label.text, label.x, label.y);
+      });
+    }
+    ctx.restore();
+  }
+  setupCanvas() {
+    this.canvas = this.shadowRoot.getElementById("zoneCanvas");
+    if (!this.canvas) {
+      this.ctx = null;
+      return;
+    }
+    this.ctx = this.canvas.getContext("2d");
+    this.canvas.width = 800;
+    this.canvas.height = 800;
+    const safeWidth = Math.max(1, this.xMax - this.xMin);
+    const safeHeight = Math.max(1, this.yMax - this.yMin);
+    this.pxPerX = this.canvas.width / safeWidth;
+    this.pxPerY = this.canvas.height / safeHeight;
+    this._invalidateGridCache();
+    this._invalidateConeCache();
+    this.drawGrid();
+  }
+  startDrawing(e) {
+    if (this.isLocked) {
+      const now = Date.now();
+      if (!this._lastLockWarningTs || now - this._lastLockWarningTs > 1500) {
+        this._notify("Unlock the grid before drawing.");
+        this._lastLockWarningTs = now;
+      }
+      return;
+    }
+    if (this.selectedZone === null) return;
+    if (!this.canvas) return;
+    this.isDrawing = true;
+    this._activeInput = e.touches ? "touch" : "mouse";
+    this.startPoint = this._getPointFromEvent(e);
+    this._cursorPoint = this.startPoint;
+    this.drawGrid();
+  }
+  draw(e) {
+    if (this.isLocked || !this.isDrawing) return;
+    const isTouch = !!(e.touches || e.changedTouches);
+    if (this._activeInput && (isTouch && this._activeInput !== "touch" || !isTouch && this._activeInput !== "mouse")) {
+      return;
+    }
+    const currentPoint = this._getPointFromEvent(e);
+    if (this.drawMode === DRAW_MODES.POLYGON) {
+      this._cursorPoint = currentPoint;
+      this.drawGrid();
+      return;
+    }
+    this.drawGrid();
+    const ctx = this.ctx;
+    ctx.strokeStyle = this.darkMode ? COLOR.canvas.drawStrokeDark : COLOR.canvas.drawStrokeLight;
+    ctx.lineWidth = 2;
+    ctx.setLineDash([5, 5]);
+    const width = currentPoint.x - this.startPoint.x;
+    const height = currentPoint.y - this.startPoint.y;
+    if (this.drawMode === DRAW_MODES.RECT) {
+      ctx.strokeRect(this.startPoint.x, this.startPoint.y, width, height);
+    } else if (this.drawMode === DRAW_MODES.ELLIPSE) {
+      ctx.beginPath();
+      ctx.ellipse(
+        this.startPoint.x + width / 2,
+        this.startPoint.y + height / 2,
+        Math.abs(width) / 2,
+        Math.abs(height) / 2,
+        0,
+        0,
+        Math.PI * 2
+      );
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+  }
+  valueToPixels(val, axis) {
+    if (axis === "x") {
+      return (val - this.xMin) * (this.pxPerX || 0);
+    } else {
+      return (val - this.yMin) * (this.pxPerY || 0);
+    }
+  }
+  pixelsToValue(pix, axis) {
+    if (axis === "x") {
+      if (!this.pxPerX) return this.xMin;
+      return pix / this.pxPerX + this.xMin;
+    } else {
+      if (!this.pxPerY) return this.yMin;
+      return this.yMin + pix / this.pxPerY;
+    }
+  }
+  getCardSize() {
+    return 8;
+  }
+  _updatePolygonButtonsVisibility() {
+    const undo = this.shadowRoot.getElementById("btnPolyUndo");
+    const fin = this.shadowRoot.getElementById("btnPolyFinish");
+    const show = this.drawMode === DRAW_MODES.POLYGON;
+    [undo, fin].forEach((btn) => {
+      if (!btn) return;
+      btn.style.display = show ? "block" : "none";
+    });
+  }
+  cancelDrawing() {
+    this._resetDrawingState();
+    this.drawGrid();
+  }
+  disconnectedCallback() {
+    this._detachGlobalListeners();
+    this._disconnectZones();
+  }
+  _detachGlobalListeners() {
+    if (this._onKeyDown) {
+      window.removeEventListener("keydown", this._onKeyDown);
+      this._onKeyDown = null;
+    }
+    if (this._outsideClickHandler) {
+      document.removeEventListener("mousedown", this._outsideClickHandler, true);
+      document.removeEventListener("touchstart", this._outsideClickHandler, true);
+      this._outsideClickHandler = null;
+    }
+  }
+  /**
+   * Say which of the three states the target list is in.
+   *
+   * Never configured and deliberately cleared both draw an empty canvas, and
+   * telling a user that nothing is tracked when the radar is quietly tracking
+   * its own targets is how the old card hid its state. Read only: the
+   * integration resolves the pairs and `apollo_mmwave.update_zone` overrides
+   * them.
+   */
+  _renderEntityStatus() {
+    var _a;
+    const host = (_a = this.shadowRoot) == null ? void 0 : _a.getElementById("entityStatus");
+    if (!host) return;
+    const configured = (this.trackedEntities || []).filter((pair) => pair.x && pair.y);
+    if (this._usingSuggestedEntities) {
+      host.textContent = configured.length ? `Using this radar's own detected targets (${configured.length}).` : "This radar has no detected targets yet, and none are configured.";
+      return;
+    }
+    host.textContent = configured.length ? `Tracking ${configured.length} target pair${configured.length === 1 ? "" : "s"}.` : "No targets are tracked, which is what this radar was told to do.";
+  }
+  _notify(message) {
+    try {
+      const ev = new Event("hass-notification", { bubbles: true, composed: true });
+      ev.detail = { message };
+      this.dispatchEvent(ev);
+    } catch {
+      alert(message);
+    }
+  }
+}
+registerElement("apollo-radar-zone-map-card", ZoneMapCard);
+window.customCards = window.customCards || [];
+window.customCards.push({
+  type: "apollo-radar-zone-map-card",
+  name: "Apollo Zone Map",
+  description: "Draw occupancy zones over LD2450 tracking-radar targets"
+});
+export {
+  ZoneMapCard
+};

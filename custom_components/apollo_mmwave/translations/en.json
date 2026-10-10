@@ -1,0 +1,46 @@
+{
+    "config": {
+        "step": {
+            "user": {
+                "description": "Set up Apollo mmWave. The integration serves its own cards and dashboard strategy — no separate downloads.",
+                "data": {
+                    "auto_create_view": "Add an 'Apollo mmWave' dashboard to the sidebar"
+                },
+                "data_description": {
+                    "auto_create_view": "Adds a dashboard with a tuning + zone-mapping tab for each detected Apollo mmWave device. Turn this off if you prefer to place the cards on your own dashboards; you can change it later in the integration options."
+                }
+            }
+        },
+        "abort": {
+            "already_configured": "This entry is already configured."
+        }
+    },
+    "options": {
+        "step": {
+            "init": {
+                "title": "Apollo mmWave options",
+                "description": "Configure dashboard behavior.",
+                "data": {
+                    "auto_create_view": "Auto-create the Apollo mmWave dashboard",
+                    "dashboard_devices": "Dashboard devices"
+                },
+                "data_description": {
+                    "auto_create_view": "Registers an 'Apollo mmWave' dashboard in your sidebar with a tab per device. Takes effect immediately. Turn this off if you prefer to lay out the cards yourself; the cards and strategy are still available to add manually.",
+                    "dashboard_devices": "Leave empty to show every Apollo mmWave device automatically; offline ones get a tab with an offline note. Select devices to show exactly those and hide the rest."
+                }
+            }
+        }
+    },
+    "entity": {
+        "sensor": {
+            "apollo_mmwave": {
+                "name": "Sensor"
+            }
+        },
+        "binary_sensor": {
+            "apollo_mmwave": {
+                "name": "Binary sensor"
+            }
+        }
+    }
+}

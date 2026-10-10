@@ -1,0 +1,176 @@
+import type { HomeAssistant } from "./types";
+import { registerElement } from "./register";
+import {
+  strategyDevices,
+  generateCards,
+  generateSections,
+  generateViews,
+  type StrategyConfig,
+} from "./strategy-core";
+
+/** Stable key for the devices this strategy config would render. Includes
+ *  detected capabilities so a forced (explicitly selected) device whose
+ *  entities register late still triggers a rebuild, and liveness so the
+ *  offline note on a tab tracks the radar. */
+function radarDeviceKey(hass: HomeAssistant, config: StrategyConfig): string {
+  return strategyDevices(hass, config)
+    .map(
+      (d) =>
+        `${d.deviceId}:${d.profile?.key ?? ""}:${d.ld2450 ? 1 : 0}:${d.online ? 1 : 0}`
+    )
+    .sort()
+    .join(",");
+}
+
+/**
+ * Only rebuild the dashboard when the *set of detected devices* changes.
+ *
+ * HA regenerates a strategy dashboard whenever `hass.entities`/`devices`/`areas`
+ * changes. Drawing a zone creates new `apollo_mmwave` zone sensors, which mutates
+ * `hass.entities` — regenerating mid-draw would tear down the zone-mapper card
+ * ("Subscription not found") and wipe the in-progress zone. Comparing the actual
+ * detected-device key keeps "add a device → a tab appears" while ignoring that
+ * churn (zone sensors belong to no radar device, so the key is unchanged).
+ *
+ * The fast path must include `entities`: a freshly added ESPHome device lands
+ * in the device registry *before* its entities/states register, so detection
+ * fails at that moment. The follow-up updates only touch `hass.entities` — if
+ * we short-circuited on `devices` alone, the new device's tab would never
+ * appear until a manual page reload.
+ */
+export function shouldRegenerate(
+  config: StrategyConfig,
+  oldHass: HomeAssistant,
+  newHass: HomeAssistant
+): boolean {
+  // Fast path: registry objects are replaced (not mutated) on registry
+  // changes, so routine state churn (moving targets) short-circuits here.
+  //
+  // With one exception. A tab needs LIVE radar evidence, and liveness lives in
+  // `hass.states`, which the registries never reflect. A dashboard opened
+  // while the radars were still reconnecting after a Home Assistant restart
+  // saw every one of them `unavailable`, drew none, and then never looked
+  // again: the devices coming online touched states only. So an entity
+  // crossing the available/unavailable line falls through to the full key.
+  if (oldHass.devices === newHass.devices && oldHass.entities === newHass.entities) {
+    if (!availabilityChanged(oldHass, newHass)) return false;
+  }
+  const cfg = config ?? {};
+  return radarDeviceKey(oldHass, cfg) !== radarDeviceKey(newHass, cfg);
+}
+
+function isUnavailable(state: HomeAssistant["states"][string] | undefined): boolean {
+  return state === undefined || state.state === "unavailable";
+}
+
+/** True when any entity became available or unavailable between two hass
+ *  objects. Home Assistant replaces the state object of exactly the entities
+ *  that changed, so unchanged ones are skipped on reference equality. */
+function availabilityChanged(oldHass: HomeAssistant, newHass: HomeAssistant): boolean {
+  for (const id in newHass.states) {
+    const next = newHass.states[id];
+    const prev = oldHass.states[id];
+    if (prev === next) continue;
+    if (isUnavailable(prev) !== isUnavailable(next)) return true;
+  }
+  return false;
+}
+
+const EMPTY_VIEW = {
+  title: "Apollo Radar Tuning",
+  cards: [
+    {
+      type: "markdown",
+      content:
+        "No Apollo mmWave devices found. Make sure your MSR-1/MSR-2 (LD2410), " +
+        "R-PRO-1 (LD2412 + LD2450), or MTR-1 (LD2450) is added to Home Assistant.",
+    },
+  ],
+};
+
+/**
+ * View strategy: turns a single view into an auto-generated LD2410 tuning view.
+ * Usage in a view config:
+ *   strategy:
+ *     type: custom:apollo-radar-tuning
+ */
+class ApolloLd2410ViewStrategy extends HTMLElement {
+  static shouldRegenerate = shouldRegenerate;
+
+  static async generate(
+    config: StrategyConfig,
+    hass: HomeAssistant
+  ): Promise<Record<string, any>> {
+    return { type: "sections", sections: generateSections(hass, config) };
+  }
+}
+
+/**
+ * Dashboard strategy: builds a whole dashboard (one "Tuning" view with a
+ * section per MSR device). Usage in a dashboard config:
+ *   strategy:
+ *     type: custom:apollo-radar-tuning
+ */
+class ApolloLd2410DashboardStrategy extends HTMLElement {
+  static shouldRegenerate = shouldRegenerate;
+
+  static async generate(
+    config: StrategyConfig,
+    hass: HomeAssistant
+  ): Promise<Record<string, any>> {
+    const views = generateViews(hass, config);
+    return {
+      title: "Apollo Radar Tuning",
+      views: views.length ? views : [EMPTY_VIEW],
+    };
+  }
+}
+
+/**
+ * Section strategy: a single grid section with the mmWave cards, for dropping
+ * into an existing sections dashboard (add section → "Apollo Radar Tuning").
+ * Pass `device_id` to limit it to one device; otherwise every detected device's
+ * cards are included (each group starts with a help card naming the device).
+ * Usage in a section config:
+ *   strategy:
+ *     type: custom:apollo-radar-tuning
+ *     device_id: abc123...   # optional
+ */
+class ApolloRadarSectionStrategy extends HTMLElement {
+  static shouldRegenerate = shouldRegenerate;
+
+  static async generate(
+    config: StrategyConfig,
+    hass: HomeAssistant
+  ): Promise<Record<string, any>> {
+    return { type: "grid", cards: generateCards(hass, config) };
+  }
+}
+
+registerElement("ll-strategy-view-apollo-radar-tuning", ApolloLd2410ViewStrategy);
+registerElement(
+  "ll-strategy-section-apollo-radar-tuning",
+  ApolloRadarSectionStrategy
+);
+registerElement(
+  "ll-strategy-dashboard-apollo-radar-tuning",
+  ApolloLd2410DashboardStrategy
+);
+
+// Surface the dashboard strategy in HA's "New Dashboard → Community Dashboards"
+// picker (HA 2026.5+), so users add the tuning dashboard with no YAML.
+(window as any).customStrategies = (window as any).customStrategies || [];
+if (
+  !(window as any).customStrategies.some(
+    (s: { type?: string }) => s.type === "apollo-radar-tuning"
+  )
+) {
+  (window as any).customStrategies.push({
+    type: "apollo-radar-tuning",
+    strategyType: "dashboard",
+    name: "Apollo Radar Tuning",
+    description:
+      "Auto-built tuning dashboard for Apollo radar devices (MSR / LD2410, R-PRO / LD2412).",
+    documentationURL: "https://github.com/ApolloAutomation/apollo-mmwave-main",
+  });
+}
