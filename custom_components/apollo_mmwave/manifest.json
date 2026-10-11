@@ -3,7 +3,6 @@
   "name": "Apollo mmWave",
   "codeowners": [
     "@ApolloAutomation",
-    "@bharvey88",
     "@WestwardWinds"
   ],
   "config_flow": true,
