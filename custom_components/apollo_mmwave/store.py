@@ -180,6 +180,11 @@ class _MigratingStore(Store[dict[str, Any]]):
         old_minor_version: int,  # noqa: ARG002 - signature fixed by Store
         old_data: dict[str, Any],
     ) -> dict[str, Any]:
+        # Store raises UnsupportedStorageVersionError for a major above
+        # STORAGE_VERSION before calling this, since no `max_readable_version`
+        # is passed, so a newer file fails setup instead of being read. A major
+        # above 1 here is therefore the current one with a different minor
+        # version, which has nothing to rekey.
         if old_major_version > 1:
             return old_data
         # Store hands over the file's `data` field verbatim, so a hand edit or a
@@ -222,8 +227,13 @@ class _MigratingStore(Store[dict[str, Any]]):
         return {STORE_DEVICES: devices, STORE_ORPHANS: orphans}
 
 
-def _parse_entry(raw: Any) -> dict[str, Any] | None:
-    """Normalise one stored device entry, or None if it is not a mapping."""
+def _parse_entry(raw: Any, device_id: str | None = None) -> dict[str, Any] | None:
+    """
+    Normalise one stored device entry, or None if it is not a mapping.
+
+    ``device_id`` (the entry's key, an orphan's location name included) only
+    names the entry in the warning for each zone that has to be dropped.
+    """
     if not isinstance(raw, dict):
         return None
     entry = _empty_device()
@@ -234,9 +244,24 @@ def _parse_entry(raw: Any) -> dict[str, Any] | None:
             try:
                 zone_id = int(zone_key)
             except TypeError, ValueError:
+                _LOGGER.warning(
+                    "Apollo mmWave: dropped zone '%s' of '%s' from %s; its key"
+                    " is not a zone number.",
+                    zone_key,
+                    device_id,
+                    STORAGE_KEY,
+                )
                 continue
             if isinstance(zone_def, dict):
                 entry[STORE_ZONES][zone_id] = zone_def
+            else:
+                _LOGGER.warning(
+                    "Apollo mmWave: dropped zone %s of '%s' from %s; its"
+                    " definition is not an object.",
+                    zone_key,
+                    device_id,
+                    STORAGE_KEY,
+                )
     entities = raw.get(STORE_ENTITIES)
     if isinstance(entities, list):
         entry[STORE_ENTITIES] = entities
@@ -285,14 +310,30 @@ class ZoneStore:
             return False
         self.devices = {}
         self.orphans = {}
+        # The next save writes out only what was kept, which makes every drop
+        # permanent, so each one is reported by its key.
         for device_id, raw in (data.get(STORE_DEVICES) or {}).items():
-            entry = _parse_entry(raw)
-            if entry is not None:
-                self.devices[device_id] = entry
+            entry = _parse_entry(raw, device_id)
+            if entry is None:
+                _LOGGER.warning(
+                    "Apollo mmWave: dropped the entry for device '%s' from %s;"
+                    " it is not an object.",
+                    device_id,
+                    STORAGE_KEY,
+                )
+                continue
+            self.devices[device_id] = entry
         for location, raw in (data.get(STORE_ORPHANS) or {}).items():
-            entry = _parse_entry(raw)
-            if entry is not None:
-                self.orphans[location] = entry
+            entry = _parse_entry(raw, location)
+            if entry is None:
+                _LOGGER.warning(
+                    "Apollo mmWave: dropped the unmatched location '%s' from %s;"
+                    " it is not an object.",
+                    location,
+                    STORAGE_KEY,
+                )
+                continue
+            self.orphans[location] = entry
         return True
 
     def device(self, device_id: str) -> dict[str, Any]:

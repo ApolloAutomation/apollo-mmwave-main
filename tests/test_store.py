@@ -6,7 +6,9 @@ import copy
 import logging
 from typing import TYPE_CHECKING
 
+import pytest
 from homeassistant.config_entries import ConfigEntryState
+from homeassistant.exceptions import UnsupportedStorageVersionError
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
     async_fire_time_changed,
@@ -648,3 +650,124 @@ async def test_v2_list_data_is_reported_and_ignored(
     assert store.devices == {}
     assert any("list" in record.getMessage() for record in caplog.records)
     assert hass_storage[ZONE_STORAGE_KEY]["data"] == {"devices": {}, "orphans": {}}
+
+
+async def test_newer_store_version_fails_setup(
+    hass, hass_storage, config_entry
+) -> None:
+    """A file from a newer major version is refused, never read or overwritten."""
+    newer = {
+        "version": 3,
+        "minor_version": 1,
+        "key": ZONE_STORAGE_KEY,
+        "data": {"devices": {"dev": {"zones": {"1": {"shape": "rect"}}}}},
+    }
+    hass_storage[ZONE_STORAGE_KEY] = copy.deepcopy(newer)
+
+    with pytest.raises(UnsupportedStorageVersionError):
+        await ZoneStore(hass).async_load()
+
+    config_entry.add_to_hass(hass)
+    assert not await hass.config_entries.async_setup(config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert config_entry.state is ConfigEntryState.SETUP_ERROR
+    assert hass_storage[ZONE_STORAGE_KEY] == newer
+
+
+async def test_minor_version_mismatch_passes_through(hass, hass_storage) -> None:
+    """A current-major file with another minor version keeps its device keys."""
+    devices = {"dev": {"zones": {"1": {"shape": "rect", "data": {}}}, "label": "Den"}}
+    hass_storage[ZONE_STORAGE_KEY] = {
+        "version": 2,
+        "minor_version": 2,
+        "key": ZONE_STORAGE_KEY,
+        "data": {"devices": copy.deepcopy(devices), "orphans": {}},
+    }
+
+    store = ZoneStore(hass)
+    assert await store.async_load() is True
+
+    # Not run through the v1 rekey, which would find no `locations` and empty it.
+    assert store.devices == {
+        "dev": {"zones": {1: {"shape": "rect", "data": {}}}, "label": "Den"}
+    }
+    on_disk = hass_storage[ZONE_STORAGE_KEY]
+    assert (on_disk["version"], on_disk["minor_version"]) == (2, 1)
+    assert on_disk["data"]["devices"] == devices
+
+
+def _store_warnings(caplog) -> list[str]:
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if record.name.endswith(".store") and record.levelno == logging.WARNING
+    ]
+
+
+async def test_malformed_store_entries_are_reported_when_dropped(
+    hass, hass_storage, caplog
+) -> None:
+    """Each dropped entry or zone gets one warning naming it; siblings survive."""
+    good_zone = {"shape": "rect", "data": {}}
+    hass_storage[ZONE_STORAGE_KEY] = {
+        "version": 2,
+        "data": {
+            "devices": {
+                "dev1": {"zones": {"1": good_zone}},
+                "dev2": ["garbage"],
+                "dev3": {"zones": {"1": None, "2": good_zone, "x": good_zone}},
+            },
+            "orphans": {"Ghost": "nope", "Attic": {"zones": {"4": good_zone}}},
+        },
+    }
+
+    store = ZoneStore(hass)
+    assert await store.async_load() is True
+
+    assert store.devices == {
+        "dev1": {"zones": {1: good_zone}},
+        "dev3": {"zones": {2: good_zone}},
+    }
+    assert store.orphans == {"Attic": {"zones": {4: good_zone}}}
+
+    warnings = _store_warnings(caplog)
+    assert len(warnings) == 4
+    assert [w for w in warnings if "'dev2'" in w and "entry for device" in w]
+    assert [w for w in warnings if "zone 1 of 'dev3'" in w]
+    assert [w for w in warnings if "zone 'x' of 'dev3'" in w]
+    assert [w for w in warnings if "'Ghost'" in w]
+    assert not [w for w in warnings if "dev1" in w or "Attic" in w]
+
+
+async def test_load_v2_skips_malformed_entries(hass, hass_storage) -> None:
+    """Every malformed shape in a v2 file is dropped; a string rotation is kept."""
+    hass_storage[ZONE_STORAGE_KEY] = {
+        "version": 2,
+        "data": {
+            "devices": {
+                "good": {
+                    "zones": {
+                        "1": {"shape": "rect", "data": {}},
+                        "abc": {"shape": "rect", "data": {}},
+                        "2": "nope",
+                    },
+                    "entities": "not-a-list",
+                    "rotation_deg": "15",
+                    "label": 42,
+                },
+                "bad": "not-a-dict",
+                "nullish": None,
+            },
+            "orphans": {"Ghost": []},
+        },
+    }
+
+    store = ZoneStore(hass)
+    assert await store.async_load() is True
+
+    # rotation_deg is carried verbatim: the loader does not coerce it.
+    assert store.devices == {
+        "good": {"zones": {1: {"shape": "rect", "data": {}}}, "rotation_deg": "15"}
+    }
+    assert store.orphans == {}
