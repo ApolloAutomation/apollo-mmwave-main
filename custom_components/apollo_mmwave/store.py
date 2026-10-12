@@ -80,7 +80,7 @@ def _empty_device() -> dict[str, Any]:
     return {STORE_ZONES: {}}
 
 
-def _resolve_device_id(hass: HomeAssistant, location: str, entities: Any) -> str | None:
+def resolve_device_id(hass: HomeAssistant, location: str, entities: Any) -> str | None:
     """Device id for a v1 location: by tracked entity first, then by name."""
     # A tracked coordinate entity points at its device directly, so it stays
     # correct even if the user renamed the device before upgrading. The name
@@ -202,7 +202,7 @@ class _MigratingStore(Store[dict[str, Any]]):
         for location, raw in locations.items():
             if not isinstance(raw, dict):
                 continue
-            device_id = _resolve_device_id(self.hass, location, raw.get(STORE_ENTITIES))
+            device_id = resolve_device_id(self.hass, location, raw.get(STORE_ENTITIES))
             if device_id:
                 _merge_location(
                     devices.setdefault(device_id, {}),

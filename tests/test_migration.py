@@ -17,10 +17,12 @@ from custom_components.apollo_mmwave import _device_id_for_label, get_store
 from custom_components.apollo_mmwave.const import (
     DOMAIN,
     STORE_ALIASES,
+    STORE_DEVICES,
     STORE_LABEL,
     STORE_ZONES,
 )
 from custom_components.apollo_mmwave.migration import (
+    _parse_sensor_unique_id,
     async_import_zone_mapper,
     async_migrate_unique_ids,
 )
@@ -146,6 +148,38 @@ async def test_migrates_restore_state_into_store(
     assert entry["entities"] == [{"x": TARGET_X, "y": TARGET_Y}]
     assert entry["rotation_deg"] == 15
     assert entry["label"] == "Office"
+
+
+async def test_fresh_setup_writes_the_migrated_store_once(
+    hass, config_entry, esphome_device, hass_storage, monkeypatch
+) -> None:
+    """The legacy migration leaves the write to setup, which saves it once."""
+    _register_legacy_entities(hass)
+    mock_restore_cache(
+        hass, [State("sensor.zone_mapper_office_zone_1", "1", LEGACY_ATTRS)]
+    )
+    saves = 0
+    save = ZoneStore.async_save
+
+    async def _counting_save(self) -> None:
+        nonlocal saves
+        saves += 1
+        await save(self)
+
+    monkeypatch.setattr(ZoneStore, "async_save", _counting_save)
+
+    await setup_integration(hass, config_entry)
+
+    assert saves == 1
+    stored = hass_storage[f"{DOMAIN}.zones"]["data"][STORE_DEVICES]
+    assert stored[esphome_device.id][STORE_ZONES]["1"]["shape"] == "rect"
+
+
+def test_parse_sensor_unique_id_rejects_presence_suffix() -> None:
+    """A presence unique id is never read as a coordinate sensor's zone."""
+    assert _parse_sensor_unique_id(f"{DOMAIN}_office_zone_1_presence") is None
+    assert _parse_sensor_unique_id(f"{DOMAIN}_office_zone_presence") is None
+    assert _parse_sensor_unique_id(f"{DOMAIN}_office_zone_1") == ("office", 1)
 
 
 async def test_legacy_locations_colliding_on_one_device_keep_both_zones(

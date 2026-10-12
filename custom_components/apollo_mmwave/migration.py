@@ -44,7 +44,7 @@ from .const import (
     STORE_ORPHANS,
     STORE_ZONES,
 )
-from .store import _record_location, _resolve_device_id
+from .store import _record_location, resolve_device_id
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -61,6 +61,7 @@ def _parse_sensor_unique_id(unique_id: str) -> tuple[str, int] | None:
     """Split a coordinate-sensor unique_id into (location_slug, zone_id)."""
     if not unique_id.startswith(f"{DOMAIN}_") or "_zone_" not in unique_id:
         return None
+    # Defensive only: the int() parse below already rejects a "_presence" suffix.
     if unique_id.endswith("_presence"):
         return None
     slug_and_zone = unique_id[len(f"{DOMAIN}_") :]
@@ -207,7 +208,7 @@ def _merge_legacy_location(
 
 
 async def async_migrate_legacy(hass: HomeAssistant, store: ZoneStore) -> None:
-    """Populate an empty store from legacy restore states, then persist it."""
+    """Populate an empty store from legacy restore states; the caller persists it."""
     locations = _collect_legacy_locations(hass, er.async_get(hass))
     # Which location contributed each zone id, per target, so a collision
     # warning can name both sides of it.
@@ -220,7 +221,7 @@ async def async_migrate_legacy(hass: HomeAssistant, store: ZoneStore) -> None:
         # carries no tracked pairs to resolve by, so resolving zone by zone
         # would drop that one through to the name fallback and could land it on
         # a different device from its siblings, or in orphans on its own.
-        device_id = _resolve_device_id(hass, location, _location_pairs(records))
+        device_id = resolve_device_id(hass, location, _location_pairs(records))
         if device_id is None:
             _LOGGER.warning(
                 "Apollo mmWave: legacy zone location '%s' matches no Home"
@@ -245,7 +246,6 @@ async def async_migrate_legacy(hass: HomeAssistant, store: ZoneStore) -> None:
             "Apollo mmWave: migrated %d legacy zone sensor(s) into the store",
             migrated_zones,
         )
-    await store.async_save()
 
 
 LEGACY_PLATFORM = "zone_mapper"
@@ -299,7 +299,7 @@ async def async_import_zone_mapper(hass: HomeAssistant, store: ZoneStore) -> int
     for location, records in locations.items():
         # Resolved per location, not per zone, for the reason spelled out in
         # `async_migrate_legacy`: a location's zones belong on one device.
-        device_id = _resolve_device_id(hass, location, _location_pairs(records))
+        device_id = resolve_device_id(hass, location, _location_pairs(records))
         if device_id is None:
             _LOGGER.warning(
                 "Apollo mmWave: could not match zone_mapper location '%s' to a"
@@ -384,7 +384,7 @@ async def _promote_resolvable_orphans(
     promoted: dict[str, str] = {}
     for location in list(store.orphans):
         entry = store.orphans[location]
-        device_id = _resolve_device_id(hass, location, entry.get(STORE_ENTITIES))
+        device_id = resolve_device_id(hass, location, entry.get(STORE_ENTITIES))
         if device_id is None:
             continue
         orphan = store.orphans.pop(location)
