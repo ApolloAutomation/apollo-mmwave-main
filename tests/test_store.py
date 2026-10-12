@@ -238,6 +238,91 @@ async def test_v1_locations_colliding_on_one_device_are_merged(
     assert "2" in conflict[0]
 
 
+def _v1_payload(*locations: tuple[str, dict]) -> dict:
+    """Build a v1 zone file from (location, entry) pairs, in that order."""
+    return {"version": 1, "data": {"locations": dict(locations)}}
+
+
+def _collision_warnings(caplog) -> list[str]:
+    return [
+        record.message
+        for record in caplog.records
+        if record.levelname == "WARNING" and "is defined by both" in record.message
+    ]
+
+
+async def test_v1_placeholder_zone_is_replaced_by_real_definition(
+    hass, hass_storage, device_registry, entity_registry, caplog
+) -> None:
+    """An empty placeholder is a gap, so a later real zone fills it silently."""
+    device = _make_radar(hass, device_registry, "Apollo R_PRO-1 abc123")
+    entity_registry.async_get_or_create(
+        "sensor",
+        "esphome",
+        "x1",
+        device_id=device.id,
+        suggested_object_id="apollo_r_pro_1_abc123_ld2450_target_1_x",
+    )
+    hass_storage["apollo_mmwave.zones"] = _v1_payload(
+        (
+            "Kitchen",
+            {
+                "zones": {"2": {}, "3": {}},
+                "entities": [{"x": TARGET_X, "y": TARGET_Y}],
+            },
+        ),
+        (
+            "Apollo R_PRO-1 abc123",
+            {"zones": {"2": {"shape": "rect", "data": {}}}, "entities": []},
+        ),
+    )
+
+    store = ZoneStore(hass)
+    assert await store.async_load() is True
+
+    entry = store.devices[device.id]
+    assert entry["zones"][2]["shape"] == "rect"
+    # A placeholder nobody else defines is still kept as one.
+    assert entry["zones"][3] == {}
+    # Scalars stay first writer.
+    assert entry["entities"] == [{"x": TARGET_X, "y": TARGET_Y}]
+    assert entry["label"] == "Kitchen"
+    assert _collision_warnings(caplog) == []
+
+
+async def test_v1_real_zone_is_kept_over_a_later_placeholder(
+    hass, hass_storage, device_registry, entity_registry, caplog
+) -> None:
+    """A placeholder arriving second is not a conflict and logs nothing."""
+    device = _make_radar(hass, device_registry, "Apollo R_PRO-1 abc123")
+    entity_registry.async_get_or_create(
+        "sensor",
+        "esphome",
+        "x1",
+        device_id=device.id,
+        suggested_object_id="apollo_r_pro_1_abc123_ld2450_target_1_x",
+    )
+    hass_storage["apollo_mmwave.zones"] = _v1_payload(
+        (
+            "Apollo R_PRO-1 abc123",
+            {"zones": {"2": {"shape": "rect", "data": {}}}, "entities": []},
+        ),
+        (
+            "Kitchen",
+            {
+                "zones": {"2": {}},
+                "entities": [{"x": TARGET_X, "y": TARGET_Y}],
+            },
+        ),
+    )
+
+    store = ZoneStore(hass)
+    assert await store.async_load() is True
+
+    assert store.devices[device.id]["zones"][2]["shape"] == "rect"
+    assert _collision_warnings(caplog) == []
+
+
 async def test_v1_empty_entities_list_becomes_absent(
     hass, hass_storage, device_registry
 ) -> None:

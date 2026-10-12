@@ -114,23 +114,25 @@ def _merge_location(
     left the old name behind as a second entry. A plain dict update would let
     the second entry silently wipe the first one's zones, and this migration
     runs once with no undo, so every zone id is kept and only true id-level
-    conflicts are dropped (loudly).
+    conflicts are dropped (loudly). Empty placeholders do not count as writers:
+    real data replaces one.
     """
     zones = target.setdefault(STORE_ZONES, {})
     incoming = raw.get(STORE_ZONES)
     if isinstance(incoming, dict):
         for raw_key, zone_def in incoming.items():
             zone_key = str(raw_key)
-            if zone_key in zones:
-                _LOGGER.warning(
-                    "Apollo mmWave: zone %s is defined by both '%s' and '%s',"
-                    " which migrated to the same device; keeping the definition"
-                    " from '%s'.",
-                    zone_key,
-                    zone_sources.get(zone_key, location),
-                    location,
-                    zone_sources.get(zone_key, location),
-                )
+            if zones.get(zone_key):
+                if zone_def:
+                    _LOGGER.warning(
+                        "Apollo mmWave: zone %s is defined by both '%s' and '%s',"
+                        " which migrated to the same device; keeping the"
+                        " definition from '%s'.",
+                        zone_key,
+                        zone_sources.get(zone_key, location),
+                        location,
+                        zone_sources.get(zone_key, location),
+                    )
                 continue
             zones[zone_key] = zone_def
             zone_sources[zone_key] = location
