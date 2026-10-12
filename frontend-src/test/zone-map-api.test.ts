@@ -187,8 +187,8 @@ describe("connectZones", () => {
   });
 
   it("still reads zones for a user who may not watch config entries", async () => {
-    // config_entries/subscribe is admin only. A non-admin viewing the dashboard
-    // loses reload recovery, not the card.
+    // Home Assistant does not limit config_entries/subscribe to admins, but if
+    // the feed is ever refused the viewer loses reload recovery, not the card.
     const connection = fakeConnection();
     const subscribeMessage = vi.fn(async (cb: Handler, msg: any) => {
       if (msg.type === CONFIG_ENTRIES_SUBSCRIBE) {
@@ -208,8 +208,9 @@ describe("connectZones", () => {
 
   it("retries by itself while the integration is not loaded", async () => {
     // The error text promises the zones come back on their own. The config
-    // entry feed is admin only, so for a non-admin mounting during a reload
-    // this retry is the only thing that keeps that promise.
+    // entry feed only helps if it sees the entry reach loaded after it opened,
+    // so for a card that misses that event this retry is the only thing that
+    // keeps that promise.
     vi.useFakeTimers();
     try {
       const connection = fakeConnection();
@@ -227,6 +228,44 @@ describe("connectZones", () => {
 
       await connectZones(hass, "dev123", { onConfig, onError });
       expect(onError).toHaveBeenCalledTimes(1);
+      expect(onConfig).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(RETRY_DELAYS_MS[0]);
+
+      expect(onConfig).toHaveBeenCalledWith(PAYLOAD);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("retries while the zones command is not registered yet", async () => {
+    // On a fresh boot the websocket is up before this integration has set up
+    // and registered its commands, so Home Assistant answers the zones
+    // subscribe with its own unknown_command. That is "not loaded" too: the
+    // card must say so and try again rather than show HA's internal text.
+    vi.useFakeTimers();
+    try {
+      const connection = fakeConnection();
+      let attempts = 0;
+      const subscribeMessage = vi.fn(async (cb: Handler, msg: any) => {
+        if (msg.type === ZONES_SUBSCRIBE) {
+          attempts += 1;
+          if (attempts === 1) {
+            throw { code: "unknown_command", message: "Unknown command." };
+          }
+        }
+        return connection.subscribeMessage(cb, msg);
+      });
+      const hass = fakeHass({ connection: { ...connection, subscribeMessage } });
+      const onConfig = vi.fn();
+      const onError = vi.fn();
+
+      await connectZones(hass, "dev123", { onConfig, onError });
+      expect(onError).toHaveBeenCalledTimes(1);
+      const message = onError.mock.calls[0][0];
+      expect(message).not.toContain("Unknown command");
+      expect(message).toContain("not loaded");
+      expect(message).toContain("come back on their own");
       expect(onConfig).not.toHaveBeenCalled();
 
       await vi.advanceTimersByTimeAsync(RETRY_DELAYS_MS[0]);
@@ -255,6 +294,39 @@ describe("connectZones", () => {
 
       expect(subscribeMessage.mock.calls.filter((c: any[]) => c[1].type === ZONES_SUBSCRIBE))
         .toHaveLength(RETRY_DELAYS_MS.length + 1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("tells the user to reload the page once it has stopped retrying", async () => {
+    // Only promise that the zones come back on their own while a retry is
+    // still coming; after the last one, say what the user has to do instead.
+    vi.useFakeTimers();
+    try {
+      const connection = fakeConnection();
+      const subscribeMessage = vi.fn(async (cb: Handler, msg: any) => {
+        if (msg.type === ZONES_SUBSCRIBE) {
+          throw { code: "not_loaded", message: "not loaded" };
+        }
+        return connection.subscribeMessage(cb, msg);
+      });
+      const hass = fakeHass({ connection: { ...connection, subscribeMessage } });
+      const onError = vi.fn();
+
+      await connectZones(hass, "dev123", { onConfig: vi.fn(), onError });
+      const total = RETRY_DELAYS_MS.reduce((sum, delay) => sum + delay, 0);
+      await vi.advanceTimersByTimeAsync(total * 2);
+
+      const messages: string[] = onError.mock.calls.map((call: any[]) => call[0]);
+      expect(messages).toHaveLength(RETRY_DELAYS_MS.length + 1);
+      for (const message of messages.slice(0, -1)) {
+        expect(message).toContain("come back on their own");
+        expect(message).not.toContain("Reload the page");
+      }
+      const last = messages[messages.length - 1];
+      expect(last).toContain("Reload the page once the integration is back");
+      expect(last).not.toContain("come back on their own");
     } finally {
       vi.useRealTimers();
     }

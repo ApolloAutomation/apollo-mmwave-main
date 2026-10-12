@@ -64,11 +64,11 @@ const COLOR = Object.freeze({
     deviceConeFill: 'rgba(128, 233, 31, 0.06)',
     deviceConeStroke: 'rgba(117, 243, 33, 0.6)',
     zonePalette: [
-      'rgba(244, 67, 54, 0.30)',
-      'rgba(33, 150, 243, 0.30)',
-      'rgba(76, 175, 80, 0.30)',
-      'rgba(255, 193, 7, 0.30)',
-      'rgba(156, 39, 176, 0.30)',
+      { fill: 'rgba(244, 67, 54, 0.30)', stroke: 'rgba(244, 67, 54, 1)' },
+      { fill: 'rgba(33, 150, 243, 0.30)', stroke: 'rgba(33, 150, 243, 1)' },
+      { fill: 'rgba(76, 175, 80, 0.30)', stroke: 'rgba(76, 175, 80, 1)' },
+      { fill: 'rgba(255, 193, 7, 0.30)', stroke: 'rgba(255, 193, 7, 1)' },
+      { fill: 'rgba(156, 39, 176, 0.30)', stroke: 'rgba(156, 39, 176, 1)' },
     ],
     targetPalette: ['#f44336', '#2196f3', '#4caf50', '#ffc107', '#9c27b0'],
   },
@@ -93,7 +93,18 @@ const DEFAULT_CONE = Object.freeze({
   angleDeg: 0,
 });
 
+// What a card without show_undo or unit_label_size uses. setConfig assigns
+// them when the key is absent, so removing the key from a live card's config
+// reverts it the same way a freshly created card starts.
+const DEFAULT_SHOW_UNDO = true;
+const DEFAULT_UNIT_LABEL_SIZE = 18; // px
+
 const POLYGON_MAX_POINTS = 32;
+
+// How far (CSS px) the second tap of a polygon double-tap may land from the
+// last vertex and still count as the finishing gesture rather than a new
+// vertex. A UI gesture tolerance for finger jitter, not a radar setting.
+const POLY_DOUBLE_TAP_SLOP_PX = 24;
 
 const LOCK_STORAGE_PREFIX = 'apollo-mmwave.zone-map.lock';
 
@@ -121,6 +132,19 @@ function writeStoredLock(deviceId, locked) {
   }
 }
 
+/** The Touch with `identifier` in a TouchList, or null. A TouchList is
+ *  array-like, not an array, so walk it by index. */
+function findTouch(list, identifier) {
+  if (!list) return null;
+  for (let i = 0; i < list.length; i += 1) {
+    if (list[i] && list[i].identifier === identifier) return list[i];
+  }
+  return null;
+}
+
+// TODO(REVIEW_REPORT.md X04): no yd here (backend and tuning cards accept it, so yd becomes
+// mm), and the YAML input_units overwrites the store's on every save. Decide the owner; if the
+// card keeps it, add yd: 914.4 plus yard aliases and test the keys against INPUT_UNIT_FACTORS.
 const LENGTH_UNITS = Object.freeze({
   mm: 1,
   cm: 10,
@@ -176,7 +200,13 @@ export class ZoneMapCard extends HTMLElement {
     this.startPoint = null;
     this._cursorPoint = null;
     this._activeInput = null;
+    // The identifier of the finger a touch gesture follows, null when no
+    // finger is tracked (mouse input, or between gestures).
+    this._activeTouchId = null;
     this.trackedEntities = [];
+    // What `set hass` last painted the tracked targets from (see
+    // _trackedStatesKey). null until it first paints, so that one always does.
+    this._paintedTrackedKey = null;
     this.showZones = false;
     this.showConfig = false;
     this._polyPoints = [];
@@ -208,14 +238,13 @@ export class ZoneMapCard extends HTMLElement {
     this.showModeMenu = false;
     this.isLocked = false;
     this._lastLockWarningTs = 0;
-    this.showUndo = true;
+    this.showUndo = DEFAULT_SHOW_UNDO;
     this._undoSnapshot = null;
     this.inputUnits = 'mm';
     this.gridUnits = 'mm';
     this.inputUnitMultiplier = LENGTH_UNITS.mm;
-    this.gridUnitMultiplier = LENGTH_UNITS.mm;
     this.unitDisplay = false;
-    this.unitLabelSize = 18; // px
+    this.unitLabelSize = DEFAULT_UNIT_LABEL_SIZE;
     this._gridCache = null;
     this._coneRingsCache = null;
   }
@@ -247,6 +276,8 @@ export class ZoneMapCard extends HTMLElement {
       // Units support: 'mm', 'cm', 'm', 'in', 'ft' converts to millimeters internally
       // Zones can be managed in-card; you can optionally pre-seed a list here:
       // zones: [ { id: 1, name: 'Zone 1' } ],
+      // TODO(REVIEW_REPORT.md X42): this grid and unit_display: false differ from DEFAULT_GRID
+      // and strategy cards. Pick one, derive the stub from DEFAULT_GRID or drop grid; add a test.
       grid: {
         x_min: -6000,
         x_max: 6000,
@@ -257,6 +288,9 @@ export class ZoneMapCard extends HTMLElement {
       cone: {
         y_max: 6000,
         fov_deg: 120,
+        // Only the slider's double-click reset target. What is drawn and what
+        // the presence sensors evaluate is the store's rotation_deg (0 when it
+        // was never set), which the slider writes.
         angle_deg: 0,
       },
     };
@@ -278,11 +312,12 @@ export class ZoneMapCard extends HTMLElement {
     const previousDeviceId = this.deviceId;
     this.deviceId = String(config.device_id);
     if (previousDeviceId !== this.deviceId) {
-      // Home Assistant reuses a live element and calls setConfig again when the
-      // config changes: the editor preview on every keystroke, the generated
-      // dashboard when a device is added or removed and a per-position
-      // device_id shifts. Retargeting the writes without retargeting the reads
-      // would leave the card drawing one radar and saving to another.
+      // A live element can be pointed at another radar: a parent that
+      // reassigns `config` on the same hui-card, or a wrapper card that calls
+      // setConfig directly. (On supported Home Assistant the editor preview
+      // and a regenerated view or section build a fresh element instead.)
+      // Retargeting the writes without retargeting the reads would leave the
+      // card drawing one radar and saving to another.
       this._resetDeviceState();
     }
     // Display only, so a user can call the card "Kitchen" and still share zone
@@ -291,26 +326,35 @@ export class ZoneMapCard extends HTMLElement {
     // over the whole card.
     this.cardTitle = config.title === undefined ? '' : String(config.title);
 
+    const wasLockConfigured = this._lockConfigured;
     this._lockConfigured = config.start_locked !== undefined;
     if (this._lockConfigured) {
       this.isLocked = !!config.start_locked;
+    } else if (wasLockConfigured) {
+      // start_locked was removed (the editor's "auto" choice deletes it). The
+      // forced value would otherwise stick: _applyAutoLock runs once, and it
+      // already ran under the explicit key. render() below re-applies the last
+      // payload, which re-derives the lock from the auto rule.
+      this._autoLockApplied = false;
     }
-    if (config.show_undo !== undefined) {
-      this.showUndo = !!config.show_undo;
-    }
+    this.showUndo =
+      config.show_undo === undefined ? DEFAULT_SHOW_UNDO : !!config.show_undo;
     
     this.inputUnits = this._normalizeUnit(config.input_units);
     this.gridUnits = this._normalizeUnit(config.grid_units);
     this.inputUnitMultiplier = this._unitMultiplier(this.inputUnits);
-    this.gridUnitMultiplier = this._unitMultiplier(this.gridUnits);
     this.unitDisplay = !!config.unit_display;
+    // Starts from the default every time, so a removed (or unusable) key does
+    // not leave a live card at the size the previous config asked for.
+    let unitLabelSize = DEFAULT_UNIT_LABEL_SIZE;
     if (config.unit_label_size !== undefined) {
       const s = Number(config.unit_label_size);
       if (Number.isFinite(s)) {
         // clamp between 8 and 24 px for sanity
-        this.unitLabelSize = Math.max(8, Math.min(24, Math.round(s)));
+        unitLabelSize = Math.max(8, Math.min(24, Math.round(s)));
       }
     }
+    this.unitLabelSize = unitLabelSize;
 
     this.zoneConfig = Array.isArray(config.zones) ? [...config.zones] : [];
     this.trackedEntities = this.buildTrackedEntities(config);
@@ -351,7 +395,9 @@ export class ZoneMapCard extends HTMLElement {
     // millimetres, which is also this card's default.
     const request = { ...payload, input_units: this.inputUnits };
     try {
-      await this._hass.callService('apollo_mmwave', 'update_zone', request);
+      // notifyOnError false: the catch below raises the card's own toast, and
+      // HA's default would show a second one for the same rejection.
+      await this._hass.callService('apollo_mmwave', 'update_zone', request, undefined, false);
     } catch (error) {
       const reason = error?.message ? String(error.message) : 'Home Assistant rejected it.';
       this._notify(`Could not save: ${reason}`);
@@ -376,6 +422,9 @@ export class ZoneMapCard extends HTMLElement {
     // snapshot that outlives the retarget is the same cross-device overwrite as
     // a drag, just reached through Undo. render() disables the button from here.
     this._undoSnapshot = null;
+    // Same for a polygon in progress: its vertices were placed on the old
+    // radar's map, and Finish would save them under the new radar's zone.
+    this._resetDrawingState();
     // Cosmetic, but both belong to the radar that was being shown: the slider
     // would hold the old angle and the lock the old state until the new radar
     // answers. Both are re-applied from the new config below and from the first
@@ -397,7 +446,10 @@ export class ZoneMapCard extends HTMLElement {
       const themeDark = !!hass?.themes?.darkMode;
       if (themeDark !== this.darkMode) {
         this.darkMode = themeDark;
-        if (this.canvas) {
+        // The error screen has no canvas but carries the same "dark" class on
+        // its container, so it repaints too. _loadError is only ever set by
+        // _setLoadError, which renders, so this never renders before setConfig.
+        if (this.canvas || this._loadError) {
           // The palette lives in the geometry caches' draw calls, not their
           // keys, so this is belt and suspenders with the rest of the card's
           // cache-then-render pattern (see setConfig). A full render() is what
@@ -409,14 +461,40 @@ export class ZoneMapCard extends HTMLElement {
         }
       }
     }
+    // Home Assistant assigns a new hass on every state change in the whole
+    // instance, and the tracked targets are the only part of the picture drawn
+    // from it. Everything else (zones, rotation, mode, lock, theme, config)
+    // repaints itself when it changes, so a push that moved no tracked target
+    // leaves the canvas as it is.
     if (this.canvas) {
-      this.drawGrid();
+      const trackedKey = this._trackedStatesKey();
+      if (trackedKey !== this._paintedTrackedKey) {
+        this._paintedTrackedKey = trackedKey;
+        this.drawGrid();
+      }
     }
     if (firstTime && this._hass) {
       // The store, not the entity registry, is where zones live now, so this
       // does not wait for a canvas or for any entity to exist.
       this._connectZones();
     }
+  }
+
+  /**
+   * Everything _drawTrackedTargets reads from hass: each pair's entity ids and
+   * the state strings of both. Two hass objects with the same key paint the
+   * same targets.
+   */
+  _trackedStatesKey() {
+    const states = this._hass?.states;
+    return JSON.stringify(
+      this.trackedEntities.map((pair) => [
+        pair.x,
+        states?.[pair.x]?.state,
+        pair.y,
+        states?.[pair.y]?.state,
+      ]),
+    );
   }
 
   connectedCallback() {
@@ -508,9 +586,15 @@ export class ZoneMapCard extends HTMLElement {
       const id = Number(zone?.id);
       if (Number.isFinite(id)) names.set(id, zone.name || `Zone ${id}`);
     });
+    // A stored name wins. Geometry writes carry no name, so drawing on a
+    // seeded zone stores it without one, and that must not swap the YAML name
+    // for the fallback.
     ids.forEach((id) => {
-      const name = zones[String(id)]?.name;
-      names.set(id, typeof name === 'string' && name.trim() ? name : `Zone ${id}`);
+      const stored = zones[String(id)]?.name;
+      names.set(
+        id,
+        typeof stored === 'string' && stored.trim() ? stored : (names.get(id) ?? `Zone ${id}`)
+      );
     });
     this.zoneConfig = Array.from(names.keys())
       .sort((a, b) => a - b)
@@ -518,8 +602,14 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   _applyRotation(config) {
-    if (typeof config.rotation_deg !== 'number') return;
-    const nextAngle = this._clampConeAngle(Math.round(config.rotation_deg));
+    // The store is authoritative for rotation. A radar whose slider was never
+    // moved has no stored value (null), and the presence sensors rotate its
+    // targets by 0, so the card draws them at 0 too. Keeping the YAML
+    // cone.angle_deg here instead drew targets in a frame the sensors do not
+    // evaluate. That YAML angle is only where the slider's double-click reset
+    // goes, and nothing is written to the store until the slider is used.
+    const stored = typeof config.rotation_deg === 'number' ? config.rotation_deg : 0;
+    const nextAngle = this._clampConeAngle(Math.round(stored));
     if (nextAngle !== this.coneAngleDeg) {
       this.coneAngleDeg = nextAngle;
       this._invalidateConeCache();
@@ -571,6 +661,8 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   buildTrackedEntities(cfg) {
+    // TODO(REVIEW_REPORT.md X41): direct_entity pairs are a placeholder the first store payload
+    // replaces. Retire the key deliberately (release note, zone-mapper-card) or document it.
     if (cfg && cfg.direct_entity) {
       return this.processEntityConfig(cfg.entities);
     }
@@ -765,6 +857,8 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   render() {
+    // TODO(REVIEW_REPORT.md X47): with a cached payload, chips, manager, status and drawGrid run
+    // twice. Skipping the first pass changes selection on a same-device setConfig; decide first.
     this._detachGlobalListeners();
     this.shadowRoot.innerHTML = this._template();
     this._renderTitle();
@@ -880,6 +974,8 @@ export class ZoneMapCard extends HTMLElement {
     this.canvas.addEventListener('mousemove', handleMouseMove);
     this.canvas.addEventListener('mouseup', handleMouseUp);
 
+    // TODO(REVIEW_REPORT.md X46): a locked canvas still preventDefaults every touch (touch-action
+    // none), blocking page scroll. Consider skipping it and using pan-y while locked, with a test.
     this.canvas.addEventListener(
       'touchstart',
       (event) => {
@@ -904,6 +1000,11 @@ export class ZoneMapCard extends HTMLElement {
       },
       { passive: false },
     );
+    // The browser ends a touch it takes away (a system gesture, an incoming
+    // call, an app switch, palm rejection) with touchcancel, never touchend.
+    this.canvas.addEventListener('touchcancel', (event) => this._cancelTouch(event), {
+      passive: true,
+    });
 
     this.canvas.addEventListener('dblclick', () => {
       if (this.drawMode === DRAW_MODES.POLYGON) {
@@ -916,7 +1017,18 @@ export class ZoneMapCard extends HTMLElement {
     const canvasContainer = this.canvas.parentElement;
     if (canvasContainer) {
       canvasContainer.addEventListener('mouseleave', () => {
-        if (this.isDrawing) this.cancelDrawing();
+        if (!this.isDrawing) return;
+        // A polygon is a multi-click session with its own Finish, Undo,
+        // Escape and click-away cancel, so leaving the canvas only drops the
+        // rubber-band line. A rect or ellipse drag is still cancelled: only
+        // the canvas listens for its mouseup, so a release outside would
+        // leave the drag stuck.
+        if (this.drawMode === DRAW_MODES.POLYGON) {
+          this._cursorPoint = null;
+          this.drawGrid();
+          return;
+        }
+        this.cancelDrawing();
       });
     }
   }
@@ -925,18 +1037,36 @@ export class ZoneMapCard extends HTMLElement {
    *  `disconnectedCallback` removes exactly these, and a re-attached card has
    *  to get them back without re-wiring a canvas that never lost its own. */
   _attachGlobalListeners() {
+    // TODO(REVIEW_REPORT.md X40): render() reaches this on a detached card, so these listeners
+    // retain it. If tightened, attach (and subscribe) only while isConnected; update the tests.
     if (!this.canvas) return;
     this._detachGlobalListeners();
 
     this._onKeyDown = (event) => {
+      // Keys typed into a text field belong to that field, not to the
+      // drawing: without this, editing a zone name (in this card's manager or
+      // anywhere else on the dashboard) popped a vertex per Backspace and
+      // Escape threw the polygon away. A listener on window sees
+      // `event.target` retargeted to the outermost shadow host, so ask the
+      // composed path for the real origin. A field inside a closed shadow
+      // root stays hidden from it and keeps the old behavior; Home
+      // Assistant's own fields use open roots.
+      const origin = event.composedPath()[0];
+      if (
+        origin instanceof HTMLInputElement ||
+        origin instanceof HTMLTextAreaElement ||
+        origin instanceof HTMLSelectElement ||
+        origin?.isContentEditable
+      ) {
+        return;
+      }
       if (this.drawMode !== DRAW_MODES.POLYGON) return;
       if (event.key === 'Escape') {
         this._polyPoints = [];
         this.isDrawing = false;
         this.drawGrid();
       } else if (event.key === 'Backspace' && this._polyPoints.length > 0) {
-        this._polyPoints.pop();
-        this.drawGrid();
+        this._popPolyPoint();
       }
     };
     window.addEventListener('keydown', this._onKeyDown);
@@ -944,8 +1074,15 @@ export class ZoneMapCard extends HTMLElement {
     const canvasContainer = this.canvas.parentElement;
     this._outsideClickHandler = (event) => {
       if (!this.canvas) return;
-      if (canvasContainer && canvasContainer.contains(event.target)) return;
-      if (!this.shadowRoot.contains(event.target)) return;
+      // A listener on document sees `event.target` retargeted to the
+      // outermost shadow host (this card, or Home Assistant's wrapper when
+      // nested), which neither the shadow root nor the canvas container
+      // contains. The composed path still lists the real nodes, so ask it.
+      const path = event.composedPath();
+      // The overlay buttons (Finish, Undo, mode, lock) live in the container
+      // and act on the drawing, so a press on them must not cancel it.
+      if (canvasContainer && path.includes(canvasContainer)) return;
+      if (!path.includes(this)) return;
       if (this.isDrawing) this.cancelDrawing();
     };
     document.addEventListener('mousedown', this._outsideClickHandler, true);
@@ -1013,8 +1150,7 @@ export class ZoneMapCard extends HTMLElement {
     if (btnPolyUndo) {
       btnPolyUndo.addEventListener('click', () => {
         if (this.drawMode === DRAW_MODES.POLYGON && this._polyPoints.length) {
-          this._polyPoints.pop();
-          this.drawGrid();
+          this._popPolyPoint();
         }
       });
     }
@@ -1042,6 +1178,8 @@ export class ZoneMapCard extends HTMLElement {
         this._lastLockWarningTs = 0;
         if (this.isLocked) {
           if (this.isDrawing) this.cancelDrawing();
+          // TODO(REVIEW_REPORT.md X06): the lock gates only drawing; chip double-click clear,
+          // Clear All, Undo and the manager still write. Gate the two clears or say "draw".
           this._notify('Drawing locked. Unlock the grid to edit zones.');
         } else {
           this._notify('Drawing unlocked. You can edit zones now.');
@@ -1094,11 +1232,15 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   _applyGridConfig(grid) {
+    // Start from the defaults on every call: setConfig runs again on a live
+    // element, and a removed grid block (or a sub-key dropped from it) has to
+    // land where a freshly created card would, not at the previous extents.
+    this.xMin = DEFAULT_GRID.xMin;
+    this.xMax = DEFAULT_GRID.xMax;
+    this.yMin = DEFAULT_GRID.yMin;
+    this.yMax = DEFAULT_GRID.yMax;
     if (!grid || typeof grid !== 'object') return;
-    const convert = (value) => {
-      const mmValue = this._convertToMm(value, this.gridUnits);
-      return mmValue === null ? null : mmValue;
-    };
+    const convert = (value) => this._convertToMm(value, this.gridUnits);
 
     const next = {
       xMin: convert(grid.x_min),
@@ -1130,6 +1272,13 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   _applyConeConfig(cone) {
+    // Same as the grid: a removed cone block or sub-key reverts to the default.
+    // The drawn angle is reset with the rest, and render() lays the store's
+    // rotation_deg back over it from the last payload.
+    this.coneYMax = DEFAULT_CONE.yMax;
+    this.coneFovDeg = DEFAULT_CONE.fovDeg;
+    this.coneAngleDefault = DEFAULT_CONE.angleDeg;
+    this.coneAngleDeg = DEFAULT_CONE.angleDeg;
     if (!cone || typeof cone !== 'object') return;
     if (cone.y_max !== undefined) {
       const mmValue = this._convertToMm(cone.y_max, this.gridUnits);
@@ -1142,6 +1291,11 @@ export class ZoneMapCard extends HTMLElement {
       this.coneFovDeg = Number.isFinite(fov) ? Math.min(360, Math.max(1, fov)) : this.coneFovDeg;
     }
     if (cone.angle_deg !== undefined) {
+      // cone.angle_deg is only the slider's double-click reset default. The
+      // store's rotation_deg (0 when unset) is what is drawn and evaluated:
+      // _applyRotation lays it over the angle set here as soon as a payload
+      // arrives, and render() re-applies the last payload after every
+      // setConfig.
       const angle = this._clampConeAngle(Number(cone.angle_deg));
       this.coneAngleDefault = angle;
       this.coneAngleDeg = angle;
@@ -1241,14 +1395,6 @@ export class ZoneMapCard extends HTMLElement {
 
   _invalidateConeCache() {
     this._coneRingsCache = null;
-  }
-
-  _clampGridPixel(value, size) {
-    if (!Number.isFinite(value)) return 0;
-    const limit = Math.max(size - 1, 0);
-    if (value <= 0) return 0;
-    if (value >= limit) return limit;
-    return value;
   }
 
   _computeGridMetrics() {
@@ -1461,18 +1607,19 @@ export class ZoneMapCard extends HTMLElement {
 
   _setDrawMode(mode) {
     const nextMode = mode || DRAW_MODES.RECT;
-    if (this.drawMode === nextMode && !this.isDrawing) {
+    if (this.drawMode === nextMode) {
+      // Re-selecting the active mode, or the call at the end of every
+      // render() (a theme flip, a same-radar setConfig), leaves a shape in
+      // progress alone. Clearing just `isDrawing` would hide placed polygon
+      // vertices that Finish, Backspace and the next click still act on. The
+      // rebuilt buttons still need their highlight.
       this._highlightActiveModeButton();
       this._updatePolygonButtonsVisibility();
       return;
     }
     this.drawMode = nextMode;
-    if (this.drawMode !== DRAW_MODES.POLYGON) {
-      this._polyPoints = [];
-    }
-    this._cursorPoint = null;
-    this.startPoint = null;
-    this.isDrawing = false;
+    // A shape drawn in one mode cannot be finished in another.
+    this._resetDrawingState();
     this._highlightActiveModeButton();
     this._updatePolygonButtonsVisibility();
     this._invalidateGridCache();
@@ -1507,6 +1654,16 @@ export class ZoneMapCard extends HTMLElement {
     });
   }
 
+  /** Undo the last polygon vertex (Backspace or the undo button). Popping
+   *  the only one also drops `startPoint`, the press that placed it: with no
+   *  vertices left, `_drawInProgress` draws a dot and anchors the rubber band
+   *  there, so the removed vertex stayed on the canvas until the next press. */
+  _popPolyPoint() {
+    this._polyPoints.pop();
+    if (!this._polyPoints.length) this.startPoint = null;
+    this.drawGrid();
+  }
+
   _resetDrawingState() {
     this.isDrawing = false;
     this._polyPoints = [];
@@ -1514,6 +1671,7 @@ export class ZoneMapCard extends HTMLElement {
     this.startPoint = null;
     this._lastPolyTap = 0;
     this._activeInput = null;
+    this._activeTouchId = null;
   }
 
   _getZone(zoneId) {
@@ -1570,6 +1728,8 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   _clearAllZones() {
+    // TODO(REVIEW_REPORT.md X43): this and undo write shape none for YAML-seeded ids the store
+    // never held. Consider clearing only ids in this.zones or the payload; no delete from undo.
     const zoneIds = (this.zoneConfig || []).map((zone) => zone.id);
     this._setUndoSnapshot(this._snapshotZones(zoneIds));
     this.zones = [];
@@ -1586,6 +1746,10 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   endDrawing(e) {
+    // Only the primary button draws (see startDrawing). A polygon keeps
+    // isDrawing set between vertices, so a right-button release would
+    // otherwise still place a vertex.
+    if (typeof e.button === 'number' && e.button !== 0) return;
     if (!this.isDrawing) return;
     const isTouch = !!(e.changedTouches || e.touches);
     if (
@@ -1594,9 +1758,30 @@ export class ZoneMapCard extends HTMLElement {
     ) {
       return;
     }
+    // Another finger lifting is not the end of this gesture.
+    if (isTouch && !this._carriesTrackedTouch(e)) return;
+    // The selection can go away mid-gesture (a payload with no zones, or
+    // Delete on the only zone during a held touch). Committing then would
+    // upsert a zone with id 0 that the backend refuses but the map still
+    // draws, so drop the gesture the way finishPolygon does.
+    if (this.selectedZone === null || this.selectedZone === undefined) {
+      this.cancelDrawing();
+      return;
+    }
     if (this.drawMode === DRAW_MODES.POLYGON) {
-      // Add a vertex on each mouse/touch end
       const p = this._getPointFromEvent(e);
+      if (!p) {
+        this.cancelDrawing();
+        return;
+      }
+      const now = Date.now();
+      // Double-tap / double-click detection for finishing polygon on mobile.
+      // The second tap is the gesture, not a vertex, so it is never pushed.
+      if (this._isPolyFinishTap(p, now)) {
+        if (this._polyPoints.length >= 3) this.finishPolygon();
+        return;
+      }
+      // Add a vertex on each other mouse/touch end
       const vx = this._clampAndRound(this.pixelsToValue(p.x, 'x'), this.xMin, this.xMax);
       const vy = this._clampAndRound(this.pixelsToValue(p.y, 'y'), this.yMin, this.yMax);
       if (this._polyPoints.length < this.polyMaxPoints) {
@@ -1606,20 +1791,7 @@ export class ZoneMapCard extends HTMLElement {
           this.finishPolygon();
           return;
         }
-        // Double-tap / double-click detection for finishing polygon on mobile
-        const now = Date.now();
-        if (this._lastPolyTap && now - this._lastPolyTap < 350) {
-          if (this._polyPoints.length >= 3) {
-            this.finishPolygon();
-            this._lastPolyTap = 0;
-            return;
-          }
-        }
         this._lastPolyTap = now;
-      } else {
-        // Already at limit, finalize if valid
-        if (this._polyPoints.length >= 3) this.finishPolygon();
-        return;
       }
       this.drawGrid();
       return;
@@ -1627,9 +1799,15 @@ export class ZoneMapCard extends HTMLElement {
     this.isDrawing = false;
     if (!this.startPoint) {
       this._activeInput = null;
+      this._activeTouchId = null;
       return;
     }
     const endPoint = this._getPointFromEvent(e);
+    this._activeTouchId = null;
+    if (!endPoint) {
+      this.cancelDrawing();
+      return;
+    }
     // Convert drawn zones to mm
     let payload = null;
     if (this.drawMode === DRAW_MODES.RECT) {
@@ -1641,6 +1819,14 @@ export class ZoneMapCard extends HTMLElement {
       const xMaxRounded = this._clampAndRound(Math.max(x1, x2), this.xMin, this.xMax);
       const yMinRounded = this._clampAndRound(Math.min(y1, y2), this.yMin, this.yMax);
       const yMaxRounded = this._clampAndRound(Math.max(y1, y2), this.yMin, this.yMax);
+      // A click, a tap or a perfectly straight drag has no area. The backend
+      // only keeps a rect with x_min < x_max and y_min < y_max and clears the
+      // zone for anything else, so saving this would wipe the zone's current
+      // shape. Drop the gesture silently, like a drag that leaves the canvas.
+      if (xMinRounded === xMaxRounded || yMinRounded === yMaxRounded) {
+        this.cancelDrawing();
+        return;
+      }
       payload = {
         shape: DRAW_MODES.RECT,
         data: {
@@ -1651,11 +1837,14 @@ export class ZoneMapCard extends HTMLElement {
         },
       };
     } else if (this.drawMode === DRAW_MODES.ELLIPSE) {
-      // Bounding box -> ellipse center/radii
-      const x1 = this.pixelsToValue(this.startPoint.x, 'x');
-      const y1 = this.pixelsToValue(this.startPoint.y, 'y');
-      const x2 = this.pixelsToValue(endPoint.x, 'x');
-      const y2 = this.pixelsToValue(endPoint.y, 'y');
+      // Bounding box -> ellipse center/radii. The corners are clamped to the
+      // grid first, like the rect's: a touch keeps reporting after the finger
+      // leaves the canvas, and an unclamped corner gave an edge-pinned center
+      // with a radius reaching past the grid.
+      const x1 = this._clampValue(this.pixelsToValue(this.startPoint.x, 'x'), this.xMin, this.xMax);
+      const y1 = this._clampValue(this.pixelsToValue(this.startPoint.y, 'y'), this.yMin, this.yMax);
+      const x2 = this._clampValue(this.pixelsToValue(endPoint.x, 'x'), this.xMin, this.xMax);
+      const y2 = this._clampValue(this.pixelsToValue(endPoint.y, 'y'), this.yMin, this.yMax);
       const cx = this._clampAndRound((x1 + x2) / 2, this.xMin, this.xMax);
       const cy = this._clampAndRound((y1 + y2) / 2, this.yMin, this.yMax);
       const rx = Math.max(1, Math.round(Math.abs(x2 - x1) / 2));
@@ -1678,26 +1867,84 @@ export class ZoneMapCard extends HTMLElement {
     this._cursorPoint = null;
   }
 
-  _getPointFromEvent(e) {
-    if (!this.canvas) return { x: 0, y: 0 };
+  /** Whether a polygon tap at canvas point `p` (backing px) finishes the
+   *  polygon: it came within 350 ms of the previous vertex AND landed within
+   *  POLY_DOUBLE_TAP_SLOP_PX CSS px of the last placed vertex. Time alone is
+   *  not a double-tap: two quick taps at different spots are two vertices. */
+  _isPolyFinishTap(p, now) {
+    if (!this._lastPolyTap || now - this._lastPolyTap >= 350) return false;
+    const last = this._polyPoints[this._polyPoints.length - 1];
+    if (!last || !this.canvas) return false;
     const rect = this.canvas.getBoundingClientRect();
+    const cssPerPxX = this.canvas.width ? rect.width / this.canvas.width : 1;
+    const cssPerPxY = this.canvas.height ? rect.height / this.canvas.height : 1;
+    const dx = (p.x - this.valueToPixels(last.x, 'x')) * cssPerPxX;
+    const dy = (p.y - this.valueToPixels(last.y, 'y')) * cssPerPxY;
+    return Math.hypot(dx, dy) <= POLY_DOUBLE_TAP_SLOP_PX;
+  }
+
+  /** The event's position in canvas backing px, or null when there is no
+   *  usable point: a canvas with no layout box (a hidden tab or a collapsed
+   *  container) would divide by zero and pin every shape to the grid corner.
+   *  A touch event is read at finger `touchId` (the tracked one by default),
+   *  and has no point when that finger is not in it. */
+  _getPointFromEvent(e, touchId = this._activeTouchId) {
+    if (!this.canvas) return null;
+    const rect = this.canvas.getBoundingClientRect();
+    if (!(rect.width > 0 && rect.height > 0)) return null;
     const scaleX = this.canvas.width / rect.width;
     const scaleY = this.canvas.height / rect.height;
-    let clientX, clientY;
-    if (e.touches && e.touches.length) {
-      clientX = e.touches[0].clientX;
-      clientY = e.touches[0].clientY;
-    } else if (e.changedTouches && e.changedTouches.length) {
-      clientX = e.changedTouches[0].clientX;
-      clientY = e.changedTouches[0].clientY;
-    } else {
-      clientX = e.clientX;
-      clientY = e.clientY;
+    let source = e;
+    if (e.touches || e.changedTouches) {
+      source = this._touchFor(e, touchId);
+      if (!source) return null;
     }
-    return {
-      x: (clientX - rect.left) * scaleX,
-      y: (clientY - rect.top) * scaleY,
-    };
+    const x = (source.clientX - rect.left) * scaleX;
+    const y = (source.clientY - rect.top) * scaleY;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    return { x, y };
+  }
+
+  /** The Touch of finger `touchId` in a touch event: its live position in
+   *  `touches`, else its last one in `changedTouches` (a lifted finger is only
+   *  there). With no finger tracked the first touch stands in, which is all an
+   *  event without identifiers offers. Null when the finger is absent. */
+  _touchFor(e, touchId) {
+    if (touchId === null || touchId === undefined) {
+      return (e.touches && e.touches[0]) || (e.changedTouches && e.changedTouches[0]) || null;
+    }
+    return findTouch(e.touches, touchId) || findTouch(e.changedTouches, touchId);
+  }
+
+  /** The identifier of the finger a touchstart is about, or null when the
+   *  event carries none to track. */
+  _touchIdOf(e) {
+    const touch = e.changedTouches && e.changedTouches[0];
+    return touch && typeof touch.identifier === 'number' ? touch.identifier : null;
+  }
+
+  /** Whether a touch event is about the tracked finger. Every touch event is
+   *  when no finger is tracked. */
+  _carriesTrackedTouch(e) {
+    if (this._activeTouchId === null) return true;
+    return findTouch(e.changedTouches, this._activeTouchId) !== null;
+  }
+
+  /** A cancelled touch never finished, so nothing it drew is committed. A
+   *  rect or ellipse drag is dropped. A polygon keeps its placed vertices, as
+   *  when the mouse leaves the canvas, and only loses the rubber-band line and
+   *  the finger. A cancelled finger other than the tracked one changes
+   *  nothing, as its touchend would not. */
+  _cancelTouch(e) {
+    if (!this.isDrawing || !this._carriesTrackedTouch(e)) return;
+    if (this.drawMode === DRAW_MODES.POLYGON) {
+      this._cursorPoint = null;
+      this._activeInput = null;
+      this._activeTouchId = null;
+      this.drawGrid();
+      return;
+    }
+    this.cancelDrawing();
   }
 
   _snapshotZones(zoneIds) {
@@ -1793,6 +2040,10 @@ export class ZoneMapCard extends HTMLElement {
   _renderZoneManager() {
     const host = this.shadowRoot?.getElementById('zoneManager');
     if (!host) return;
+    // Every payload rebuilds these rows, and the card's own Add Zone and
+    // rotation writes echo back as payloads, as does any other client's save.
+    // What the user is typing, and where the caret is, has to outlive that.
+    const drafts = this._captureZoneNameDrafts(host);
     host.innerHTML = '';
     const zones = (this.zoneConfig || []).slice().sort((a, b) => Number(a.id) - Number(b.id));
     zones.forEach((z) => {
@@ -1802,8 +2053,12 @@ export class ZoneMapCard extends HTMLElement {
       label.textContent = `Zone ${z.id}`;
       const input = document.createElement('input');
       input.type = 'text';
-      input.value = z.name || `Zone ${z.id}`;
+      const storedName = z.name || `Zone ${z.id}`;
+      input.value = storedName;
       input.placeholder = `Zone ${z.id}`;
+      // What the row was built with, so the next rebuild can tell an edit.
+      input.dataset.zoneId = String(z.id);
+      input.dataset.storedName = storedName;
       const saveBtn = document.createElement('button');
       saveBtn.textContent = 'Save';
       const delBtn = document.createElement('button');
@@ -1811,18 +2066,23 @@ export class ZoneMapCard extends HTMLElement {
 
       saveBtn.addEventListener('click', () => {
         const newName = input.value?.trim() || `Zone ${z.id}`;
-        z.name = newName;
-        // Persist the friendly name to backend (no shape/data change)
+        // By id, at click time: _applyZones replaces every zoneConfig entry on
+        // each payload, so the `z` this row was built from may be a stale copy.
+        const current = (this.zoneConfig || []).find((zz) => String(zz.id) === String(z.id));
+        if (current) current.name = newName;
+        // Persist the friendly name to backend. A stored zone keeps its
+        // shape and data; one only the YAML names is created without a shape.
         if (this._hass) {
           const zoneId = Number(z.id);
           if (!Number.isFinite(zoneId) || zoneId <= 0) {
             this._notify('Unable to save name: invalid zone id');
             return;
           }
-          this._saveZoneUpdate(
-            { device_id: this.deviceId, zone_id: zoneId, name: newName },
-            `${this._zoneLabel(z.id)} saved`,
-          );
+          const rename = { device_id: this.deviceId, zone_id: zoneId, name: newName };
+          const payload = this._zoneIsUnsaved(zoneId)
+            ? { ...rename, shape: 'none', data: null }
+            : rename;
+          this._saveZoneUpdate(payload, `${this._zoneLabel(z.id)} saved`);
         }
         this.renderZoneButtons();
         this.drawGrid();
@@ -1846,6 +2106,12 @@ export class ZoneMapCard extends HTMLElement {
         this.zoneConfig = (this.zoneConfig || []).filter((zz) => String(zz.id) !== String(z.id));
         this.zones = (this.zones || []).filter((zz) => String(zz.id) !== String(z.id));
         if (String(this.selectedZone) === String(z.id)) this.selectedZone = null;
+        // Undo writes every snapshot entry back, and the backend stores any
+        // zone id it is given, so an entry for this zone would re-create it and
+        // its entities (or overwrite a zone added later under the freed id).
+        // Delete itself is not undoable; the other entries still are.
+        const removedId = Number(z.id);
+        this._setUndoSnapshot((this._undoSnapshot || []).filter((s) => s.zoneId !== removedId));
         this.renderZoneButtons();
         this._renderZoneManager();
         this.drawGrid();
@@ -1857,6 +2123,71 @@ export class ZoneMapCard extends HTMLElement {
       row.appendChild(delBtn);
       host.appendChild(row);
     });
+    this._restoreZoneNameDrafts(host, drafts);
+  }
+
+  /**
+   * The zone-name edits a rebuild of the manager rows would throw away.
+   *
+   * `values` holds every input whose text differs from the name its row was
+   * built with, keyed by zone id; a row nobody edited is left out, so it picks
+   * up a rename from the payload. `focus` is the focused input's zone id and
+   * selection, or null when focus is elsewhere.
+   */
+  _captureZoneNameDrafts(host) {
+    const values = new Map();
+    let focus = null;
+    const active = this.shadowRoot?.activeElement;
+    host.querySelectorAll('input[data-zone-id]').forEach((input) => {
+      const zoneId = input.dataset.zoneId;
+      if (input.value !== input.dataset.storedName) values.set(zoneId, input.value);
+      if (input === active) {
+        focus = {
+          zoneId,
+          start: input.selectionStart,
+          end: input.selectionEnd,
+          direction: input.selectionDirection,
+        };
+      }
+    });
+    return { values, focus };
+  }
+
+  /** Lay captured drafts back over the rebuilt rows of the zones still listed. */
+  _restoreZoneNameDrafts(host, drafts) {
+    const inputs = new Map();
+    host.querySelectorAll('input[data-zone-id]').forEach((input) => {
+      inputs.set(input.dataset.zoneId, input);
+    });
+    drafts.values.forEach((value, zoneId) => {
+      const input = inputs.get(zoneId);
+      if (input) input.value = value;
+    });
+    const focused = drafts.focus ? inputs.get(drafts.focus.zoneId) : null;
+    if (!focused) return;
+    focused.focus({ preventScroll: true });
+    const { start, end, direction } = drafts.focus;
+    if (typeof start === 'number' && typeof end === 'number') {
+      focused.setSelectionRange(start, end, direction || undefined);
+    }
+  }
+
+  /**
+   * Whether a zone row exists only because the card YAML names it.
+   *
+   * The backend renames only zones the store holds, so a name-only save for
+   * such a zone was dropped while the card said it was saved, and the next
+   * payload put the YAML name back. Saving it the way Add Zone does creates it.
+   * Before the first payload the store's contents are unknown, and a zone drawn
+   * here may still be on its way to the store; shape none would erase real
+   * geometry in either case, so both keep the name-only save.
+   */
+  _zoneIsUnsaved(zoneId) {
+    const config = this._zoneConfigPayload;
+    if (!config) return false;
+    const stored = config.zones && typeof config.zones === 'object' ? config.zones : {};
+    if (String(zoneId) in stored) return false;
+    return !(this.zones || []).some((zone) => Number(zone.id) === zoneId);
   }
 
   _handleAddZone() {
@@ -1888,13 +2219,18 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   finishPolygon() {
-    if (this._polyPoints.length >= 3 && this.selectedZone !== null) {
-      // Enforce max points on commit
-      if (this._polyPoints.length > this.polyMaxPoints) {
-        this._polyPoints = this._polyPoints.slice(0, this.polyMaxPoints);
-      }
+    // Drop consecutive repeated vertices. A double-click slow enough to finish
+    // through the dblclick listener (350 to ~500 ms) has already stored its
+    // second click as a vertex, and a zero-length edge is never intended.
+    const pts = this._polyPoints.filter(
+      (p, i, a) => i === 0 || p.x !== a[i - 1].x || p.y !== a[i - 1].y,
+    );
+    // TODO(REVIEW_REPORT.md X44): too few points (or no zone selected) cancels silently. Suggest
+    // a toast ("A polygon needs at least 3 points", "Select a zone first"), with a test.
+    if (pts.length >= 3 && this.selectedZone !== null) {
       const zoneId = this.selectedZone;
-      const points = this._polyPoints.slice(0, this.polyMaxPoints).map((pt) => ({
+      // Enforce max points on commit
+      const points = pts.slice(0, this.polyMaxPoints).map((pt) => ({
         x: this._clampAndRound(pt.x, this.xMin, this.xMax),
         y: this._clampAndRound(pt.y, this.yMin, this.yMax),
       }));
@@ -2047,8 +2383,8 @@ export class ZoneMapCard extends HTMLElement {
     orderedZones.forEach((zone, idx) => {
       if (!zone || !zone.shape || !zone.data) return;
       const color = colors[(Number(zone.id) - 1) % colors.length] || colors[idx % colors.length];
-      ctx.strokeStyle = color.replace('0.30', '1');
-      ctx.fillStyle = color;
+      ctx.strokeStyle = color.stroke;
+      ctx.fillStyle = color.fill;
       ctx.lineWidth = 3;
       let bbox = null; // {x,y,width,height}
       if (zone.shape === DRAW_MODES.RECT) {
@@ -2155,30 +2491,10 @@ export class ZoneMapCard extends HTMLElement {
         ctx.restore();
       }
       ctx.save();
-      const fill = this.darkMode
-        ? COLOR.canvas.polygonVertexFillDark
-        : COLOR.canvas.polygonVertexFillLight;
-      const stroke = this.darkMode
-        ? COLOR.canvas.polygonVertexStrokeDark
-        : COLOR.canvas.polygonVertexStrokeLight;
-      for (const pt of pts) {
-        ctx.beginPath();
-        ctx.arc(pt.x, pt.y, 3.5, 0, Math.PI * 2);
-        ctx.fillStyle = fill;
-        ctx.fill();
-        ctx.lineWidth = 2;
-        ctx.strokeStyle = stroke;
-        ctx.stroke();
-      }
+      for (const pt of pts) this._drawVertexDot(ctx, pt.x, pt.y);
 
       if (!pts.length && this.startPoint) {
-        ctx.beginPath();
-        ctx.arc(this.startPoint.x, this.startPoint.y, 3.5, 0, Math.PI * 2);
-        ctx.fillStyle = fill;
-        ctx.fill();
-        ctx.lineWidth = 2;
-        ctx.strokeStyle = stroke;
-        ctx.stroke();
+        this._drawVertexDot(ctx, this.startPoint.x, this.startPoint.y);
       }
       ctx.restore();
     } else if (
@@ -2188,21 +2504,55 @@ export class ZoneMapCard extends HTMLElement {
     ) {
       const pt = this.startPoint;
       ctx.save();
-      const fill = this.darkMode
-        ? COLOR.canvas.polygonVertexFillDark
-        : COLOR.canvas.polygonVertexFillLight;
-      const stroke = this.darkMode
-        ? COLOR.canvas.polygonVertexStrokeDark
-        : COLOR.canvas.polygonVertexStrokeLight;
-      ctx.beginPath();
-      ctx.arc(pt.x, pt.y, 3.5, 0, Math.PI * 2);
-      ctx.fillStyle = fill;
-      ctx.fill();
-      ctx.lineWidth = 2;
-      ctx.strokeStyle = stroke;
-      ctx.stroke();
+      this._drawVertexDot(ctx, pt.x, pt.y);
       ctx.restore();
+      // The dashed rubber band from the start point to the last pointer
+      // position. Nothing to outline until the pointer has moved.
+      const cur = this._cursorPoint;
+      if (cur && (cur.x !== pt.x || cur.y !== pt.y)) {
+        const width = cur.x - pt.x;
+        const height = cur.y - pt.y;
+        ctx.save();
+        ctx.strokeStyle = this.darkMode
+          ? COLOR.canvas.drawStrokeDark
+          : COLOR.canvas.drawStrokeLight;
+        ctx.lineWidth = 2;
+        ctx.setLineDash([5, 5]);
+        if (this.drawMode === DRAW_MODES.RECT) {
+          ctx.strokeRect(pt.x, pt.y, width, height);
+        } else {
+          ctx.beginPath();
+          ctx.ellipse(
+            pt.x + width / 2,
+            pt.y + height / 2,
+            Math.abs(width) / 2,
+            Math.abs(height) / 2,
+            0,
+            0,
+            Math.PI * 2,
+          );
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
     }
+  }
+
+  /** One in-progress vertex marker: a filled dot with a contrasting ring. */
+  _drawVertexDot(ctx, x, y) {
+    const fill = this.darkMode
+      ? COLOR.canvas.polygonVertexFillDark
+      : COLOR.canvas.polygonVertexFillLight;
+    const stroke = this.darkMode
+      ? COLOR.canvas.polygonVertexStrokeDark
+      : COLOR.canvas.polygonVertexStrokeLight;
+    ctx.beginPath();
+    ctx.arc(x, y, 3.5, 0, Math.PI * 2);
+    ctx.fillStyle = fill;
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = stroke;
+    ctx.stroke();
   }
 
   _drawZoneLabel(zone, bbox) {
@@ -2263,13 +2613,8 @@ export class ZoneMapCard extends HTMLElement {
 
     // Apply rotation; positive rotates to device's right
     const rotRad = (this.coneAngleDeg * Math.PI) / 180;
-    let thetaStart = phiL + rotRad;
-    let thetaEnd = phiR + rotRad;
-    if (thetaStart > thetaEnd) {
-      const tmp = thetaStart;
-      thetaStart = thetaEnd;
-      thetaEnd = tmp;
-    }
+    const thetaStart = phiL + rotRad;
+    const thetaEnd = phiR + rotRad;
 
     const radius = Math.max(0, this.coneYMax);
     const ax = this.valueToPixels(apex.x, 'x');
@@ -2360,6 +2705,8 @@ export class ZoneMapCard extends HTMLElement {
     const offsetX = -this.xMin * pxPerMmX;
     const offsetY = -this.yMin * pxPerMmY;
 
+    // TODO(REVIEW_REPORT.md X45): rings run out to cone.y_max (no ceiling), even past the grid.
+    // If touched, stop at the farthest grid corner distance; do not clamp y_max.
     for (let r = stepMm; r <= radius + 1e-6; r += stepMm) {
       let sinAng = sinStart;
       let cosAng = cosStart;
@@ -2445,6 +2792,8 @@ export class ZoneMapCard extends HTMLElement {
       return;
     }
     this.ctx = this.canvas.getContext('2d');
+    // TODO(REVIEW_REPORT.md X39): fixed 800 px store with no devicePixelRatio (blurry on HiDPI);
+    // non-square grids draw stretched. DPR sizing must scale the px constants; document stretch.
     this.canvas.width = 800;
     this.canvas.height = 800;
     const safeWidth = Math.max(1, this.xMax - this.xMin);
@@ -2457,6 +2806,14 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   startDrawing(e) {
+    // A right or middle press opens the browser menu or autoscroll; it must
+    // not start a drag or place a vertex. Touch events carry no button.
+    if (typeof e.button === 'number' && e.button !== 0) return;
+    const isTouch = !!e.touches;
+    // A second finger on the canvas is never a new gesture. Restarting here
+    // moved the drag's origin to the first finger, and the next lift of
+    // either finger committed a collapsed or truncated shape over the zone.
+    if (isTouch && e.touches.length > 1) return;
     if (this.isLocked) {
       const now = Date.now();
       if (!this._lastLockWarningTs || now - this._lastLockWarningTs > 1500) {
@@ -2467,10 +2824,14 @@ export class ZoneMapCard extends HTMLElement {
     }
     if (this.selectedZone === null) return;
     if (!this.canvas) return;
+    const touchId = isTouch ? this._touchIdOf(e) : null;
+    const point = this._getPointFromEvent(e, touchId);
+    if (!point) return;
     this.isDrawing = true;
-    this._activeInput = e.touches ? 'touch' : 'mouse';
-    this.startPoint = this._getPointFromEvent(e);
-    this._cursorPoint = this.startPoint;
+    this._activeInput = isTouch ? 'touch' : 'mouse';
+    this._activeTouchId = touchId;
+    this.startPoint = point;
+    this._cursorPoint = point;
     this.drawGrid();
   }
 
@@ -2483,36 +2844,15 @@ export class ZoneMapCard extends HTMLElement {
     ) {
       return;
     }
-    const currentPoint = this._getPointFromEvent(e);
-    // polygon cache cursor point
-    if (this.drawMode === DRAW_MODES.POLYGON) {
-      this._cursorPoint = currentPoint;
-      this.drawGrid();
-      return;
-    }
+    // Only the tracked finger moves the shape.
+    if (isTouch && !this._carriesTrackedTouch(e)) return;
+    // Every mode keeps the cursor point and lets drawGrid() rebuild the
+    // preview from it, so any other repaint (a hass push, a zone payload)
+    // redraws the rubber band instead of wiping it until the next move.
+    const point = this._getPointFromEvent(e);
+    if (!point) return;
+    this._cursorPoint = point;
     this.drawGrid();
-    const ctx = this.ctx;
-    ctx.strokeStyle = this.darkMode ? COLOR.canvas.drawStrokeDark : COLOR.canvas.drawStrokeLight;
-    ctx.lineWidth = 2;
-    ctx.setLineDash([5, 5]);
-    const width = currentPoint.x - this.startPoint.x;
-    const height = currentPoint.y - this.startPoint.y;
-    if (this.drawMode === DRAW_MODES.RECT) {
-      ctx.strokeRect(this.startPoint.x, this.startPoint.y, width, height);
-    } else if (this.drawMode === DRAW_MODES.ELLIPSE) {
-      ctx.beginPath();
-      ctx.ellipse(
-        this.startPoint.x + width / 2,
-        this.startPoint.y + height / 2,
-        Math.abs(width) / 2,
-        Math.abs(height) / 2,
-        0,
-        0,
-        Math.PI * 2,
-      );
-      ctx.stroke();
-    }
-    ctx.setLineDash([]);
   }
 
   valueToPixels(val, axis) {
@@ -2576,13 +2916,21 @@ export class ZoneMapCard extends HTMLElement {
    *
    * Never configured and deliberately cleared both draw an empty canvas, and
    * telling a user that nothing is tracked when the radar is quietly tracking
-   * its own targets is how the old card hid its state. Read only: the
+   * its own targets is how the old card hid its state. Until the store has
+   * answered (the first load, or the round trip after a retarget) none of the
+   * three is known, so the line says so instead of guessing. Read only: the
    * integration resolves the pairs and `apollo_mmwave.update_zone` overrides
    * them.
    */
   _renderEntityStatus() {
     const host = this.shadowRoot?.getElementById('entityStatus');
     if (!host) return;
+    if (this._zoneConfigPayload === null) {
+      // The pre-payload state (no pairs, not using suggestions) is the same as
+      // a user who cleared the list, so it cannot be read off trackedEntities.
+      host.textContent = "Waiting for this radar's configuration.";
+      return;
+    }
     const configured = (this.trackedEntities || []).filter((pair) => pair.x && pair.y);
     if (this._usingSuggestedEntities) {
       host.textContent = configured.length

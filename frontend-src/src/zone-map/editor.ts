@@ -203,6 +203,9 @@ export class ZoneMapCardEditor extends HTMLElement {
       (hasLd2450Device(this._hass, device.id) ||
         (isEsphomeDevice(this._hass, device.id) &&
           (apolloModelInfo(this._hass.devices?.[device.id])?.ld2450 ?? false)));
+    // TODO(REVIEW_REPORT.md X49): unlike the two selectors, this value-changed
+    // is not stopped. Add stopPropagation (with a test) if symmetry is wanted,
+    // and reword the selector comment to call those stops defensive.
     picker.addEventListener("value-changed", (event: Event) => {
       const value = (event as CustomEvent).detail?.value;
       this._commit("device_id", typeof value === "string" ? value : "");
