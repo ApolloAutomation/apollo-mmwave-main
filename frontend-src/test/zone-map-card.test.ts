@@ -11,6 +11,7 @@
 import { afterEach, describe, it, expect, vi } from "vitest";
 import { ZoneMapCard } from "../src/zone-map/card";
 import { CONFIG_ENTRIES_SUBSCRIBE, ZONES_GET, ZONES_SUBSCRIBE } from "../src/zone-map/api";
+import type { ZoneConfig } from "../src/zone-map/api";
 
 type Handler = (message: any) => void;
 
@@ -454,6 +455,25 @@ describe("zone map card zone loading", () => {
     ]);
     expect(card.zoneConfig).toEqual([{ id: 1, name: "Doorway" }]);
     expect(card.coneAngleDeg).toBe(12);
+  });
+
+  it("lists a placeholder zone by name without drawing it", async () => {
+    // The legacy migration stores a pre-1.2 zone whose restore data was lost
+    // as `{}`, so the entity is recreated and the zone can be redrawn. Typed,
+    // so tsc holds ZoneDef to the placeholder the backend really serves.
+    const payload: ZoneConfig = { ...ZONE_PAYLOAD, zones: { ...ZONE_PAYLOAD.zones, "3": {} } };
+    const hass = fakeHass(payload);
+
+    const card = await mountCard(hass);
+
+    expect(card._loadError).toBeNull();
+    expect(card.zones).toEqual([
+      { id: 1, shape: "rect", data: { x_min: 0, x_max: 1000, y_min: 0, y_max: 1000 } },
+    ]);
+    expect(card.zoneConfig).toEqual([
+      { id: 1, name: "Doorway" },
+      { id: 3, name: "Zone 3" },
+    ]);
   });
 
   it("applies a pushed payload without a page reload", async () => {

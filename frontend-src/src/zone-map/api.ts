@@ -20,8 +20,9 @@ export interface TargetPair {
 }
 
 export interface ZoneDef {
-  shape: string;
-  data: Record<string, any> | null;
+  /** Both absent on a legacy zone whose data was lost: `{}` means no geometry. */
+  shape?: string;
+  data?: Record<string, any> | null;
   name?: string;
 }
 
