@@ -13,7 +13,7 @@ YAML (replace both `?v=` URLs; see
 
 - **Tuning guide.** The help card's **Full tuning guide** link now opens the
   new
-  [Apollo mmWave dashboard guide](https://wiki.apolloautomation.com/products/general/calibrating-and-updating/radar-tuning/apollo-mmwave-dashboard/)
+  [Apollo mmWave dashboard guide](https://wiki.apolloautomation.com/products/general/setup/apollo-mmwave-dashboard/)
   on the Apollo Automation wiki, at its LD2412 section on an R PRO-1 tab,
   instead of the older zone pages. The README links the new setup and tuning
   guides too.

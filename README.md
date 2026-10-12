@@ -140,7 +140,7 @@ more.
 - Apollo Automation wiki guides:
   [setup](https://wiki.apolloautomation.com/products/general/setup/apollo-mmwave-dashboard-setup/)
   and
-  [radar tuning](https://wiki.apolloautomation.com/products/general/calibrating-and-updating/radar-tuning/apollo-mmwave-dashboard/).
+  [radar tuning](https://wiki.apolloautomation.com/products/general/setup/apollo-mmwave-dashboard/).
 - [docs/configuration.md](docs/configuration.md): which devices appear,
   auto-calibration and its services, zones in automations, your own dashboards,
   card options and the full troubleshooting list.
