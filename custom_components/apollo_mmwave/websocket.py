@@ -140,6 +140,13 @@ def _answerable(
     return True
 
 
+# Neither zone command is admin-only, and that is deliberate. The auto-created
+# dashboard is written with `require_admin` False, so non-admin users open the
+# card, and the card draws nothing without these two commands. Nor do they
+# open much up: every user can already read the zone geometry, rotation and
+# tracked pairs from the zone sensors' state attributes. `update_zone` is
+# likewise a plain service, not an admin one. Adding `require_admin` here would
+# quietly break the dashboard for every non-admin user.
 @websocket_api.websocket_command(
     {vol.Required("type"): TYPE_GET, vol.Required("device_id"): str}
 )
