@@ -3,6 +3,7 @@ import {
   anyResolved,
   entityIds,
   resolveRadar,
+  resolvedDeviceId,
   resolvedStatesChanged,
 } from "../src/cards/resolution";
 import type { EntityMap, HomeAssistant, HassEntity } from "../src/types";
@@ -116,5 +117,26 @@ describe("anyResolved", () => {
   it("is false when nothing resolves (device removed/renamed)", () => {
     expect(anyResolved(hass, ["switch.gone_radar_engineering_mode"])).toBe(false);
     expect(anyResolved(hass, [])).toBe(false);
+  });
+});
+
+describe("resolvedDeviceId", () => {
+  const hass = hassWith([eng, thr]);
+  const map = resolveRadar(undefined, hass, { type: "x", device_id: "dev1" }).map;
+
+  it("prefers the configured device_id", () => {
+    expect(resolvedDeviceId(hass, { device_id: "other" }, map)).toBe("other");
+  });
+
+  it("falls back to the device of the first resolved entity in the registry", () => {
+    expect(resolvedDeviceId(hass, {}, map)).toBe("dev1");
+  });
+
+  it("is undefined when no resolved entity is registered", () => {
+    const empty: HomeAssistant = { states: hass.states, entities: {}, devices: {} };
+    expect(resolvedDeviceId(empty, {}, map)).toBeUndefined();
+    expect(
+      resolvedDeviceId(hass, {}, { move_threshold: [], still_threshold: [], move_energy: [], still_energy: [] })
+    ).toBeUndefined();
   });
 });

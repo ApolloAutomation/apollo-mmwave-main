@@ -13,6 +13,10 @@ function row(entity: string | undefined, name: string): Row[] {
 export function controlRows(m: EntityMap): Row[] {
   return [
     ...row(m.engineering_mode, "Radar Engineering Mode"),
+    // LD2412 only: the chip's own background correction. Both slots are
+    // undefined on an LD2410, so these rows simply do not appear there.
+    ...row(m.background_correction, "Start Dynamic Background Correction"),
+    ...row(m.background_correction_status, "Background Correction Running"),
     ...row(m.bluetooth, "Bluetooth"),
     ...row(m.restart_radar, "Restart Radar"),
     ...row(m.factory_reset_radar, "Factory Reset Radar"),

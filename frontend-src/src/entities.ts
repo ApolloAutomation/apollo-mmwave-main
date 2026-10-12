@@ -144,6 +144,16 @@ const SCALAR_PATTERNS: ScalarPattern[] = [
   S("radar_target", "binary_sensor", "_ld2412_presence"),
   S("moving_target", "binary_sensor", "_ld2412_moving_target"),
   S("still_target", "binary_sensor", "_ld2412_still_target"),
+  // The chip's own background correction (a firmware button and a status
+  // flag) and the query-params button the calibration job presses. The
+  // backend's gates.py carries the same suffixes; change both together.
+  S("background_correction", "button", "_ld2412_start_dynamic_background_correction"),
+  S(
+    "background_correction_status",
+    "binary_sensor",
+    "_ld2412_dynamic_background_correction_status"
+  ),
+  S("query_params", "button", "_ld2412_query_params"),
 ];
 
 // Gate slots share their suffix with the slot name (`_g3_move_threshold`,

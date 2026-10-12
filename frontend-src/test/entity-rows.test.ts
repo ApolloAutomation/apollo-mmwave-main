@@ -9,6 +9,7 @@ import {
   presentRows,
 } from "../src/panels/entity-rows";
 import { entityMapFromBaseName } from "../src/entities";
+import { LD2412_PROFILE } from "../src/profiles";
 import type { HomeAssistant } from "../src/types";
 
 const base = "apollo_msr_2_m4c4dd";
@@ -19,6 +20,29 @@ describe("row builders", () => {
     const ids = controlRows(m).map((r) => r.entity);
     expect(ids).toContain(`switch.${base}_radar_engineering_mode`);
     expect(ids).toContain(`button.${base}_esp_reboot`);
+  });
+
+  it("adds the two LD2412 background-correction rows right after engineering mode", () => {
+    const b = "apollo_r_pro_1_abcd";
+    const rows = controlRows(LD2412_PROFILE.entityMap(b));
+    expect(rows.slice(0, 3)).toEqual([
+      { entity: `switch.${b}_ld2412_engineering_mode`, name: "Radar Engineering Mode" },
+      {
+        entity: `button.${b}_ld2412_start_dynamic_background_correction`,
+        name: "Start Dynamic Background Correction",
+      },
+      {
+        entity: `binary_sensor.${b}_ld2412_dynamic_background_correction_status`,
+        name: "Background Correction Running",
+      },
+    ]);
+  });
+
+  it("omits the background-correction rows when the slots are unset (LD2410)", () => {
+    const names = controlRows(m).map((r) => r.name);
+    expect(names).not.toContain("Start Dynamic Background Correction");
+    expect(names).not.toContain("Background Correction Running");
+    expect(names[0]).toBe("Radar Engineering Mode");
   });
 
   it("splits thresholds into 9 move + 9 still rows (LD2410), labelled by gate", () => {

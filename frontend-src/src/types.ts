@@ -22,6 +22,38 @@ export interface HomeAssistant {
   >;
   /** Server config; `unit_system.length` is "km" (metric) or "mi" (US). */
   config?: { unit_system?: { length?: string } };
+  /** HA's service call. The fifth argument (`notifyOnError`) must be false
+   *  when a card renders the rejection itself, or the error toasts twice.
+   *  Optional so existing fixtures built from `{states, entities, devices}`
+   *  still type-check. */
+  callService?(
+    domain: string,
+    service: string,
+    data?: Record<string, any>,
+    target?: unknown,
+    notifyOnError?: boolean
+  ): Promise<any>;
+  callWS?<T>(msg: Record<string, any>): Promise<T>;
+  connection?: HassConnection;
+  /** HA's translator; "" for an unknown key. Used to render a rejected
+   *  service call's translated exception message. */
+  localize?(key: string, values?: Record<string, any>): string;
+  /** Loads a translation category for an integration and resolves to the
+   *  updated `localize`. */
+  loadBackendTranslation?(
+    category: string,
+    integration?: string | string[]
+  ): Promise<(key: string, values?: Record<string, any>) => string>;
+}
+
+/** The slice of home-assistant-js-websocket's Connection the cards use. */
+export interface HassConnection {
+  subscribeMessage<T>(
+    callback: (message: T) => void,
+    subscription: Record<string, any>
+  ): Promise<() => void | Promise<void>>;
+  addEventListener?(event: string, callback: () => void): void;
+  removeEventListener?(event: string, callback: () => void): void;
 }
 
 export type PanelKey =
@@ -52,6 +84,11 @@ export interface EntityMap {
   restart_radar?: string;
   factory_reset_radar?: string;
   esp_reboot?: string;
+  // LD2412 only: the chip's own background correction and its status, plus
+  // the button that re-reads every threshold from the chip.
+  background_correction?: string;
+  background_correction_status?: string;
+  query_params?: string;
   // zone config
   radar_timeout?: string;
   zone_1_start?: string;
@@ -87,4 +124,21 @@ export interface Ld2410CardConfig {
   panels?: Partial<Record<PanelKey, boolean>>;
   title?: string;
   distance_unit?: "mm" | "cm" | "m" | "in" | "ft" | "yd";
+}
+
+/** Options the calibrate card forwards to `apollo_mmwave.calibrate_gates`.
+ *  Absent keys are not sent, so the backend defaults apply. */
+export interface CalibrationOptions {
+  duration_s?: number;
+  settle_s?: number;
+  margin?: number;
+  margin_pct?: number;
+}
+
+export interface CalibrateCardConfig {
+  type: string;
+  device_id?: string;
+  device_base_name?: string;
+  title?: string;
+  calibration?: CalibrationOptions;
 }

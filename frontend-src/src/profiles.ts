@@ -42,6 +42,25 @@ function emptyZones(): Pick<
   };
 }
 
+/** Sentence shared by both chips' gate tips: points at the calibrate card. */
+const CALIBRATE_TIP =
+  "Or press **Calibrate with empty room** on the Auto-calibrate card to set them from your empty room.";
+
+/** Sentence shared by both chips' range tips: explains the timeout slider. */
+const RADAR_TIMEOUT_TIP =
+  "**Radar Timeout** is how long presence stays on after the last detection; raise it if lights flick off while you sit still.";
+
+/**
+ * HLK-LD2410 factory thresholds per gate (g0..g8), from the manual. Used only
+ * to show the "these look like factory thresholds" hint on the calibrate
+ * card; a wrong value hides or shows one line. Confirm against a factory-reset
+ * MSR-2 before release.
+ */
+export const LD2410_FACTORY_THRESHOLDS: { move: number[]; still: number[] } = {
+  move: [50, 50, 40, 30, 20, 15, 15, 15, 15],
+  still: [0, 0, 40, 40, 30, 30, 20, 20, 20],
+};
+
 /** MSR-1 / MSR-2 — LD2410, 9 gates (g0..g8), `radar_`/bare-`g` naming, with
  *  configurable distance zones. */
 export const LD2410_PROFILE: RadarProfile = {
@@ -51,9 +70,11 @@ export const LD2410_PROFILE: RadarProfile = {
   rangeLabels: ["Max Move Gate", "Max Still Gate"],
   gateSizeLabel: "Gate Size",
   rangeTip:
-    "💡 **Gate Size** sets how far each gate reaches (e.g. 0.75 m). **Max Move / Still Gate** cap the farthest gate used to detect moving vs. still targets — lower them to ignore distant motion.",
+    "💡 **Gate Size** sets how far each gate reaches (e.g. 0.75 m). **Max Move / Still Gate** cap the farthest gate used to detect moving vs. still targets; lower them to ignore distant motion. " +
+    RADAR_TIMEOUT_TIP,
   gateTip:
-    "💡 Each gate's **move / still threshold** is how strong a signal must be to count as presence at that distance. Lower = more sensitive (more false triggers), higher = less. Turn on **Radar Engineering Mode** and watch the Gate Energy chart while you move around to pick values.",
+    "💡 Each gate's **move / still threshold** is how strong a signal must be to count as presence at that distance. Lower = more sensitive (more false triggers), higher = less. Turn on **Radar Engineering Mode** and watch the Gate Energy chart while you move around to pick values. " +
+    CALIBRATE_TIP,
   wikiUrl: "https://wiki.apolloautomation.com/products/msr2/setup/zones-ha/",
   entityMap(base: string): EntityMap {
     const gates = [0, 1, 2, 3, 4, 5, 6, 7, 8];
@@ -98,9 +119,11 @@ export const LD2412_PROFILE: RadarProfile = {
   rangeLabels: ["Max Gate", "Min Gate"],
   gateSizeLabel: "Distance Resolution",
   rangeTip:
-    "💡 **Distance Resolution** sets gate spacing — smaller (0.5 m) gives finer tuning over a shorter range, larger (0.75 m) reaches farther. **Min / Max Gate** limit which gates are used for detection.",
+    "💡 **Distance Resolution** sets gate spacing: smaller (0.5 m) gives finer tuning over a shorter range, larger (0.75 m) reaches farther. **Min / Max Gate** limit which gates are used for detection. " +
+    RADAR_TIMEOUT_TIP,
   gateTip:
-    "💡 Each gate's **move / still threshold** is how strong a signal must be to count as presence at that distance. Lower = more sensitive (more false triggers), higher = less. Turn on **Radar Engineering Mode** and watch the Gate Energy chart while you move around to pick values.",
+    "💡 Each gate's **move / still threshold** is how strong a signal must be to count as presence at that distance. Lower = more sensitive (more false triggers), higher = less. Turn on **Radar Engineering Mode** and watch the Gate Energy chart while you move around to pick values. " +
+    CALIBRATE_TIP,
   wikiUrl:
     "https://wiki.apolloautomation.com/products/rpro1/setup/zones-ha/#ld2412-configuration",
   entityMap(base: string): EntityMap {
@@ -130,6 +153,9 @@ export const LD2412_PROFILE: RadarProfile = {
       radar_target: `binary_sensor.${base}_ld2412_presence`,
       moving_target: `binary_sensor.${base}_ld2412_moving_target`,
       still_target: `binary_sensor.${base}_ld2412_still_target`,
+      background_correction: `button.${base}_ld2412_start_dynamic_background_correction`,
+      background_correction_status: `binary_sensor.${base}_ld2412_dynamic_background_correction_status`,
+      query_params: `button.${base}_ld2412_query_params`,
     };
   },
 };

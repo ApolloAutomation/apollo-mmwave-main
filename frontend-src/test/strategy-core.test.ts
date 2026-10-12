@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   detectRadarDevices,
   buildDeviceCards,
+  buildDeviceSections,
   deviceView,
   generateCards,
   generateViews,
@@ -97,6 +98,96 @@ describe("buildDeviceCards", () => {
   it("includes a markdown help card linking the wiki", () => {
     const help = cards.find((c: any) => c.type === "markdown") as any;
     expect(help.content).toContain(LD2410_PROFILE.wikiUrl);
+  });
+
+  it("starts the help card with the Start here checklist", () => {
+    const help = cards.find((c: any) => c.type === "markdown") as any;
+    expect(help.content).toContain("Start here");
+    expect(help.content).toContain("Calibrate with empty room");
+    expect(help.content).toContain("Max Move Gate / Max Still Gate");
+    expect(help.content).toContain("Radar Timeout");
+    expect(help.content).not.toContain("\u2014");
+  });
+
+  it("places the calibrate card right after the help card with the device ids", () => {
+    expect(cards[0].type).toBe("markdown");
+    expect(cards[1]).toMatchObject({
+      type: "custom:apollo-radar-calibrate-card",
+      device_id: "dev1",
+      device_base_name: base,
+      title: "Auto-calibrate",
+    });
+    expect(cards[1]).not.toHaveProperty("calibration");
+  });
+
+  it("passes the strategy's calibration block through to the card", () => {
+    const calibration = { duration_s: 120, settle_s: 0 };
+    const withOptions = buildDeviceCards(deviceHass(), ld2410Dev, "in", calibration);
+    const card = withOptions.find(
+      (c: any) => c.type === "custom:apollo-radar-calibrate-card"
+    ) as any;
+    expect(card.calibration).toEqual(calibration);
+    const fromConfig = generateCards(deviceHass(), { calibration }).find(
+      (c: any) => c.type === "custom:apollo-radar-calibrate-card"
+    ) as any;
+    expect(fromConfig.calibration).toEqual(calibration);
+  });
+});
+
+describe("calibrate card placement in sections", () => {
+  it("is the first card of the first section for an LD2410 device", () => {
+    const sections = buildDeviceSections(deviceHass(), ld2410Dev, "in");
+    expect(sections[0].cards[0].type).toBe("custom:apollo-radar-calibrate-card");
+    expect(sections[0].cards[1].type).toBe("markdown");
+  });
+
+  it("is the first card of the first section for an LD2412 device", () => {
+    const b = "apollo_r_pro_1_abcd";
+    const id = `switch.${b}_ld2412_engineering_mode`;
+    const hass: HomeAssistant = {
+      states: { [id]: { entity_id: id, state: "off", attributes: {} } },
+      entities: { [id]: { device_id: "rpro" } },
+      devices: { rpro: { name: "Office R-PRO-1" } },
+    };
+    const dev = detectRadarDevices(hass)[0];
+    const sections = buildDeviceSections(hass, dev);
+    expect(sections[0].cards[0]).toMatchObject({
+      type: "custom:apollo-radar-calibrate-card",
+      device_id: "rpro",
+      device_base_name: b,
+    });
+  });
+
+  it("is absent for an LD2450-only device (MTR-1)", () => {
+    const x = "sensor.apollo_mtr_1_abcd_target_1_x";
+    const hass: HomeAssistant = {
+      states: { [x]: { entity_id: x, state: "100", attributes: {} } },
+      entities: { [x]: { device_id: "mtr" } },
+      devices: { mtr: { name: "Hall MTR-1" } },
+    };
+    const dev = detectRadarDevices(hass)[0];
+    expect(dev.profile).toBeUndefined();
+    const types = buildDeviceCards(hass, dev).map((c: any) => c.type);
+    expect(types).not.toContain("custom:apollo-radar-calibrate-card");
+    const sectionTypes = buildDeviceSections(hass, dev).flatMap((s) =>
+      s.cards.map((c: any) => c.type)
+    );
+    expect(sectionTypes).not.toContain("custom:apollo-radar-calibrate-card");
+  });
+
+  it("keeps the card on an offline gate radar so it can render its own offline state", () => {
+    const offline: RadarDevice = { ...ld2410Dev, online: false };
+    const sections = buildDeviceSections(deviceHass(), offline, "in");
+    expect(sections[0].cards[0].type).toBe("custom:apollo-radar-calibrate-card");
+  });
+});
+
+describe("profile tips", () => {
+  it("point the gate tip at the calibrate card and explain the timeout in the range tip", () => {
+    for (const profile of [LD2410_PROFILE, LD2412_PROFILE]) {
+      expect(profile.gateTip).toContain("Calibrate with empty room");
+      expect(profile.rangeTip).toContain("**Radar Timeout** is how long presence stays on");
+    }
   });
 });
 
