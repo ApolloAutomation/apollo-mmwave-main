@@ -1,4 +1,4 @@
-import type { HomeAssistant } from "./types";
+import type { CalibrationOptions, HomeAssistant } from "./types";
 import {
   baseNameFromDevice,
   detectProfileFromEntities,
@@ -41,6 +41,9 @@ export interface StrategyConfig {
    *  Empty/absent means every detected Apollo radar, online or not. */
   devices?: string[];
   distance_unit?: string;
+  /** Seeds the calibrate card's `calibration:` block on every gate-radar tab
+   *  (duration, countdown and headroom sent to `calibrate_gates`). */
+  calibration?: CalibrationOptions;
 }
 
 function isLive(hass: HomeAssistant, entityId: string | undefined): boolean {
@@ -219,11 +222,19 @@ function helpCardBody(dev: RadarDevice): Record<string, any> {
         `Draw occupancy zones over the live target positions below.`,
     };
   }
+  const p = dev.profile;
   return {
     type: "markdown",
     content:
-      `**${dev.name}** — Apollo ${dev.profile.label} radar.\n\n` +
-      `New to tuning? [How to configure this sensor →](${dev.profile.wikiUrl})`,
+      `**${dev.name}**, Apollo ${p.label} radar.\n\n` +
+      `**Start here**\n` +
+      `1. Press **Calibrate with empty room** on the Auto-calibrate card and leave the room.\n` +
+      `2. Set how far it should look: **${p.rangeLabels[0]} / ${p.rangeLabels[1]}** on the` +
+      ` Detection Range card (each gate is 0.75 m unless you changed ${p.gateSizeLabel}).\n` +
+      `3. Set how long presence stays on after you stop moving: **Radar Timeout**, same card.\n` +
+      `4. Walk the room and watch the Gate Energy chart. Raise a gate's threshold if it` +
+      ` triggers with nobody there, lower it if it misses you.\n\n` +
+      `[Full tuning guide →](${p.wikiUrl})`,
   };
 }
 
@@ -233,6 +244,8 @@ function noteCard(text: string): Record<string, any> {
 
 interface DeviceCards {
   help: Record<string, any>;
+  /** The auto-calibrate card, first on every gate-radar tab. */
+  calibrate?: Record<string, any>;
   controls?: Record<string, any>;
   range?: Record<string, any>;
   rangeNote?: Record<string, any>;
@@ -252,7 +265,8 @@ interface DeviceCards {
 function cardMap(
   hass: HomeAssistant,
   dev: RadarDevice,
-  distanceUnit?: string
+  distanceUnit?: string,
+  calibration?: CalibrationOptions
 ): DeviceCards {
   const cards: DeviceCards = { help: helpCard(dev) };
 
@@ -260,6 +274,15 @@ function cardMap(
   // tunable gate radar.
   if (dev.profile) {
     const profile = dev.profile;
+    // Online or not: the card renders its own offline state, and a tab that
+    // always starts with the same card is easier to learn.
+    cards.calibrate = {
+      type: "custom:apollo-radar-calibrate-card",
+      device_id: dev.deviceId,
+      device_base_name: dev.base,
+      title: "Auto-calibrate",
+      ...(calibration ? { calibration } : {}),
+    };
     // Prefer the device's actual entity ids (rename/dedup-proof); constructed
     // ids are only right when nothing was renamed.
     const m = entityMapFromDevice(hass, dev.deviceId) ?? profile.entityMap(dev.base);
@@ -337,11 +360,13 @@ function cardMap(
 export function buildDeviceCards(
   hass: HomeAssistant,
   dev: RadarDevice,
-  distanceUnit?: string
+  distanceUnit?: string,
+  calibration?: CalibrationOptions
 ): Record<string, any>[] {
-  const c = cardMap(hass, dev, distanceUnit);
+  const c = cardMap(hass, dev, distanceUnit, calibration);
   return [
     c.help,
+    c.calibrate,
     c.controls,
     c.range,
     c.rangeNote,
@@ -363,16 +388,17 @@ export function buildDeviceCards(
 export function buildDeviceSections(
   hass: HomeAssistant,
   dev: RadarDevice,
-  distanceUnit?: string
+  distanceUnit?: string,
+  calibration?: CalibrationOptions
 ): Record<string, any>[] {
-  const c = cardMap(hass, dev, distanceUnit);
+  const c = cardMap(hass, dev, distanceUnit, calibration);
   const columns: (Record<string, any> | undefined)[][] = [];
 
-  // Gate-radar tuning columns: controls | distance+config | gate-energy+move |
-  // history+still. LD2412 has no Zone Config, so column 1 is short — put
-  // occupancy there instead of column 2 to balance it.
+  // Gate-radar tuning columns: calibrate+help+controls | distance+config |
+  // gate-energy+move | history+still. LD2412 has no Zone Config, so column 1
+  // is short; put occupancy there instead of column 2 to balance it.
   if (dev.profile) {
-    const col1 = [c.help, c.controls, c.zone];
+    const col1 = [c.calibrate, c.help, c.controls, c.zone];
     const col2: (Record<string, any> | undefined)[] = [
       c.distance,
       c.range,
@@ -405,13 +431,14 @@ export function deviceView(
   hass: HomeAssistant,
   dev: RadarDevice,
   distanceUnit?: string,
-  path: string = dev.base
+  path: string = dev.base,
+  calibration?: CalibrationOptions
 ): Record<string, any> {
   return {
     title: dev.name,
     path,
     type: "sections",
-    sections: buildDeviceSections(hass, dev, distanceUnit),
+    sections: buildDeviceSections(hass, dev, distanceUnit, calibration),
   };
 }
 
@@ -432,7 +459,7 @@ export function generateViews(
     let path = d.base;
     if (used.has(path)) path = `${d.base}_${d.deviceId}`;
     used.add(path);
-    return deviceView(hass, d, config.distance_unit, path);
+    return deviceView(hass, d, config.distance_unit, path, config.calibration);
   });
 }
 
@@ -442,7 +469,7 @@ export function generateSections(
   config: StrategyConfig
 ): Record<string, any>[] {
   return strategyDevices(hass, config).flatMap((d) =>
-    buildDeviceSections(hass, d, config.distance_unit)
+    buildDeviceSections(hass, d, config.distance_unit, config.calibration)
   );
 }
 
@@ -453,6 +480,6 @@ export function generateCards(
   config: StrategyConfig
 ): Record<string, any>[] {
   return strategyDevices(hass, config).flatMap((d) =>
-    buildDeviceCards(hass, d, config.distance_unit)
+    buildDeviceCards(hass, d, config.distance_unit, config.calibration)
   );
 }

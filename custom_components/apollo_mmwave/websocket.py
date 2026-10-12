@@ -23,10 +23,14 @@ from homeassistant.components import websocket_api
 from homeassistant.core import callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
+from .calibration import calibration_payload
 from .const import (
     ATTR_ROTATION_DEG,
+    DATA_CALIBRATION_JOBS,
+    DATA_CALIBRATION_STORE,
     DATA_STORE,
     DOMAIN,
+    SIGNAL_CALIBRATION_UPDATED,
     SIGNAL_ZONES_UPDATED,
     STORE_ENTITIES,
     STORE_INPUT_UNITS,
@@ -41,6 +45,8 @@ if TYPE_CHECKING:
 
 TYPE_GET = f"{DOMAIN}/zones/get"
 TYPE_SUBSCRIBE = f"{DOMAIN}/zones/subscribe"
+TYPE_CALIBRATION_GET = f"{DOMAIN}/calibration/get"
+TYPE_CALIBRATION_SUBSCRIBE = f"{DOMAIN}/calibration/subscribe"
 
 # Detected pairs the user has not chosen, offered so the card can say "using the
 # radar's own targets" instead of demanding a manual pick.
@@ -60,6 +66,8 @@ def async_register(hass: HomeAssistant) -> CALLBACK_TYPE:
     # (a reload) replaces the handlers rather than stacking them.
     websocket_api.async_register_command(hass, ws_get_zones)
     websocket_api.async_register_command(hass, ws_subscribe_zones)
+    websocket_api.async_register_command(hass, ws_get_calibration)
+    websocket_api.async_register_command(hass, ws_subscribe_calibration)
     hass.data.setdefault(DOMAIN, {}).setdefault(DATA_SUBSCRIPTIONS, set())
 
     @callback
@@ -189,3 +197,90 @@ def ws_subscribe_zones(
     active.add(_teardown)
     connection.subscriptions[msg["id"]] = _teardown
     connection.send_result(msg["id"])
+
+
+def _calibration_loaded(hass: HomeAssistant) -> bool:
+    # The zone `_answerable` tests only DATA_STORE, which `async_unload_entry`
+    # pops before the on_unload hooks run; a half-set-up entry can have the
+    # reverse. The calibration commands need both of their own keys.
+    data = hass.data.get(DOMAIN, {})
+    return DATA_CALIBRATION_STORE in data and DATA_CALIBRATION_JOBS in data
+
+
+def _calibration_answerable(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> bool:
+    """Report whether a calibration request can be served, sending the error if not."""
+    from . import _device_is_registered  # noqa: PLC0415 - avoid a module import cycle
+
+    if not _calibration_loaded(hass):
+        connection.send_error(msg["id"], ERR_NOT_LOADED, "Apollo mmWave is not loaded.")
+        return False
+    device_id = msg["device_id"]
+    if not _device_is_registered(hass, device_id):
+        connection.send_error(
+            msg["id"],
+            websocket_api.ERR_NOT_FOUND,
+            f"No Home Assistant device with id {device_id}",
+        )
+        return False
+    return True
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): TYPE_CALIBRATION_GET, vol.Required("device_id"): str}
+)
+@callback
+def ws_get_calibration(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Return one radar's calibration state (job, snapshots, last result)."""
+    if not _calibration_answerable(hass, connection, msg):
+        return
+    connection.send_result(msg["id"], calibration_payload(hass, msg["device_id"]))
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): TYPE_CALIBRATION_SUBSCRIBE, vol.Required("device_id"): str}
+)
+@callback
+def ws_subscribe_calibration(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Push a radar's calibration state now and on every job change."""
+    if not _calibration_answerable(hass, connection, msg):
+        return
+    device_id = msg["device_id"]
+    active = _subscriptions(hass)
+    closed = False
+
+    @callback
+    def _forward(changed_device_id: str) -> None:
+        if changed_device_id != device_id:
+            return
+        # A job finishing during the unload window would otherwise build a
+        # payload from a store that is no longer there.
+        if not _calibration_loaded(hass):
+            return
+        connection.send_event(msg["id"], calibration_payload(hass, device_id))
+
+    unsub_dispatcher = async_dispatcher_connect(
+        hass, SIGNAL_CALIBRATION_UPDATED, _forward
+    )
+
+    @callback
+    def _teardown() -> None:
+        # Same three-way race as `ws_subscribe_zones`: a no-op the second time.
+        nonlocal closed
+        if closed:
+            return
+        closed = True
+        active.discard(_teardown)
+        unsub_dispatcher()
+
+    active.add(_teardown)
+    connection.subscriptions[msg["id"]] = _teardown
+    connection.send_result(msg["id"])
+    # The current state follows at once, so a tab opened mid-run shows the
+    # running job with no get/subscribe race.
+    connection.send_event(msg["id"], calibration_payload(hass, device_id))

@@ -141,6 +141,12 @@ that later resolves to that device, the copy already on the device wins and the
 leftover copy is dropped. It is written to the log when it happens, so search
 your log for `apollo_mmwave` if a zone you expected is missing.
 
+A running auto-calibration does not survive a Home Assistant restart; the saved
+thresholds do, and the Auto-calibrate card shows an interrupted banner with
+Turn it off and Undo after the restart. The card offers only the newest saved
+snapshot as Undo; older ones can be restored through the
+`apollo_mmwave.restore_gate_thresholds` service with a `snapshot_id`.
+
 ## Choosing which devices appear
 
 By default the dashboard shows every Apollo mmWave device Home Assistant
@@ -162,6 +168,138 @@ strategy:
   type: custom:apollo-radar-tuning
   devices:
     - your_device_id   # exactly these, online or not
+```
+
+## Auto-calibration
+
+Every gate-radar tab (MSR-1, MSR-2, R-PRO-1) starts with an **Auto-calibrate**
+card. Press **Calibrate with empty room** and leave: Home Assistant turns Radar
+Engineering Mode on, counts down 15 seconds so you can get out, listens to every
+gate's move and still energy for a minute, then sets each threshold just above
+the background it heard. Your current thresholds are saved first, so the card
+always offers **Undo (restore 14:31 values)**, labelled with the time of the
+saved values, and that saved copy survives a Home Assistant restart.
+
+Rules for a good run:
+
+- Nobody in the radar's view: people, pets, robot vacuums. A person sitting
+  still inflates the still thresholds and the card warns when the radar
+  reported presence for much of the listen.
+- Fans, curtains and plants that normally move are part of the background.
+  Leave them as they usually are.
+- Leave Radar Engineering Mode on until the card says it is done. The job stops
+  without changing anything if the mode is turned off during the listen, and on
+  the R-PRO-1 if Start Dynamic Background Correction is pressed.
+- **R-PRO-1 (LD2412):** run **Start Dynamic Background Correction** on the
+  Controls card first, with the room empty, and wait for **Background
+  Correction Running** to turn off. That is the chip's own feature, written
+  into the radar itself, so Undo on this card cannot reverse it. Calibrate
+  afterwards, and calibrate again after any later background correction.
+
+**Preview only** computes the new thresholds and shows them without changing
+anything (Radar Engineering Mode is still turned on for the listen). The result
+table shows each gate's peak and threshold, dims gates beyond your max gate,
+marks a gate that ended up at 100 as **off**, and lists any value the radar did
+not echo back. The job runs in the backend, so closing the browser does not
+stop it; reopen the dashboard and the card picks the running job up again. If
+Home Assistant restarts during a run the card shows an interrupted banner with
+**Turn it off** for Radar Engineering Mode and **Undo** for any thresholds that
+may have been written.
+
+The card is part of the generated dashboard, and can be placed on your own:
+
+```yaml
+type: custom:apollo-radar-calibrate-card
+device_id: your_device_id
+title: Auto-calibrate          # optional
+calibration:                   # optional; absent keys use the service defaults
+  duration_s: 120              # listen for two minutes (15..600)
+  settle_s: 0                  # no countdown (0..120)
+  margin: 10                   # headroom in energy points (0..50)
+  margin_pct: 25               # headroom in percent of the peak (0..100)
+```
+
+The same `calibration:` block on a `custom:apollo-radar-tuning` strategy seeds
+every generated card. The card drives the `apollo_mmwave.calibrate_gates`,
+`apollo_mmwave.cancel_calibration` and `apollo_mmwave.restore_gate_thresholds`
+services, which automations can call directly; see the service descriptions in
+Developer Tools.
+
+### The calibration services
+
+| Service | What it does |
+|---|---|
+| `apollo_mmwave.calibrate_gates` | The run described above for one radar (`device_id`). Optional `duration_s` (15 to 600, default 60), `settle_s` (0 to 120, default 15), `margin` (0 to 50 points, default 10), `margin_pct` (0 to 100 percent, default 25; the larger headroom wins per gate, and both cannot be 0), `kind` (`both`, `move` or `still`), `apply` (`false` previews without writing) and `wait` (`true` blocks until the job ends and returns the full result). |
+| `apollo_mmwave.cancel_calibration` | Stops the running job for one radar. Nothing is written if it had not started writing; values already written stay until you restore. |
+| `apollo_mmwave.restore_gate_thresholds` | Writes the thresholds saved before the last calibration back (or a chosen `snapshot_id`). The current values are saved first, so a restore can itself be undone. |
+
+Every service takes one device per call. An automation that knows the room is
+empty can skip the countdown and read the result back:
+
+```yaml
+automation:
+  - alias: Recalibrate the office radar overnight
+    triggers:
+      - trigger: time
+        at: "03:00:00"
+    conditions:
+      - condition: state
+        entity_id: binary_sensor.apollo_msr_2_abc123_radar_target
+        state: "off"
+        for: "00:30:00"
+    actions:
+      - action: apollo_mmwave.calibrate_gates
+        data:
+          device_id: your_device_id
+          settle_s: 0
+          wait: true
+        response_variable: calibration
+      - if:
+          - condition: template
+            value_template: "{{ calibration.outcome != 'applied' }}"
+        then:
+          - action: persistent_notification.create
+            data:
+              title: Radar calibration
+              message: >
+                Outcome {{ calibration.outcome }}
+                {% if calibration.error %}({{ calibration.error.message }}){% endif %},
+                {{ calibration.changed }} thresholds changed.
+```
+
+Several radars take one call each, so loop over them:
+
+```yaml
+actions:
+  - repeat:
+      for_each:
+        - device_id_of_the_office_radar
+        - device_id_of_the_hall_radar
+      sequence:
+        - action: apollo_mmwave.calibrate_gates
+          data:
+            device_id: "{{ repeat.item }}"
+            settle_s: 0
+            wait: true
+```
+
+**Recorder.** While Radar Engineering Mode is on, the radar updates its 18
+(LD2410) or 28 (LD2412) gate energy sensors about once a second, and every
+update lands in the recorder. The job turns the mode back off when it was the
+one that turned it on, so a calibration adds about two minutes of that. If you
+leave the mode on to watch the Gate Energy chart, exclude the per-gate energy
+sensors. The globs match the gate number exactly (one digit on the LD2410, two
+on the LD2412), so the aggregate move and still energy sensors stay recorded
+even when the device name contains `_g`:
+
+```yaml
+recorder:
+  exclude:
+    entity_globs:
+      - sensor.*_g?_move_energy     # LD2410: g0 to g8
+      - sensor.*_g?_still_energy
+      - sensor.*_g??_move_energy    # LD2412: g00 to g13
+      - sensor.*_g??_still_energy
 ```
 
 ## Use your own dashboards instead
@@ -187,11 +325,12 @@ strategies stay available:
     device_id: your_device_id   # optional; omit for all devices
   ```
 
-- **Cards** — `custom:apollo-radar-distance-card`,
+- **Cards**: `custom:apollo-radar-calibrate-card`,
+  `custom:apollo-radar-distance-card`,
   `custom:apollo-radar-gate-energy-card`, and
   `custom:apollo-radar-zone-map-card` can be placed individually (they're in
-  the card picker). The zone map card takes a `device_id`; `title` is display
-  only. The zone map starts locked once the radar has zones, and the Lock
+  the card picker). The calibrate and zone map cards take a `device_id`;
+  `title` is display only. The zone map starts locked once the radar has zones, and the Lock
   toggle is remembered per radar in the browser. Set `start_locked: true` or
   `false` (also in the card editor) to force the starting state instead.
 

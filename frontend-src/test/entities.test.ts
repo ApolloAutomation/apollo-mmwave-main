@@ -9,6 +9,7 @@ import {
   resolveProfile,
   exists,
 } from "../src/entities";
+import { LD2412_PROFILE } from "../src/profiles";
 import type { HomeAssistant } from "../src/types";
 
 const base = "apollo_msr_2_m4c4dd";
@@ -127,6 +128,32 @@ describe("classifyObjectId", () => {
     });
   });
 
+  it("classifies the LD2412 background-correction and query-params entities", () => {
+    expect(
+      classifyObjectId("button", `${base}_ld2412_start_dynamic_background_correction`)
+    ).toEqual({ slot: "background_correction" });
+    expect(
+      classifyObjectId("binary_sensor", `${base}_ld2412_dynamic_background_correction_status`)
+    ).toEqual({ slot: "background_correction_status" });
+    expect(classifyObjectId("button", `${base}_ld2412_query_params`)).toEqual({
+      slot: "query_params",
+    });
+    // Dedup suffixes still land on the same slots.
+    expect(classifyObjectId("button", `${base}_ld2412_query_params_2`)).toEqual({
+      slot: "query_params",
+    });
+  });
+
+  it("rejects the LD2412 calibration entities in the wrong domain", () => {
+    expect(
+      classifyObjectId("switch", `${base}_ld2412_start_dynamic_background_correction`)
+    ).toBeUndefined();
+    expect(
+      classifyObjectId("sensor", `${base}_ld2412_dynamic_background_correction_status`)
+    ).toBeUndefined();
+    expect(classifyObjectId("sensor", `${base}_ld2412_query_params`)).toBeUndefined();
+  });
+
   it("does not confuse target with moving/still target", () => {
     expect(classifyObjectId("binary_sensor", `${base}_radar_moving_target`)).toEqual({
       slot: "moving_target",
@@ -232,6 +259,27 @@ describe("resolveProfile", () => {
     const hass = hassWith(["sensor.foo_ld2450_target_1_x"]);
     hass.devices.dev1 = { manufacturer: "ApolloAutomation", model: "MTR-1" };
     expect(resolveProfile(hass, { type: "x", device_id: "dev1" })).toBeUndefined();
+  });
+});
+
+describe("LD2412_PROFILE.entityMap", () => {
+  it("includes the background-correction button, its status and query params", () => {
+    const b = "apollo_r_pro_1_abcd";
+    const map = LD2412_PROFILE.entityMap(b);
+    expect(map.background_correction).toBe(
+      `button.${b}_ld2412_start_dynamic_background_correction`
+    );
+    expect(map.background_correction_status).toBe(
+      `binary_sensor.${b}_ld2412_dynamic_background_correction_status`
+    );
+    expect(map.query_params).toBe(`button.${b}_ld2412_query_params`);
+  });
+
+  it("leaves the three slots unset on the LD2410 map", () => {
+    const map = entityMapFromBaseName(base);
+    expect(map.background_correction).toBeUndefined();
+    expect(map.background_correction_status).toBeUndefined();
+    expect(map.query_params).toBeUndefined();
   });
 });
 

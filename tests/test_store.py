@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+import copy
 from typing import TYPE_CHECKING
 
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    async_fire_time_changed,
+)
 
+from custom_components.apollo_mmwave.const import DOMAIN, SERVICE_UPDATE_ZONE
+from custom_components.apollo_mmwave.store import STORAGE_KEY as ZONE_STORAGE_KEY
 from custom_components.apollo_mmwave.store import ZoneStore
+
+from .conftest import CALIBRATION_STORAGE_KEY, radar_ids
 
 if TYPE_CHECKING:
     from homeassistant.helpers.device_registry import DeviceEntry
@@ -341,3 +349,36 @@ async def test_v1_merge_keeps_an_explicit_zero_rotation(
     assert await store.async_load() is True
 
     assert store.devices[device.id]["rotation_deg"] == 0
+
+
+async def test_calibration_file_is_separate_from_zone_store(
+    hass, hass_storage, calibration_rig, ld2410_device, device_id
+) -> None:
+    """A calibration writes its own file and leaves the zone file byte-identical."""
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_UPDATE_ZONE,
+        {
+            "device_id": device_id,
+            "zone_id": 1,
+            "shape": "rect",
+            "data": {"x_min": 0, "x_max": 10, "y_min": 0, "y_max": 10},
+        },
+        blocking=True,
+    )
+    async_fire_time_changed(hass, fire_all=True)
+    await hass.async_block_till_done()
+    zone_file = copy.deepcopy(hass_storage[ZONE_STORAGE_KEY])
+    assert CALIBRATION_STORAGE_KEY not in hass_storage
+
+    result = await calibration_rig.run(radar_ids(ld2410_device), move=60, still=60)
+    async_fire_time_changed(hass, fire_all=True)
+    await hass.async_block_till_done()
+
+    assert result["outcome"] == "applied"
+    assert hass_storage[ZONE_STORAGE_KEY] == zone_file
+    calibration_file = hass_storage[CALIBRATION_STORAGE_KEY]["data"]
+    snapshots = calibration_file["devices"][ld2410_device.id]["snapshots"]
+    assert [snapshot["id"] for snapshot in snapshots] == [result["snapshot_id"]]
+    assert "zones" not in calibration_file
+    assert "devices" in hass_storage[ZONE_STORAGE_KEY]["data"]

@@ -94,6 +94,20 @@ export class ApolloLd2410GateEnergyCard extends LitElement {
       gap: 4px 14px;
       margin-top: 6px;
     }
+    /* The chart's engineering-mode button; its position is inline so the
+       chart template is self-contained. */
+    button.overlay {
+      font: inherit;
+      font-size: 0.9em;
+      font-weight: 500;
+      cursor: pointer;
+      border: none;
+      border-radius: 4px;
+      padding: 8px 14px;
+      background: var(--primary-color);
+      color: var(--text-primary-color, #fff);
+      white-space: nowrap;
+    }
   `;
 }
 

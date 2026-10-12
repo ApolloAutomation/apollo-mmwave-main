@@ -72,3 +72,19 @@ export function resolvedStatesChanged(
 export function anyResolved(hass: HomeAssistant, ids: string[]): boolean {
   return ids.some((id) => id in hass.states);
 }
+
+/** The HA device id a card config points at: `device_id` when set, else the
+ *  device of the first resolved entity the registry knows (the
+ *  `device_base_name` fallback has no id of its own, so the entities vouch). */
+export function resolvedDeviceId(
+  hass: HomeAssistant,
+  config: { device_id?: string },
+  map: EntityMap
+): string | undefined {
+  if (config.device_id) return config.device_id;
+  for (const id of entityIds(map)) {
+    const deviceId = hass.entities[id]?.device_id;
+    if (deviceId) return deviceId;
+  }
+  return undefined;
+}

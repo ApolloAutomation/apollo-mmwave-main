@@ -1,8 +1,9 @@
 // Keep in sync with custom_components/apollo_mmwave/manifest.json.
-export const CARD_VERSION = "2.1.3";
+export const CARD_VERSION = "2.2.0";
 
 import "./cards/distance-card";
 import "./cards/gate-energy-card";
+import "./cards/calibrate-card";
 import "./strategy";
 
 // eslint-disable-next-line no-console
