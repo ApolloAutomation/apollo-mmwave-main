@@ -720,3 +720,184 @@ describe("zone map card outside clicks", () => {
     expect(card._polyPoints).toHaveLength(0);
   });
 });
+
+/**
+ * Polygon finishing through the real canvas listeners.
+ *
+ * A double-click or double-tap finishes the polygon, and its second click is
+ * the gesture, not a vertex. Two quick taps at different spots are two
+ * vertices. The canvas is laid out at 800x800 CSS px over the 800x800 bitmap,
+ * so one px is 12.5 mm on the default 10 m grid.
+ */
+describe("zone map card polygon double-tap", () => {
+  let now = 0;
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  async function polygonCard() {
+    const hass = fakeHass({ ...ZONE_PAYLOAD, zones: {} });
+    const card = await mountCard(hass);
+    card.isLocked = false;
+    card.selectedZone = 1;
+    card._setDrawMode("polygon");
+    vi.spyOn(card.canvas, "getBoundingClientRect").mockReturnValue({
+      left: 0,
+      top: 0,
+      right: 800,
+      bottom: 800,
+      x: 0,
+      y: 0,
+      width: 800,
+      height: 800,
+      toJSON: () => ({}),
+    } as DOMRect);
+    now = 100_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    hass.callService.mockClear();
+    return { card, hass };
+  }
+
+  function click(card: any, x: number, y: number, afterMs: number) {
+    now += afterMs;
+    card.canvas.dispatchEvent(new MouseEvent("mousedown", { clientX: x, clientY: y }));
+    card.canvas.dispatchEvent(new MouseEvent("mouseup", { clientX: x, clientY: y }));
+  }
+
+  function tap(card: any, x: number, y: number, afterMs: number) {
+    now += afterMs;
+    const point = { clientX: x, clientY: y };
+    const start = Object.assign(new Event("touchstart", { cancelable: true }), {
+      touches: [point],
+      changedTouches: [point],
+    });
+    const end = Object.assign(new Event("touchend", { cancelable: true }), {
+      touches: [],
+      changedTouches: [point],
+    });
+    card.canvas.dispatchEvent(start);
+    card.canvas.dispatchEvent(end);
+  }
+
+  function polygonSaves(hass: any): any[] {
+    return hass.callService.mock.calls
+      .filter((call: any[]) => call[1] === "update_zone" && call[2].shape === "polygon")
+      .map((call: any[]) => call[2].data.points);
+  }
+
+  function hasConsecutiveRepeat(points: any[]): boolean {
+    return points.some(
+      (p: any, i: number) => i > 0 && p.x === points[i - 1].x && p.y === points[i - 1].y
+    );
+  }
+
+  const SQUARE = [
+    { x: -3750, y: 1250 },
+    { x: -1250, y: 1250 },
+    { x: -1250, y: 3750 },
+    { x: -3750, y: 3750 },
+  ];
+
+  /** Three corners placed slowly, so none of them is near a double-tap. */
+  function threeSlowCorners(input: typeof click) {
+    return (card: any) => {
+      input(card, 100, 100, 1000);
+      input(card, 300, 100, 1000);
+      input(card, 300, 300, 1000);
+    };
+  }
+
+  it("keeps drawing when three distinct vertices are clicked 300 ms apart", async () => {
+    const { card, hass } = await polygonCard();
+
+    click(card, 100, 100, 1000);
+    click(card, 500, 100, 300);
+    click(card, 500, 500, 300);
+
+    expect(card.isDrawing).toBe(true);
+    expect(card._polyPoints).toHaveLength(3);
+    expect(hass.callService).not.toHaveBeenCalled();
+  });
+
+  it("adds a quick fourth vertex at a new spot instead of finishing", async () => {
+    const { card, hass } = await polygonCard();
+
+    threeSlowCorners(click)(card);
+    click(card, 100, 300, 200);
+
+    expect(card._polyPoints).toEqual(SQUARE);
+    expect(hass.callService).not.toHaveBeenCalled();
+  });
+
+  it("finishes on a double-click at the last corner without storing the second click", async () => {
+    const { card, hass } = await polygonCard();
+
+    threeSlowCorners(click)(card);
+    click(card, 100, 300, 1000);
+    click(card, 100, 300, 100);
+    card.canvas.dispatchEvent(new MouseEvent("dblclick"));
+
+    const saves = polygonSaves(hass);
+    expect(saves).toHaveLength(1);
+    expect(saves[0]).toEqual(SQUARE);
+    expect(hasConsecutiveRepeat(saves[0])).toBe(false);
+    expect(card._polyPoints).toHaveLength(0);
+    expect(card.isDrawing).toBe(false);
+  });
+
+  it("drops the repeated corner when a slower double-click finishes through dblclick", async () => {
+    const { card, hass } = await polygonCard();
+
+    threeSlowCorners(click)(card);
+    click(card, 100, 300, 1000);
+    click(card, 100, 300, 400);
+    expect(hass.callService).not.toHaveBeenCalled();
+    card.canvas.dispatchEvent(new MouseEvent("dblclick"));
+
+    const saves = polygonSaves(hass);
+    expect(saves).toHaveLength(1);
+    expect(saves[0]).toEqual(SQUARE);
+    expect(card._polyPoints).toHaveLength(0);
+  });
+
+  it("finishes on a touch double-tap at the last corner with four points", async () => {
+    const { card, hass } = await polygonCard();
+
+    threeSlowCorners(tap)(card);
+    tap(card, 100, 300, 1000);
+    tap(card, 100, 300, 150);
+
+    const saves = polygonSaves(hass);
+    expect(saves).toHaveLength(1);
+    expect(saves[0]).toEqual(SQUARE);
+    expect(card.isDrawing).toBe(false);
+  });
+
+  it("still finishes when the second tap lands a few px off the corner", async () => {
+    const { card, hass } = await polygonCard();
+
+    threeSlowCorners(tap)(card);
+    tap(card, 100, 300, 1000);
+    tap(card, 103, 302, 150);
+
+    const saves = polygonSaves(hass);
+    expect(saves).toHaveLength(1);
+    expect(saves[0]).toEqual(SQUARE);
+  });
+
+  it("saves nothing for a same-spot double-tap with only two vertices", async () => {
+    const { card, hass } = await polygonCard();
+
+    tap(card, 100, 100, 1000);
+    tap(card, 300, 100, 1000);
+    tap(card, 300, 100, 150);
+
+    expect(hass.callService).not.toHaveBeenCalled();
+    expect(card.isDrawing).toBe(true);
+    expect(card._polyPoints).toEqual([
+      { x: -3750, y: 1250 },
+      { x: -1250, y: 1250 },
+    ]);
+  });
+});

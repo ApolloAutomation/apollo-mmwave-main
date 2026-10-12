@@ -95,6 +95,11 @@ const DEFAULT_CONE = Object.freeze({
 
 const POLYGON_MAX_POINTS = 32;
 
+// How far (CSS px) the second tap of a polygon double-tap may land from the
+// last vertex and still count as the finishing gesture rather than a new
+// vertex. A UI gesture tolerance for finger jitter, not a radar setting.
+const POLY_DOUBLE_TAP_SLOP_PX = 24;
+
 const LOCK_STORAGE_PREFIX = 'apollo-mmwave.zone-map.lock';
 
 function lockStorageKey(deviceId) {
@@ -1602,8 +1607,15 @@ export class ZoneMapCard extends HTMLElement {
       return;
     }
     if (this.drawMode === DRAW_MODES.POLYGON) {
-      // Add a vertex on each mouse/touch end
       const p = this._getPointFromEvent(e);
+      const now = Date.now();
+      // Double-tap / double-click detection for finishing polygon on mobile.
+      // The second tap is the gesture, not a vertex, so it is never pushed.
+      if (this._isPolyFinishTap(p, now)) {
+        if (this._polyPoints.length >= 3) this.finishPolygon();
+        return;
+      }
+      // Add a vertex on each other mouse/touch end
       const vx = this._clampAndRound(this.pixelsToValue(p.x, 'x'), this.xMin, this.xMax);
       const vy = this._clampAndRound(this.pixelsToValue(p.y, 'y'), this.yMin, this.yMax);
       if (this._polyPoints.length < this.polyMaxPoints) {
@@ -1612,15 +1624,6 @@ export class ZoneMapCard extends HTMLElement {
         if (this._polyPoints.length === this.polyMaxPoints && this._polyPoints.length >= 3) {
           this.finishPolygon();
           return;
-        }
-        // Double-tap / double-click detection for finishing polygon on mobile
-        const now = Date.now();
-        if (this._lastPolyTap && now - this._lastPolyTap < 350) {
-          if (this._polyPoints.length >= 3) {
-            this.finishPolygon();
-            this._lastPolyTap = 0;
-            return;
-          }
         }
         this._lastPolyTap = now;
       } else {
@@ -1683,6 +1686,22 @@ export class ZoneMapCard extends HTMLElement {
     this._activeInput = null;
     this.startPoint = null;
     this._cursorPoint = null;
+  }
+
+  /** Whether a polygon tap at canvas point `p` (backing px) finishes the
+   *  polygon: it came within 350 ms of the previous vertex AND landed within
+   *  POLY_DOUBLE_TAP_SLOP_PX CSS px of the last placed vertex. Time alone is
+   *  not a double-tap: two quick taps at different spots are two vertices. */
+  _isPolyFinishTap(p, now) {
+    if (!this._lastPolyTap || now - this._lastPolyTap >= 350) return false;
+    const last = this._polyPoints[this._polyPoints.length - 1];
+    if (!last || !this.canvas) return false;
+    const rect = this.canvas.getBoundingClientRect();
+    const cssPerPxX = this.canvas.width ? rect.width / this.canvas.width : 1;
+    const cssPerPxY = this.canvas.height ? rect.height / this.canvas.height : 1;
+    const dx = (p.x - this.valueToPixels(last.x, 'x')) * cssPerPxX;
+    const dy = (p.y - this.valueToPixels(last.y, 'y')) * cssPerPxY;
+    return Math.hypot(dx, dy) <= POLY_DOUBLE_TAP_SLOP_PX;
   }
 
   _getPointFromEvent(e) {
@@ -1893,13 +1912,16 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   finishPolygon() {
-    if (this._polyPoints.length >= 3 && this.selectedZone !== null) {
-      // Enforce max points on commit
-      if (this._polyPoints.length > this.polyMaxPoints) {
-        this._polyPoints = this._polyPoints.slice(0, this.polyMaxPoints);
-      }
+    // Drop consecutive repeated vertices. A double-click slow enough to finish
+    // through the dblclick listener (350 to ~500 ms) has already stored its
+    // second click as a vertex, and a zero-length edge is never intended.
+    const pts = this._polyPoints.filter(
+      (p, i, a) => i === 0 || p.x !== a[i - 1].x || p.y !== a[i - 1].y,
+    );
+    if (pts.length >= 3 && this.selectedZone !== null) {
       const zoneId = this.selectedZone;
-      const points = this._polyPoints.slice(0, this.polyMaxPoints).map((pt) => ({
+      // Enforce max points on commit
+      const points = pts.slice(0, this.polyMaxPoints).map((pt) => ({
         x: this._clampAndRound(pt.x, this.xMin, this.xMax),
         y: this._clampAndRound(pt.y, this.yMin, this.yMax),
       }));
