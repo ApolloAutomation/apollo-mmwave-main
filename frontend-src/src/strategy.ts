@@ -133,8 +133,9 @@ const STALE_SELECTION_VIEW = {
 };
 
 /**
- * View strategy: turns a single view into an auto-generated LD2410 tuning view.
- * Usage in a view config:
+ * View strategy: turns a single view into one sections view holding the
+ * sections of every detected Apollo mmWave device (MSR-1/MSR-2 LD2410,
+ * R-PRO-1 LD2412 + LD2450, MTR-1 LD2450). Usage in a view config:
  *   strategy:
  *     type: custom:apollo-radar-tuning
  */
@@ -150,8 +151,9 @@ class ApolloLd2410ViewStrategy extends HTMLElement {
 }
 
 /**
- * Dashboard strategy: builds a whole dashboard (one "Tuning" view with a
- * section per MSR device). Usage in a dashboard config:
+ * Dashboard strategy: builds a whole dashboard with one sections view (tab)
+ * per detected Apollo mmWave device (MSR-1/MSR-2 LD2410, R-PRO-1 LD2412 +
+ * LD2450, MTR-1 LD2450). Usage in a dashboard config:
  *   strategy:
  *     type: custom:apollo-radar-tuning
  */
@@ -218,7 +220,8 @@ if (
     strategyType: "dashboard",
     name: "Apollo Radar Tuning",
     description:
-      "Auto-built tuning dashboard for Apollo radar devices (MSR / LD2410, R-PRO / LD2412).",
+      "Auto-built tuning dashboard for Apollo radar devices " +
+      "(MSR / LD2410, R-PRO / LD2412 + LD2450, MTR-1 / LD2450).",
     documentationURL: "https://github.com/ApolloAutomation/apollo-mmwave-main",
   });
 }

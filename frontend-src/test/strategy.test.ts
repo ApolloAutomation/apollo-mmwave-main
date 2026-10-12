@@ -4,6 +4,9 @@
  * every selected id has left the device registry (replaced hardware, a re-add
  * after the deleted-device window, a hand-typed id), so the message has to
  * point at the selection instead of telling the user to add their radar.
+ *
+ * Also the "New dashboard" picker entry, whose description Home Assistant
+ * shows verbatim, so it has to name every supported device family.
  */
 
 import { describe, it, expect } from "vitest";
@@ -91,6 +94,34 @@ describe("dashboard strategy empty states", () => {
       const dashboard = await dashboardStrategy().generate(config as StrategyConfig, hass);
       expect(dashboard.views).toHaveLength(1);
       expect(dashboard.views[0].title).toBe("Living Room MSR-2");
+    }
+  });
+});
+
+describe("dashboard picker entry", () => {
+  type PickerEntry = {
+    type?: string;
+    strategyType?: string;
+    name?: string;
+    description?: string;
+  };
+
+  function pickerEntries(): PickerEntry[] {
+    const all = (window as any).customStrategies as PickerEntry[] | undefined;
+    return (all ?? []).filter((s) => s.type === "apollo-radar-tuning");
+  }
+
+  it("registers one dashboard strategy entry", () => {
+    const entries = pickerEntries();
+    expect(entries).toHaveLength(1);
+    expect(entries[0].strategyType).toBe("dashboard");
+    expect(entries[0].name).toBe("Apollo Radar Tuning");
+  });
+
+  it("names every supported device family, including MTR-1", () => {
+    const description = pickerEntries()[0].description ?? "";
+    for (const family of ["MSR", "LD2410", "R-PRO", "LD2412", "LD2450", "MTR-1"]) {
+      expect(description).toContain(family);
     }
   });
 });
