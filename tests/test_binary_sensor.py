@@ -25,6 +25,10 @@ TARGET_2 = {
     "x": "sensor.r_pro_ld2450_target_2_x",
     "y": "sensor.r_pro_ld2450_target_2_y",
 }
+TARGET_3 = {
+    "x": "sensor.r_pro_ld2450_target_3_x",
+    "y": "sensor.r_pro_ld2450_target_3_y",
+}
 
 
 def _presence_id(entity_registry, device_id: str) -> str:
@@ -172,6 +176,62 @@ async def test_fallback_recovers_when_target_sensors_appear_later(
     hass.states.async_set("sensor.late_ld2450_target_1_y", "1000")
     await hass.async_block_till_done()
 
+    assert hass.states.get(presence_id).state == "on"
+
+
+def _geometry_pairs(hass, entity_registry, device_id: str) -> list[dict[str, str]]:
+    sensor_id = entity_registry.async_get_entity_id(
+        "sensor", DOMAIN, f"{device_id}_zone_1"
+    )
+    return hass.states.get(sensor_id).attributes["entities"]
+
+
+async def test_removing_a_target_sensor_drops_it_from_the_tracked_pairs(
+    hass, entity_registry, setup_entry_with_zone
+) -> None:
+    """A deleted target leaves no registry entry, so the cache is searched for it."""
+    device_id, _ = setup_entry_with_zone
+    presence_id = _presence_id(entity_registry, device_id)
+    assert _geometry_pairs(hass, entity_registry, device_id) == [
+        TARGET_1,
+        TARGET_2,
+        TARGET_3,
+    ]
+
+    entity_registry.async_remove(TARGET_1["y"])
+    await hass.async_block_till_done()
+
+    assert _geometry_pairs(hass, entity_registry, device_id) == [TARGET_2, TARGET_3]
+    _set_target(hass, TARGET_1, 0, 1000)  # inside, but no longer a pair
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "off"
+
+    _set_target(hass, TARGET_2, 0, 1000)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "on"
+
+
+async def test_renaming_a_target_sensor_retargets_the_pairs(
+    hass, entity_registry, setup_entry_with_zone
+) -> None:
+    """A renamed target is tracked under its new id, not the one it left behind."""
+    # Unlike a removal, a rename keeps a registry entry pointing at the radar,
+    # so this goes through the entry's own device and does not depend on the
+    # search of cached pairs the removal test above covers.
+    device_id, _ = setup_entry_with_zone
+    presence_id = _presence_id(entity_registry, device_id)
+    renamed = {"x": "sensor.front_ld2450_target_1_x", "y": TARGET_1["y"]}
+
+    entity_registry.async_update_entity(TARGET_1["x"], new_entity_id=renamed["x"])
+    await hass.async_block_till_done()
+
+    assert _geometry_pairs(hass, entity_registry, device_id) == [
+        renamed,
+        TARGET_2,
+        TARGET_3,
+    ]
+    _set_target(hass, renamed, 0, 1000)
+    await hass.async_block_till_done()
     assert hass.states.get(presence_id).state == "on"
 
 

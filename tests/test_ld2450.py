@@ -6,13 +6,14 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
-from homeassistant.core import callback
+from homeassistant.core import CoreState, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_registry import RegistryEntryDisabler
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.apollo_mmwave import get_store, ld2450
 from custom_components.apollo_mmwave.const import (
+    DATA_PAIR_CACHE,
     DOMAIN,
     SERVICE_UPDATE_ZONE,
     SIGNAL_ZONES_UPDATED,
@@ -247,24 +248,62 @@ async def test_effective_target_pairs_does_not_create_a_store_entry(
     assert store.devices == {}
 
 
+def _started_listeners(hass) -> int:
+    """Count the EVENT_HOMEASSISTANT_STARTED listeners on the bus."""
+    # The key is dropped once its last listener goes, so read it with a default.
+    return hass.bus.async_listeners().get(EVENT_HOMEASSISTANT_STARTED, 0)
+
+
 async def test_unloading_after_startup_logs_no_listener_error(
-    hass, config_entry, esphome_device, caplog
+    hass, esphome_device, caplog
 ) -> None:
     """The one-shot STARTED listener must not be removed twice on reload."""
-    _ = esphome_device
-
+    # The test hass boots already running, where no one-shot is registered at
+    # all, so step back to not_running, where integrations set up during boot.
+    hass.set_state(CoreState.not_running)
+    baseline = _started_listeners(hass)
     unsubscribe = async_track_target_pairs(hass)
+    assert _started_listeners(hass) == baseline + 1
+    # A pair resolved before boot finished is what the one-shot re-resolves.
+    assert effective_target_pairs(hass, ZoneStore(hass), esphome_device.id)
+    signals = _record_signals(hass)
+
+    hass.set_state(CoreState.running)
     hass.bus.async_fire(EVENT_HOMEASSISTANT_STARTED)
     await hass.async_block_till_done()
-    unsubscribe()
 
+    assert signals == [esphome_device.id]
+    assert hass.data[DOMAIN][DATA_PAIR_CACHE] == {}
+    # Other one-shots on this event fire too, so the count after it says
+    # nothing about ours. The error log is what a second removal leaves.
+    unsubscribe()
     assert "Unable to remove unknown job listener" not in caplog.text
 
-    # And once Home Assistant is already running there is nothing to wait for.
-    _ = config_entry
-    assert hass.is_running
+
+async def test_unloading_before_startup_removes_the_pending_listener(
+    hass, caplog
+) -> None:
+    """A reload during boot takes its one-shot with it rather than leaving it."""
+    hass.set_state(CoreState.not_running)
+    baseline = _started_listeners(hass)
     unsubscribe = async_track_target_pairs(hass)
+    assert _started_listeners(hass) == baseline + 1
+
     unsubscribe()
+
+    assert _started_listeners(hass) == baseline
+    assert "Unable to remove unknown job listener" not in caplog.text
+
+
+async def test_subscribing_once_running_adds_no_startup_listener(hass, caplog) -> None:
+    """Once Home Assistant is already running there is nothing to wait for."""
+    assert hass.is_running
+    baseline = _started_listeners(hass)
+
+    unsubscribe = async_track_target_pairs(hass)
+    assert _started_listeners(hass) == baseline
+    unsubscribe()
+
     assert "Unable to remove unknown job listener" not in caplog.text
 
 
