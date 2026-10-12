@@ -2,7 +2,8 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   // registry-detection.test.ts imports config_flow.py with ?raw to check the
-  // frontend model table against the backend's MMWAVE_MODELS. Vite refuses
+  // frontend model table against the backend's MMWAVE_MODELS, and
+  // test/bundle-*.test.ts load the committed bundles from www/. Vite refuses
   // to load files outside the project root unless they are allowed here. This
   // config is read only by vitest; the bundle builds use vite.config.ts.
   server: {

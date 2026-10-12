@@ -42,7 +42,8 @@ export function bundle(name: string, entry: string): UserConfig {
       // unminified until 2.2.2. Vite 8 runs it and keeps /* @__PURE__ */
       // annotations. Lit's legacy decorators come from tsconfig.json
       // (experimentalDecorators, useDefineForClassFields: false), which
-      // Vite 8's Oxc transform reads.
+      // Vite 8's Oxc transform reads. test/bundle-tuning.test.ts runs the
+      // built file to prove the cards still re-render.
       minify: "terser",
     },
   };
