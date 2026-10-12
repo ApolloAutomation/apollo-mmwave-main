@@ -1425,3 +1425,219 @@ describe("zone map card rect and ellipse preview across repaints", () => {
     expect((previews as typeof rectPreviews)(calls)).toHaveLength(1);
   });
 });
+
+/**
+ * Gestures that carry no shape.
+ *
+ * The backend keeps a rect only when x_min < x_max and y_min < y_max, and for
+ * anything else it stores data: null, which wipes the zone. A click, a tap or
+ * a perfectly straight drag in rect mode used to send exactly that and then
+ * toast "saved". A canvas with no layout box (a hidden tab, a collapsed
+ * container) divided by zero, pinned every shape to the grid corner and gave
+ * an ellipse NaN radii, with the same wipe and the same toast. None of these
+ * may reach the store. The canvas is laid out at 800x800 CSS px over the
+ * 800x800 bitmap unless a test collapses it.
+ */
+describe("zone map card gestures without a shape", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function box(width: number, height: number): DOMRect {
+    return {
+      left: 0,
+      top: 0,
+      right: width,
+      bottom: height,
+      x: 0,
+      y: 0,
+      width,
+      height,
+      toJSON: () => ({}),
+    } as DOMRect;
+  }
+
+  /** Unlocked on ZONE_PAYLOAD with zone 1 (Doorway, a 0..1000 rect) selected. */
+  async function drawingCard(mode: string, width = 800, height = 800) {
+    const hass = fakeHass();
+    const card = await mountCard(hass);
+    card.isLocked = false;
+    expect(card.selectedZone).toBe(1);
+    card._setDrawMode(mode);
+    const layout = vi
+      .spyOn(card.canvas, "getBoundingClientRect")
+      .mockReturnValue(box(width, height));
+    hass.callService.mockClear();
+    const toasts = notifications(card);
+    return { card, hass, toasts, layout };
+  }
+
+  function mouse(card: any, type: string, x: number, y: number) {
+    card.canvas.dispatchEvent(new MouseEvent(type, { clientX: x, clientY: y }));
+  }
+
+  function touch(card: any, type: string, x: number, y: number) {
+    const point = { clientX: x, clientY: y };
+    const event = Object.assign(new Event(type, { cancelable: true }), {
+      touches: type === "touchend" ? [] : [point],
+      changedTouches: [point],
+    });
+    card.canvas.dispatchEvent(event);
+  }
+
+  /** Let a resolved callService run on to its success toast. */
+  async function settle() {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  function zoneSaves(hass: any): any[] {
+    return hass.callService.mock.calls.filter((call: any[]) => call[1] === "update_zone");
+  }
+
+  function savedToasts(toasts: string[]): string[] {
+    return toasts.filter((message) => /saved/i.test(message));
+  }
+
+  it("saves nothing for a click without a drag in rect mode, and still saves a real drag", async () => {
+    const { card, hass, toasts } = await drawingCard("rect");
+    const zonesBefore = structuredClone(card.zones);
+    const undoBefore = card._undoSnapshot;
+
+    mouse(card, "mousedown", 400, 400);
+    mouse(card, "mouseup", 400, 400);
+    await settle();
+
+    expect(hass.callService).not.toHaveBeenCalled();
+    expect(card.zones).toEqual(zonesBefore);
+    expect(card._undoSnapshot).toBe(undoBefore);
+    expect(savedToasts(toasts)).toEqual([]);
+    expect(card.isDrawing).toBe(false);
+    expect(card.startPoint).toBeNull();
+    expect(card._activeInput).toBeNull();
+
+    mouse(card, "mousedown", 100, 100);
+    mouse(card, "mousemove", 300, 300);
+    mouse(card, "mouseup", 300, 300);
+    await settle();
+
+    const saves = zoneSaves(hass);
+    expect(saves).toHaveLength(1);
+    expect(saves[0][2].shape).toBe("rect");
+    const data = saves[0][2].data;
+    expect(data.x_min).toBeLessThan(data.x_max);
+    expect(data.y_min).toBeLessThan(data.y_max);
+    expect(savedToasts(toasts)).toEqual(["Doorway saved"]);
+  });
+
+  it("saves nothing for a touch tap in rect mode", async () => {
+    const { card, hass, toasts } = await drawingCard("rect");
+    const zonesBefore = structuredClone(card.zones);
+
+    touch(card, "touchstart", 300, 300);
+    touch(card, "touchend", 300, 300);
+    await settle();
+
+    expect(hass.callService).not.toHaveBeenCalled();
+    expect(card.zones).toEqual(zonesBefore);
+    expect(savedToasts(toasts)).toEqual([]);
+    expect(card.isDrawing).toBe(false);
+  });
+
+  it.each([
+    ["vertical", 400, 100, 400, 500],
+    ["horizontal", 100, 400, 500, 400],
+  ])("saves nothing for a perfectly %s rect drag", async (_name, x1, y1, x2, y2) => {
+    const { card, hass, toasts } = await drawingCard("rect");
+    const zonesBefore = structuredClone(card.zones);
+
+    mouse(card, "mousedown", x1, y1);
+    mouse(card, "mousemove", x2, y2);
+    mouse(card, "mouseup", x2, y2);
+    await settle();
+
+    expect(hass.callService).not.toHaveBeenCalled();
+    expect(card.zones).toEqual(zonesBefore);
+    expect(savedToasts(toasts)).toEqual([]);
+    expect(card.isDrawing).toBe(false);
+  });
+
+  it("reads no point from a canvas with no layout box", async () => {
+    const { card, layout } = await drawingCard("rect");
+    expect(card._getPointFromEvent({ clientX: 200, clientY: 100 })).toEqual({ x: 200, y: 100 });
+    // A touch end with no touch list has no coordinates at all.
+    expect(card._getPointFromEvent({ touches: [], changedTouches: [] })).toBeNull();
+
+    layout.mockReturnValue(box(0, 0));
+
+    expect(card._getPointFromEvent({ clientX: 10, clientY: 10 })).toBeNull();
+    expect(card._getPointFromEvent({ clientX: 0, clientY: 0 })).toBeNull();
+  });
+
+  it.each(["rect", "ellipse", "polygon"])(
+    "saves nothing for a %s touch on a canvas with no layout box",
+    async (mode) => {
+      const { card, hass, toasts } = await drawingCard(mode, 0, 0);
+      const zonesBefore = structuredClone(card.zones);
+
+      touch(card, "touchstart", 10, 10);
+      touch(card, "touchmove", 20, 20);
+      touch(card, "touchend", 20, 20);
+      await settle();
+
+      expect(hass.callService).not.toHaveBeenCalled();
+      expect(card.zones).toEqual(zonesBefore);
+      expect(toasts).toEqual([]);
+      expect(card.isDrawing).toBe(false);
+      expect(card.startPoint).toBeNull();
+      expect(card._polyPoints).toEqual([]);
+    }
+  );
+
+  it.each(["rect", "ellipse"])(
+    "drops a %s touch drag whose canvas loses its layout box before the touch ends",
+    async (mode) => {
+      const { card, hass, toasts, layout } = await drawingCard(mode);
+      const zonesBefore = structuredClone(card.zones);
+
+      touch(card, "touchstart", 100, 100);
+      touch(card, "touchmove", 300, 300);
+      expect(card._cursorPoint).toEqual({ x: 300, y: 300 });
+
+      layout.mockReturnValue(box(0, 0));
+      // A move on the collapsed canvas keeps the last real cursor point.
+      touch(card, "touchmove", 350, 350);
+      expect(card._cursorPoint).toEqual({ x: 300, y: 300 });
+      touch(card, "touchend", 350, 350);
+      await settle();
+
+      expect(hass.callService).not.toHaveBeenCalled();
+      expect(card.zones).toEqual(zonesBefore);
+      expect(toasts).toEqual([]);
+      expect(card.isDrawing).toBe(false);
+      expect(card.startPoint).toBeNull();
+      expect(card._cursorPoint).toBeNull();
+    }
+  );
+
+  it("never places a polygon vertex from a canvas that lost its layout box", async () => {
+    const { card, hass, toasts, layout } = await drawingCard("polygon");
+    card._lastPolyTap = 0;
+    mouse(card, "mousedown", 100, 100);
+    mouse(card, "mouseup", 100, 100);
+    card._lastPolyTap = 0;
+    mouse(card, "mousedown", 300, 100);
+    mouse(card, "mouseup", 300, 100);
+    expect(card._polyPoints).toHaveLength(2);
+
+    layout.mockReturnValue(box(0, 0));
+    card._lastPolyTap = 0;
+    mouse(card, "mousedown", 300, 300);
+    mouse(card, "mouseup", 300, 300);
+    await settle();
+
+    expect(card._polyPoints).toEqual([]);
+    expect(card.isDrawing).toBe(false);
+    expect(hass.callService).not.toHaveBeenCalled();
+    expect(toasts).toEqual([]);
+  });
+});

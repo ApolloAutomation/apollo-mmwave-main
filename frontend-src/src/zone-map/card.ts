@@ -1638,6 +1638,10 @@ export class ZoneMapCard extends HTMLElement {
     }
     if (this.drawMode === DRAW_MODES.POLYGON) {
       const p = this._getPointFromEvent(e);
+      if (!p) {
+        this.cancelDrawing();
+        return;
+      }
       const now = Date.now();
       // Double-tap / double-click detection for finishing polygon on mobile.
       // The second tap is the gesture, not a vertex, so it is never pushed.
@@ -1670,6 +1674,10 @@ export class ZoneMapCard extends HTMLElement {
       return;
     }
     const endPoint = this._getPointFromEvent(e);
+    if (!endPoint) {
+      this.cancelDrawing();
+      return;
+    }
     // Convert drawn zones to mm
     let payload = null;
     if (this.drawMode === DRAW_MODES.RECT) {
@@ -1681,6 +1689,14 @@ export class ZoneMapCard extends HTMLElement {
       const xMaxRounded = this._clampAndRound(Math.max(x1, x2), this.xMin, this.xMax);
       const yMinRounded = this._clampAndRound(Math.min(y1, y2), this.yMin, this.yMax);
       const yMaxRounded = this._clampAndRound(Math.max(y1, y2), this.yMin, this.yMax);
+      // A click, a tap or a perfectly straight drag has no area. The backend
+      // only keeps a rect with x_min < x_max and y_min < y_max and clears the
+      // zone for anything else, so saving this would wipe the zone's current
+      // shape. Drop the gesture silently, like a drag that leaves the canvas.
+      if (xMinRounded === xMaxRounded || yMinRounded === yMaxRounded) {
+        this.cancelDrawing();
+        return;
+      }
       payload = {
         shape: DRAW_MODES.RECT,
         data: {
@@ -1734,9 +1750,13 @@ export class ZoneMapCard extends HTMLElement {
     return Math.hypot(dx, dy) <= POLY_DOUBLE_TAP_SLOP_PX;
   }
 
+  /** The event's position in canvas backing px, or null when there is no
+   *  usable point: a canvas with no layout box (a hidden tab or a collapsed
+   *  container) would divide by zero and pin every shape to the grid corner. */
   _getPointFromEvent(e) {
-    if (!this.canvas) return { x: 0, y: 0 };
+    if (!this.canvas) return null;
     const rect = this.canvas.getBoundingClientRect();
+    if (!(rect.width > 0 && rect.height > 0)) return null;
     const scaleX = this.canvas.width / rect.width;
     const scaleY = this.canvas.height / rect.height;
     let clientX, clientY;
@@ -1750,10 +1770,10 @@ export class ZoneMapCard extends HTMLElement {
       clientX = e.clientX;
       clientY = e.clientY;
     }
-    return {
-      x: (clientX - rect.left) * scaleX,
-      y: (clientY - rect.top) * scaleY,
-    };
+    const x = (clientX - rect.left) * scaleX;
+    const y = (clientY - rect.top) * scaleY;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    return { x, y };
   }
 
   _snapshotZones(zoneIds) {
@@ -2553,10 +2573,12 @@ export class ZoneMapCard extends HTMLElement {
     }
     if (this.selectedZone === null) return;
     if (!this.canvas) return;
+    const point = this._getPointFromEvent(e);
+    if (!point) return;
     this.isDrawing = true;
     this._activeInput = e.touches ? 'touch' : 'mouse';
-    this.startPoint = this._getPointFromEvent(e);
-    this._cursorPoint = this.startPoint;
+    this.startPoint = point;
+    this._cursorPoint = point;
     this.drawGrid();
   }
 
@@ -2572,7 +2594,9 @@ export class ZoneMapCard extends HTMLElement {
     // Every mode keeps the cursor point and lets drawGrid() rebuild the
     // preview from it, so any other repaint (a hass push, a zone payload)
     // redraws the rubber band instead of wiping it until the next move.
-    this._cursorPoint = this._getPointFromEvent(e);
+    const point = this._getPointFromEvent(e);
+    if (!point) return;
+    this._cursorPoint = point;
     this.drawGrid();
   }
 
