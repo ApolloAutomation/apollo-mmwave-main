@@ -44,6 +44,16 @@ jobs:
       - name: Checkout the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # Pin the Node major the committed bundles were built with, so the
+      # bundle-sync check below does not move when the runner image's default
+      # Node changes.
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: frontend-src/package-lock.json
+
       - name: Install dependencies
         run: npm ci
 
@@ -53,7 +63,11 @@ jobs:
       - name: Run vitest
         run: npm test
 
+      # git diff only sees tracked files. vite runs with emptyOutDir off, so a
+      # renamed bundle leaves the old file untouched and the new one untracked;
+      # git status also reports untracked and deleted files.
       - name: Build and verify the committed bundles are current
         run: |
           npm run build
-          git diff --exit-code ../custom_components/apollo_mmwave/www
+          git status --porcelain -- ../custom_components/apollo_mmwave/www
+          test -z "$(git status --porcelain -- ../custom_components/apollo_mmwave/www)"
