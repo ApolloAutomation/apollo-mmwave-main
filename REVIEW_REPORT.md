@@ -306,7 +306,7 @@ The 129 commits in `pre-audit-2026-10-10..ca4d56e`:
 - **The walk-test copy fix (e76b424).** The wiki's first-time-reader review found that the card's post-calibration line contradicted how Radar Target works. The product copy was corrected instead of explaining the old line in the wiki, and the wiki now quotes the new line (0b782fbf).
 
 **Wiki**
-- **Help-card links stay on the old pages until the wiki is live (X61).** `profiles.ts` still links to `products/msr2/setup/zones-ha/` and `products/rpro1/setup/zones-ha/#ld2412-configuration`, because the new guide would 404 until it is published.
+- **Help-card links stay on the old pages until the wiki is live (X61).** `profiles.ts` still links to `products/msr2/setup/zones-ha/` and `products/rpro1/setup/zones-ha/#ld2412-configuration`, because the new guide would 404 until it is published. Done in 2.2.3: both now link to the new tuning guide.
 - **The MTR-1 tip uses a site-absolute `.md` link,** against the style guide's relative-link rule. The page is included at three folder depths, and only that form resolves on all of them. The repo already uses it in 102 places.
 - **Left for you:** the Homey copy of the MTR-1 page now shows the Home Assistant tip, because it includes that page.
 - **Navigation:** each new page appears once under General > Radar Tuning, and the product sections get link entries, so the sidebar does not jump between products.
@@ -334,7 +334,7 @@ The 129 commits in `pre-audit-2026-10-10..ca4d56e`:
 
 ## Flagged and left alone
 
-These 61 items were flagged rather than fixed; X10 was later fixed (711f65b) and is kept here for traceability. They touch tuning values, would change intended behavior, or need a product decision. 58 of them have a `TODO(REVIEW_REPORT.md Xnn)` comment at their code site. X55 (a binary image), X56 (the untracked local venv) and X57 (ARCHITECTURE.md, which lanes could not edit) have none by design. Four markers also ship inside each built bundle, because Vite keeps those comments: X24, X32 and X61 (twice) in the tuning bundle, and X24, X42 and X61 (twice) in the zone-map bundle.
+These 61 items were flagged rather than fixed; X10 was later fixed (711f65b) and is kept here for traceability. They touch tuning values, would change intended behavior, or need a product decision. 58 of them have a `TODO(REVIEW_REPORT.md Xnn)` comment at their code site. X55 (a binary image), X56 (the untracked local venv) and X57 (ARCHITECTURE.md, which lanes could not edit) have none by design. Up to 2.2.2, four markers also shipped inside each built bundle, because Vite 6 kept those comments: X24, X32 and X61 (twice) in the tuning bundle, and X24, X42 and X61 (twice) in the zone-map bundle. Since 2.2.3 terser strips them, and the X61 markers are gone.
 
 ### Tuning-parameter items
 
@@ -407,7 +407,7 @@ A finder marked these as touching a tuning parameter, or the work list names a t
 | X56 | local `.venv` against the requirements pins (no marker: untracked) | `.venv` still has HA 2026.8.1, pytest-homeassistant-custom-component 0.13.355 and frontend 20260930.2, while the repo pins 2026.10.0, 0.13.371 and 20260930.3. Local runs, including this audit's, therefore tested 2026.8.1. | **Done** after the docs pass: `.venv` re-synced to 2026.10.0, 0.13.371 and 20260930.3; 490 passed. Keep it in step whenever the pins move. |
 | X57 | ARCHITECTURE.md Known limitations intro (no marker: docs were off limits to lanes) | It pointed at REVIEW_REPORT.md before that file existed. | Resolved by this file. `test -f REVIEW_REPORT.md` should pass before merge. |
 | X58 | `zone_entities.py` module docstring and `_sync_entities` | Four items that were never verified: a disabled entity is constructed on every signal before being skipped; an add that raises inside HA is never retried; the removal nudge fires before HA frees the old state, so a retry could get a `_2` entity id; the docstring describes a race the pinned HA cannot produce. | Verify these four before changing anything. B09 fixed only the disabled-device pending leak, and T09 now covers the refused-add retry. |
-| X61 | `profiles.ts` `LD2410_PROFILE.wikiUrl` and `LD2412_PROFILE.wikiUrl` | The help card's tuning links still point at the older zones-ha wiki pages. | Once the docs PR is live, switch both to `products/general/calibrating-and-updating/radar-tuning/apollo-mmwave-dashboard/` (it returns 404 until then) and rebuild the bundles. |
+| X61 | `profiles.ts` `LD2410_PROFILE.wikiUrl` and `LD2412_PROFILE.wikiUrl` | The help card's tuning links still point at the older zones-ha wiki pages. | **Done in 2.2.3:** both profiles link to `products/general/calibrating-and-updating/radar-tuning/apollo-mmwave-dashboard/`, the LD2412 one to its `#r-pro-1-and-its-ld2412-radar` section, `test/strategy-core.test.ts` pins both, and the two TODO comments are gone. |
 
 ## Attempted and reverted
 
@@ -442,7 +442,7 @@ A finder marked these as touching a tuning parameter, or the work list names a t
    - Add screenshots; the guides have none yet.
    - Check the HA UI details the fixer could not confirm in a live install: the Take control dialog, no tab bar on a single-radar install, the Finish button, "+ N entities not shown", and the power icon.
    - Decide whether the Homey copy should show the MTR-1 tip.
-   - Once the pages are published, switch the help-card links (X61) and rebuild the bundles.
+   - Once the pages are published, switch the help-card links (X61) and rebuild the bundles. Done in 2.2.3.
 
 ### Medium
 
@@ -454,7 +454,7 @@ A finder marked these as touching a tuning parameter, or the work list names a t
 12. **Fix two drawing bugs the fix agents reported but left out of scope.** F24: when a payload removes the selected zone mid-drag and other zones remain, the card selects the first remaining zone, so the drag commits to a different zone than the one the user started on. F21 and F23: in ellipse mode a click or tap still saves a 1 mm radius ellipse (the `Math.max(1, ...)` floor).
 13. **Add brand images for HACS and HA (X54).** Done in 2.2.1: the icons ship in `brand/`, and `ignore: brands` is gone.
 14. **Upgrade the remaining frontend tools.** Done in 2.2.3: TypeScript 7.0 type checks the project with no new errors, and terser 5.51 and Vite 8.3 build the bundles. Unlike Vite 6, Vite 8 runs terser on ES library output, so the bundles are now minified.
-15. **Reword or retarget the `TODO(REVIEW_REPORT.md ...)` comments that ship inside the bundles** (X24, X32, X42 and X61). The X61 one tells users a wiki page returns 404.
+15. **Reword or retarget the `TODO(REVIEW_REPORT.md ...)` comments that ship inside the bundles** (X24, X32, X42 and X61). The X61 one tells users a wiki page returns 404. Done in 2.2.3: the X61 comments are gone, and terser now strips the other comments from the bundles, so none of them ships.
 
 ### Low
 

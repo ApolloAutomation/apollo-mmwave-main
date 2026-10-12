@@ -384,7 +384,7 @@ Frontend registration and the dashboard:
 - Entities registered after the first detection do not add rows to an open dashboard, because they do not change `radarDeviceKey`. Conversely, any radar's online/offline flip changes the key and rebuilds every tab, which drops an unfinished zone drawing on any tab (X31).
 - The view and section strategies render nothing, with no message, when no device matches (X30); with several devices the view strategy runs their sections together with no separator (X38). An R PRO-1's five sections exceed HA's default of four columns, so the Zone Map wraps to a second row (X36).
 - An invalid `distance_unit` ("CM", "feet") is ignored without a warning (X50).
-- The help card's wiki links (`wikiUrl`) still point at the older zones-ha pages until the new wiki guide is published (X61).
+- An R PRO-1 without the optional LD2412 still gets the LD2412 tuning cards. `APOLLO_MODELS` in `profiles.ts` maps every `r-pro-1` model to `LD2412_PROFILE`, and `deviceFromId` in `strategy-core.ts` falls back to that registry profile when `detectProfileFromEntities` finds no LD2412 entity. The tab then shows the help card's LD2412 checklist, an Auto-calibrate card that says the radar is offline with its buttons disabled (the backend's payload has `entities: null` because `resolve_gate_entities` finds no gate), "device not found" on both charts, and a Controls card holding only ESP Reboot, above a working zone map. `docs/configuration.md` tells users to use the zone map.
 
 Zone map card:
 

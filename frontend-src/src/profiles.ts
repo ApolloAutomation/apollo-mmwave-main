@@ -88,9 +88,8 @@ export const LD2410_PROFILE: RadarProfile = {
     "💡 **Gate Size** sets how far each gate reaches (e.g. 0.75 m). **Max Move / Still Gate** cap the farthest gate used to detect moving vs. still targets; lower them to ignore distant motion. " +
     RADAR_TIMEOUT_TIP,
   gateTip: GATE_TIP,
-  // TODO(REVIEW_REPORT.md X61): once its wiki docs PR is live (it 404s until then), point both
-  // profiles at products/general/calibrating-and-updating/radar-tuning/apollo-mmwave-dashboard/.
-  wikiUrl: "https://wiki.apolloautomation.com/products/msr2/setup/zones-ha/",
+  wikiUrl:
+    "https://wiki.apolloautomation.com/products/general/calibrating-and-updating/radar-tuning/apollo-mmwave-dashboard/",
   entityMap(base: string): EntityMap {
     const gates = [0, 1, 2, 3, 4, 5, 6, 7, 8];
     const g = (suffix: (n: number) => string) => gates.map((n) => suffix(n));
@@ -146,9 +145,8 @@ export const LD2412_PROFILE: RadarProfile = {
     "💡 **Distance Resolution** sets gate spacing: smaller (0.5 m) gives finer tuning over a shorter range, larger (0.75 m) reaches farther. **Min / Max Gate** limit which gates are used for detection. " +
     RADAR_TIMEOUT_TIP,
   gateTip: GATE_TIP,
-  // TODO(REVIEW_REPORT.md X61): switch with LD2410_PROFILE.wikiUrl once the new guide is live.
   wikiUrl:
-    "https://wiki.apolloautomation.com/products/rpro1/setup/zones-ha/#ld2412-configuration",
+    "https://wiki.apolloautomation.com/products/general/calibrating-and-updating/radar-tuning/apollo-mmwave-dashboard/#r-pro-1-and-its-ld2412-radar",
   entityMap(base: string): EntityMap {
     const gates = Array.from({ length: 14 }, (_, i) => i);
     const pad = (n: number) => String(n).padStart(2, "0");

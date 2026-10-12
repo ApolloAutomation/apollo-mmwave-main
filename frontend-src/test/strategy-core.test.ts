@@ -134,7 +134,7 @@ describe("buildDeviceCards", () => {
 
   it("includes a markdown help card linking the wiki", () => {
     const help = cards.find((c: any) => c.type === "markdown") as any;
-    expect(help.content).toContain(LD2410_PROFILE.wikiUrl);
+    expect(help.content).toContain(`[Full tuning guide →](${LD2410_PROFILE.wikiUrl})`);
   });
 
   it("starts the help card with the Start here checklist", () => {
@@ -422,6 +422,13 @@ describe("profile tips", () => {
       expect(profile.gateTip).toContain("Calibrate with empty room");
       expect(profile.rangeTip).toContain("**Radar Timeout** is how long presence stays on");
     }
+  });
+
+  it("link the help card to the dashboard's wiki tuning guide, the LD2412 to its section", () => {
+    const guide =
+      "https://wiki.apolloautomation.com/products/general/calibrating-and-updating/radar-tuning/apollo-mmwave-dashboard/";
+    expect(LD2410_PROFILE.wikiUrl).toBe(guide);
+    expect(LD2412_PROFILE.wikiUrl).toBe(`${guide}#r-pro-1-and-its-ld2412-radar`);
   });
 });
 

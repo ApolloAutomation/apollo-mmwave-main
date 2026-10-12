@@ -105,6 +105,12 @@ survives a Home Assistant restart. Undo saves the calibrated values before it
 writes, so the button then becomes **Redo (put the calibrated values back)**.
 Under the button, the card shows when those values were saved.
 
+On the R PRO-1, radar tuning needs the optional LD2412. Every R PRO-1 has the
+LD2450 for the zone map, and the LD2412 is an add-on. Without it the tab still
+shows the Auto-calibrate card and the LD2412 charts, but the Auto-calibrate card
+says the radar is offline and its buttons stay disabled, and the charts say
+"Apollo mmWave: device not found". Use the zone map on that tab instead.
+
 Rules for a good run:
 
 - Nobody in the radar's view: people, pets, robot vacuums. A person sitting
@@ -425,7 +431,8 @@ slider (or with `update_zone`'s `rotation_deg`).
   radar is online and the mode is off.
 - **A distance or gate-energy card says "Apollo mmWave: device not found".**
   Its `device_id` matches no device with gate-radar entities, for example an
-  MTR-1 or a radar that was removed. Point it at an MSR-1, MSR-2 or R PRO-1.
+  MTR-1, an R PRO-1 without the optional LD2412, or a radar that was removed.
+  Point it at an MSR-1, MSR-2 or an R PRO-1 with the LD2412.
 - **Calibration says the radar has not reported its threshold values.** A radar
   that has been running for a long time may not have sent them to Home
   Assistant yet. Press **Read settings from the radar** on the card. If the
