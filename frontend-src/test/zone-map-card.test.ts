@@ -416,6 +416,26 @@ describe("zone map card config keys removed on a live element", () => {
   });
 });
 
+describe("zone map card grid units", () => {
+  it("reads the grid extents in grid_units and keeps them in mm", async () => {
+    const card = await mountCard(fakeHass(), {
+      grid_units: "cm",
+      grid: { x_min: -300, x_max: 300, y_min: 0, y_max: 500 },
+    });
+
+    expect([card.xMin, card.xMax, card.yMin, card.yMax]).toEqual([-3000, 3000, 0, 5000]);
+  });
+
+  it("keeps the default for an extent that is not a number", async () => {
+    const card = await mountCard(fakeHass(), {
+      grid_units: "cm",
+      grid: { x_min: "wide", x_max: 250 },
+    });
+
+    expect([card.xMin, card.xMax, card.yMin, card.yMax]).toEqual([-5000, 2500, 0, 10000]);
+  });
+});
+
 describe("zone map card zone loading", () => {
   it("reads zones from the store, not from entity attributes", async () => {
     const hass = fakeHass();
@@ -1632,6 +1652,33 @@ describe("zone map card polygon double-tap", () => {
       { x: -3750, y: 1250 },
       { x: -1250, y: 1250 },
     ]);
+  });
+
+  it("auto-finishes at the 32-point cap with one save of all 32 points", async () => {
+    const { card, hass } = await polygonCard();
+    // 16 corners along the top edge, then 16 back along the bottom edge, all
+    // a second apart so no click reads as a double-tap.
+    const top = Array.from({ length: 16 }, (_, i) => ({ px: 100 + 40 * i, py: 100 }));
+    const bottom = top.map(({ px }) => ({ px, py: 500 })).reverse();
+    const corners = [...top, ...bottom];
+    const expected = corners.map(({ px, py }) => ({ x: -5000 + 12.5 * px, y: 12.5 * py }));
+
+    corners.slice(0, 31).forEach(({ px, py }) => click(card, px, py, 1000));
+    expect(polygonSaves(hass)).toHaveLength(0);
+    expect(card._polyPoints).toHaveLength(31);
+
+    click(card, corners[31].px, corners[31].py, 1000);
+
+    const saves = polygonSaves(hass);
+    expect(saves).toHaveLength(1);
+    expect(saves[0]).toEqual(expected);
+    expect(card._polyPoints).toHaveLength(0);
+    expect(card.isDrawing).toBe(false);
+
+    // The next click starts a fresh polygon rather than landing on a full one.
+    click(card, 700, 700, 1000);
+    expect(card._polyPoints).toEqual([{ x: 3750, y: 8750 }]);
+    expect(polygonSaves(hass)).toHaveLength(1);
   });
 });
 
@@ -3087,5 +3134,116 @@ describe("zone map card non-primary mouse buttons", () => {
       })
     );
     expect(card.isDrawing).toBe(false);
+  });
+});
+
+
+/** A 2D context that notes the fill and stroke style each call ran under. */
+function styleRecordingContext() {
+  const draws: Array<[string, any, any]> = [];
+  const ctx = new Proxy({} as Record<string | symbol, any>, {
+    get(target, prop) {
+      if (prop in target) return target[prop];
+      return () => {
+        draws.push([String(prop), target.fillStyle, target.strokeStyle]);
+      };
+    },
+    set(target, prop, value) {
+      target[prop] = value;
+      return true;
+    },
+  });
+  return { ctx, draws };
+}
+
+/**
+ * The colors a zone and an in-progress shape are painted in.
+ *
+ * A zone fills with its palette color at 0.30 alpha and outlines it at full
+ * alpha, picked by zone id so a zone keeps its color when another one goes.
+ */
+describe("zone map card drawing colors", () => {
+  const RED = ["rgba(244, 67, 54, 0.30)", "rgba(244, 67, 54, 1)"];
+  const BLUE = ["rgba(33, 150, 243, 0.30)", "rgba(33, 150, 243, 1)"];
+
+  it("fills and outlines each zone with its id's palette pair", async () => {
+    const hass = fakeHass({
+      ...ZONE_PAYLOAD,
+      zones: {
+        "1": { shape: "rect", data: { x_min: -4000, x_max: -2000, y_min: 1000, y_max: 3000 } },
+        "2": { shape: "ellipse", data: { cx: 0, cy: 5000, rx: 1000, ry: 800 } },
+        "6": {
+          shape: "polygon",
+          data: {
+            points: [
+              { x: 1000, y: 6000 },
+              { x: 4000, y: 6000 },
+              { x: 2500, y: 9000 },
+            ],
+          },
+        },
+      },
+    });
+    const card = await mountCard(hass);
+    const { ctx, draws } = styleRecordingContext();
+    card.ctx = ctx;
+
+    card.drawZones();
+
+    const shapeDraws = draws.filter(([name]) =>
+      ["fillRect", "strokeRect", "fill", "stroke"].includes(name)
+    );
+    expect(shapeDraws).toEqual([
+      ["fillRect", ...RED],
+      ["strokeRect", ...RED],
+      ["fill", ...BLUE],
+      ["stroke", ...BLUE],
+      // Zone 6 wraps around the five-color palette to zone 1's pair.
+      ["fill", ...RED],
+      ["stroke", ...RED],
+    ]);
+  });
+
+  /** From the first vertex dot on, each fill or stroke with the style it used. */
+  function dotDraws(draws: Array<[string, any, any]>) {
+    const first = draws.findIndex(([name]) => name === "arc");
+    return draws
+      .slice(first)
+      .filter(([name]) => name === "fill" || name === "stroke")
+      .map(([name, fill, stroke]) => [name, name === "fill" ? fill : stroke]);
+  }
+
+  it("draws each placed polygon vertex as a dot in the light theme's colors", async () => {
+    const card = await mountCard(fakeHass(), { dark_mode: false });
+    const { ctx, draws } = styleRecordingContext();
+    card.ctx = ctx;
+    startPolygon(card);
+
+    card._drawInProgress();
+
+    expect(draws.filter(([name]) => name === "arc")).toHaveLength(2);
+    expect(dotDraws(draws)).toEqual([
+      ["fill", "#000000"],
+      ["stroke", "rgba(255,255,255,0.6)"],
+      ["fill", "#000000"],
+      ["stroke", "rgba(255,255,255,0.6)"],
+    ]);
+  });
+
+  it("draws a rect's start point as a dot in the dark theme's colors", async () => {
+    const card = await mountCard(fakeHass(), { dark_mode: true });
+    const { ctx, draws } = styleRecordingContext();
+    card.ctx = ctx;
+    card.drawMode = "rect";
+    card.isDrawing = true;
+    card.startPoint = { x: 100, y: 100 };
+
+    card._drawInProgress();
+
+    expect(draws.filter(([name]) => name === "arc")).toHaveLength(1);
+    expect(dotDraws(draws)).toEqual([
+      ["fill", "#ffffff"],
+      ["stroke", "rgba(0,0,0,0.6)"],
+    ]);
   });
 });

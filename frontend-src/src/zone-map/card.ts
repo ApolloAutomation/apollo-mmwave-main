@@ -64,11 +64,11 @@ const COLOR = Object.freeze({
     deviceConeFill: 'rgba(128, 233, 31, 0.06)',
     deviceConeStroke: 'rgba(117, 243, 33, 0.6)',
     zonePalette: [
-      'rgba(244, 67, 54, 0.30)',
-      'rgba(33, 150, 243, 0.30)',
-      'rgba(76, 175, 80, 0.30)',
-      'rgba(255, 193, 7, 0.30)',
-      'rgba(156, 39, 176, 0.30)',
+      { fill: 'rgba(244, 67, 54, 0.30)', stroke: 'rgba(244, 67, 54, 1)' },
+      { fill: 'rgba(33, 150, 243, 0.30)', stroke: 'rgba(33, 150, 243, 1)' },
+      { fill: 'rgba(76, 175, 80, 0.30)', stroke: 'rgba(76, 175, 80, 1)' },
+      { fill: 'rgba(255, 193, 7, 0.30)', stroke: 'rgba(255, 193, 7, 1)' },
+      { fill: 'rgba(156, 39, 176, 0.30)', stroke: 'rgba(156, 39, 176, 1)' },
     ],
     targetPalette: ['#f44336', '#2196f3', '#4caf50', '#ffc107', '#9c27b0'],
   },
@@ -240,7 +240,6 @@ export class ZoneMapCard extends HTMLElement {
     this.inputUnits = 'mm';
     this.gridUnits = 'mm';
     this.inputUnitMultiplier = LENGTH_UNITS.mm;
-    this.gridUnitMultiplier = LENGTH_UNITS.mm;
     this.unitDisplay = false;
     this.unitLabelSize = DEFAULT_UNIT_LABEL_SIZE;
     this._gridCache = null;
@@ -339,7 +338,6 @@ export class ZoneMapCard extends HTMLElement {
     this.inputUnits = this._normalizeUnit(config.input_units);
     this.gridUnits = this._normalizeUnit(config.grid_units);
     this.inputUnitMultiplier = this._unitMultiplier(this.inputUnits);
-    this.gridUnitMultiplier = this._unitMultiplier(this.gridUnits);
     this.unitDisplay = !!config.unit_display;
     // Starts from the default every time, so a removed (or unusable) key does
     // not leave a live card at the size the previous config asked for.
@@ -1227,10 +1225,7 @@ export class ZoneMapCard extends HTMLElement {
     this.yMin = DEFAULT_GRID.yMin;
     this.yMax = DEFAULT_GRID.yMax;
     if (!grid || typeof grid !== 'object') return;
-    const convert = (value) => {
-      const mmValue = this._convertToMm(value, this.gridUnits);
-      return mmValue === null ? null : mmValue;
-    };
+    const convert = (value) => this._convertToMm(value, this.gridUnits);
 
     const next = {
       xMin: convert(grid.x_min),
@@ -1385,14 +1380,6 @@ export class ZoneMapCard extends HTMLElement {
 
   _invalidateConeCache() {
     this._coneRingsCache = null;
-  }
-
-  _clampGridPixel(value, size) {
-    if (!Number.isFinite(value)) return 0;
-    const limit = Math.max(size - 1, 0);
-    if (value <= 0) return 0;
-    if (value >= limit) return limit;
-    return value;
   }
 
   _computeGridMetrics() {
@@ -1788,10 +1775,6 @@ export class ZoneMapCard extends HTMLElement {
           return;
         }
         this._lastPolyTap = now;
-      } else {
-        // Already at limit, finalize if valid
-        if (this._polyPoints.length >= 3) this.finishPolygon();
-        return;
       }
       this.drawGrid();
       return;
@@ -2379,8 +2362,8 @@ export class ZoneMapCard extends HTMLElement {
     orderedZones.forEach((zone, idx) => {
       if (!zone || !zone.shape || !zone.data) return;
       const color = colors[(Number(zone.id) - 1) % colors.length] || colors[idx % colors.length];
-      ctx.strokeStyle = color.replace('0.30', '1');
-      ctx.fillStyle = color;
+      ctx.strokeStyle = color.stroke;
+      ctx.fillStyle = color.fill;
       ctx.lineWidth = 3;
       let bbox = null; // {x,y,width,height}
       if (zone.shape === DRAW_MODES.RECT) {
@@ -2487,30 +2470,10 @@ export class ZoneMapCard extends HTMLElement {
         ctx.restore();
       }
       ctx.save();
-      const fill = this.darkMode
-        ? COLOR.canvas.polygonVertexFillDark
-        : COLOR.canvas.polygonVertexFillLight;
-      const stroke = this.darkMode
-        ? COLOR.canvas.polygonVertexStrokeDark
-        : COLOR.canvas.polygonVertexStrokeLight;
-      for (const pt of pts) {
-        ctx.beginPath();
-        ctx.arc(pt.x, pt.y, 3.5, 0, Math.PI * 2);
-        ctx.fillStyle = fill;
-        ctx.fill();
-        ctx.lineWidth = 2;
-        ctx.strokeStyle = stroke;
-        ctx.stroke();
-      }
+      for (const pt of pts) this._drawVertexDot(ctx, pt.x, pt.y);
 
       if (!pts.length && this.startPoint) {
-        ctx.beginPath();
-        ctx.arc(this.startPoint.x, this.startPoint.y, 3.5, 0, Math.PI * 2);
-        ctx.fillStyle = fill;
-        ctx.fill();
-        ctx.lineWidth = 2;
-        ctx.strokeStyle = stroke;
-        ctx.stroke();
+        this._drawVertexDot(ctx, this.startPoint.x, this.startPoint.y);
       }
       ctx.restore();
     } else if (
@@ -2520,19 +2483,7 @@ export class ZoneMapCard extends HTMLElement {
     ) {
       const pt = this.startPoint;
       ctx.save();
-      const fill = this.darkMode
-        ? COLOR.canvas.polygonVertexFillDark
-        : COLOR.canvas.polygonVertexFillLight;
-      const stroke = this.darkMode
-        ? COLOR.canvas.polygonVertexStrokeDark
-        : COLOR.canvas.polygonVertexStrokeLight;
-      ctx.beginPath();
-      ctx.arc(pt.x, pt.y, 3.5, 0, Math.PI * 2);
-      ctx.fillStyle = fill;
-      ctx.fill();
-      ctx.lineWidth = 2;
-      ctx.strokeStyle = stroke;
-      ctx.stroke();
+      this._drawVertexDot(ctx, pt.x, pt.y);
       ctx.restore();
       // The dashed rubber band from the start point to the last pointer
       // position. Nothing to outline until the pointer has moved.
@@ -2564,6 +2515,23 @@ export class ZoneMapCard extends HTMLElement {
         ctx.restore();
       }
     }
+  }
+
+  /** One in-progress vertex marker: a filled dot with a contrasting ring. */
+  _drawVertexDot(ctx, x, y) {
+    const fill = this.darkMode
+      ? COLOR.canvas.polygonVertexFillDark
+      : COLOR.canvas.polygonVertexFillLight;
+    const stroke = this.darkMode
+      ? COLOR.canvas.polygonVertexStrokeDark
+      : COLOR.canvas.polygonVertexStrokeLight;
+    ctx.beginPath();
+    ctx.arc(x, y, 3.5, 0, Math.PI * 2);
+    ctx.fillStyle = fill;
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = stroke;
+    ctx.stroke();
   }
 
   _drawZoneLabel(zone, bbox) {
@@ -2624,13 +2592,8 @@ export class ZoneMapCard extends HTMLElement {
 
     // Apply rotation; positive rotates to device's right
     const rotRad = (this.coneAngleDeg * Math.PI) / 180;
-    let thetaStart = phiL + rotRad;
-    let thetaEnd = phiR + rotRad;
-    if (thetaStart > thetaEnd) {
-      const tmp = thetaStart;
-      thetaStart = thetaEnd;
-      thetaEnd = tmp;
-    }
+    const thetaStart = phiL + rotRad;
+    const thetaEnd = phiR + rotRad;
 
     const radius = Math.max(0, this.coneYMax);
     const ax = this.valueToPixels(apex.x, 'x');
