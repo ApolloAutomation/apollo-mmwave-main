@@ -11,18 +11,25 @@ element with no way to recover short of a hard refresh.
 from __future__ import annotations
 
 import logging
+from http import HTTPStatus
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from homeassistant.components.frontend import DATA_PANELS
-from homeassistant.components.lovelace.const import LOVELACE_DATA, ConfigNotFound
+from homeassistant.components.frontend import DATA_EXTRA_MODULE_URL, DATA_PANELS
+from homeassistant.components.lovelace import LovelaceData
+from homeassistant.components.lovelace.const import (
+    LOVELACE_DATA,
+    MODE_STORAGE,
+    ConfigNotFound,
+)
 from homeassistant.components.lovelace.dashboard import LovelaceStorage, LovelaceYAML
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.loader import async_get_integration
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.apollo_mmwave import frontend as apollo_frontend
 from custom_components.apollo_mmwave.const import (
     CONF_AUTO_CREATE_VIEW,
     CONF_DASHBOARD_DEVICES,
@@ -32,8 +39,10 @@ from custom_components.apollo_mmwave.const import (
     DASHBOARD_URL_PATH,
     DATA_ASSETS_REGISTERED,
     DOMAIN,
+    JS_BUNDLES,
 )
 from custom_components.apollo_mmwave.frontend import (
+    _async_register_lovelace_resources,
     _dashboards_collection,
     async_register_dashboard,
     async_register_frontend_assets,
@@ -231,6 +240,121 @@ async def test_mistyped_resource_row_is_repointed_as_a_module(
     assert ours[0]["type"] == "module"
 
 
+async def _current_urls(hass) -> list[str]:
+    """Return every bundle's url with this version's cache-buster."""
+    version = (await async_get_integration(hass, DOMAIN)).version
+    return [f"/apollo_mmwave/{name}?v={version}" for name in JS_BUNDLES]
+
+
+def _our_extra_module_urls(hass) -> set[str]:
+    """Return the extra module urls under our static path."""
+    return {
+        url
+        for url in hass.data[DATA_EXTRA_MODULE_URL].urls
+        if url.startswith("/apollo_mmwave/")
+    }
+
+
+async def test_both_bundles_are_extra_module_urls_and_served(
+    hass, hass_client, config_entry
+) -> None:
+    """Each bundle's versioned url reaches every page, and the file is served."""
+    await setup_integration(hass, config_entry)
+
+    urls = await _current_urls(hass)
+    assert _our_extra_module_urls(hass) == set(urls)
+    client = await hass_client()
+    for url in urls:
+        response = await client.get(url)
+        assert response.status == HTTPStatus.OK
+
+
+async def test_missing_bundle_is_warned_about_and_never_registered(
+    hass, hass_client, config_entry, tmp_path, caplog
+) -> None:
+    """
+    A bundle missing from www/ is named in a warning and nothing points at it.
+
+    A url registered for a file that is not there would make every dashboard
+    load fetch a 404 with nothing in the log to say why.
+    """
+    with patch.object(apollo_frontend, "_frontend_path", return_value=tmp_path):
+        await setup_integration(hass, config_entry)
+
+    warnings = _apollo_warnings(caplog)
+    assert len(warnings) == len(JS_BUNDLES)
+    for name, warning in zip(JS_BUNDLES, warnings, strict=True):
+        assert f"bundled frontend asset {name} is missing" in warning
+    assert _our_extra_module_urls(hass) == set()
+    rows = hass.data[LOVELACE_DATA].resources.async_items()
+    assert not [i for i in rows if str(i.get("url", "")).startswith("/apollo_mmwave/")]
+    client = await hass_client()
+    for name in JS_BUNDLES:
+        response = await client.get(f"/apollo_mmwave/{name}")
+        assert response.status == HTTPStatus.NOT_FOUND
+
+
+async def test_yaml_resource_mode_logs_manual_instructions(
+    hass, config_entry, caplog
+) -> None:
+    """
+    YAML-mode resources get one warning listing both urls, last, to copy.
+
+    The collection is read-only there, so the rows have to be added by hand.
+    Each ?v= moves on every upgrade while a hand-added row stays put, and the
+    old row beside the new extra module url runs the bundle twice, so the
+    warning says to replace the row rather than add another one.
+    """
+    assert await async_setup_component(
+        hass, "lovelace", {"lovelace": {"resource_mode": "yaml"}}
+    )
+    assert not hasattr(hass.data[LOVELACE_DATA].resources, "async_create_item")
+
+    await setup_integration(hass, config_entry)
+
+    urls = await _current_urls(hass)
+    records = _apollo_warning_records(caplog)
+    assert len(records) == 1
+    assert records[0].exc_info is None
+    message = records[0].getMessage()
+    assert "managed in YAML" in message
+    assert "Each ?v= is the current integration version" in message
+    assert "after every upgrade, replace each bundle's existing row" in message
+    assert "instead of adding a second row" in message
+    # Nothing trails the urls, so a copied ?v= is exactly the current one.
+    assert message.endswith(f"Resources: {', '.join(urls)}")
+    # The extra module urls still cover pages loaded from now on.
+    assert _our_extra_module_urls(hass) == set(urls)
+
+
+@pytest.mark.parametrize("has_lovelace_data", [False, True])
+async def test_unavailable_resource_collection_is_warned_about(
+    hass, caplog, has_lovelace_data
+) -> None:
+    """
+    No resource collection to write to is a warning, never a raised error.
+
+    Lovelace is a manifest dependency, so setup always finds its data on the
+    pinned Home Assistant versions. The helper is driven directly so the
+    branch keeps working if Lovelace's internals move.
+    """
+    if has_lovelace_data:
+        hass.data[LOVELACE_DATA] = LovelaceData(
+            resource_mode=MODE_STORAGE,
+            dashboards={},
+            resources=None,
+            yaml_dashboards={},
+        )
+
+    await _async_register_lovelace_resources(hass, await _current_urls(hass))
+
+    warnings = _apollo_warnings(caplog)
+    assert len(warnings) == 1
+    assert "Lovelace resource collection unavailable" in warnings[0]
+    expected_type = "LovelaceData" if has_lovelace_data else "NoneType"
+    assert f"(lovelace data: {expected_type})" in warnings[0]
+
+
 @pytest.fixture
 def dashboard_entry() -> MockConfigEntry:
     """Return an entry with the sidebar dashboard turned ON."""
@@ -241,6 +365,15 @@ def dashboard_entry() -> MockConfigEntry:
         options={CONF_AUTO_CREATE_VIEW: True},
         unique_id=DOMAIN,
     )
+
+
+def _our_rows(hass) -> list[dict[str, Any]]:
+    """Return every dashboards collection row on our url path."""
+    return [
+        i
+        for i in _dashboards_collection(hass).async_items()
+        if i["url_path"] == DASHBOARD_URL_PATH
+    ]
 
 
 async def _dashboard_config(hass) -> dict | None:
@@ -291,6 +424,62 @@ async def test_removing_the_entry_removes_the_dashboard(hass, dashboard_entry) -
     await hass.config_entries.async_remove(dashboard_entry.entry_id)
     await hass.async_block_till_done()
 
+    assert DASHBOARD_URL_PATH not in hass.data[LOVELACE_DATA].dashboards
+    assert DASHBOARD_URL_PATH not in hass.data[DATA_PANELS]
+
+
+async def test_the_auto_create_option_removes_and_recreates_the_dashboard(
+    hass, dashboard_entry, caplog
+) -> None:
+    """
+    Changing the option on the entry removes the dashboard, then brings it back.
+
+    The update listener is the one production path that deletes the
+    dashboard, so the options are changed on the entry the way a saved
+    options form arrives, not by calling the helpers.
+    """
+    await setup_integration(hass, dashboard_entry)
+    assert len(_our_rows(hass)) == 1
+    assert DASHBOARD_URL_PATH in hass.data[DATA_PANELS]
+
+    hass.config_entries.async_update_entry(
+        dashboard_entry, options={CONF_AUTO_CREATE_VIEW: False}
+    )
+    await hass.async_block_till_done()
+
+    assert _our_rows(hass) == []
+    assert DASHBOARD_URL_PATH not in hass.data[LOVELACE_DATA].dashboards
+    assert DASHBOARD_URL_PATH not in hass.data[DATA_PANELS]
+
+    hass.config_entries.async_update_entry(
+        dashboard_entry, options={CONF_AUTO_CREATE_VIEW: True}
+    )
+    await hass.async_block_till_done()
+
+    assert len(_our_rows(hass)) == 1
+    assert DASHBOARD_URL_PATH in hass.data[DATA_PANELS]
+    assert await _dashboard_config(hass) == {
+        "strategy": {"type": DASHBOARD_STRATEGY_TYPE}
+    }
+    assert _apollo_warnings(caplog) == []
+
+
+async def test_unreachable_dashboards_collection_is_warned_about(
+    hass, dashboard_entry, caplog
+) -> None:
+    """
+    Without the dashboards collection, setup goes on and says how to recover.
+
+    The collection is borrowed from a websocket handler rather than a public
+    API, so if Lovelace moves it the warning names the strategy to add by hand.
+    """
+    with patch.object(apollo_frontend, "_dashboards_collection", return_value=None):
+        await setup_integration(hass, dashboard_entry)
+
+    warnings = _apollo_warnings(caplog)
+    assert len(warnings) == 1
+    assert "could not reach Lovelace's dashboards collection" in warnings[0]
+    assert DASHBOARD_STRATEGY_TYPE in warnings[0]
     assert DASHBOARD_URL_PATH not in hass.data[LOVELACE_DATA].dashboards
     assert DASHBOARD_URL_PATH not in hass.data[DATA_PANELS]
 
@@ -409,6 +598,18 @@ STALE_ROW: dict[str, Any] = {
 }
 
 
+# A user's YAML dashboard on our url path, using our strategy the way our own
+# warnings suggest building one by hand.
+YAML_DASHBOARDS: dict[str, Any] = {
+    DASHBOARD_URL_PATH: {
+        "mode": "yaml",
+        "filename": "apollo-mmwave.yaml",
+        "title": "My Radar",
+        "show_in_sidebar": True,
+    }
+}
+
+
 async def _yaml_dashboard_over_a_stale_row(hass, hass_storage) -> None:
     """
     Boot Lovelace with a user's YAML dashboard on our url path and our old row.
@@ -424,20 +625,7 @@ async def _yaml_dashboard_over_a_stale_row(hass, hass_storage) -> None:
         "data": {"items": [dict(STALE_ROW)]},
     }
     assert await async_setup_component(
-        hass,
-        "lovelace",
-        {
-            "lovelace": {
-                "dashboards": {
-                    DASHBOARD_URL_PATH: {
-                        "mode": "yaml",
-                        "filename": "apollo-mmwave.yaml",
-                        "title": "My Radar",
-                        "show_in_sidebar": True,
-                    }
-                }
-            }
-        },
+        hass, "lovelace", {"lovelace": {"dashboards": YAML_DASHBOARDS}}
     )
 
 
@@ -454,14 +642,66 @@ def _assert_yaml_dashboard_untouched(hass) -> None:
     assert [i["id"] for i in rows] == [STALE_ROW["id"]]
 
 
-def _apollo_warnings(caplog) -> list[str]:
-    """Return every warning or worse this integration logged."""
+def _apollo_warning_records(caplog) -> list[logging.LogRecord]:
+    """Return every warning-or-worse record this integration logged."""
     return [
-        r.getMessage()
+        r
         for r in caplog.records
         if r.name.startswith("custom_components.apollo_mmwave")
         and r.levelno >= logging.WARNING
     ]
+
+
+def _apollo_warnings(caplog) -> list[str]:
+    """Return every warning or worse this integration logged."""
+    return [r.getMessage() for r in _apollo_warning_records(caplog)]
+
+
+async def test_a_yaml_dashboard_on_our_url_path_is_left_alone(
+    hass, dashboard_entry, caplog
+) -> None:
+    """
+    A YAML dashboard already on our url path gets no row, now or on removal.
+
+    Lovelace refuses a second panel on a path a YAML dashboard holds, so
+    creating one anyway would log a traceback on every start; and the
+    dashboard is the user's, so removing the integration leaves it standing.
+    """
+    caplog.set_level(logging.DEBUG, logger=apollo_frontend.__name__)
+    assert await async_setup_component(
+        hass, "lovelace", {"lovelace": {"dashboards": YAML_DASHBOARDS}}
+    )
+
+    await setup_integration(hass, dashboard_entry)
+
+    assert _our_rows(hass) == []
+    assert isinstance(
+        hass.data[LOVELACE_DATA].dashboards[DASHBOARD_URL_PATH], LovelaceYAML
+    )
+    assert DASHBOARD_URL_PATH in hass.data[DATA_PANELS]
+    owned = [
+        r
+        for r in caplog.records
+        if r.name == apollo_frontend.__name__ and "already owns" in r.getMessage()
+    ]
+    assert len(owned) == 1
+    assert owned[0].levelno == logging.DEBUG
+    assert f"'{DASHBOARD_URL_PATH}'" in owned[0].getMessage()
+
+    # A device selection makes no difference: still no row, nothing raised.
+    await async_register_dashboard(hass, ["dev1"])
+    await hass.async_block_till_done()
+    assert _our_rows(hass) == []
+
+    await hass.config_entries.async_remove(dashboard_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert isinstance(
+        hass.data[LOVELACE_DATA].dashboards.get(DASHBOARD_URL_PATH), LovelaceYAML
+    )
+    assert DASHBOARD_URL_PATH in hass.data[DATA_PANELS]
+    assert _our_rows(hass) == []
+    assert _apollo_warnings(caplog) == []
 
 
 async def test_yaml_dashboard_on_our_path_is_never_removed(

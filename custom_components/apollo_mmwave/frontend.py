@@ -166,11 +166,18 @@ async def _async_register_lovelace_resources(
             )
             return
         if not hasattr(resources, "async_create_item"):
+            # The urls stay last so no punctuation trails them: a "." copied
+            # onto a ?v= gives a url unlike the extra module url, which then
+            # loads the bundle a second time.
             _LOGGER.warning(
                 "Apollo mmWave: Lovelace resources are managed in YAML on this"
                 " system (%s), so they can't be registered automatically. Add"
-                " these module resources to your lovelace resources config,"
-                " or the dashboard/cards won't load without a hard refresh: %s",
+                " the module resources listed at the end of this message to"
+                " your lovelace resources config, or the dashboard/cards won't"
+                " load without a hard refresh. Each ?v= is the current"
+                " integration version: after every upgrade, replace each"
+                " bundle's existing row with its new url instead of adding a"
+                " second row, which would load the bundle twice. Resources: %s",
                 type(resources).__name__,
                 ", ".join(js_urls),
             )
