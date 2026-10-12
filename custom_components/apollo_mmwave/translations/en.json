@@ -31,18 +31,6 @@
             }
         }
     },
-    "entity": {
-        "sensor": {
-            "apollo_mmwave": {
-                "name": "Sensor"
-            }
-        },
-        "binary_sensor": {
-            "apollo_mmwave": {
-                "name": "Binary sensor"
-            }
-        }
-    },
     "exceptions": {
         "unknown_device": {
             "message": "No Home Assistant device has id {device_id}."
