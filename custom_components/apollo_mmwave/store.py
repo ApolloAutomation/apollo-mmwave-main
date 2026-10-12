@@ -17,6 +17,7 @@ in-memory shape is::
             "entities": [{"x": "<entity_id>", "y": "<entity_id>"}, ...],  # optional
             "rotation_deg": 0,          # optional
             "label": "Apollo R_PRO-1 abc123",   # optional, display only
+            "aliases": ["Kitchen"],   # optional, other merged v1 names
             "input_units": "mm",  # optional; absent means millimetres
         },
     }
@@ -32,9 +33,12 @@ v1 keyed all of this by the device's display name. A rename orphaned the
 zones, and two devices whose names slugified alike collided on one entity id.
 The Home Assistant device id survives renames and is unique, so it is the key;
 ``label`` is carried along for display and is never used to build an
-identifier. v1 entries that resolve to no device land in ``orphans``, still
-keyed by name, so a user who renamed a device mid-upgrade does not silently
-lose their drawn zones.
+identifier. When several v1 names merge onto one device, the first is the
+``label`` and the rest are kept in ``aliases``, so old unique ids and the
+deprecated ``location`` service field still resolve through any of them. v1
+entries that resolve to no device land in ``orphans``, still keyed by name, so
+a user who renamed a device mid-upgrade does not silently lose their drawn
+zones.
 """
 
 from __future__ import annotations
@@ -51,6 +55,7 @@ from .const import (
     ATTR_ROTATION_DEG,
     DOMAIN,
     INPUT_UNIT_FACTORS,
+    STORE_ALIASES,
     STORE_DEVICES,
     STORE_ENTITIES,
     STORE_INPUT_UNITS,
@@ -101,6 +106,20 @@ def _resolve_device_id(hass: HomeAssistant, location: str, entities: Any) -> str
     return None
 
 
+def _record_location(target: dict[str, Any], location: str) -> None:
+    """Remember a location name that merged onto this entry, first one as label."""
+    # A rename left the old name behind as a second location on the same
+    # device. Pre-2.0 unique ids were built from whichever name was current at
+    # the time, so keeping only the first would strand the other name's
+    # entities on their old unique ids and its `location` automations too.
+    label = target.setdefault(STORE_LABEL, location)
+    if location == label:
+        return
+    aliases = target.setdefault(STORE_ALIASES, [])
+    if location not in aliases:
+        aliases.append(location)
+
+
 def _merge_location(
     target: dict[str, Any],
     raw: dict[str, Any],
@@ -149,7 +168,7 @@ def _merge_location(
     # presence rather than truthiness like the rest of the integration does.
     if rotation is not None and target.get(ATTR_ROTATION_DEG) is None:
         target[ATTR_ROTATION_DEG] = rotation
-    target.setdefault(STORE_LABEL, location)
+    _record_location(target, location)
 
 
 class _MigratingStore(Store[dict[str, Any]]):
@@ -227,6 +246,11 @@ def _parse_entry(raw: Any) -> dict[str, Any] | None:
     label = raw.get(STORE_LABEL)
     if isinstance(label, str):
         entry[STORE_LABEL] = label
+    aliases = raw.get(STORE_ALIASES)
+    if isinstance(aliases, list):
+        names = [alias for alias in aliases if isinstance(alias, str)]
+        if names:
+            entry[STORE_ALIASES] = names
     # Absent stays absent (millimetres). A value the service could never have
     # written is dropped rather than carried, so it reads as millimetres too.
     units = raw.get(STORE_INPUT_UNITS)

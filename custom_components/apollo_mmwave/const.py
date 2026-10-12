@@ -34,6 +34,11 @@ STORE_ENTITIES = "entities"
 STORE_DEVICES = "devices"
 STORE_ORPHANS = "orphans"
 STORE_LABEL = "label"
+# Every other v1 or legacy location name that merged onto the same device. A
+# rename left the old name behind as a second location; pre-2.0 unique ids were
+# built from either name and a deprecated `location` call can use either, so
+# both have to keep resolving. Like `label`, never used to build an identifier.
+STORE_ALIASES = "aliases"
 # Unit the device's target sensors report in. The card scales readings by
 # this before drawing them over millimetre zone geometry; the presence sensor
 # has to scale the same way or the two disagree about who is inside a zone.

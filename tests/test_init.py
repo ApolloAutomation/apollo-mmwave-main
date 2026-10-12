@@ -309,6 +309,34 @@ async def test_deprecated_location_resolves_through_the_stored_label(
     assert get_store(hass).device(device_id)[ATTR_ROTATION_DEG] == 90
 
 
+async def test_location_alias_resolves_every_merged_v1_name(
+    hass, config_entry, hass_storage, esphome_device
+) -> None:
+    """Either name a rename left behind still reaches the radar."""
+    # Both v1 locations tracked this radar's sensors, so they merged onto it and
+    # only the first became the label. An automation may use either name.
+    hass_storage[ZONE_STORAGE_KEY] = {
+        "version": 1,
+        "data": {
+            "locations": {
+                "Kitchen": {
+                    "zones": {"1": {"shape": "rect", "data": {}}},
+                    "entities": TRACKED,
+                },
+                "Den": {
+                    "zones": {"2": {"shape": "rect", "data": {}}},
+                    "entities": TRACKED,
+                },
+            }
+        },
+    }
+    await setup_integration(hass, config_entry)
+
+    await _update_zone(hass, {"location": "den", ATTR_ROTATION_DEG: 45})
+
+    assert get_store(hass).devices[esphome_device.id].get(ATTR_ROTATION_DEG) == 45
+
+
 async def test_unresolvable_location_writes_nothing(
     hass, init_integration, device_id
 ) -> None:

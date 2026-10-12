@@ -52,6 +52,7 @@ from .const import (
     SHAPE_POLYGON,
     SHAPE_RECT,
     SIGNAL_ZONES_UPDATED,
+    STORE_ALIASES,
     STORE_ENTITIES,
     STORE_INPUT_UNITS,
     STORE_LABEL,
@@ -317,7 +318,7 @@ def _notify_zones_updated(hass: HomeAssistant, device_id: str) -> None:
 def _device_id_for_label(store: ZoneStore, location: Any) -> str | None:
     """Resolve a deprecated `location` value against the stored device labels."""
     # Matching is slug-based so a v1 automation still hits its device however the
-    # name was capitalized or punctuated. Only stored labels are consulted: the
+    # name was capitalized or punctuated. Only stored names are consulted: the
     # service must not invent a target the store has never heard of.
     if not isinstance(location, str) or not location.strip():
         return None
@@ -325,6 +326,11 @@ def _device_id_for_label(store: ZoneStore, location: Any) -> str | None:
     for device_id, entry in store.devices.items():
         label = entry.get(STORE_LABEL)
         if isinstance(label, str) and slugify(label) == wanted:
+            return device_id
+    # A second v1 name that merged onto a device is as valid a target as the
+    # label, but a label wins a tie, the same as in the unique-id rewrite.
+    for device_id, entry in store.devices.items():
+        if any(slugify(alias) == wanted for alias in entry.get(STORE_ALIASES, [])):
             return device_id
     return None
 

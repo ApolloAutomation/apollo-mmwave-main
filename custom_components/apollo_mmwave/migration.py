@@ -38,12 +38,13 @@ from .const import (
     ATTR_ROTATION_DEG,
     ATTR_SHAPE,
     DOMAIN,
+    STORE_ALIASES,
     STORE_ENTITIES,
     STORE_LABEL,
     STORE_ORPHANS,
     STORE_ZONES,
 )
-from .store import _resolve_device_id
+from .store import _record_location, _resolve_device_id
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -233,7 +234,7 @@ async def async_migrate_legacy(hass: HomeAssistant, store: ZoneStore) -> None:
         else:
             target = store.device(device_id)
             source_key = device_id
-        target.setdefault(STORE_LABEL, location)
+        _record_location(target, location)
         _merge_legacy_location(
             target, records, location, sources.setdefault(source_key, {})
         )
@@ -312,7 +313,7 @@ async def async_import_zone_mapper(hass: HomeAssistant, store: ZoneStore) -> int
                 for zone_id in target[STORE_ZONES]
             },
         )
-        target.setdefault(STORE_LABEL, location)
+        _record_location(target, location)
         before = len(target[STORE_ZONES])
         # Shared with the pre-1.2 migration because the failure mode is the same:
         # a renamed radar leaves two locations resolving onto one device, and a
@@ -354,6 +355,10 @@ def _merge_promoted_orphan(
         and orphan.get(ATTR_ROTATION_DEG) is not None
     ):
         target[ATTR_ROTATION_DEG] = orphan[ATTR_ROTATION_DEG]
+    # The name is kept too, as the label or as an alias if the entry already has
+    # one. It is the only bridge a later setup has from this location's old
+    # unique ids to the device, for an entity this run had to skip.
+    _record_location(target, location)
 
 
 async def _promote_resolvable_orphans(
@@ -409,14 +414,21 @@ async def async_migrate_unique_ids(hass: HomeAssistant, store: ZoneStore) -> Non
     registry = er.async_get(hass)
     promoted = await _promote_resolvable_orphans(hass, store)
     # The v1 store keyed everything by display name and the old unique ids were
-    # built from a slug of it, so `label` is the bridge back to a device.
-    slug_to_device = {
-        slugify(entry[STORE_LABEL]): device_id
-        for device_id, entry in store.devices.items()
-        if isinstance(entry.get(STORE_LABEL), str)
-    }
-    # A device can only carry one label, so a promoted location that merged into
-    # a device that already had one contributes a second slug for the same id.
+    # built from a slug of it, so `label` is the bridge back to a device. First
+    # writer wins a slug tie, as the deprecated `location` lookup does; in v1
+    # the location that set up first is the one that created the entity.
+    slug_to_device: dict[str, str] = {}
+    for device_id, entry in store.devices.items():
+        label = entry.get(STORE_LABEL)
+        if isinstance(label, str):
+            slug_to_device.setdefault(slugify(label), device_id)
+    # Every other name merged onto a device bridges too, but only after all the
+    # labels, so a device's own label always wins a tie with another's alias.
+    for device_id, entry in store.devices.items():
+        for alias in entry.get(STORE_ALIASES, []):
+            slug_to_device.setdefault(slugify(alias), device_id)
+    # A promoted location bridges for this run even if its orphan entry carried
+    # no label of its own.
     for location, device_id in promoted.items():
         slug_to_device.setdefault(slugify(location), device_id)
     if not slug_to_device:

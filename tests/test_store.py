@@ -438,6 +438,28 @@ async def test_unknown_input_units_on_disk_are_dropped(hass, hass_storage) -> No
     assert store.orphans["Ghost Room"]["input_units"] == "in"
 
 
+async def test_only_string_aliases_on_disk_are_kept(hass, hass_storage) -> None:
+    """Merged v1 names come back; anything that is not a name is dropped."""
+    hass_storage[ZONE_STORAGE_KEY] = {
+        "version": 2,
+        "data": {
+            "devices": {
+                "mixed": {"zones": {}, "label": "Kitchen", "aliases": ["Den", 5, None]},
+                "scalar": {"zones": {}, "label": "Kitchen", "aliases": "Den"},
+                "nothing_left": {"zones": {}, "label": "Kitchen", "aliases": [7]},
+            },
+            "orphans": {},
+        },
+    }
+
+    store = ZoneStore(hass)
+    assert await store.async_load() is True
+
+    assert store.devices["mixed"]["aliases"] == ["Den"]
+    assert "aliases" not in store.devices["scalar"]
+    assert "aliases" not in store.devices["nothing_left"]
+
+
 async def test_a_new_device_entry_has_no_entities_key(hass) -> None:
     """A device nobody has configured must read as unconfigured, not cleared."""
     store = ZoneStore(hass)
