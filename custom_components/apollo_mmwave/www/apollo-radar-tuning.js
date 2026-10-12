@@ -1162,6 +1162,9 @@ const DISTANCE_CHART_SLOTS = [
   "detection_distance",
   "moving_distance",
   "still_distance",
+  "radar_target",
+  "moving_target",
+  "still_target",
   "zone_1_start",
   "end_zone_1",
   "end_zone_2",
@@ -1180,13 +1183,20 @@ function distanceModel(hass, m2, unit) {
   const gateCount = registers > 1 ? registers - 1 : GATE_COUNT;
   const maxRange = gateSizeChart * gateCount;
   const bars = [];
-  const pushBar = (id, label, color) => {
+  const pushBar = (id, targetId, label, color) => {
+    var _a3;
     if (!id || !(id in hass.states)) return;
-    bars.push({ label, value: distInUnit(hass, id, unit) ?? 0, color });
+    const noTarget = !!targetId && ((_a3 = hass.states[targetId]) == null ? void 0 : _a3.state) === "off";
+    bars.push({
+      label,
+      value: noTarget ? 0 : distInUnit(hass, id, unit) ?? 0,
+      color,
+      noTarget
+    });
   };
-  pushBar(m2.detection_distance, "Detection", DETECTION_COLOR);
-  pushBar(m2.moving_distance, "Moving", MOVE_COLOR$1);
-  pushBar(m2.still_distance, "Still", STILL_COLOR$1);
+  pushBar(m2.detection_distance, m2.radar_target, "Detection", DETECTION_COLOR);
+  pushBar(m2.moving_distance, m2.moving_target, "Moving", MOVE_COLOR$1);
+  pushBar(m2.still_distance, m2.still_target, "Still", STILL_COLOR$1);
   const zones = [];
   const bounds = [
     distInUnit(hass, m2.zone_1_start, unit),
@@ -1232,6 +1242,8 @@ const ROW_H = 30;
 const BAR_H = ROW_H - 8;
 const AXIS_H = 52;
 const MID = BAR_H / 2 + 4;
+const NO_TARGET_OPACITY = 0.45;
+const NO_TARGET_TEXT = "no target";
 function rowLabel(r2) {
   if (r2.kind === "zones") return "Zones";
   if (r2.kind === "gates") return "Gates";
@@ -1244,10 +1256,12 @@ function rowTip(r2) {
   if (r2.kind === "gates")
     return "The radar splits its range into gates. Each colored segment is one distance bin (G1, G2, ...).";
   if (r2.kind === "max") return r2.tip ?? rangeLimitTip(r2.label);
-  if (r2.bar.label === "Detection")
-    return "Current distance to the detected target.";
-  if (r2.bar.label === "Moving")
-    return "Current distance to a moving target.";
+  const tip = barTip(r2.bar.label);
+  return r2.bar.noTarget ? `${tip} The radar reports no target right now.` : tip;
+}
+function barTip(label) {
+  if (label === "Detection") return "Current distance to the detected target.";
+  if (label === "Moving") return "Current distance to a moving target.";
   return "Current distance to a still (stationary) target.";
 }
 function valueLabel(xEnd, text, y3) {
@@ -1315,10 +1329,11 @@ function renderDistanceChart(hass, m2, unit, maxLabels = LD2410_PROFILE.maxBarLa
       });
     } else if (r2.kind === "bar") {
       const xe = x2(r2.bar.value);
+      const text = r2.bar.noTarget ? NO_TARGET_TEXT : fmt(r2.bar.value);
       content = w`
         <rect x=${LBL} y=${y3} width=${Math.max(1, xe - LBL)} height=${BAR_H}
           rx="4" fill=${r2.bar.color}></rect>
-        ${valueLabel(xe, fmt(r2.bar.value), y3)}`;
+        ${valueLabel(xe, text, y3)}`;
     } else if (r2.kind === "gates") {
       const segs = [];
       for (let g2 = 0; g2 < model.gateCount; g2++) {
@@ -1340,10 +1355,11 @@ function renderDistanceChart(hass, m2, unit, maxLabels = LD2410_PROFILE.maxBarLa
         <text x=${(LBL + xe) / 2} y=${y3 + MID} font-size="13" font-weight="600"
           text-anchor="middle" fill="#fff">${text}</text>`;
     }
+    const body = r2.kind === "bar" && r2.bar.noTarget ? w`<g opacity=${NO_TARGET_OPACITY}>${label2}${content}</g>` : w`${label2}${content}`;
     return w`<g>
       <title>${rowTip(r2)}</title>
       <rect x="0" y=${y3} width=${WIDTH$1} height=${BAR_H} fill="transparent"></rect>
-      ${label2}${content}
+      ${body}
     </g>`;
   });
   return b`
