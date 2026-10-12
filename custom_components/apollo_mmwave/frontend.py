@@ -381,9 +381,9 @@ def _desired_config(
     Build the strategy config for the given device selection.
 
     Only ``type`` and ``devices`` are ours. Anything else under ``strategy``
-    (``distance_unit`` is a documented option) was typed into the raw config
-    editor by the user, and rewriting the whole dict on every restart threw it
-    away, so it is carried over.
+    (``distance_unit``, for one, is a user-settable strategy option; see the
+    README) was typed into the raw config editor by the user, and rewriting the
+    whole dict on every restart threw it away, so it is carried over.
     """
     strategy: dict[str, Any] = {}
     if _is_ours(stored):

@@ -158,6 +158,16 @@ describe("ghost/offline device filtering", () => {
     expect(devices.map((d) => d.deviceId)).toEqual(["other"]);
   });
 
+  it("renders only device_id when devices is also set (device_id wins)", () => {
+    const live = mtrFixture("1200");
+    const hass = hassWith(live.states, live.entities, {
+      mtr: MTR_DEVICE,
+      other: { ...MTR_DEVICE, name: "Other MTR-1" },
+    });
+    const devices = strategyDevices(hass, { device_id: "mtr", devices: ["other"] });
+    expect(devices.map((d) => d.deviceId)).toEqual(["mtr"]);
+  });
+
   it("drops a selected device that no longer exists in the registry", () => {
     const hass = hassWith({}, {}, {});
     expect(strategyDevices(hass, { devices: ["gone"] })).toHaveLength(0);

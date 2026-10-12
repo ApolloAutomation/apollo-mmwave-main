@@ -35,6 +35,8 @@ export interface RadarDevice {
 }
 
 export interface StrategyConfig {
+  /** A single device to show. Takes precedence over `devices`: when both are
+   *  set, only this device is rendered and `devices` is ignored. */
   device_id?: string;
   /** Explicit selection: show exactly these devices, online or not. Set by
    *  the integration's "Dashboard devices" option (or by hand in YAML).
