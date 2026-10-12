@@ -46,6 +46,7 @@ from .ld2450 import effective_target_pairs
 from .zone_entities import ZoneEntityMixin
 
 if TYPE_CHECKING:
+    import asyncio
     from collections.abc import Callable, Iterator
 
     from homeassistant.config_entries import ConfigEntry
@@ -194,6 +195,7 @@ class ZonePresenceBinarySensor(ZoneEntityMixin, BinarySensorEntity):
         self._zone_id = zone_id
         self._attr_is_on = False
         self._unsub_state_listener: Callable[[], None] | None = None
+        self._pending_eval: asyncio.Handle | None = None
 
         self._attr_name = f"Zone {zone_id} presence"
         self._attr_unique_id = f"{device_id}_zone_{zone_id}_presence"
@@ -233,6 +235,9 @@ class ZonePresenceBinarySensor(ZoneEntityMixin, BinarySensorEntity):
 
     async def async_will_remove_from_hass(self) -> None:
         """Stop tracking coordinate entities."""
+        if self._pending_eval is not None:
+            self._pending_eval.cancel()
+            self._pending_eval = None
         if self._unsub_state_listener:
             self._unsub_state_listener()
             self._unsub_state_listener = None
@@ -260,6 +265,20 @@ class ZonePresenceBinarySensor(ZoneEntityMixin, BinarySensorEntity):
 
     @callback
     def _handle_coordinate_update(self, _event: Event[EventStateChangedData]) -> None:
+        # A target's X and Y are two entities written one after the other, so
+        # evaluating inside each write tests a point no target occupied (the new
+        # X with the old Y) and can pulse presence on and off. Scheduling one
+        # evaluation with call_soon lets both writes land first. This is
+        # best-effort coalescing: it removes the pulse when X and Y arrive in one
+        # event-loop turn, which is how the ESPHome API normally delivers a
+        # batched pair, but not when they arrive in separate turns. It adds no
+        # timed window.
+        if self._pending_eval is None:
+            self._pending_eval = self.hass.loop.call_soon(self._flush_evaluation)
+
+    @callback
+    def _flush_evaluation(self) -> None:
+        self._pending_eval = None
         self._evaluate_and_write()
 
     def _evaluate_and_write(self, *, write: bool = True) -> None:

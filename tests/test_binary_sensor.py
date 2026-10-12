@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import logging
+
+from homeassistant.core import callback
 from homeassistant.helpers.dispatcher import async_dispatcher_send
+from homeassistant.helpers.event import async_track_state_change_event
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.apollo_mmwave import get_store, ld2450
+from custom_components.apollo_mmwave.binary_sensor import ZonePresenceBinarySensor
 from custom_components.apollo_mmwave.const import (
     ATTR_ROTATION_DEG,
     DOMAIN,
@@ -295,3 +300,91 @@ async def test_presence_scales_readings_by_the_devices_input_units(
     _set_target(hass, TARGET_1, 0, 250)
     await hass.async_block_till_done()
     assert hass.states.get(presence_id).state == "on"
+
+
+def _record_state_changes(hass, entity_id: str) -> list[tuple[str | None, str | None]]:
+    changes: list[tuple[str | None, str | None]] = []
+
+    @callback
+    def _record(event) -> None:
+        old, new = event.data["old_state"], event.data["new_state"]
+        changes.append((old and old.state, new and new.state))
+
+    async_track_state_change_event(hass, [entity_id], _record)
+    return changes
+
+
+async def test_presence_does_not_pulse_between_x_and_y_updates(
+    hass, entity_registry, setup_entry_with_zone
+) -> None:
+    """X lands before Y, and the point in between is not where any target was."""
+    device_id, _ = setup_entry_with_zone
+    presence_id = _presence_id(entity_registry, device_id)
+    _set_target(hass, TARGET_1, 2000, 1000)  # outside, to the right
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "off"
+    changes = _record_state_changes(hass, presence_id)
+
+    # Outside to outside. The new X with the old Y, (0, 1000), is inside the
+    # zone, so evaluating between the two writes would publish on, then off.
+    _set_target(hass, TARGET_1, 0, 3000)
+    await hass.async_block_till_done()
+
+    assert changes == []
+    assert hass.states.get(presence_id).state == "off"
+
+
+async def test_presence_does_not_drop_between_y_and_x_updates(
+    hass, entity_registry, setup_entry_with_zone
+) -> None:
+    """The mirror case: two inside points whose mix is outside a round zone."""
+    device_id, _ = setup_entry_with_zone
+    get_store(hass).device(device_id)[STORE_ZONES][1] = {
+        "shape": "ellipse",
+        "data": {"cx": 0, "cy": 1000, "rx": 1000, "ry": 1000},
+    }
+    async_dispatcher_send(hass, SIGNAL_ZONES_UPDATED, device_id)
+    await hass.async_block_till_done()
+    presence_id = _presence_id(entity_registry, device_id)
+    _set_target(hass, TARGET_1, 950, 1000)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "on"
+    changes = _record_state_changes(hass, presence_id)
+
+    # Inside to inside, Y first: the new Y with the old X, (950, 1950), lies
+    # outside the ellipse, so evaluating between the writes would drop to off.
+    hass.states.async_set(TARGET_1["y"], "1950")
+    hass.states.async_set(TARGET_1["x"], "0")
+    await hass.async_block_till_done()
+
+    assert changes == []
+    assert hass.states.get(presence_id).state == "on"
+
+
+async def test_a_pending_evaluation_is_cancelled_on_removal(
+    hass, entity_registry, setup_entry_with_zone, monkeypatch, caplog
+) -> None:
+    """A zone deleted between a coordinate write and its evaluation stays gone."""
+    device_id, _ = setup_entry_with_zone
+    presence_id = _presence_id(entity_registry, device_id)
+    evaluated: list[str] = []
+    real = ZonePresenceBinarySensor._evaluate_and_write  # noqa: SLF001 - the subject
+
+    def _spy(self, *, write: bool = True) -> None:
+        evaluated.append(self.entity_id)
+        real(self, write=write)
+
+    monkeypatch.setattr(ZonePresenceBinarySensor, "_evaluate_and_write", _spy)
+
+    hass.states.async_set(TARGET_1["x"], "0")  # schedules an evaluation
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_UPDATE_ZONE,
+        {"device_id": device_id, "zone_id": 1, "delete": True},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+
+    assert evaluated == []
+    assert hass.states.get(presence_id) is None
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
