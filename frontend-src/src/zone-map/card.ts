@@ -1018,8 +1018,7 @@ export class ZoneMapCard extends HTMLElement {
         this.isDrawing = false;
         this.drawGrid();
       } else if (event.key === 'Backspace' && this._polyPoints.length > 0) {
-        this._polyPoints.pop();
-        this.drawGrid();
+        this._popPolyPoint();
       }
     };
     window.addEventListener('keydown', this._onKeyDown);
@@ -1103,8 +1102,7 @@ export class ZoneMapCard extends HTMLElement {
     if (btnPolyUndo) {
       btnPolyUndo.addEventListener('click', () => {
         if (this.drawMode === DRAW_MODES.POLYGON && this._polyPoints.length) {
-          this._polyPoints.pop();
-          this.drawGrid();
+          this._popPolyPoint();
         }
       });
     }
@@ -1615,6 +1613,16 @@ export class ZoneMapCard extends HTMLElement {
       const targetId = Number(btn.dataset.zoneId);
       btn.classList.toggle('active', targetId === this.selectedZone);
     });
+  }
+
+  /** Undo the last polygon vertex (Backspace or the undo button). Popping
+   *  the only one also drops `startPoint`, the press that placed it: with no
+   *  vertices left, `_drawInProgress` draws a dot and anchors the rubber band
+   *  there, so the removed vertex stayed on the canvas until the next press. */
+  _popPolyPoint() {
+    this._polyPoints.pop();
+    if (!this._polyPoints.length) this.startPoint = null;
+    this.drawGrid();
   }
 
   _resetDrawingState() {

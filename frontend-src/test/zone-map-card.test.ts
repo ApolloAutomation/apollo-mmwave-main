@@ -1753,6 +1753,37 @@ describe("zone map card drawing across mode changes and re-renders", () => {
   });
 });
 
+/** A 2D context that records every method call and keeps property writes. */
+function recordingContext() {
+  const calls: Array<[string, any[]]> = [];
+  const sink: any = new Proxy(function () {} as object, {
+    get(_target, prop) {
+      if (prop === Symbol.toPrimitive) return () => 0;
+      return sink;
+    },
+    set() {
+      return true;
+    },
+    apply() {
+      return sink;
+    },
+  });
+  const ctx = new Proxy({} as Record<string | symbol, any>, {
+    get(target, prop) {
+      if (prop in target) return target[prop];
+      return (...args: any[]) => {
+        calls.push([String(prop), args]);
+        return sink;
+      };
+    },
+    set(target, prop, value) {
+      target[prop] = value;
+      return true;
+    },
+  });
+  return { ctx, calls };
+}
+
 /**
  * The rect and ellipse rubber band across repaints.
  *
@@ -1767,37 +1798,6 @@ describe("zone map card rect and ellipse preview across repaints", () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
-
-  /** A 2D context that records every method call and keeps property writes. */
-  function recordingContext() {
-    const calls: Array<[string, any[]]> = [];
-    const sink: any = new Proxy(function () {} as object, {
-      get(_target, prop) {
-        if (prop === Symbol.toPrimitive) return () => 0;
-        return sink;
-      },
-      set() {
-        return true;
-      },
-      apply() {
-        return sink;
-      },
-    });
-    const ctx = new Proxy({} as Record<string | symbol, any>, {
-      get(target, prop) {
-        if (prop in target) return target[prop];
-        return (...args: any[]) => {
-          calls.push([String(prop), args]);
-          return sink;
-        };
-      },
-      set(target, prop, value) {
-        target[prop] = value;
-        return true;
-      },
-    });
-    return { ctx, calls };
-  }
 
   /** Unlocked with zone 1 selected, an 800x800 CSS box and a recording ctx. */
   async function drawingCard(mode: string) {
@@ -2594,5 +2594,109 @@ describe("zone map card multi-touch and touchcancel", () => {
         { x: -3750, y: 3750 },
       ],
     ]);
+  });
+});
+
+/**
+ * Undoing polygon vertices (Backspace or the undo button).
+ *
+ * With no vertices placed, the canvas draws a dot at `startPoint`, the last
+ * press, and anchors the rubber band there, so the first press shows up
+ * before its vertex lands. Undoing the only vertex left `startPoint` set, and
+ * the canvas kept a dot and a dashed line at a vertex that no longer existed
+ * until the next press, so the undo looked as if it had done nothing. The
+ * canvas is laid out at 800x800 CSS px over the 800x800 bitmap, so canvas
+ * (100,100) is the vertex at (-3750, 1250) mm on the default grid.
+ */
+describe("zone map card undoing polygon vertices", () => {
+  afterEach(() => {
+    document.body.replaceChildren();
+    vi.restoreAllMocks();
+  });
+
+  /** Unlocked polygon mode on zone 1, laid out, with a recording ctx. */
+  async function polygonCard() {
+    const hass = fakeHass({ ...ZONE_PAYLOAD, zones: {} });
+    const card = await mountCard(hass, { start_locked: false });
+    document.body.appendChild(card);
+    card._setSelectedZone(1);
+    card._setDrawMode("polygon");
+    vi.spyOn(card.canvas, "getBoundingClientRect").mockReturnValue({
+      left: 0,
+      top: 0,
+      right: 800,
+      bottom: 800,
+      x: 0,
+      y: 0,
+      width: 800,
+      height: 800,
+      toJSON: () => ({}),
+    } as DOMRect);
+    const { ctx, calls } = recordingContext();
+    card.ctx = ctx;
+    return { card, calls };
+  }
+
+  function click(card: any, x: number, y: number) {
+    card.canvas.dispatchEvent(new MouseEvent("mousedown", { clientX: x, clientY: y }));
+    card.canvas.dispatchEvent(new MouseEvent("mouseup", { clientX: x, clientY: y }));
+  }
+
+  /** The vertex dots one repaint draws, as [x, y] canvas px. */
+  function vertexDots(card: any, calls: Array<[string, any[]]>): number[][] {
+    calls.length = 0;
+    card.drawGrid();
+    return calls
+      .filter(([name, args]) => name === "arc" && args[2] === 3.5)
+      .map(([, args]) => [args[0], args[1]]);
+  }
+
+  /** The dashed polygon rubber band strokes one repaint sets up. */
+  function rubberBands(card: any, calls: Array<[string, any[]]>): number {
+    calls.length = 0;
+    card.drawGrid();
+    const isRubberBand = ([name, args]: [string, any[]]) =>
+      name === "setLineDash" && args[0]?.join() === "6,6";
+    return calls.filter(isRubberBand).length;
+  }
+
+  const undoes: Array<[string, (card: any) => void]> = [
+    ["Backspace", () => keyOn(document.body, "Backspace")],
+    ["the undo button", (card) => card.shadowRoot.getElementById("btnPolyUndo").click()],
+  ];
+
+  it.each(undoes)("leaves no dot at the only vertex once %s removes it", async (_name, undo) => {
+    const { card, calls } = await polygonCard();
+    click(card, 100, 100);
+    card.canvas.dispatchEvent(new MouseEvent("mousemove", { clientX: 300, clientY: 250 }));
+    expect(card._polyPoints).toEqual([{ x: -3750, y: 1250 }]);
+    expect(vertexDots(card, calls)).toEqual([[100, 100]]);
+
+    undo(card);
+
+    expect(card._polyPoints).toEqual([]);
+    expect(card.isDrawing).toBe(true);
+    expect(card.startPoint).toBeNull();
+    expect(vertexDots(card, calls)).toEqual([]);
+    expect(rubberBands(card, calls)).toBe(0);
+
+    // The next press starts the polygon over from where it lands.
+    click(card, 500, 500);
+    expect(card._polyPoints).toEqual([{ x: 1250, y: 6250 }]);
+    expect(vertexDots(card, calls)).toEqual([[500, 500]]);
+  });
+
+  it.each(undoes)("keeps startPoint when %s leaves a vertex behind", async (_name, undo) => {
+    const { card, calls } = await polygonCard();
+    click(card, 100, 100);
+    click(card, 300, 100);
+    const startPoint = card.startPoint;
+    expect(startPoint).toEqual({ x: 300, y: 100 });
+
+    undo(card);
+
+    expect(card._polyPoints).toEqual([{ x: -3750, y: 1250 }]);
+    expect(card.startPoint).toBe(startPoint);
+    expect(vertexDots(card, calls)).toEqual([[100, 100]]);
   });
 });
