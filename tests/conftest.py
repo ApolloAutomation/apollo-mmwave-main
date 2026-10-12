@@ -233,7 +233,7 @@ class RadarIds:
 
     @property
     def query_params(self) -> str:
-        """Return the LD2412 query-params button."""
+        """Return the query-params button (the LD2412 base already ends in ld2412)."""
         return f"button.{self.base}_query_params"
 
 
@@ -324,6 +324,8 @@ def ld2410_device(hass, device_registry, entity_registry, active_radars) -> Devi
     builder.add("number", f"{LD2410_BASE}_radar_max_still_distance", "6", range_attrs)
     builder.add("binary_sensor", f"{LD2410_BASE}_radar_moving_target", "off")
     builder.add("binary_sensor", f"{LD2410_BASE}_radar_target", "off")
+    # The MSR firmware's "Query Params" button (no chip prefix, unlike LD2412).
+    builder.add("button", f"{LD2410_BASE}_query_params", "unknown")
     active_radars.append(ids)
     return device
 

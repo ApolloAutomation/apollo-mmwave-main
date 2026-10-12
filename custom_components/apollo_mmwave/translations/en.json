@@ -54,7 +54,7 @@
             "message": "The LD2412 is still running its background correction. Wait for its status to turn off, then try again."
         },
         "thresholds_not_numeric": {
-            "message": "Some threshold entities have no value yet ({entity_ids}). Press the radar's query params button or wait a moment, then try again."
+            "message": "The radar has not reported {count} of its threshold values yet."
         },
         "margin_zero": {
             "message": "Set at least one headroom. With both margin and margin_pct at 0 the thresholds would equal the highest reading Home Assistant saw, which is only about a tenth of the radar's own frames, so the radar would trigger constantly."

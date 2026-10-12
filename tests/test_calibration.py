@@ -602,7 +602,40 @@ async def test_calibrate_rejects_non_numeric_thresholds_on_both_chips(
             {"device_id": ids.device_id},
             "thresholds_not_numeric",
         )
-        assert err.translation_placeholders == {"entity_ids": ids.threshold(2, "move")}
+        assert err.translation_placeholders == {
+            "count": "1",
+            "entity_ids": ids.threshold(2, "move"),
+        }
+    assert harness.services.calls == []
+
+
+async def test_non_numeric_refusal_counts_the_values_and_logs_the_ids(
+    harness, msr, caplog
+) -> None:
+    """A radar that never reported its thresholds gets one short sentence."""
+    # A radar whose ESP has been up a long time reads unknown for every number
+    # until its query params button is pressed.
+    for entity_id in msr.thresholds():
+        harness.hass.states.async_set(entity_id, "unknown")
+
+    with caplog.at_level(logging.WARNING, logger=calibration.__name__):
+        err = await _reject(
+            harness.hass,
+            SERVICE_CALIBRATE_GATES,
+            {"device_id": msr.device_id},
+            "thresholds_not_numeric",
+        )
+
+    message = str(err)
+    assert message == "The radar has not reported 18 of its threshold values yet"
+    assert "number." not in message
+    assert err.translation_placeholders["count"] == str(2 * LD2410_GATES)
+    assert msr.threshold(8, "still") in err.translation_placeholders["entity_ids"]
+    logged = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any(
+        msr.threshold(0, "move") in line and msr.threshold(8, "still") in line
+        for line in logged
+    )
     assert harness.services.calls == []
 
 
@@ -617,7 +650,10 @@ async def test_calibrate_kind_move_checks_every_ld2412_threshold(harness, rpro) 
         "thresholds_not_numeric",
     )
 
-    assert err.translation_placeholders == {"entity_ids": rpro.threshold(5, "still")}
+    assert err.translation_placeholders == {
+        "count": "1",
+        "entity_ids": rpro.threshold(5, "still"),
+    }
     assert harness.services.calls == []
 
 
@@ -633,7 +669,10 @@ async def test_calibrate_kind_move_checks_both_numbers_of_written_ld2410_gates(
         {"device_id": msr.device_id, "kind": "move"},
         "thresholds_not_numeric",
     )
-    assert err.translation_placeholders == {"entity_ids": msr.threshold(3, "still")}
+    assert err.translation_placeholders == {
+        "count": "1",
+        "entity_ids": msr.threshold(3, "still"),
+    }
 
     # With g3 move skipped (no energy sensor) nothing is sent for gate 3.
     entity_registry.async_remove(msr.energy(3, "move"))
@@ -668,17 +707,22 @@ async def test_calibrate_ld2412_refreshes_before_capture_and_before_verify(
 
 
 async def test_calibrate_ld2412_fails_when_refresh_leaves_a_threshold_non_numeric(
-    harness, rpro
+    harness, rpro, caplog
 ) -> None:
     """A value the chip could not report after the refresh stops the job."""
     harness.services.on_press[rpro.query_params] = lambda: (
         harness.hass.states.async_set(rpro.threshold(1, "move"), "unknown")
     )
 
-    result = await harness.run(rpro, move=ALL_CHANGE, still=ALL_CHANGE)
+    with caplog.at_level(logging.WARNING, logger=calibration.__name__):
+        result = await harness.run(rpro, move=ALL_CHANGE, still=ALL_CHANGE)
 
     assert result["error"]["code"] == "thresholds_not_numeric"
-    assert rpro.threshold(1, "move") in result["error"]["message"]
+    # Counted in the message the card shows, named in the log.
+    assert result["error"]["message"] == (
+        "The radar has not reported 1 of its threshold values. Nothing was changed."
+    )
+    assert rpro.threshold(1, "move") in caplog.text
     assert harness.services.writes() == []
     assert _store(harness.hass).snapshots_summary(rpro.device_id) == []
 
@@ -694,7 +738,7 @@ async def test_calibrate_ld2412_refresh_checks_the_channel_it_does_not_write(
     result = await harness.run(rpro, kind="move", move=ALL_CHANGE, still=ALL_CHANGE)
 
     assert result["error"]["code"] == "thresholds_not_numeric"
-    assert rpro.threshold(7, "still") in result["error"]["message"]
+    assert "1 of its threshold values" in result["error"]["message"]
     assert harness.services.writes() == []
 
 
@@ -765,6 +809,46 @@ async def test_calibrate_dry_run_writes_nothing_and_takes_no_snapshot(
     assert result["snapshot_id"] is None
     assert [call[1] for call in harness.services.calls] == ["turn_on", "turn_off"]
     assert result["changed"] == 2 * LD2412_GATES
+
+
+async def test_result_records_apply_for_calibrations_only(harness, msr) -> None:
+    """A result says whether it was a preview, so the card can name it one."""
+    preview = await harness.run(msr, apply=False)
+    applied = await harness.run(msr, move=ALL_CHANGE, still=ALL_CHANGE)
+    restored = await harness.restore(msr)
+
+    assert preview["apply"] is False
+    assert applied["apply"] is True
+    assert restored["apply"] is None
+    assert _store(harness.hass).last_result(msr.device_id)["apply"] is None
+
+
+async def test_preview_stopped_by_unload_is_stored_as_a_preview(
+    harness, msr, init_integration
+) -> None:
+    """The footer can say "Last preview ... was stopped" after a restart."""
+    task = harness.start(msr, duration_s=60, apply=False)
+    harness.feed.set_all(QUIET, QUIET, msr)
+    await harness.advance(5)
+
+    assert await harness.hass.config_entries.async_unload(init_integration.entry_id)
+    await harness.hass.async_block_till_done()
+    result = await finish_job(task)
+
+    assert result["error"]["code"] == "cancelled_by_shutdown"
+    assert result["writes_done"] == 0
+    assert result["apply"] is False
+
+
+async def test_calibrate_ld2410_never_presses_its_query_params_button(
+    harness, msr
+) -> None:
+    """Only the LD2412 job refreshes; the MSR's button is there for the card."""
+    result = await harness.run(msr, move=ALL_CHANGE, still=ALL_CHANGE)
+
+    assert result["outcome"] == "applied"
+    assert harness.hass.states.get(msr.query_params) is not None
+    assert harness.services.of("press") == []
 
 
 async def test_calibrate_kind_move_only_leaves_still_untouched(harness, msr) -> None:
@@ -1724,7 +1808,10 @@ async def test_restore_ld2412_checks_thresholds_outside_the_snapshot(
         "thresholds_not_numeric",
     )
 
-    assert err.translation_placeholders == {"entity_ids": rpro.threshold(2, "still")}
+    assert err.translation_placeholders == {
+        "count": "1",
+        "entity_ids": rpro.threshold(2, "still"),
+    }
 
 
 async def test_restore_with_unknown_snapshot_id_raises(harness, msr) -> None:

@@ -251,9 +251,11 @@ ERROR_MESSAGES = {
         "Dynamic Background Correction was started during the listen. Nothing was"
         " changed. Wait for its status to turn off, then calibrate again."
     ),
+    # The ids are logged (`_log_missing_thresholds`), not shown: listing all 28
+    # of an LD2412 in the card buried the sentence under entity ids.
     ERR_THRESHOLDS_NOT_NUMERIC: (
-        "Some threshold entities still have no value after the radar was asked for"
-        " them ({entity_ids}). Nothing was changed. Check the radar's device page."
+        "The radar has not reported {count} of its threshold values."
+        " Nothing was changed."
     ),
     ERR_SNAPSHOT_FAILED: (
         "Could not save the current thresholds, so nothing was changed. Check the"
@@ -380,6 +382,15 @@ def _validation_error(key: str, **placeholders: str) -> ServiceValidationError:
         translation_domain=DOMAIN,
         translation_key=key,
         translation_placeholders=placeholders or None,
+    )
+
+
+def _log_missing_thresholds(device_id: str, missing: list[str]) -> None:
+    _LOGGER.warning(
+        "Apollo mmWave: device %s has not reported %d threshold values: %s",
+        device_id,
+        len(missing),
+        ", ".join(missing),
     )
 
 
@@ -674,6 +685,9 @@ class CalibrationJob:
             "margin": self.params.get("margin"),
             "margin_pct": self.params.get("margin_pct"),
             "kind_filter": self.params.get("kind"),
+            # False for a preview, so a stored failure or stop can be named as
+            # one ("Last preview ... was stopped"); None on a restore.
+            "apply": self.params.get("apply"),
             "samples": self.samples,
             "presence_fraction": self._fraction(
                 self.presence_ticks, self.entities.radar_target
@@ -1148,9 +1162,8 @@ class CalibrationJob:
             if numeric_state(self.hass, entity_id) is None
         ]
         if missing:
-            raise _JobFailedError(
-                ERR_THRESHOLDS_NOT_NUMERIC, entity_ids=", ".join(missing)
-            )
+            _log_missing_thresholds(self.device_id, missing)
+            raise _JobFailedError(ERR_THRESHOLDS_NOT_NUMERIC, count=len(missing))
 
     def _capture(self, items: list[_WriteItem]) -> dict[str, float]:
         """Read every threshold to be written, right now, as the single source."""
@@ -1525,6 +1538,9 @@ def _entities_info(hass: HomeAssistant, entities: GateEntities) -> dict[str, Any
         "engineering_mode_on": _state_of(hass, entities.engineering_mode) == STATE_ON,
         "background_status": entities.background_status,
         "background_status_on": _state_of(hass, entities.background_status) == STATE_ON,
+        # The card presses it to fetch thresholds a long-running radar never
+        # reported (its answer to `thresholds_not_numeric`), on either chip.
+        "query_params_button": entities.query_params_button,
         "max_move_gate": _gate_number(hass, entities.max_move_gate),
         "max_still_gate": _gate_number(hass, entities.max_still_gate),
         "min_gate": _gate_number(hass, entities.min_gate),
@@ -1612,11 +1628,16 @@ def _check_background(hass: HomeAssistant, entities: GateEntities) -> None:
         raise _validation_error(TR_BACKGROUND_CORRECTION_RUNNING)
 
 
-def _check_numeric(hass: HomeAssistant, entity_ids: list[str]) -> None:
+def _check_numeric(hass: HomeAssistant, device_id: str, entity_ids: list[str]) -> None:
     missing = [eid for eid in entity_ids if numeric_state(hass, eid) is None]
     if missing:
+        _log_missing_thresholds(device_id, missing)
+        # The message only counts them; the ids stay in the placeholders for
+        # anyone who reads the error object, and in the log line above.
         raise _validation_error(
-            TR_THRESHOLDS_NOT_NUMERIC, entity_ids=", ".join(missing)
+            TR_THRESHOLDS_NOT_NUMERIC,
+            count=str(len(missing)),
+            entity_ids=", ".join(missing),
         )
 
 
@@ -1668,7 +1689,7 @@ def _preflight_calibrate(
         raise _validation_error(TR_ENGINEERING_MODE_MISSING)
     _check_online(hass, [switch, *thresholds])
     _check_background(hass, entities)
-    _check_numeric(hass, _chip_sent_thresholds(entities, thresholds))
+    _check_numeric(hass, device_id, _chip_sent_thresholds(entities, thresholds))
     if params["margin"] == 0 and params["margin_pct"] == 0:
         raise _validation_error(TR_MARGIN_ZERO)
     _check_permissions(user, [switch, *thresholds])
@@ -1730,7 +1751,7 @@ def _preflight_restore(
     resolved = list(targets)
     _check_online(hass, resolved)
     _check_background(hass, entities)
-    _check_numeric(hass, _chip_sent_thresholds(entities, resolved))
+    _check_numeric(hass, device_id, _chip_sent_thresholds(entities, resolved))
     _check_permissions(user, resolved)
     return JobSpec(
         device_id=device_id,
