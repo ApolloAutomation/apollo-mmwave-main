@@ -613,6 +613,50 @@ describe("zone map card target pairs", () => {
     expect(card.trackedEntities).toEqual([{ x: "sensor.pushed_x", y: "sensor.pushed_y" }]);
   });
 
+  it("does not claim the tracked list was cleared before the store has answered", async () => {
+    // Before the first payload the card holds no pairs and is not using the
+    // suggestions, which is also what a deliberately cleared list looks like.
+    // An Apollo radar is tracking its own targets during that window.
+    const hass = fakeHass();
+    hass.callWS = vi.fn(async (msg: any) => {
+      if (msg.type === ZONES_GET) return new Promise(() => {});
+      return [];
+    });
+    const card: any = new ZoneMapCard();
+    card.setConfig({ device_id: "dev123" } as any);
+    card.hass = hass;
+    await vi.waitFor(() =>
+      expect(hass.callWS).toHaveBeenCalledWith({ type: ZONES_GET, device_id: "dev123" })
+    );
+
+    expect(card._zoneConfigPayload).toBeNull();
+    const status = card.shadowRoot.getElementById("entityStatus").textContent;
+    expect(status).toBe("Waiting for this radar's configuration.");
+    expect(status).not.toMatch(/told to do/);
+  });
+
+  it("says it is waiting again while a retargeted radar's read is pending", async () => {
+    const hass = fakeHass();
+    const card = await mountCard(hass);
+    expect(card.shadowRoot.getElementById("entityStatus").textContent).toMatch(
+      /detected targets/i
+    );
+
+    hass.callWS = vi.fn(async (msg: any) => {
+      if (msg.type === ZONES_GET) return new Promise(() => {});
+      return [];
+    });
+    card.setConfig({ device_id: "dev999" } as any);
+    await vi.waitFor(() =>
+      expect(hass.callWS).toHaveBeenCalledWith({ type: ZONES_GET, device_id: "dev999" })
+    );
+
+    expect(card._zoneConfigPayload).toBeNull();
+    const status = card.shadowRoot.getElementById("entityStatus").textContent;
+    expect(status).toBe("Waiting for this radar's configuration.");
+    expect(status).not.toMatch(/told to do/);
+  });
+
   it("offers no pair-editing UI, only the read-only status line", async () => {
     // The pair pickers were a hand-rolled combobox whose list closed on a
     // 200ms blur timer, so a click held longer than that silently did nothing.

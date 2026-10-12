@@ -2899,13 +2899,21 @@ export class ZoneMapCard extends HTMLElement {
    *
    * Never configured and deliberately cleared both draw an empty canvas, and
    * telling a user that nothing is tracked when the radar is quietly tracking
-   * its own targets is how the old card hid its state. Read only: the
+   * its own targets is how the old card hid its state. Until the store has
+   * answered (the first load, or the round trip after a retarget) none of the
+   * three is known, so the line says so instead of guessing. Read only: the
    * integration resolves the pairs and `apollo_mmwave.update_zone` overrides
    * them.
    */
   _renderEntityStatus() {
     const host = this.shadowRoot?.getElementById('entityStatus');
     if (!host) return;
+    if (this._zoneConfigPayload === null) {
+      // The pre-payload state (no pairs, not using suggestions) is the same as
+      // a user who cleared the list, so it cannot be read off trackedEntities.
+      host.textContent = "Waiting for this radar's configuration.";
+      return;
+    }
     const configured = (this.trackedEntities || []).filter((pair) => pair.x && pair.y);
     if (this._usingSuggestedEntities) {
       host.textContent = configured.length
