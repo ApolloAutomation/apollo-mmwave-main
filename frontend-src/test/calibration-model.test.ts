@@ -486,9 +486,9 @@ describe("resultRows", () => {
     expect(rows[2].move.flags).toContain("unused");
   });
 
-  it("marks preview cells as would set", () => {
+  it("leaves the would-set tag out of preview cells (the line above the table says it)", () => {
     const rows = resultRows(result({ outcome: "preview", gates: [gate(0, { written: false, confirmed: null, actual: null })] }));
-    expect(rows[0].move.text).toBe("50 → 24 (would set)");
+    expect(rows[0].move.text).toBe("50 → 24");
   });
 
   it("marks a channel that was off (at the number's max) and was turned back on", () => {
@@ -509,7 +509,7 @@ describe("resultRows", () => {
     const preview = resultRows(
       result({ outcome: "preview", gates: [gate(2, {}, { old: 100, new: 15, written: false, confirmed: null, actual: null })] })
     );
-    expect(preview[0].still.text).toBe("100 → 15 (was off, would set)");
+    expect(preview[0].still.text).toBe("100 → 15 (was off)");
   });
 
   it("reads off against each number's own max", () => {
@@ -598,7 +598,7 @@ describe("warningLines", () => {
       })
     );
     expect(lines).toEqual([
-      "2 values could not be confirmed: G3 move still reports 35 (asked for 27), G5 still could not be read (radar offline). Check the Move / Still Thresholds cards.",
+      "2 values could not be confirmed: G3 move threshold reads back 35 (asked for 27), G5 still threshold could not be read (radar offline). Check the Move / Still Thresholds cards.",
     ]);
   });
 
@@ -614,9 +614,9 @@ describe("warningLines", () => {
     );
     expect(lines).toHaveLength(2);
     expect(lines[0]).toBe(
-      "G3 move is now off (its background peaked at 92). If a fan or curtain moves there all day this is fine; if not, press Undo and run again with the room really empty."
+      "The G3 move threshold is now off (its background peaked at 92). If a fan or curtain moves there all day this is fine; if not, press Undo and run again with the room really empty."
     );
-    expect(lines[1]).toMatch(/^G4 still is now off \(its background peaked at 95\)/);
+    expect(lines[1]).toMatch(/^The G4 still threshold is now off \(its background peaked at 95\)/);
     expect(warningLines(result({ warnings: ["gate_off"], gates_off: [] }))).toEqual([]);
     expect(warningLines(result())).toEqual([]);
   });
@@ -626,11 +626,11 @@ describe("reenabledLines", () => {
   it("says which gate an applied run turned back on and how to turn it off again", () => {
     const r = result({ gates: [gate(0), gate(2, {}, { old: 100, new: 15 })] });
     expect(reenabledLines(r)).toEqual([
-      "G2 still was off (set to 100) and calibration turned it back on (now 15). If you turned it off on purpose, set it back to 100 on the Still Thresholds card, or press Undo to put back all your previous values.",
+      "The G2 still threshold was off (set to 100) and calibration turned it back on (now 15). If you turned it off on purpose, set it back to 100 on the Still Thresholds card, or press Undo to put back all your previous values.",
     ]);
     const partial = result({ outcome: "partial", gates: [gate(1, { old: 100, new: 64 })] });
     expect(reenabledLines(partial)).toEqual([
-      "G1 move was off (set to 100) and calibration turned it back on (now 64). If you turned it off on purpose, set it back to 100 on the Move Thresholds card, or press Undo to put back all your previous values.",
+      "The G1 move threshold was off (set to 100) and calibration turned it back on (now 64). If you turned it off on purpose, set it back to 100 on the Move Thresholds card, or press Undo to put back all your previous values.",
     ]);
   });
 
@@ -640,7 +640,7 @@ describe("reenabledLines", () => {
       gates: [gate(2, {}, { old: 100, new: 15, written: false, confirmed: null, actual: null })],
     });
     expect(reenabledLines(r)).toEqual([
-      "G2 still is off (set to 100) and calibration would turn it back on (would set 15). If you turned it off on purpose, set it back to 100 on the Still Thresholds card after you calibrate.",
+      "The G2 still threshold is off (set to 100) and calibration would turn it back on (would set 15). If you turned it off on purpose, set it back to 100 on the Still Thresholds card after you calibrate.",
     ]);
   });
 
@@ -701,20 +701,20 @@ describe("gates turned off before a run", () => {
     const hass = msrHass({ [m.still_threshold[2]]: "100" });
     const off = offChannelsBeforeRun(hass, m, "ld2410", LIMITS);
     expect(off).toEqual([{ gate: 2, channel: "still", max: 100 }]);
-    expect(offGatesLine(off)).toBe("G2 still is off (set to 100). Calibrating will turn it back on.");
+    expect(offGatesLine(off)).toBe("The G2 still threshold is off (set to 100). Calibrating will turn it back on.");
   });
 
   it("combines several gates into one sentence, gate ascending, move before still", () => {
     const hass = msrHass({ [m.still_threshold[2]]: "100", [m.move_threshold[0]]: "100.0" });
     expect(offGatesLine(offChannelsBeforeRun(hass, m, "ld2410", LIMITS))).toBe(
-      "G0 move, G2 still are off (set to 100). Calibrating will turn them back on."
+      "These thresholds are off (set to 100): G0 move, G2 still. Calibrating will turn them back on."
     );
     expect(
       offGatesLine([
         { gate: 0, channel: "move", max: 100 },
         { gate: 2, channel: "still", max: 80 },
       ])
-    ).toBe("G0 move (set to 100), G2 still (set to 80) are off. Calibrating will turn them back on.");
+    ).toBe("These thresholds are off: G0 move (set to 100), G2 still (set to 80). Calibrating will turn them back on.");
     expect(offGatesLine([])).toBeNull();
   });
 
@@ -773,7 +773,7 @@ describe("gates turned off before a run", () => {
     // G0 is below Min Gate and G12 above Max Gate; G1 still counts on the
     // LD2412, where only the LD2410's G0 and G1 still idle near the top.
     expect(offGatesLine(offChannelsBeforeRun(hass, rm, "ld2412", limits))).toBe(
-      "G1 move, G1 still are off (set to 100). Calibrating will turn them back on."
+      "These thresholds are off (set to 100): G1 move, G1 still. Calibrating will turn them back on."
     );
   });
 

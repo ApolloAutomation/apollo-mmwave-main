@@ -2082,9 +2082,7 @@ function thresholdText(ch, preview, max) {
   const tags = [];
   if (off) tags.push("off");
   if (wasOff(ch, max)) tags.push("was off");
-  if (preview) {
-    tags.push("would set");
-  } else if (ch.written && ch.confirmed === false) {
+  if (!preview && ch.written && ch.confirmed === false) {
     tags.push("not confirmed");
   }
   return tags.length ? `${arrow} (${tags.join(", ")})` : arrow;
@@ -2138,10 +2136,13 @@ function unusedFootnote(result) {
   }
   return lines;
 }
+function thresholdName(gate, channel) {
+  return `G${gate} ${channel} threshold`;
+}
 function channelLabel(result, entityId) {
   for (const g2 of result.gates ?? []) {
-    if (g2.move.entity_id === entityId) return `G${g2.gate} move`;
-    if (g2.still.entity_id === entityId) return `G${g2.gate} still`;
+    if (g2.move.entity_id === entityId) return thresholdName(g2.gate, "move");
+    if (g2.still.entity_id === entityId) return thresholdName(g2.gate, "still");
   }
   return entityId;
 }
@@ -2153,7 +2154,7 @@ function unverifiedLine(result) {
     if (e2.actual === null || e2.actual === void 0) {
       return `${label} could not be read (radar offline)`;
     }
-    return `${label} still reports ${num(e2.actual)} (asked for ${num(e2.asked)})`;
+    return `${label} reads back ${num(e2.actual)} (asked for ${num(e2.asked)})`;
   });
   return `${plural(entries.length, "value")} could not be confirmed: ${parts.join(", ")}. Check the Move / Still Thresholds cards.`;
 }
@@ -2176,7 +2177,7 @@ function warningLines(result) {
     } else if (code === "gate_off") {
       for (const entry of result.gates_off ?? []) {
         lines.push(
-          `G${entry.gate} ${entry.channel} is now off (its background peaked at ${num(entry.peak)}). If a fan or curtain moves there all day this is fine; if not, press Undo and run again with the room really empty.`
+          `The ${thresholdName(entry.gate, entry.channel)} is now off (its background peaked at ${num(entry.peak)}). If a fan or curtain moves there all day this is fine; if not, press Undo and run again with the room really empty.`
         );
       }
     }
@@ -2201,11 +2202,11 @@ function reenabledLines(result, maxOf = defaultMax) {
       const max = maxOf(ch.entity_id);
       if (!wasOff(ch, max)) continue;
       if (!preview && (!ch.written || ch.confirmed === false)) continue;
-      const label = `G${g2.gate} ${channel}`;
+      const label = thresholdName(g2.gate, channel);
       const top = num(max);
       const card = thresholdsCard(channel);
       lines.push(
-        preview ? `${label} is off (set to ${top}) and calibration would turn it back on (would set ${num(ch.new)}). If you turned it off on purpose, set it back to ${top} on the ${card} card after you calibrate.` : `${label} was off (set to ${top}) and calibration turned it back on (now ${num(ch.new)}). If you turned it off on purpose, set it back to ${top} on the ${card} card, or press Undo to put back all your previous values.`
+        preview ? `The ${label} is off (set to ${top}) and calibration would turn it back on (would set ${num(ch.new)}). If you turned it off on purpose, set it back to ${top} on the ${card} card after you calibrate.` : `The ${label} was off (set to ${top}) and calibration turned it back on (now ${num(ch.new)}). If you turned it off on purpose, set it back to ${top} on the ${card} card, or press Undo to put back all your previous values.`
       );
     }
   }
@@ -2276,10 +2277,10 @@ function offGatesLine(channels) {
   const label = (c2) => `G${c2.gate} ${c2.channel}`;
   if (channels.length === 1) {
     const c2 = channels[0];
-    return `${label(c2)} is off (set to ${num(c2.max)}). Calibrating will turn it back on.`;
+    return `The ${thresholdName(c2.gate, c2.channel)} is off (set to ${num(c2.max)}). Calibrating will turn it back on.`;
   }
   const top = channels[0].max;
-  const names = channels.every((c2) => c2.max === top) ? `${channels.map(label).join(", ")} are off (set to ${num(top)}).` : `${channels.map((c2) => `${label(c2)} (set to ${num(c2.max)})`).join(", ")} are off.`;
+  const names = channels.every((c2) => c2.max === top) ? `These thresholds are off (set to ${num(top)}): ${channels.map(label).join(", ")}.` : `These thresholds are off: ${channels.map((c2) => `${label(c2)} (set to ${num(c2.max)})`).join(", ")}.`;
   return `${names} Calibrating will turn them back on.`;
 }
 const UNDO_LABEL = "Undo (restore your previous values)";
@@ -2497,6 +2498,11 @@ const READ_SETTINGS_LABEL = "Read settings from the radar";
 const READING_SETTINGS = "Reading settings from the radar...";
 const READ_SETTINGS_WAIT_MS = 3e3;
 const QUERY_PARAMS_HINT = "Open the radar's device page, press its Query Params button in the Diagnostic section, wait a few seconds, then try again.";
+function thresholdCell(text) {
+  const m2 = /^(.+?) (\([^()]*\))$/.exec(text);
+  if (!m2) return b`<span class="value">${text}</span>`;
+  return b`<span class="value">${m2[1]}</span> <span class="note">${m2[2]}</span>`;
+}
 function safeUnsubscribe(unsubscribe) {
   try {
     const result = unsubscribe();
@@ -3181,9 +3187,9 @@ const _ApolloRadarCalibrateCard = class _ApolloRadarCalibrateCard extends i {
       <tr class=${row2.unused ? "unused" : ""}>
         <th scope="row">${row2.label}</th>
         <td class=${cellClass(row2.move.flags)}>${row2.move.peak}</td>
-        <td class=${cellClass(row2.move.flags)}>${row2.move.text}</td>
+        <td class="threshold ${cellClass(row2.move.flags)}">${thresholdCell(row2.move.text)}</td>
         <td class=${cellClass(row2.still.flags)}>${row2.still.peak}</td>
-        <td class=${cellClass(row2.still.flags)}>${row2.still.text}</td>
+        <td class="threshold ${cellClass(row2.still.flags)}">${thresholdCell(row2.still.text)}</td>
       </tr>
     `;
     return b`
@@ -3494,6 +3500,16 @@ _ApolloRadarCalibrateCard.styles = i$3`
       text-align: left;
       padding: 4px 6px;
       border-bottom: 1px solid var(--divider-color, #e0e0e0);
+      white-space: nowrap;
+    }
+    /* A threshold cell may wrap, but only between its value and its note,
+       so "(was off)" drops under "100 → 15" on a narrow card instead of
+       pushing the column out of view. */
+    td.threshold {
+      white-space: normal;
+    }
+    td.threshold .value,
+    td.threshold .note {
       white-space: nowrap;
     }
     th {
@@ -4008,7 +4024,7 @@ if (!window.customStrategies.some(
     documentationURL: "https://github.com/ApolloAutomation/apollo-mmwave-main"
   });
 }
-const CARD_VERSION = "2.2.1";
+const CARD_VERSION = "2.2.2";
 console.info(
   `%c APOLLO-MMWAVE %c v${CARD_VERSION} `,
   "color:#fff;background:#03a9f4;font-weight:700;",
