@@ -164,14 +164,16 @@ function emptyZones() {
     zone_3_occupancy: void 0
   };
 }
+const CALIBRATE_TIP = "Or press **Calibrate with empty room** on the Auto-calibrate card to set them from your empty room.";
+const RADAR_TIMEOUT_TIP = "**Radar Timeout** is how long presence stays on after the last detection; raise it if lights flick off while you sit still.";
 const LD2410_PROFILE = {
   key: "ld2410",
   label: "LD2410",
   maxBarLabels: ["Max Move", "Max Still"],
   rangeLabels: ["Max Move Gate", "Max Still Gate"],
   gateSizeLabel: "Gate Size",
-  rangeTip: "💡 **Gate Size** sets how far each gate reaches (e.g. 0.75 m). **Max Move / Still Gate** cap the farthest gate used to detect moving vs. still targets — lower them to ignore distant motion.",
-  gateTip: "💡 Each gate's **move / still threshold** is how strong a signal must be to count as presence at that distance. Lower = more sensitive (more false triggers), higher = less. Turn on **Radar Engineering Mode** and watch the Gate Energy chart while you move around to pick values.",
+  rangeTip: "💡 **Gate Size** sets how far each gate reaches (e.g. 0.75 m). **Max Move / Still Gate** cap the farthest gate used to detect moving vs. still targets; lower them to ignore distant motion. " + RADAR_TIMEOUT_TIP,
+  gateTip: "💡 Each gate's **move / still threshold** is how strong a signal must be to count as presence at that distance. Lower = more sensitive (more false triggers), higher = less. Turn on **Radar Engineering Mode** and watch the Gate Energy chart while you move around to pick values. " + CALIBRATE_TIP,
   wikiUrl: "https://wiki.apolloautomation.com/products/msr2/setup/zones-ha/",
   entityMap(base) {
     const gates = [0, 1, 2, 3, 4, 5, 6, 7, 8];
@@ -212,8 +214,8 @@ const LD2412_PROFILE = {
   maxBarLabels: ["Max Gate", "Min Gate"],
   rangeLabels: ["Max Gate", "Min Gate"],
   gateSizeLabel: "Distance Resolution",
-  rangeTip: "💡 **Distance Resolution** sets gate spacing — smaller (0.5 m) gives finer tuning over a shorter range, larger (0.75 m) reaches farther. **Min / Max Gate** limit which gates are used for detection.",
-  gateTip: "💡 Each gate's **move / still threshold** is how strong a signal must be to count as presence at that distance. Lower = more sensitive (more false triggers), higher = less. Turn on **Radar Engineering Mode** and watch the Gate Energy chart while you move around to pick values.",
+  rangeTip: "💡 **Distance Resolution** sets gate spacing: smaller (0.5 m) gives finer tuning over a shorter range, larger (0.75 m) reaches farther. **Min / Max Gate** limit which gates are used for detection. " + RADAR_TIMEOUT_TIP,
+  gateTip: "💡 Each gate's **move / still threshold** is how strong a signal must be to count as presence at that distance. Lower = more sensitive (more false triggers), higher = less. Turn on **Radar Engineering Mode** and watch the Gate Energy chart while you move around to pick values. " + CALIBRATE_TIP,
   wikiUrl: "https://wiki.apolloautomation.com/products/rpro1/setup/zones-ha/#ld2412-configuration",
   entityMap(base) {
     const gates = Array.from({ length: 14 }, (_, i) => i);
@@ -241,7 +243,10 @@ const LD2412_PROFILE = {
       detection_distance: void 0,
       radar_target: `binary_sensor.${base}_ld2412_presence`,
       moving_target: `binary_sensor.${base}_ld2412_moving_target`,
-      still_target: `binary_sensor.${base}_ld2412_still_target`
+      still_target: `binary_sensor.${base}_ld2412_still_target`,
+      background_correction: `button.${base}_ld2412_start_dynamic_background_correction`,
+      background_correction_status: `binary_sensor.${base}_ld2412_dynamic_background_correction_status`,
+      query_params: `button.${base}_ld2412_query_params`
     };
   }
 };
