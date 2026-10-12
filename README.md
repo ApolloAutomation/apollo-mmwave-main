@@ -56,9 +56,9 @@ warning exactly and add each one once, as a module:
 lovelace:
   resource_mode: yaml
   resources:
-    - url: /apollo_mmwave/apollo-radar-tuning.js?v=2.2.0
+    - url: /apollo_mmwave/apollo-radar-tuning.js?v=2.2.1
       type: module
-    - url: /apollo_mmwave/apollo-radar-zone-map-card.js?v=2.2.0
+    - url: /apollo_mmwave/apollo-radar-zone-map-card.js?v=2.2.1
       type: module
 ```
 
@@ -67,6 +67,34 @@ URL with the new one from the warning instead of adding a second row. An
 out-of-date row makes the browser run the bundle twice, once from that row and
 once from the URL the integration adds itself; a duplicate "Apollo Zone Map"
 entry in the card picker is the sign.
+
+## What changed in 2.2.1
+
+2.2.1 fixes what testing auto-calibration on real MSR-1, MSR-2 and R PRO-1
+radars turned up. Nothing needs changing by hand unless your Lovelace resources
+are managed in YAML (replace both `?v=` URLs; see [Install](#install-hacs)).
+
+- **Gates you turned off.** A threshold at 100 means that gate never triggers.
+  Calibration still sets those gates, and the card now says so: before a run it
+  names them ("G2 still is off (set to 100). Calibrating will turn it back
+  on."), the result table marks them ("100 → 15 (was off)"), and a line under
+  the table says how to turn one off again. Gates the radar is not using
+  (beyond your max gate) are left out, and so are gates the last calibration
+  turned off itself.
+- **Thresholds the radar has not reported yet.** A radar that has been running
+  for a long time can show every threshold as unknown. The card now says how
+  many ("The radar has not reported 18 of its threshold values yet.") instead
+  of listing every entity, and offers **Read settings from the radar**, which
+  asks the radar for them and then tries again. The entity ids go to the Home
+  Assistant log.
+- **Undo and Redo.** The button says what it puts back: **Undo (restore your
+  previous values)** after a calibration and **Redo (put the calibrated values
+  back)** after an Undo. The card also shows when those values were saved.
+- **After a restart.** A run stopped by a Home Assistant restart now reads "Last
+  preview ... was stopped by a Home Assistant restart. Nothing was changed."
+  in the card's footer instead of "failed", and a preview is called a preview.
+- **Wording.** The card says it sets each threshold "a margin above" the
+  background it heard, not "just above" it.
 
 ## What changed in 2.2.0
 
@@ -305,9 +333,10 @@ card. Press **Calibrate with empty room** and leave: Home Assistant turns Radar
 Engineering Mode on, counts down 15 seconds so you can get out, listens to every
 gate's move and still energy for a minute, then sets each threshold a margin
 above the background it heard. Your current thresholds are saved first, so the
-card always offers **Undo (restore 14:31 values)**, labeled with the time of
-the saved values (and the date, on a later day), and that saved copy survives a
-Home Assistant restart.
+card always offers **Undo (restore your previous values)**, and that saved copy
+survives a Home Assistant restart. Undo saves the calibrated values before it
+writes, so the button then becomes **Redo (put the calibrated values back)**.
+Under the button, the card shows when those values were saved.
 
 Rules for a good run:
 
@@ -329,8 +358,12 @@ Rules for a good run:
 anything (Radar Engineering Mode is still turned on for the listen). The result
 table shows each gate's peak and threshold, dims gates beyond your max gate,
 marks a gate that ended up at 100 as **off**, and lists any value the radar did
-not echo back. The job runs in the backend, so closing the browser does not
-stop it; reopen the dashboard and the card picks the running job up again. If
+not echo back. A gate you turned off yourself (threshold at 100) is calibrated
+like the others, which turns it back on: the card names those gates before the
+run, marks them **was off** in the table, and says how to set one back to 100
+on its Thresholds card (Undo puts back all your previous values, not just that
+gate). The job runs in the backend, so closing the browser does not stop it;
+reopen the dashboard and the card picks the running job up again. If
 Home Assistant restarts during a run the card shows an interrupted banner with
 **Turn it off** for Radar Engineering Mode and **Undo** for any thresholds that
 may have been written.
@@ -618,6 +651,11 @@ slider (or with `update_zone`'s `rotation_deg`).
 - **A distance or gate-energy card says "Apollo mmWave: device not found".**
   Its `device_id` matches no device with gate-radar entities, for example an
   MTR-1 or a radar that was removed. Point it at an MSR-1, MSR-2 or R PRO-1.
+- **Calibration says the radar has not reported its threshold values.** A radar
+  that has been running for a long time may not have sent them to Home
+  Assistant yet. Press **Read settings from the radar** on the card. If the
+  card does not offer it, open the radar's device page, press its Query Params
+  button in the Diagnostic section, wait a few seconds and try again.
 - **The Zone Map card says Apollo mmWave is not loaded.** Right after a restart
   the card retries on its own. If it still says so, reload the page once the
   integration has loaded.
