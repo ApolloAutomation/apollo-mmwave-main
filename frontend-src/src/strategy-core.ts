@@ -58,6 +58,10 @@ function isLive(hass: HomeAssistant, entityId: string | undefined): boolean {
   return !!entityId && isLiveState(hass.states[entityId]);
 }
 
+/** The platform this integration's own entities carry. Kept local rather than
+ *  imported from `zone-map/api.ts` so that module stays out of this bundle. */
+const OWN_PLATFORM = "apollo_mmwave";
+
 /**
  * Whether a device shows LIVE radar evidence.
  *
@@ -99,10 +103,14 @@ function hasLiveRadarEvidence(
 
   // No recognizable radar entities: only a registry match keeps the device
   // (renamed-beyond-recognition case), and only while something is alive.
+  // This integration's own zone sensors sit on the radar's device but never go
+  // unavailable, so they say nothing about the radar and do not count. Only
+  // that platform is skipped: older frontends send no platform at all.
   return (
     registryMatched &&
     Object.entries(hass.entities).some(
-      ([id, e]) => e.device_id === deviceId && isLive(hass, id)
+      ([id, e]) =>
+        e.device_id === deviceId && e.platform !== OWN_PLATFORM && isLive(hass, id)
     )
   );
 }

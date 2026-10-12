@@ -191,6 +191,64 @@ describe("ghost/offline device filtering", () => {
     expect(devices).toHaveLength(1);
     expect(devices[0].profile?.key).toBe("ld2410");
   });
+
+  describe("renamed beyond recognition, with a drawn zone", () => {
+    // The integration attaches its own zone sensors to the radar's device and
+    // they never go unavailable, so they must not stand in for the radar.
+    const renamed = "sensor.den_motion_distance";
+    const zone = "sensor.den_zone_1";
+    const presence = "binary_sensor.den_zone_1_presence";
+    const MSR_DEVICE = {
+      name: "Den MSR-2",
+      manufacturer: "ApolloAutomation",
+      model: "MSR-2",
+    };
+    const zoneEntry = { device_id: "msr", platform: "apollo_mmwave" };
+    const denWith = (extra: States, extraEntities: Entities) =>
+      hassWith(
+        {
+          [renamed]: state(renamed, "unavailable"),
+          [zone]: state(zone, "1"),
+          [presence]: state(presence, "off"),
+          ...extra,
+        },
+        {
+          [renamed]: { device_id: "msr", platform: "esphome" },
+          [zone]: zoneEntry,
+          [presence]: zoneEntry,
+          ...extraEntities,
+        },
+        { msr: MSR_DEVICE }
+      );
+
+    it("a live zone sensor does not keep a renamed, unavailable radar online", () => {
+      const hass = denWith({}, {});
+      const devices = detectRadarDevices(hass);
+      expect(devices).toHaveLength(1);
+      expect(devices[0].online).toBe(false);
+      expect(buildDeviceCards(hass, devices[0])[0].content).toContain(
+        "Offline right now"
+      );
+    });
+
+    it("still counts a live esphome entity on the same device as online", () => {
+      const wifi = "sensor.den_wifi_signal";
+      const hass = denWith(
+        { [wifi]: state(wifi, "-60") },
+        { [wifi]: { device_id: "msr", platform: "esphome" } }
+      );
+      const devices = detectRadarDevices(hass);
+      expect(devices).toHaveLength(1);
+      expect(devices[0].online).toBe(true);
+      expect(buildDeviceCards(hass, devices[0])[0].content).not.toContain("Offline");
+    });
+
+    it("still counts a live entity with no platform (older frontends)", () => {
+      const wifi = "sensor.den_wifi_signal";
+      const hass = denWith({ [wifi]: state(wifi, "-60") }, { [wifi]: { device_id: "msr" } });
+      expect(detectRadarDevices(hass)[0].online).toBe(true);
+    });
+  });
 });
 
 describe("help card on the sections strategies (dashboard and view)", () => {
