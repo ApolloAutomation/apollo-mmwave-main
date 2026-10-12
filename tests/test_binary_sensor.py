@@ -388,3 +388,137 @@ async def test_a_pending_evaluation_is_cancelled_on_removal(
     assert evaluated == []
     assert hass.states.get(presence_id) is None
     assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+def _draw_zone(hass, device_id: str, zone: dict) -> None:
+    get_store(hass).device(device_id)[STORE_ZONES][1] = zone
+    async_dispatcher_send(hass, SIGNAL_ZONES_UPDATED, device_id)
+
+
+async def test_polygon_presence_triangle(
+    hass, entity_registry, setup_entry_with_zone
+) -> None:
+    """A target inside a triangle reads on, and off once it leaves."""
+    device_id, _ = setup_entry_with_zone
+    _draw_zone(
+        hass,
+        device_id,
+        {
+            "shape": "polygon",
+            "data": {
+                "points": [
+                    {"x": -1000, "y": 0},
+                    {"x": 1000, "y": 0},
+                    {"x": 0, "y": 2000},
+                ]
+            },
+        },
+    )
+    await hass.async_block_till_done()
+    presence_id = _presence_id(entity_registry, device_id)
+
+    _set_target(hass, TARGET_1, 0, 500)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "on"
+
+    # Inside the triangle's bounding box, but past the slanted right edge.
+    _set_target(hass, TARGET_1, 900, 1500)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "off"
+
+    _set_target(hass, TARGET_1, 2000, 1000)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "off"
+
+
+async def test_polygon_presence_concave_notch(
+    hass, entity_registry, setup_entry_with_zone
+) -> None:
+    """A U-shaped zone counts its arms and base, not the notch between them."""
+    device_id, _ = setup_entry_with_zone
+    _draw_zone(
+        hass,
+        device_id,
+        {
+            "shape": "polygon",
+            "data": {
+                "points": [
+                    {"x": -1500, "y": 0},
+                    {"x": 1500, "y": 0},
+                    {"x": 1500, "y": 3000},
+                    {"x": 500, "y": 3000},
+                    {"x": 500, "y": 1000},
+                    {"x": -500, "y": 1000},
+                    {"x": -500, "y": 3000},
+                    {"x": -1500, "y": 3000},
+                ]
+            },
+        },
+    )
+    await hass.async_block_till_done()
+    presence_id = _presence_id(entity_registry, device_id)
+
+    _set_target(hass, TARGET_1, 0, 500)  # the base
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "on"
+
+    _set_target(hass, TARGET_1, 0, 2000)  # the notch
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "off"
+
+    _set_target(hass, TARGET_1, 1000, 2000)  # the right arm
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "on"
+
+    _set_target(hass, TARGET_1, 0, 2500)  # back into the notch
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "off"
+
+    _set_target(hass, TARGET_1, -1000, 2500)  # the left arm
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "on"
+
+
+async def test_shared_coordinate_entity_is_tracked_once(
+    hass, entity_registry, setup_entry_with_zone, monkeypatch
+) -> None:
+    """Two pairs sharing an X entity must not dispatch its updates twice."""
+    device_id, _ = setup_entry_with_zone
+    presence_id = _presence_id(entity_registry, device_id)
+    dispatched: list[str] = []
+    evaluated: list[str] = []
+    real_handle = ZonePresenceBinarySensor._handle_coordinate_update  # noqa: SLF001
+    real_evaluate = ZonePresenceBinarySensor._evaluate_and_write  # noqa: SLF001
+
+    @callback
+    def _spy_handle(self, event) -> None:
+        dispatched.append(event.data["entity_id"])
+        real_handle(self, event)
+
+    def _spy_evaluate(self, *, write: bool = True) -> None:
+        evaluated.append(self.entity_id)
+        real_evaluate(self, write=write)
+
+    monkeypatch.setattr(
+        ZonePresenceBinarySensor, "_handle_coordinate_update", _spy_handle
+    )
+    monkeypatch.setattr(ZonePresenceBinarySensor, "_evaluate_and_write", _spy_evaluate)
+
+    # Re-tracking after the store change subscribes the spy.
+    get_store(hass).device(device_id)[STORE_ENTITIES] = [
+        {"x": "sensor.shared_x", "y": "sensor.first_y"},
+        {"x": "sensor.shared_x", "y": "sensor.second_y"},
+    ]
+    async_dispatcher_send(hass, SIGNAL_ZONES_UPDATED, device_id)
+    hass.states.async_set("sensor.first_y", "1000")
+    hass.states.async_set("sensor.second_y", "1500")
+    await hass.async_block_till_done()
+    dispatched.clear()
+    evaluated.clear()
+
+    hass.states.async_set("sensor.shared_x", "0")
+    await hass.async_block_till_done()
+
+    assert dispatched == ["sensor.shared_x"]
+    assert evaluated == [presence_id]
+    assert hass.states.get(presence_id).state == "on"

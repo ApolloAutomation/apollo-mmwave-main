@@ -43,7 +43,7 @@ from .const import (
     STORE_INPUT_UNITS,
 )
 from .ld2450 import effective_target_pairs
-from .zone_entities import ZoneEntityMixin
+from .zone_entities import ZoneEntityMixin, async_setup_zone_platform
 
 if TYPE_CHECKING:
     import asyncio
@@ -123,6 +123,11 @@ def _point_in_ellipse(x_val: float, y_val: float, ellipse: ShapeData) -> bool:
     return (dx * dx) / (rx * rx) + (dy * dy) / (ry * ry) <= 1.0
 
 
+# Even-odd ray cast toward +x. A point exactly on a non-horizontal edge counts
+# as a crossing and toggles, while one on a horizontal edge never does, so
+# whether a boundary point reads inside depends on which edge it sits on. The
+# rect and ellipse tests are inclusive on every boundary. Only a reading that
+# lands exactly on an edge is affected; interior points are unambiguous.
 def _point_in_polygon(x_val: float, y_val: float, polygon: ShapeData) -> bool:
     if not isinstance(polygon, dict):
         return False
@@ -164,7 +169,6 @@ async def async_setup_entry(
 ) -> None:
     """Create presence sensors for stored zones, and for zones added later."""
     from . import get_store  # noqa: PLC0415 - avoid a module import cycle
-    from .zone_entities import async_setup_zone_platform  # noqa: PLC0415
 
     store = get_store(hass)
     async_setup_zone_platform(
@@ -251,13 +255,18 @@ class ZonePresenceBinarySensor(ZoneEntityMixin, BinarySensorEntity):
             self._unsub_state_listener()
             self._unsub_state_listener = None
 
-        entity_ids = [
-            entity_id
-            for pair in self._tracked_pairs()
-            if isinstance(pair, dict)
-            for entity_id in (pair.get("x"), pair.get("y"))
-            if isinstance(entity_id, str)
-        ]
+        # Pairs can share an entity (one X with two Ys, or X and Y the same
+        # entity). Home Assistant registers the listener once per listed id, so
+        # a repeat would dispatch every state change of that entity twice.
+        entity_ids = list(
+            dict.fromkeys(
+                entity_id
+                for pair in self._tracked_pairs()
+                if isinstance(pair, dict)
+                for entity_id in (pair.get("x"), pair.get("y"))
+                if isinstance(entity_id, str)
+            )
+        )
         if entity_ids:
             self._unsub_state_listener = async_track_state_change_event(
                 self.hass, entity_ids, self._handle_coordinate_update
