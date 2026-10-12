@@ -10,6 +10,8 @@ import { describe, it, expect } from "vitest";
 import {
   buildDeviceCards,
   detectRadarDevices,
+  generateSections,
+  generateViews,
   strategyDevices,
 } from "../src/strategy-core";
 import type { HassEntity, HomeAssistant } from "../src/types";
@@ -188,6 +190,59 @@ describe("ghost/offline device filtering", () => {
     const devices = detectRadarDevices(hass);
     expect(devices).toHaveLength(1);
     expect(devices[0].profile?.key).toBe("ld2410");
+  });
+});
+
+describe("help card on the sections strategies (dashboard and view)", () => {
+  // buildDeviceSections used to place the help card only in the gate-radar
+  // tuning column, so a device without a profile lost it: an offline MTR-1
+  // showed an empty zone map with no note, and a forced device with nothing
+  // detectable got a tab with no sections at all.
+  const sectionCards = (sections: Record<string, any>[]) =>
+    sections.flatMap((s) => s.cards as Record<string, any>[]);
+  const offlineMtr = () => {
+    const { states, entities } = mtrFixture("unavailable");
+    return hassWith(states, entities, { mtr: MTR_DEVICE });
+  };
+  const mystery = () => hassWith({}, {}, { mystery: { name: "Garage Sensor" } });
+
+  it("carries the offline note for an offline MTR-1 on the dashboard strategy", () => {
+    const views = generateViews(offlineMtr(), {});
+    expect(views).toHaveLength(1);
+    const cards = sectionCards(views[0].sections);
+    expect(cards.some((c) => c.content?.includes("Offline right now"))).toBe(true);
+    // The zone map is still there, after the note.
+    expect(cards[cards.length - 1].type).toBe("custom:apollo-radar-zone-map-card");
+  });
+
+  it("carries the offline note for an offline MTR-1 on the view strategy", () => {
+    const cards = sectionCards(generateSections(offlineMtr(), {}));
+    expect(cards.some((c) => c.content?.includes("Offline right now"))).toBe(true);
+  });
+
+  it("keeps a live MTR-1 tab as just the zone map", () => {
+    const { states, entities } = mtrFixture("1200");
+    const hass = hassWith(states, entities, { mtr: MTR_DEVICE });
+    const sections = generateViews(hass, {})[0].sections;
+    expect(sections).toHaveLength(1);
+    expect(sections[0].type).toBe("grid");
+    expect(sections[0].cards).toHaveLength(1);
+    expect(sections[0].cards[0].type).toBe("custom:apollo-radar-zone-map-card");
+  });
+
+  it("explains a forced device with nothing detectable on the dashboard strategy", () => {
+    const sections = generateViews(mystery(), { devices: ["mystery"] })[0].sections;
+    expect(sections).toHaveLength(1);
+    expect(sections[0].cards).toHaveLength(1);
+    expect(sections[0].cards[0].content).toContain("no radar data");
+    expect(sections[0].cards[0].content).not.toContain("Offline right now");
+  });
+
+  it("explains a forced device with nothing detectable on the view strategy", () => {
+    const sections = generateSections(mystery(), { devices: ["mystery"] });
+    expect(sections).toHaveLength(1);
+    expect(sections[0].type).toBe("grid");
+    expect(sections[0].cards[0].content).toContain("no radar data");
   });
 });
 

@@ -419,6 +419,14 @@ export function buildDeviceSections(
     );
   }
 
+  // A zone-only or undetectable device has no tuning column to carry the help
+  // card, so it gets its own section only when it has something to say (the
+  // offline note, or that nothing is detectable). A live MTR-1 stays just the
+  // zone map.
+  if (!dev.profile && (!dev.online || !c.zoneMap)) {
+    columns.push([c.help]);
+  }
+
   // LD2450 zone map gets its own column. On a shared tab (R-PRO-1) a thin
   // heading precedes it; on a zone-only device (MTR-1) it's just the card —
   // the tab title already names the device.
