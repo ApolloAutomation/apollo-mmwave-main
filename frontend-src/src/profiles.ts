@@ -65,11 +65,11 @@ const RADAR_TIMEOUT_TIP =
   "**Radar Timeout** is how long presence stays on after the last detection; raise it if lights flick off while you sit still.";
 
 /**
- * HLK-LD2410 factory thresholds per gate (g0..g8), from the manual. Used only
- * to show the "these look like factory thresholds" hint on the calibrate
- * card; a wrong value hides or shows one line.
- * TODO(REVIEW_REPORT.md X60): these match the commonly published HLK defaults but
- * were not confirmed on a factory-reset MSR-2 during the audit; check on hardware.
+ * HLK-LD2410 factory thresholds per gate (g0..g8). They match the commonly
+ * published HLK defaults, and a real MSR-1 read back exactly this table during
+ * hardware testing on 2026-10-12 (REVIEW_REPORT.md X60). Used only to show the
+ * "these look like factory thresholds" hint on the calibrate card; a wrong
+ * value hides or shows one line.
  */
 export const LD2410_FACTORY_THRESHOLDS: { move: number[]; still: number[] } = {
   move: [50, 50, 40, 30, 20, 15, 15, 15, 15],

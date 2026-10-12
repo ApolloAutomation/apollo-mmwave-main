@@ -417,7 +417,6 @@ Calibration:
 - `snapshotContents` tells Undo from Redo by assuming every restore wrote back the newest snapshot, which every card Undo and Redo does. A restore of an older `snapshot_id` through the service, a failed restore and its retry, or a hand edit between runs can make the label describe the wrong values; the button still restores exactly `snapshots[0]`.
 - The "Restored the thresholds from 14:31" line names the result's `restored_from`; for a stored result without it, it infers the restored snapshot as the entry older than the redo snapshot in the payload's list, and drops the time when that entry is missing.
 - The calibrate card does not treat HA's `unknown_command` as not loaded, so on a fresh boot it can show that error instead of the loading state until the entry's `loaded` event reopens the subscription; the zone API's handling of that code was not copied over.
-- `LD2410_FACTORY_THRESHOLDS` matches the commonly published HLK defaults but was not confirmed on a factory-reset MSR-2; it only decides whether the factory hint shows (X60).
 
 Tooling:
 

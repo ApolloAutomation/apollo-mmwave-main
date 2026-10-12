@@ -6,7 +6,7 @@ It also built the scope you added during the run: empty-room auto-calibration fo
 All 7 high-severity findings are fixed. pytest went from 107 to 490 tests, vitest from 208 tests in 20 files to 737 in 27, and npm audit from 10 advisories (3 critical) to 0. The shipped bundles stayed byte-identical through the toolchain upgrade.
 As of ca4d56e the branch had 129 commits on top of the baseline. Two more fixes (cdd64a5, 711f65b) and the docs commit that adds this file come on top of that.
 Merge status: all merge conditions met (full build, every baseline test kept or deliberately replaced, all new tests, CI green, no conflicts). Merged into `main` with a merge commit through PR #7; the post-merge verification is recorded as the final comment on the PR.
-PR: [ApolloAutomation/apollo-mmwave-main#7](https://github.com/ApolloAutomation/apollo-mmwave-main/pull/7) (draft, into `main`).
+PR: [ApolloAutomation/apollo-mmwave-main#7](https://github.com/ApolloAutomation/apollo-mmwave-main/pull/7) (merged into `main`).
 Wiki: [ApolloAutomation/docs#1150](https://github.com/ApolloAutomation/docs/pull/1150), branch `docs/apollo-mmwave-dashboard` (commits f1d3fab2 and 0b782fbf) into `dev`, open for the wiki maintainers to merge. Publish it after this PR is merged.
 
 ## Repo health before and after
@@ -302,7 +302,7 @@ The 129 commits in `pre-audit-2026-10-10..ca4d56e`:
   - 31 `SPEC NOTE:` comments mark places where the spec was unclear and the conservative choice was taken;
   - spec follow-ups F1 to F11 (for example live peak markers, a walk test and an older-snapshot picker) were left out;
   - CI tests only HA 2026.10.0, documented per addendum item 8 rather than adding a test matrix.
-- **The factory-threshold table was left unconfirmed (X60).** The values match the commonly published HLK defaults, but the HLK-LD2410B datasheet in the MSR-2 repository does not list default sensitivities. The table only decides whether the card shows its "these look like factory thresholds" hint, so the values stay as they are, with a TODO.
+- **The factory-threshold table was left unconfirmed (X60).** The values match the commonly published HLK defaults, but the HLK-LD2410B datasheet in the MSR-2 repository does not list default sensitivities. The table only decides whether the card shows its "these look like factory thresholds" hint, so the values stay as they are, with a TODO. Hardware testing on 2026-10-12 later confirmed them: a real MSR-1 read back exactly this table (X60, done in 2.2.3).
 - **The walk-test copy fix (e76b424).** The wiki's first-time-reader review found that the card's post-calibration line contradicted how Radar Target works. The product copy was corrected instead of explaining the old line in the wiki, and the wiki now quotes the new line (0b782fbf).
 
 **Wiki**
@@ -354,7 +354,7 @@ A finder marked these as touching a tuning parameter, or the work list names a t
 | X42 (tuning) | `zone-map/card.ts` `getStubConfig` | Cards added from the picker draw -6000..6000 by 0..12000 mm with `unit_display` false, while strategy cards use `DEFAULT_GRID` (-5000..5000 by 0..10000, `unit_display` true). | Pick one and derive the stub from `DEFAULT_GRID` and `DEFAULT_CONE`, or drop `grid` from the stub, with a test. |
 | X45 (tuning) | `zone-map/card.ts` `_getConeRingsRenderState` | Cone rings are built out to `cone.y_max`, which has no ceiling, even past the visible grid. Only a hand-edited `y_max` is affected. | If touched, stop at the farthest grid corner (no visible change). Do not clamp `y_max`. |
 | X59 (tuning) | `binary_sensor.py` `_LINE_INTERSECTION_EPSILON` | The `or epsilon` fallback in `_point_in_polygon` can never run, because the crossing guard already excludes y1 == y2. | Removing the fallback and the constant changes no output. Do it together with the polygon tests, if whoever owns the tuning table agrees. |
-| X60 (tuning) | `profiles.ts` `LD2410_FACTORY_THRESHOLDS` doc block | The table (move 50,50,40,30,20,15,15,15,15; still 0,0,40,40,30,30,20,20,20) matches the commonly published HLK defaults but was not confirmed on hardware. It only decides whether the calibrate card shows its factory-thresholds hint. The doc block says "from the manual", but the repo's HLK-LD2410B manual does not list these values. | Confirm on a factory-reset MSR-2. The values are unchanged and have one copy in the source. Consider rewording "from the manual". |
+| X60 (tuning) | `profiles.ts` `LD2410_FACTORY_THRESHOLDS` doc block | The table (move 50,50,40,30,20,15,15,15,15; still 0,0,40,40,30,30,20,20,20) matches the commonly published HLK defaults but was not confirmed on hardware. It only decides whether the calibrate card shows its factory-thresholds hint. The doc block says "from the manual", but the repo's HLK-LD2410B manual does not list these values. | **Done in 2.2.3:** a real MSR-1 read back exactly this table during hardware testing on 2026-10-12. The doc block no longer says "from the manual", and the TODO comment is gone. |
 
 ### Other flagged items
 
@@ -432,14 +432,14 @@ A finder marked these as touching a tuning parameter, or the work list names a t
 
 ### High
 
-1. **Validate auto-calibration on a real MSR-2 and a real R PRO-1 before announcing it.** Check a full run, Undo, Preview and Stop, an HA restart mid-run, and the LD2412 background-correction guard, and confirm the 15 s and 60 s defaults. Tests and reviews ran against simulated entities, plus the ESPHome sources for the driver behavior.
-2. **Confirm the LD2410 factory-threshold table on a factory-reset MSR-2 (X60),** and reword "from the manual" if the manual still does not list the values.
+1. **(Mostly done) Validate auto-calibration on real hardware.** Hardware testing on 2026-10-12 ran, on a real MSR-1: a full calibration with every written value read back, Undo back to the exact previous values, Redo, Preview, Stop, and an HA restart mid-run (nothing written, Radar Engineering Mode turned back off). On an MSR-2 whose thresholds were unknown it checked the refusal and Read settings from the radar, and on a real R PRO-1 an LD2412 Preview. The 15 s and 60 s defaults worked as designed. Still open: a writing calibration on an R PRO-1 LD2412, including the background-correction guard, with Undo back to its current values.
+2. **(Done) Confirm the LD2410 factory-threshold table (X60).** A real MSR-1 read back exactly the table, and "from the manual" is gone (2.2.3).
 3. **(Done) X10.** Fixed in 711f65b before the merge.
-4. **Ship release notes for every user-visible change.** Most important is the `zone_id: 0` refusal and its workaround (edit `.storage/apollo_mmwave.zones` with HA stopped). Also cover B02's dropped events for no-op calls, `input_units` now surviving restarts, a malformed store file being replaced on setup, and the calibration feature. The docs pass is adding a "What changed in 2.2.0" section to the README for this.
+4. **Ship release notes for every user-visible change.** Most important is the `zone_id: 0` refusal and its workaround (edit `.storage/apollo_mmwave.zones` with HA stopped). Also cover B02's dropped events for no-op calls, `input_units` now surviving restarts, a malformed store file being replaced on setup, and the calibration feature. Done: CHANGELOG.md has an entry for each release from 2.2.0 to 2.2.3, including the `zone_id: 0` refusal.
 5. **(Done) Merge.** PR #7 merged into `main` with a merge commit after CI passed; see its final comment for the post-merge check. Note that HACS installs from the default branch while the repository has no releases, so the merge makes 2.2.0 available to HACS users. Consider tagging a release once items 1 and 2 are done.
 6. **Wiki.**
-   - Review and merge [ApolloAutomation/docs#1150](https://github.com/ApolloAutomation/docs/pull/1150) into `dev`, then publish.
-   - Add screenshots; the guides have none yet.
+   - Done: [ApolloAutomation/docs#1150](https://github.com/ApolloAutomation/docs/pull/1150) merged into `dev` and was published through [ApolloAutomation/docs#1151](https://github.com/ApolloAutomation/docs/pull/1151). Each mmWave sensor has its own copy of both guides in its Radar Tuning or Zone Configuration section.
+   - Done: screenshots and looping clips from a live install are in both guides.
    - Check the HA UI details the fixer could not confirm in a live install: the Take control dialog, no tab bar on a single-radar install, the Finish button, "+ N entities not shown", and the power icon.
    - Decide whether the Homey copy should show the MTR-1 tip.
    - Once the pages are published, switch the help-card links (X61) and rebuild the bundles. Done in 2.2.3.
