@@ -11,8 +11,13 @@
  * fields as class fields: those shadow Lit's accessors, and the cards stop
  * updating after their first render.
  *
+ * It also checks that the bundle defines its elements again through Home
+ * Assistant's registry polyfill once the app boots, and that a second copy
+ * of the bundle adds no second picker entry or element.
+ *
  * The zone map bundle has its own file (bundle-zone-map.test.ts), so the two
- * bundles never register into the same window here.
+ * bundles never register into the same window here. vitest.bundles.config.ts
+ * runs the card and strategy suites against this bundle.
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -22,6 +27,7 @@ import { CARD_VERSION } from "../../custom_components/apollo_mmwave/www/apollo-r
 import bundleSource from "../../custom_components/apollo_mmwave/www/apollo-radar-tuning.js?raw";
 import pkg from "../package.json";
 import { registeredTags } from "./bundle-sources";
+import { installRegistry, polyfillRegistry, tick } from "./registry-polyfill";
 
 type Handler = (message: any) => void;
 
@@ -284,5 +290,52 @@ describe("tuning bundle Lit cards", () => {
     card.setConfig({ type: "custom:apollo-radar-distance-card", device_id: "gone" });
     await settle(card);
     expect(text(card)).toContain(NOT_FOUND);
+  });
+});
+
+describe("tuning bundle and the registry polyfill", () => {
+  it("defines its elements again through the polyfill once the app boots", async () => {
+    // The bundle loaded on the native registry, as on a cold cache. The
+    // polyfill then takes over window.customElements and cannot see them.
+    const native = window.customElements;
+    const tags = registeredTags("../src/index.ts");
+    const polyfill = polyfillRegistry(native);
+    installRegistry(polyfill);
+    try {
+      for (const tag of tags) expect(polyfill.get(tag), tag).toBeUndefined();
+      polyfill.define("home-assistant", class HomeAssistant extends HTMLElement {});
+      await tick();
+      for (const tag of tags) expect(polyfill.get(tag), tag).toBe(native.get(tag));
+    } finally {
+      installRegistry(native);
+    }
+  });
+});
+
+// Last in this file: the second copy stays loaded, with its own registry hook.
+describe("tuning bundle evaluated a second time", () => {
+  it("adds no second picker entry and keeps the first copy's elements", async () => {
+    // A second copy under another URL, such as a hand-added resource with an
+    // older ?v=, runs the whole bundle again.
+    const tags = registeredTags("../src/index.ts");
+    const first = new Map(tags.map((tag) => [tag, customElements.get(tag)]));
+    const banner = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    try {
+      vi.resetModules();
+      // @ts-expect-error The committed bundle is plain JS with no type declarations.
+      await import("../../custom_components/apollo_mmwave/www/apollo-radar-tuning.js");
+      // The version banner shows the second copy really ran.
+      expect(banner).toHaveBeenCalledTimes(1);
+    } finally {
+      banner.mockRestore();
+    }
+    for (const tag of tags) expect(customElements.get(tag), tag).toBe(first.get(tag));
+    const cards = (window as any).customCards as { type: string }[];
+    expect(cards.map((c) => c.type)).toEqual([
+      "apollo-radar-distance-card",
+      "apollo-radar-gate-energy-card",
+      "apollo-radar-calibrate-card",
+    ]);
+    expect((window as any).customStrategies).toHaveLength(1);
   });
 });

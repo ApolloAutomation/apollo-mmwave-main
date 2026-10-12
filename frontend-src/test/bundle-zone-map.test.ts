@@ -7,10 +7,13 @@
  * loads the file Home Assistant serves and checks that it is one standalone
  * module, that it defines the card and its editor and lists the card in the
  * card picker, and that the card renders a store payload and repaints when a
- * new payload, a new `hass` or a new config arrives.
+ * new payload, a new `hass` or a new config arrives. It also checks that
+ * the bundle defines its elements again through Home Assistant's registry
+ * polyfill once the app boots.
  *
  * The tuning bundle has its own file (bundle-tuning.test.ts), so the two
- * bundles never register into the same window here.
+ * bundles never register into the same window here. vitest.bundles.config.ts
+ * runs the zone map suites against this bundle.
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -19,6 +22,7 @@ import { parseSync } from "vite";
 import { ZoneMapCard } from "../../custom_components/apollo_mmwave/www/apollo-radar-zone-map-card.js";
 import bundleSource from "../../custom_components/apollo_mmwave/www/apollo-radar-zone-map-card.js?raw";
 import { registeredTags } from "./bundle-sources";
+import { installRegistry, polyfillRegistry, tick } from "./registry-polyfill";
 
 type Handler = (message: any) => void;
 
@@ -124,5 +128,22 @@ describe("zone map bundle card", () => {
     card.setConfig({ device_id: "dev123", title: "Office" });
     expect(card.shadowRoot.getElementById("deviceTitle").textContent).toBe("Office");
     expect(text(card)).toContain("Hallway");
+  });
+});
+
+describe("zone map bundle and the registry polyfill", () => {
+  it("defines its elements again through the polyfill once the app boots", async () => {
+    const native = window.customElements;
+    const tags = registeredTags("../src/zone-map/card.ts");
+    const polyfill = polyfillRegistry(native);
+    installRegistry(polyfill);
+    try {
+      for (const tag of tags) expect(polyfill.get(tag), tag).toBeUndefined();
+      polyfill.define("home-assistant", class HomeAssistant extends HTMLElement {});
+      await tick();
+      for (const tag of tags) expect(polyfill.get(tag), tag).toBe(native.get(tag));
+    } finally {
+      installRegistry(native);
+    }
   });
 });

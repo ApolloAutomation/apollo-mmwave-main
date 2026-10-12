@@ -89,13 +89,14 @@ the pieces fit together.
 
 Frontend source lives in `frontend-src/` (TypeScript + Lit + Vite, with Vitest
 tests). The build writes straight into the integration's `www/` folder, and the
-built bundles are committed. CI runs the first four steps, on Node 22:
+built bundles are committed. CI runs the first five steps, on Node 22:
 
 ```bash
 cd frontend-src
 npm ci              # install exactly what package-lock.json pins
 npx tsc --noEmit    # type check
 npm test            # vitest
+npm run test:bundles # the card suites again, against the committed bundles
 npm run build       # → ../custom_components/apollo_mmwave/www/*.js (one pass per bundle)
 npm run watch       # rebuild both bundles on every save (Ctrl+C stops both)
 ```
@@ -108,6 +109,11 @@ every frontend change. Build with Node 22 to match the committed output. Terser
 strips most comments from the bundles, so a comment-only change usually leaves
 them as they are, but comments inside template strings (CSS in the card
 styles) do ship; run the build and let the check decide.
+
+`npm run test:bundles` runs every suite that imports a card, the dashboard
+strategy or the zone map against the bundles in `www/` instead of the sources
+(see `vitest.bundles.config.ts`), so it tests what you last built: rebuild
+first after a source change.
 
 `npm run watch` needs a POSIX shell (macOS, Linux, the devcontainer or WSL). On
 Windows npm runs scripts with `cmd.exe`, even from Git Bash, so run

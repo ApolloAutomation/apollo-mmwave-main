@@ -69,6 +69,12 @@ jobs:
       - name: Run vitest
         run: npm test
 
+      # The card, strategy and zone map suites again, against the committed
+      # bundles instead of the sources (vitest.bundles.config.ts). The next
+      # step proves those bundles match a fresh build.
+      - name: Run the suites against the committed bundles
+        run: npm run test:bundles
+
       # git diff only sees tracked files. vite runs with emptyOutDir off, so a
       # renamed bundle leaves the old file untouched and the new one untracked;
       # git status also reports untracked and deleted files.

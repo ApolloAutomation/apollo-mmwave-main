@@ -10,6 +10,7 @@
     "watch:tuning": "vite build --watch",
     "watch:zone-map": "vite build --watch --config vite.zone-map.config.ts",
     "test": "vitest run",
+    "test:bundles": "vitest run --config vitest.bundles.config.ts",
     "test:watch": "vitest"
   },
   "dependencies": {
