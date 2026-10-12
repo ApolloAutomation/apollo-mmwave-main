@@ -262,6 +262,9 @@ export class ZoneMapCard extends HTMLElement {
       cone: {
         y_max: 6000,
         fov_deg: 120,
+        // Only the slider's double-click reset target. What is drawn and what
+        // the presence sensors evaluate is the store's rotation_deg (0 when it
+        // was never set), which the slider writes.
         angle_deg: 0,
       },
     };
@@ -527,8 +530,14 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   _applyRotation(config) {
-    if (typeof config.rotation_deg !== 'number') return;
-    const nextAngle = this._clampConeAngle(Math.round(config.rotation_deg));
+    // The store is authoritative for rotation. A radar whose slider was never
+    // moved has no stored value (null), and the presence sensors rotate its
+    // targets by 0, so the card draws them at 0 too. Keeping the YAML
+    // cone.angle_deg here instead drew targets in a frame the sensors do not
+    // evaluate. That YAML angle is only where the slider's double-click reset
+    // goes, and nothing is written to the store until the slider is used.
+    const stored = typeof config.rotation_deg === 'number' ? config.rotation_deg : 0;
+    const nextAngle = this._clampConeAngle(Math.round(stored));
     if (nextAngle !== this.coneAngleDeg) {
       this.coneAngleDeg = nextAngle;
       this._invalidateConeCache();
@@ -1169,6 +1178,11 @@ export class ZoneMapCard extends HTMLElement {
       this.coneFovDeg = Number.isFinite(fov) ? Math.min(360, Math.max(1, fov)) : this.coneFovDeg;
     }
     if (cone.angle_deg !== undefined) {
+      // cone.angle_deg is only the slider's double-click reset default. The
+      // store's rotation_deg (0 when unset) is what is drawn and evaluated:
+      // _applyRotation lays it over the angle set here as soon as a payload
+      // arrives, and render() re-applies the last payload after every
+      // setConfig.
       const angle = this._clampConeAngle(Number(cone.angle_deg));
       this.coneAngleDefault = angle;
       this.coneAngleDeg = angle;

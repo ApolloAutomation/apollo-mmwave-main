@@ -584,6 +584,85 @@ describe("zone map card writes", () => {
   });
 });
 
+describe("zone map card rotation source", () => {
+  // The presence sensors rotate targets by the store's rotation_deg, and by 0
+  // when it was never set. A card that kept the YAML cone.angle_deg for such a
+  // radar drew targets inside zones that the sensors evaluated somewhere else.
+  const UNROTATED = { ...ZONE_PAYLOAD, rotation_deg: null };
+
+  /** Put one live target (the payload's suggested pair) at x, y in mm. */
+  function trackTarget(hass: any, x: number, y: number) {
+    hass.states["sensor.a_x"] = { entity_id: "sensor.a_x", state: String(x), attributes: {} };
+    hass.states["sensor.a_y"] = { entity_id: "sensor.a_y", state: String(y), attributes: {} };
+  }
+
+  /** Where the card draws each live target, in mm. */
+  function drawnTargets(card: any): number[][] {
+    const spy = vi.spyOn(card, "drawCurrentPosition").mockImplementation(() => {});
+    card._drawTrackedTargets();
+    const points = spy.mock.calls.map((call: any[]) => [call[0], call[1]]);
+    spy.mockRestore();
+    return points;
+  }
+
+  it("draws an unset store rotation as 0, not the YAML angle", async () => {
+    const hass = fakeHass(UNROTATED);
+    trackTarget(hass, 0, 1000);
+    const card = await mountCard(hass, { cone: { angle_deg: 45 } });
+
+    expect(card.coneAngleDeg).toBe(0);
+    expect(card.coneAngleDefault).toBe(45);
+    expect(card.shadowRoot.getElementById("coneAngleSlider").value).toBe("0");
+    expect(card.shadowRoot.getElementById("coneAngleLabel").textContent).toBe("0°");
+    const points = drawnTargets(card);
+    expect(points).toHaveLength(1);
+    expect(points[0][0]).toBeCloseTo(0, 6);
+    expect(points[0][1]).toBeCloseTo(1000, 6);
+
+    // A same-radar setConfig (the editor, on every keystroke) re-reads the
+    // YAML angle, and must not bring it back either.
+    card.setConfig({ device_id: "dev123", cone: { angle_deg: 45 } });
+    expect(card.coneAngleDeg).toBe(0);
+    expect(card.shadowRoot.getElementById("coneAngleSlider").value).toBe("0");
+
+    // Viewing a radar is not configuring it.
+    expect(hass.callService).not.toHaveBeenCalled();
+  });
+
+  it("resets to the YAML angle on double-click and persists it", async () => {
+    const hass = fakeHass(UNROTATED);
+    const card = await mountCard(hass, { cone: { angle_deg: 45 } });
+    const slider = card.shadowRoot.getElementById("coneAngleSlider");
+
+    slider.dispatchEvent(new MouseEvent("dblclick"));
+
+    expect(card.coneAngleDeg).toBe(45);
+    expect(slider.value).toBe("45");
+    expect(hass.callService).toHaveBeenCalledWith("apollo_mmwave", "update_zone", {
+      device_id: "dev123",
+      rotation_deg: 45,
+      input_units: "mm",
+    });
+  });
+
+  it("draws a stored rotation over the YAML angle", async () => {
+    const hass = fakeHass();
+    trackTarget(hass, 0, 1000);
+    const card = await mountCard(hass, { cone: { angle_deg: 45 } });
+
+    expect(card.coneAngleDeg).toBe(12);
+    expect(card.shadowRoot.getElementById("coneAngleSlider").value).toBe("12");
+    const theta = (12 * Math.PI) / 180;
+    const points = drawnTargets(card);
+    expect(points[0][0]).toBeCloseTo(1000 * Math.sin(theta), 6);
+    expect(points[0][1]).toBeCloseTo(1000 * Math.cos(theta), 6);
+
+    card.setConfig({ device_id: "dev123", cone: { angle_deg: 45 } });
+    expect(card.coneAngleDeg).toBe(12);
+    expect(hass.callService).not.toHaveBeenCalled();
+  });
+});
+
 describe("zone map card connection ownership", () => {
   it("drops a late payload from the radar the card no longer shows", async () => {
     // Retargeting disposes the old connection only after its own round trips
