@@ -2220,6 +2220,126 @@ describe("zone map card gestures without a shape", () => {
 });
 
 /**
+ * An ellipse drag that ends past the edge of the grid.
+ *
+ * A touch keeps reporting to the canvas after the finger slides off it, so a
+ * touch drag can end far outside the grid. The rect clamps both corners to
+ * the grid, but the ellipse clamped only its center and took its radii from
+ * the raw corners, so the same drag saved an ellipse pinned to the edge with
+ * a radius reaching thousands of mm past it. The canvas is laid out at
+ * 800x800 CSS px over the 800x800 bitmap, so one canvas px is 12.5 mm on the
+ * default grid (x -5000..5000, y 0..10000).
+ */
+describe("zone map card ellipse drag past the grid", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** Unlocked on ZONE_PAYLOAD with zone 1 (Doorway) selected in `mode`. */
+  async function drawingCard(mode: string) {
+    const hass = fakeHass();
+    const card = await mountCard(hass, { start_locked: false });
+    card._setSelectedZone(1);
+    card._setDrawMode(mode);
+    vi.spyOn(card.canvas, "getBoundingClientRect").mockReturnValue({
+      left: 0,
+      top: 0,
+      right: 800,
+      bottom: 800,
+      x: 0,
+      y: 0,
+      width: 800,
+      height: 800,
+      toJSON: () => ({}),
+    } as DOMRect);
+    hass.callService.mockClear();
+    return { card, hass };
+  }
+
+  function touch(card: any, type: string, x: number, y: number) {
+    const point = new Touch({ identifier: 1, target: card.canvas, clientX: x, clientY: y });
+    card.canvas.dispatchEvent(
+      new TouchEvent(type, {
+        cancelable: true,
+        touches: type === "touchend" ? [] : [point],
+        targetTouches: type === "touchend" ? [] : [point],
+        changedTouches: [point],
+      })
+    );
+  }
+
+  function mouse(card: any, type: string, x: number, y: number) {
+    card.canvas.dispatchEvent(new MouseEvent(type, { clientX: x, clientY: y }));
+  }
+
+  function touchDrag(card: any, from: number[], to: number[]) {
+    touch(card, "touchstart", from[0], from[1]);
+    touch(card, "touchmove", to[0], to[1]);
+    touch(card, "touchend", to[0], to[1]);
+  }
+
+  /** The data of every update_zone call, in order. */
+  function savedData(hass: any): any[] {
+    return hass.callService.mock.calls
+      .filter((call: any[]) => call[1] === "update_zone")
+      .map((call: any[]) => call[2].data);
+  }
+
+  it.each([
+    [
+      "past the far corner",
+      [700, 700],
+      [1200, 1200],
+      { cx: 4375, cy: 9375, rx: 625, ry: 625 },
+      { x_min: 3750, x_max: 5000, y_min: 8750, y_max: 10000 },
+    ],
+    [
+      "past the near corner",
+      [100, 100],
+      [-400, -400],
+      { cx: -4375, cy: 625, rx: 625, ry: 625 },
+      { x_min: -5000, x_max: -3750, y_min: 0, y_max: 1250 },
+    ],
+  ])(
+    "keeps a touch ellipse drag ending %s inside the grid, on the rect's box",
+    async (_name, from, to, ellipse, rect) => {
+      const { card, hass } = await drawingCard("ellipse");
+      touchDrag(card, from as number[], to as number[]);
+
+      const [data] = savedData(hass);
+      expect(data).toEqual(ellipse);
+      expect(data.cx + data.rx).toBeLessThanOrEqual(card.xMax);
+      expect(data.cx - data.rx).toBeGreaterThanOrEqual(card.xMin);
+      expect(data.cy + data.ry).toBeLessThanOrEqual(card.yMax);
+      expect(data.cy - data.ry).toBeGreaterThanOrEqual(card.yMin);
+      expect(card.zones.find((zone: any) => Number(zone.id) === 1)).toEqual(
+        expect.objectContaining({ shape: "ellipse", data: ellipse })
+      );
+
+      // The same gesture in rect mode saves the box the ellipse is drawn in.
+      card._setDrawMode("rect");
+      hass.callService.mockClear();
+      touchDrag(card, from as number[], to as number[]);
+      expect(savedData(hass)).toEqual([rect]);
+    }
+  );
+
+  it("saves an on-canvas ellipse drag unchanged", async () => {
+    const { card, hass } = await drawingCard("ellipse");
+
+    mouse(card, "mousedown", 100, 100);
+    mouse(card, "mousemove", 300, 500);
+    mouse(card, "mouseup", 300, 500);
+    touchDrag(card, [100, 100], [500, 400]);
+
+    expect(savedData(hass)).toEqual([
+      { cx: -2500, cy: 3750, rx: 1250, ry: 2500 },
+      { cx: -1250, cy: 3125, rx: 2500, ry: 1875 },
+    ]);
+  });
+});
+
+/**
  * A touch gesture follows the finger that started it.
  *
  * A second finger landing mid-drag (a resting thumb, a palm) used to restart

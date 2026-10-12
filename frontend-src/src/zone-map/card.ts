@@ -1788,11 +1788,14 @@ export class ZoneMapCard extends HTMLElement {
         },
       };
     } else if (this.drawMode === DRAW_MODES.ELLIPSE) {
-      // Bounding box -> ellipse center/radii
-      const x1 = this.pixelsToValue(this.startPoint.x, 'x');
-      const y1 = this.pixelsToValue(this.startPoint.y, 'y');
-      const x2 = this.pixelsToValue(endPoint.x, 'x');
-      const y2 = this.pixelsToValue(endPoint.y, 'y');
+      // Bounding box -> ellipse center/radii. The corners are clamped to the
+      // grid first, like the rect's: a touch keeps reporting after the finger
+      // leaves the canvas, and an unclamped corner gave an edge-pinned center
+      // with a radius reaching past the grid.
+      const x1 = this._clampValue(this.pixelsToValue(this.startPoint.x, 'x'), this.xMin, this.xMax);
+      const y1 = this._clampValue(this.pixelsToValue(this.startPoint.y, 'y'), this.yMin, this.yMax);
+      const x2 = this._clampValue(this.pixelsToValue(endPoint.x, 'x'), this.xMin, this.xMax);
+      const y2 = this._clampValue(this.pixelsToValue(endPoint.y, 'y'), this.yMin, this.yMax);
       const cx = this._clampAndRound((x1 + x2) / 2, this.xMin, this.xMax);
       const cy = this._clampAndRound((y1 + y2) / 2, this.yMin, this.yMax);
       const rx = Math.max(1, Math.round(Math.abs(x2 - x1) / 2));
