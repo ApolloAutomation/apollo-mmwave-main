@@ -511,6 +511,71 @@ describe("zone map card target pairs", () => {
     expect(types).not.toContain("config/device_registry/list");
     expect(types).not.toContain("config/entity_registry/list");
   });
+
+  // The presence sensor (binary_sensor.py `_build_point_rotator` and its unit
+  // scaling) applies the same rotation and multiplier before its zone test,
+  // and test_binary_sensor.py pins the same results there. A slip on either
+  // side draws a target inside a zone whose presence sensor reads off.
+  /** Mount on the suggested pair, set its reading, and return what is drawn. */
+  async function drawnTargets(
+    payload: any,
+    reading: { x: string; y: string },
+    config: Record<string, any> = {}
+  ) {
+    const hass = fakeHass(payload);
+    const card = await mountCard(hass, config);
+    hass.states["sensor.a_x"] = { state: reading.x };
+    hass.states["sensor.a_y"] = { state: reading.y };
+    card.drawCurrentPosition = vi.fn();
+
+    card._drawTrackedTargets();
+
+    return card.drawCurrentPosition.mock.calls.map((call: any[]) => [call[0], call[1]]);
+  }
+
+  it("rotates a drawn target by the radar's rotation", async () => {
+    const drawn = await drawnTargets(
+      { ...ZONE_PAYLOAD, rotation_deg: 90 },
+      { x: "1000", y: "0" }
+    );
+
+    expect(drawn).toHaveLength(1);
+    expect(drawn[0][0]).toBeCloseTo(0);
+    expect(drawn[0][1]).toBeCloseTo(-1000);
+  });
+
+  it("rotates by degrees, not radians, at an angle that is not a right angle", async () => {
+    const drawn = await drawnTargets(
+      { ...ZONE_PAYLOAD, rotation_deg: 45 },
+      { x: "1000", y: "0" }
+    );
+
+    expect(drawn).toHaveLength(1);
+    expect(drawn[0][0]).toBeCloseTo(1000 * Math.SQRT1_2);
+    expect(drawn[0][1]).toBeCloseTo(-1000 * Math.SQRT1_2);
+  });
+
+  it("scales a drawn target by the card's input units", async () => {
+    const drawn = await drawnTargets(
+      { ...ZONE_PAYLOAD, rotation_deg: 0 },
+      { x: "100", y: "25" },
+      { input_units: "cm" }
+    );
+
+    expect(drawn).toHaveLength(1);
+    expect(drawn[0][0]).toBeCloseTo(1000);
+    expect(drawn[0][1]).toBeCloseTo(250);
+  });
+
+  it("draws nothing for the (0, 0) no-target reading", async () => {
+    const drawn = await drawnTargets(
+      { ...ZONE_PAYLOAD, rotation_deg: 90 },
+      { x: "0", y: "0" },
+      { input_units: "cm" }
+    );
+
+    expect(drawn).toEqual([]);
+  });
 });
 
 describe("zone map card writes", () => {

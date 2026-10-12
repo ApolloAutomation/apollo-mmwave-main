@@ -3,20 +3,26 @@
 from __future__ import annotations
 
 import logging
+import math
 
+import pytest
 from homeassistant.core import callback
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_state_change_event
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.apollo_mmwave import get_store, ld2450
-from custom_components.apollo_mmwave.binary_sensor import ZonePresenceBinarySensor
+from custom_components.apollo_mmwave.binary_sensor import (
+    ZonePresenceBinarySensor,
+    _build_point_rotator,
+)
 from custom_components.apollo_mmwave.const import (
     ATTR_ROTATION_DEG,
     DOMAIN,
     SERVICE_UPDATE_ZONE,
     SIGNAL_ZONES_UPDATED,
     STORE_ENTITIES,
+    STORE_INPUT_UNITS,
     STORE_ZONES,
 )
 
@@ -117,6 +123,44 @@ async def test_presence_tracks_targets_in_and_out(
     assert hass.states.get(presence_id).state == "off"
 
 
+async def test_a_second_target_inside_turns_presence_on(
+    hass, entity_registry, setup_entry_with_zone
+) -> None:
+    """Presence means any tracked target is inside, not only the first one."""
+    device_id, _ = setup_entry_with_zone
+    presence_id = _presence_id(entity_registry, device_id)
+
+    _set_target(hass, TARGET_1, 5000, 1000)  # outside, to the right
+    _set_target(hass, TARGET_2, 0, 1000)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "on"
+
+    _set_target(hass, TARGET_2, -5000, 1000)  # outside, to the left
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "off"
+
+
+@pytest.mark.parametrize(
+    "bad_state",
+    ["unknown", "unavailable", "abc", ""],
+    ids=["unknown", "unavailable", "non-numeric", "empty"],
+)
+async def test_invalid_target_states_read_as_no_target(
+    hass, entity_registry, setup_entry_with_zone, bad_state
+) -> None:
+    """A coordinate the radar cannot report is no reading, not an error."""
+    device_id, _ = setup_entry_with_zone
+    presence_id = _presence_id(entity_registry, device_id)
+    _set_target(hass, TARGET_1, 0, 1000)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "on"
+
+    hass.states.async_set(TARGET_1["y"], bad_state)
+    await hass.async_block_till_done()
+
+    assert hass.states.get(presence_id).state == "off"
+
+
 async def test_presence_applies_the_devices_rotation(
     hass, entity_registry, setup_entry_with_zone
 ) -> None:
@@ -136,6 +180,47 @@ async def test_presence_applies_the_devices_rotation(
     _set_target(hass, TARGET_1, -1000, 0)
     await hass.async_block_till_done()
     assert hass.states.get(presence_id).state == "on"
+
+
+async def test_a_non_numeric_rotation_leaves_readings_unrotated(
+    hass, entity_registry, setup_entry_with_zone
+) -> None:
+    """A stored rotation that does not parse falls back to no rotation."""
+    device_id, _ = setup_entry_with_zone
+    get_store(hass).device(device_id)[ATTR_ROTATION_DEG] = "abc"
+    async_dispatcher_send(hass, SIGNAL_ZONES_UPDATED, device_id)
+    await hass.async_block_till_done()
+    presence_id = _presence_id(entity_registry, device_id)
+
+    _set_target(hass, TARGET_1, 500, 1500)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "on"
+
+    _set_target(hass, TARGET_1, 1500, 500)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "off"
+
+
+@pytest.mark.parametrize(
+    ("rotation", "expected"),
+    [
+        (90, (0, -1000)),
+        (-90, (0, 1000)),
+        (180, (-1000, 0)),
+        # Not a right angle, so degrees taken as radians cannot pass by luck.
+        (45, (1000 / math.sqrt(2), -1000 / math.sqrt(2))),
+        ("abc", (1000, 0)),
+        (None, (1000, 0)),
+    ],
+    ids=["90", "-90", "180", "45", "non-numeric", "none"],
+)
+def test_point_rotator_matches_the_cards_rotation(rotation, expected) -> None:
+    """The card draws targets with the same formula, so both must agree."""
+    # frontend-src/src/zone-map/card.ts `_drawTrackedTargets` is the twin, and
+    # zone-map-card.test.ts pins the same 90 and 45 degree results there.
+    rotate = _build_point_rotator(rotation)
+
+    assert rotate(1000, 0) == pytest.approx(expected, abs=1e-6)
 
 
 async def test_presence_entity_attaches_to_the_device(
@@ -300,6 +385,60 @@ async def test_presence_scales_readings_by_the_devices_input_units(
     _set_target(hass, TARGET_1, 0, 250)
     await hass.async_block_till_done()
     assert hass.states.get(presence_id).state == "on"
+
+
+@pytest.mark.parametrize(
+    ("units", "inside_and_outside_y"),
+    [
+        ("cm", (150, 250)),
+        ("m", (1.5, 2.5)),
+        ("in", (60, 80)),
+        ("ft", (6, 7)),
+        ("yd", (2, 3)),
+    ],
+    ids=["cm", "m", "in", "ft", "yd"],
+)
+async def test_presence_scales_readings_by_each_input_unit(
+    hass, entity_registry, setup_entry_with_zone, units, inside_and_outside_y
+) -> None:
+    """Every unit the service accepts is converted to millimetres first."""
+    device_id, _ = setup_entry_with_zone
+    inside_y, outside_y = inside_and_outside_y
+    presence_id = _presence_id(entity_registry, device_id)
+    # The zone spans y 0..2000 mm. Each outside reading would be inside if it
+    # were taken as millimetres, so it only reads off once it is scaled.
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_UPDATE_ZONE,
+        {"device_id": device_id, "input_units": units},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+
+    _set_target(hass, TARGET_1, 0, inside_y)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "on"
+
+    _set_target(hass, TARGET_1, 0, outside_y)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "off"
+
+
+async def test_unrecognised_stored_input_units_read_as_millimetres(
+    hass, entity_registry, setup_entry_with_zone
+) -> None:
+    """A unit the service would refuse, already in the store, is no scaling."""
+    device_id, _ = setup_entry_with_zone
+    get_store(hass).device(device_id)[STORE_INPUT_UNITS] = "furlong"
+    presence_id = _presence_id(entity_registry, device_id)
+
+    _set_target(hass, TARGET_1, 0, 250)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "on"
+
+    _set_target(hass, TARGET_1, 0, 2500)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "off"
 
 
 def _record_state_changes(hass, entity_id: str) -> list[tuple[str | None, str | None]]:
@@ -477,6 +616,65 @@ async def test_polygon_presence_concave_notch(
     _set_target(hass, TARGET_1, -1000, 2500)  # the left arm
     await hass.async_block_till_done()
     assert hass.states.get(presence_id).state == "on"
+
+
+async def test_ellipse_presence_includes_the_rim(
+    hass, entity_registry, setup_entry_with_zone
+) -> None:
+    """The centre and a point on the rim read on, one just past the rim off."""
+    device_id, _ = setup_entry_with_zone
+    _draw_zone(
+        hass,
+        device_id,
+        {"shape": "ellipse", "data": {"cx": 0, "cy": 1000, "rx": 500, "ry": 1000}},
+    )
+    await hass.async_block_till_done()
+    presence_id = _presence_id(entity_registry, device_id)
+
+    _set_target(hass, TARGET_1, 0, 1000)  # the centre
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "on"
+
+    _set_target(hass, TARGET_1, 600, 1000)  # past the rim
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "off"
+
+    _set_target(hass, TARGET_1, 500, 1000)  # on the rim, inclusive
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "on"
+
+
+@pytest.mark.parametrize(
+    "zone",
+    [
+        {
+            "shape": "polygon",
+            "data": {"points": [{"x": -1000, "y": 0}, {"x": 1000, "y": 2000}]},
+        },
+        {"shape": "none", "data": RECT_ZONE["data"]},
+        {"shape": "blob", "data": RECT_ZONE["data"]},
+        {"shape": "rect", "data": None},
+        {
+            "shape": "rect",
+            "data": {"x_min": 0, "x_max": 0, "y_min": 0, "y_max": 2000},
+        },
+    ],
+    ids=["two-point-polygon", "none", "unknown-shape", "rect-no-data", "zero-width"],
+)
+async def test_an_unusable_zone_never_reads_on(
+    hass, entity_registry, setup_entry_with_zone, zone
+) -> None:
+    """A zone with no usable area reads off even with a target on its geometry."""
+    # The service refuses unknown shapes, so these come from data already on
+    # disk and are written straight to the store.
+    device_id, _ = setup_entry_with_zone
+    _draw_zone(hass, device_id, zone)
+    await hass.async_block_till_done()
+
+    _set_target(hass, TARGET_1, 0, 1000)
+    await hass.async_block_till_done()
+
+    assert hass.states.get(_presence_id(entity_registry, device_id)).state == "off"
 
 
 async def test_shared_coordinate_entity_is_tracked_once(
