@@ -27,6 +27,21 @@ describe("gateEnergyModel", () => {
     expect(gateEnergyModel(h, m).engineeringMode).toBe(true);
   });
 
+  it("reports an unavailable switch as unavailable, not as engineering mode", () => {
+    const model = gateEnergyModel(hass({ [m.engineering_mode!]: ent("unavailable") }), m);
+    expect(model.engineeringMode).toBe(false);
+    expect(model.unavailable).toBe(true);
+  });
+
+  it("does not report an off, unknown or missing switch as unavailable", () => {
+    expect(gateEnergyModel(hass({ [m.engineering_mode!]: ent("off") }), m).unavailable).toBe(false);
+    // Only "unavailable" means offline, as in strategy-core's isLive.
+    expect(gateEnergyModel(hass({ [m.engineering_mode!]: ent("unknown") }), m).unavailable).toBe(
+      false
+    );
+    expect(gateEnergyModel(hass({}), m).unavailable).toBe(false);
+  });
+
   it("reads energies (default 0) and thresholds per gate", () => {
     const h = hass({
       [m.move_energy[0]]: ent("42"),
@@ -174,6 +189,25 @@ describe("renderGateEnergyChart engineering-mode overlay", () => {
     expect(flat(renderGateEnergyChart(hass({ [m.move_energy[0]]: ent("0") }), m))).toContain(
       "Turn on Radar Engineering Mode"
     );
+  });
+
+  it("says the radar is unavailable instead of asking for engineering mode", () => {
+    const offline = flat(
+      renderGateEnergyChart(
+        hass({ [m.engineering_mode!]: ent("unavailable"), [m.move_energy[0]]: ent("unavailable") }),
+        m
+      )
+    );
+    expect(offline).toContain("Radar unavailable");
+    expect(offline).toContain("Waiting for the device to reconnect");
+    expect(offline).not.toContain("to see gate energy values");
+    expect(offline).not.toContain(">Turn on Radar Engineering Mode<");
+
+    const switchedOff = flat(renderGateEnergyChart(hass(off), m));
+    expect(switchedOff).toContain(">Turn on Radar Engineering Mode<");
+    expect(switchedOff).toContain("to see gate energy values");
+    expect(switchedOff).not.toContain("Radar unavailable");
+    expect(switchedOff).not.toContain("Waiting for the device to reconnect");
   });
 
   it("renders no button and no turn-off text once engineering mode is on", () => {

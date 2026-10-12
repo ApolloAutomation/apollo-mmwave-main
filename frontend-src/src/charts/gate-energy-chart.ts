@@ -19,6 +19,10 @@ export interface GateRow {
 
 export interface GateEnergyModel {
   engineeringMode: boolean;
+  /** The engineering-mode switch exists but reads "unavailable": the radar is
+   *  offline, so the plot says so instead of asking for the switch. Only
+   *  "unavailable" counts, matching strategy-core's isLive. */
+  unavailable: boolean;
   present: boolean;
   gates: GateRow[];
 }
@@ -47,6 +51,8 @@ export function gateEnergyModel(hass: HomeAssistant, m: EntityMap): GateEnergyMo
   return {
     engineeringMode:
       !!m.engineering_mode && hass.states[m.engineering_mode]?.state === "on",
+    unavailable:
+      !!m.engineering_mode && hass.states[m.engineering_mode]?.state === "unavailable",
     present,
     gates,
   };
@@ -129,6 +135,12 @@ export function renderGateEnergyChart(
         fill="var(--secondary-text-color)">${v}</text>`
   );
 
+  // An unavailable switch is not an "off" one: the radar is offline, and
+  // asking the user to turn the switch on would send them after a control
+  // that cannot respond. The same dimmed plot says so instead.
+  const [overlayLine1, overlayLine2] = model.unavailable
+    ? ["Radar unavailable", "Waiting for the device to reconnect"]
+    : ["Turn on Radar Engineering Mode", "to see gate energy values"];
   const overlay = model.engineeringMode
     ? nothing
     : svg`
@@ -136,8 +148,8 @@ export function renderGateEnergyChart(
           fill="var(--card-background-color, #000)" opacity="0.78"></rect>
         <text x=${(WIDTH + PAD_L) / 2} y=${PAD_T + PLOT_H / 2} font-size="20"
           font-weight="600" text-anchor="middle" fill="var(--primary-text-color, #e6e6e6)">
-          <tspan x=${(WIDTH + PAD_L) / 2} dy="-4">Turn on Radar Engineering Mode</tspan>
-          <tspan x=${(WIDTH + PAD_L) / 2} dy="28">to see gate energy values</tspan>
+          <tspan x=${(WIDTH + PAD_L) / 2} dy="-4">${overlayLine1}</tspan>
+          <tspan x=${(WIDTH + PAD_L) / 2} dy="28">${overlayLine2}</tspan>
         </text>`;
 
   // A real HTML button over the plot, not an SVG element with an ARIA role: a
