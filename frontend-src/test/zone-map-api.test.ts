@@ -299,6 +299,39 @@ describe("connectZones", () => {
     }
   });
 
+  it("tells the user to reload the page once it has stopped retrying", async () => {
+    // Only promise that the zones come back on their own while a retry is
+    // still coming; after the last one, say what the user has to do instead.
+    vi.useFakeTimers();
+    try {
+      const connection = fakeConnection();
+      const subscribeMessage = vi.fn(async (cb: Handler, msg: any) => {
+        if (msg.type === ZONES_SUBSCRIBE) {
+          throw { code: "not_loaded", message: "not loaded" };
+        }
+        return connection.subscribeMessage(cb, msg);
+      });
+      const hass = fakeHass({ connection: { ...connection, subscribeMessage } });
+      const onError = vi.fn();
+
+      await connectZones(hass, "dev123", { onConfig: vi.fn(), onError });
+      const total = RETRY_DELAYS_MS.reduce((sum, delay) => sum + delay, 0);
+      await vi.advanceTimersByTimeAsync(total * 2);
+
+      const messages: string[] = onError.mock.calls.map((call: any[]) => call[0]);
+      expect(messages).toHaveLength(RETRY_DELAYS_MS.length + 1);
+      for (const message of messages.slice(0, -1)) {
+        expect(message).toContain("come back on their own");
+        expect(message).not.toContain("Reload the page");
+      }
+      const last = messages[messages.length - 1];
+      expect(last).toContain("Reload the page once the integration is back");
+      expect(last).not.toContain("come back on their own");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("does not retry an error that retrying cannot fix", async () => {
     vi.useFakeTimers();
     try {

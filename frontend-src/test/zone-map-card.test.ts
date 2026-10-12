@@ -92,9 +92,13 @@ async function mountCard(hass: any, config: Record<string, any> = {}) {
   return card as any;
 }
 
+// Every card here mounts as dev123, and _applyAutoLock reads the lock toggle
+// remembered for that radar, so a toggle one test stores must not reach the
+// next one, whichever describe it is in.
+afterEach(() => window.localStorage.clear());
+
 describe("zone map card registration", () => {
-  it("registers under the apollo-radar namespace and not the old name", async () => {
-    await import("../src/zone-map/card");
+  it("registers under the apollo-radar namespace and not the old name", () => {
     expect(customElements.get("apollo-radar-zone-map-card")).toBeDefined();
     expect(customElements.get("zone-mapper-card")).toBeUndefined();
   });
@@ -122,8 +126,6 @@ describe("zone map card registration", () => {
 
 describe("zone map card lock state", () => {
   const KEY = "apollo-mmwave.zone-map.lock.dev123";
-
-  afterEach(() => window.localStorage.clear());
 
   it("starts locked when the radar already has zones", async () => {
     const card = await mountCard(fakeHass());
@@ -326,8 +328,6 @@ describe("zone map card config keys removed on a live element", () => {
   const TYPE = "custom:apollo-radar-zone-map-card";
   const EMPTY = { ...ZONE_PAYLOAD, zones: {} };
 
-  afterEach(() => window.localStorage.clear());
-
   const FULL = {
     type: TYPE,
     grid: { x_min: -1000, x_max: 1000, y_min: 0, y_max: 2000 },
@@ -417,7 +417,7 @@ describe("zone map card config keys removed on a live element", () => {
   });
 });
 
-describe("zone map card grid units", () => {
+describe("zone map card grid and cone config", () => {
   it("reads the grid extents in grid_units and keeps them in mm", async () => {
     const card = await mountCard(fakeHass(), {
       grid_units: "cm",
@@ -434,6 +434,91 @@ describe("zone map card grid units", () => {
     });
 
     expect([card.xMin, card.xMax, card.yMin, card.yMax]).toEqual([-5000, 2500, 0, 10000]);
+  });
+
+  it("swaps inverted extents and widens equal ones by 1 mm, after converting", async () => {
+    const card = await mountCard(fakeHass(), {
+      grid_units: "ft",
+      grid: { x_min: 10, x_max: -10, y_min: 5, y_max: 5 },
+    });
+
+    expect([card.xMin, card.xMax, card.yMin, card.yMax]).toEqual([-3048, 3048, 1524, 1525]);
+    // The canvas spans the corrected extents, y_min on the top edge.
+    expect(card.valueToPixels(-3048, "x")).toBe(0);
+    expect(card.valueToPixels(3048, "x")).toBeCloseTo(800, 9);
+    expect(card.valueToPixels(1524, "y")).toBe(0);
+    expect(card.valueToPixels(1525, "y")).toBeCloseTo(800, 9);
+
+    card.setConfig({
+      device_id: "dev123",
+      grid_units: "ft",
+      grid: { x_min: 0, x_max: 0, y_min: 20, y_max: 10 },
+    });
+    expect([card.xMin, card.xMax, card.yMin, card.yMax]).toEqual([0, 1, 3048, 6096]);
+  });
+
+  it("reads the cone range in grid_units and keeps the cone config in bounds", async () => {
+    const cm = await mountCard(fakeHass(), {
+      grid_units: "cm",
+      cone: { y_max: 450, fov_deg: 90 },
+    });
+    expect([cm.coneYMax, cm.coneFovDeg]).toEqual([4500, 90]);
+
+    const card = await mountCard(fakeHass(), { cone: { y_max: -5, fov_deg: 0 } });
+    expect([card.coneYMax, card.coneFovDeg]).toEqual([0, 1]);
+
+    card.setConfig({ device_id: "dev123", cone: { fov_deg: 400 } });
+    expect(card.coneFovDeg).toBe(360);
+
+    // A value that is not a number keeps the default rather than going NaN.
+    card.setConfig({ device_id: "dev123", cone: { y_max: "far", fov_deg: "wide" } });
+    expect([card.coneYMax, card.coneFovDeg]).toEqual([6000, 120]);
+  });
+
+  it("labels ticks in the grid's display unit at the step's precision", async () => {
+    const card = await mountCard(fakeHass());
+
+    expect(
+      ["mm", "cm", "m", "in", "ft", undefined, "furlong"].map((unit) =>
+        card._gridDisplayUnit(unit)
+      )
+    ).toEqual(["m", "cm", "m", "ft", "ft", "m", "m"]);
+    expect(card._formatTickLabel(500, 500, "m")).toBe("0.5m");
+    expect(card._formatTickLabel(-2000, 1000, "m")).toBe("-2m");
+    expect(card._formatTickLabel(1500, 1500, "m")).toBe("1.5m");
+    expect(card._formatTickLabel(250, 250, "m")).toBe("0.25m");
+    expect(card._formatTickLabel(150, 50, "cm")).toBe("15cm");
+    expect(card._formatTickLabel(304.8, 304.8, "ft")).toBe("1ft");
+    expect(card._formatTickLabel(762, 152.4, "ft")).toBe("2.5ft");
+  });
+
+  /** One label per step from `from` to `to`, without the origin's. */
+  function tickLabels(from: number, to: number, step: number, unit: string): string[] {
+    return Array.from({ length: Math.round((to - from) / step) + 1 }, (_, i) => from + i * step)
+      .filter((value) => value !== 0)
+      .map((value) => `${value}${unit}`);
+  }
+
+  it("labels the default mm grid every half metre when unit_display is on", async () => {
+    const card = await mountCard(fakeHass(), { unit_display: true });
+
+    const { labels } = card._getGridRenderState();
+
+    expect(labels.x.map((label: any) => label.text)).toEqual(tickLabels(-5, 5, 0.5, "m"));
+    expect(labels.y.map((label: any) => label.text)).toEqual(tickLabels(0, 10, 0.5, "m"));
+  });
+
+  it("labels an inch grid in feet", async () => {
+    const card = await mountCard(fakeHass(), {
+      grid_units: "in",
+      unit_display: true,
+      grid: { x_min: -96, x_max: 96, y_min: 0, y_max: 192 },
+    });
+
+    const { labels } = card._getGridRenderState();
+
+    expect(labels.x.map((label: any) => label.text)).toEqual(tickLabels(-8, 8, 1, "ft"));
+    expect(labels.y.map((label: any) => label.text)).toEqual(tickLabels(0, 16, 1, "ft"));
   });
 });
 
@@ -519,6 +604,41 @@ describe("zone map card zone loading", () => {
     // An empty canvas reads as "this radar has no zones yet", which is exactly
     // the ambiguity this rework removes.
     expect(card.shadowRoot!.querySelector("canvas")).toBeNull();
+  });
+
+  it("brings the map back, with the payload laid over it, once a load error clears", async () => {
+    // The integration was still loading when the card opened, so the store
+    // could not answer. The config entry feed reopens the card once it loads.
+    const hass = fakeHass(ZONE_PAYLOAD, { code: "not_loaded", message: "not loaded" });
+    const card = await mountCard(hass);
+    expect(card._loadError).toMatch(/not loaded/);
+    expect(card.canvas).toBeNull();
+    await vi.waitFor(() => expect(hass.handlers[CONFIG_ENTRIES_SUBSCRIBE]).toHaveLength(1));
+
+    hass.error = undefined;
+    hass.handlers[CONFIG_ENTRIES_SUBSCRIBE][0]([
+      { type: "updated", entry: { domain: "apollo_mmwave", state: "loaded" } },
+    ]);
+    await vi.waitFor(() => expect(card._loadError).toBeNull());
+
+    const root = card.shadowRoot;
+    expect(root.getElementById("loadError")).toBeNull();
+    expect(card.canvas).toBeTruthy();
+    expect(card.canvas).toBe(root.querySelector("canvas"));
+    // The re-render threw the error screen away; the payload is applied to
+    // the rebuilt map, not left behind on the DOM that was replaced.
+    expect(card.zones).toEqual([
+      { id: 1, shape: "rect", data: { x_min: 0, x_max: 1000, y_min: 0, y_max: 1000 } },
+    ]);
+    expect(root.querySelector('#zone-buttons .zone-btn[data-zone-id="1"]').textContent).toBe(
+      "Doorway"
+    );
+    expect(card.selectedZone).toBe(1);
+    expect(root.getElementById("deviceTitle").textContent).toBe("Office radar");
+    expect(root.getElementById("coneAngleSlider").value).toBe("12");
+    expect(root.getElementById("entityStatus").textContent).toBe(
+      "Using this radar's own detected targets (1)."
+    );
   });
 
   it("retargets its reads when the card is pointed at another radar", async () => {
@@ -836,6 +956,50 @@ describe("zone map card writes", () => {
     const payload = hass.callService.mock.calls[0][2];
     expect(payload.device_id).toBe("dev123");
     expect(payload).not.toHaveProperty("location");
+  });
+
+  it("adds the lowest free zone id with no shape and a default name", async () => {
+    const hass = fakeHass();
+    const card = await mountCard(hass);
+    hass.callService.mockClear();
+
+    card.shadowRoot.getElementById("btnAddZone").click();
+
+    expect(hass.callService.mock.calls.map((call: any[]) => call[2])).toEqual([
+      {
+        device_id: "dev123",
+        zone_id: 2,
+        shape: "none",
+        data: null,
+        name: "Zone 2",
+        input_units: "mm",
+      },
+    ]);
+    expect(card.selectedZone).toBe(2);
+    expect(card.zoneConfig).toEqual([
+      { id: 1, name: "Doorway" },
+      { id: 2, name: "Zone 2" },
+    ]);
+  });
+
+  it("fills the first gap in the zone ids, counting zones only the YAML names", async () => {
+    const hass = fakeHass({
+      ...ZONE_PAYLOAD,
+      zones: { ...ZONE_PAYLOAD.zones, "3": { shape: "none", data: null, name: "Couch" } },
+    });
+    const card = await mountCard(hass, { zones: [{ id: 4, name: "Desk" }] });
+    hass.callService.mockClear();
+
+    card._handleAddZone();
+    card._handleAddZone();
+
+    expect(
+      hass.callService.mock.calls.map((call: any[]) => [call[2].zone_id, call[2].name])
+    ).toEqual([
+      [2, "Zone 2"],
+      [5, "Zone 5"],
+    ]);
+    expect(card.selectedZone).toBe(5);
   });
 });
 
@@ -3265,5 +3429,314 @@ describe("zone map card drawing colors", () => {
       ["fill", "#ffffff"],
       ["stroke", "rgba(0,0,0,0.6)"],
     ]);
+  });
+});
+
+/**
+ * Canvas geometry and the shapes a gesture commits.
+ *
+ * setupCanvas fixes the bitmap at 800x800 px, so on the default grid (x
+ * -5000..5000, y 0..10000 mm) one bitmap px is 12.5 mm on both axes, and y
+ * grows downward from y_min on the top edge. happy-dom has no layout, so each
+ * test gives the canvas its CSS box.
+ */
+describe("zone map card drawing", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const DOORWAY = ZONE_PAYLOAD.zones["1"].data;
+
+  function box(left: number, top: number, width: number, height: number): DOMRect {
+    return {
+      left,
+      top,
+      right: left + width,
+      bottom: top + height,
+      x: left,
+      y: top,
+      width,
+      height,
+      toJSON: () => ({}),
+    } as DOMRect;
+  }
+
+  /** Unlocked on ZONE_PAYLOAD with zone 1 (Doorway) selected in `mode`. */
+  async function drawingCard(mode: string, layout = box(0, 0, 800, 800)) {
+    const hass = fakeHass();
+    const card = await mountCard(hass, { start_locked: false });
+    expect(card.selectedZone).toBe(1);
+    card._setDrawMode(mode);
+    vi.spyOn(card.canvas, "getBoundingClientRect").mockReturnValue(layout);
+    hass.callService.mockClear();
+    const toasts = notifications(card);
+    return { card, hass, toasts };
+  }
+
+  function drag(card: any, from: number[], to: number[]) {
+    const mouse = (type: string, [x, y]: number[]) =>
+      card.canvas.dispatchEvent(new MouseEvent(type, { clientX: x, clientY: y }));
+    mouse("mousedown", from);
+    mouse("mousemove", to);
+    mouse("mouseup", to);
+  }
+
+  /** Let a resolved callService run on to its toast. */
+  async function settle() {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  function zoneSaves(hass: any): any[] {
+    return hass.callService.mock.calls
+      .filter((call: any[]) => call[1] === "update_zone")
+      .map((call: any[]) => call[2]);
+  }
+
+  it("maps mm to bitmap px and back on the default grid, with y growing down", async () => {
+    const card = await mountCard(fakeHass());
+
+    expect([card.canvas.width, card.canvas.height]).toEqual([800, 800]);
+    expect([card.pxPerX, card.pxPerY]).toEqual([0.08, 0.08]);
+    expect(card.valueToPixels(-5000, "x")).toBe(0);
+    expect(card.valueToPixels(0, "x")).toBeCloseTo(400, 9);
+    expect(card.valueToPixels(5000, "x")).toBeCloseTo(800, 9);
+    // y_min is the top edge, and a larger y is further down the canvas.
+    expect(card.valueToPixels(0, "y")).toBe(0);
+    expect(card.valueToPixels(2500, "y")).toBeCloseTo(200, 9);
+    expect(card.valueToPixels(10000, "y")).toBeCloseTo(800, 9);
+    expect(card.pixelsToValue(0, "x")).toBe(-5000);
+    expect(card.pixelsToValue(200, "y")).toBeCloseTo(2500, 9);
+
+    for (const value of [-5000, -1234.5, 0, 2500, 5000]) {
+      expect(card.pixelsToValue(card.valueToPixels(value, "x"), "x")).toBeCloseTo(value, 6);
+    }
+    for (const value of [0, 1234.5, 5000, 10000]) {
+      expect(card.pixelsToValue(card.valueToPixels(value, "y"), "y")).toBeCloseTo(value, 6);
+    }
+  });
+
+  it("reads a pointer in bitmap px, scaled from the canvas's CSS box", async () => {
+    // Laid out at 400x400 CSS px, 10 px in from the left and 20 px down.
+    const { card } = await drawingCard("rect", box(10, 20, 400, 400));
+
+    expect(card._getPointFromEvent({ clientX: 110, clientY: 70 })).toEqual({ x: 200, y: 100 });
+    expect(card._getPointFromEvent({ clientX: 410, clientY: 420 })).toEqual({ x: 800, y: 800 });
+  });
+
+  it("saves an up-left rect drag with sorted, rounded corners, and Undo restores it", async () => {
+    // 640 CSS px over the 800 px bitmap: one CSS px is 1.25 bitmap px, so the
+    // release at CSS (81, 81) is bitmap (101.25, 101.25), (-3734.375, 1265.625) mm.
+    const { card, hass, toasts } = await drawingCard("rect", box(0, 0, 640, 640));
+
+    drag(card, [240, 240], [81, 81]);
+    await settle();
+
+    const rect = { x_min: -3734, x_max: -1250, y_min: 1266, y_max: 3750 };
+    expect(zoneSaves(hass)).toEqual([
+      { device_id: "dev123", zone_id: 1, shape: "rect", data: rect, input_units: "mm" },
+    ]);
+    expect(card.zones).toEqual([{ id: 1, shape: "rect", data: rect }]);
+    expect(toasts).toEqual(["Doorway saved"]);
+    expect(card._undoSnapshot).toEqual([{ zoneId: 1, shape: "rect", data: DOORWAY }]);
+    expect(card.isDrawing).toBe(false);
+
+    hass.callService.mockClear();
+    card.shadowRoot.getElementById("btnUndo").click();
+    await settle();
+
+    expect(zoneSaves(hass)).toEqual([
+      { device_id: "dev123", zone_id: 1, shape: "rect", data: DOORWAY, input_units: "mm" },
+    ]);
+    expect(card.zones).toEqual([{ id: 1, shape: "rect", data: DOORWAY }]);
+    expect(toasts).toEqual(["Doorway saved", "Undid last zone change"]);
+    expect(card._undoSnapshot).toBeNull();
+    expect(card.shadowRoot.getElementById("btnUndo").disabled).toBe(true);
+  });
+
+  it("floors a flat ellipse's radius at 1 mm", async () => {
+    const { card, hass } = await drawingCard("ellipse");
+
+    drag(card, [100, 100], [100, 300]);
+
+    expect(zoneSaves(hass).map((save) => save.data)).toEqual([
+      { cx: -3750, cy: 2500, rx: 1, ry: 1250 },
+    ]);
+  });
+
+  it("commits at most 32 vertices of a longer polygon, each clamped and rounded", async () => {
+    const { card, hass, toasts } = await drawingCard("polygon");
+    // The click path auto-finishes at 32 points, so only a longer list handed
+    // to finishPolygon reaches its own cap.
+    const vertices = Array.from({ length: 40 }, (_, i) => ({
+      x: -4000 + 200 * i + 0.3,
+      y: 250 * i + 0.7,
+    }));
+    vertices[0] = { x: -5200.4, y: 120.6 }; // past the left edge
+    vertices[1] = { x: -4800.6, y: -30 }; // above the top edge
+    vertices[31] = { x: 5300, y: 10400 }; // past the far corner, the last one kept
+    card._polyPoints = vertices;
+    card.isDrawing = true;
+
+    card.finishPolygon();
+    await settle();
+
+    const saves = zoneSaves(hass);
+    expect(saves).toHaveLength(1);
+    expect(saves[0]).toEqual(
+      expect.objectContaining({ device_id: "dev123", zone_id: 1, shape: "polygon" })
+    );
+    const points = saves[0].data.points;
+    expect(points).toHaveLength(32);
+    expect(points.slice(0, 3)).toEqual([
+      { x: -5000, y: 121 },
+      { x: -4801, y: 0 },
+      { x: -3600, y: 501 },
+    ]);
+    expect(points.slice(30)).toEqual([
+      { x: 2000, y: 7501 },
+      { x: 5000, y: 10000 },
+    ]);
+    for (const { x, y } of points) {
+      expect(Number.isInteger(x) && Number.isInteger(y)).toBe(true);
+      expect(x >= card.xMin && x <= card.xMax && y >= card.yMin && y <= card.yMax).toBe(true);
+    }
+    expect(card.zones).toEqual([{ id: 1, shape: "polygon", data: { points } }]);
+    expect(toasts).toEqual(["Doorway saved"]);
+    expect(card._undoSnapshot).toEqual([{ zoneId: 1, shape: "rect", data: DOORWAY }]);
+    expect(card._polyPoints).toEqual([]);
+    expect(card.isDrawing).toBe(false);
+  });
+});
+
+/**
+ * Clearing zones from the chips, and undoing it.
+ *
+ * A double-click on a zone chip clears that zone and Clear All Zones clears
+ * every listed one, with one update_zone of shape none per zone. Both leave an
+ * undo snapshot, and Undo writes each zone back. Clear All and Undo toast once
+ * for the whole batch, and only when every write landed; a refused write says
+ * so itself. Unlocked throughout, so nothing here depends on whether the lock
+ * should guard these controls.
+ */
+describe("zone map card clearing zones", () => {
+  const DOORWAY = ZONE_PAYLOAD.zones["1"].data;
+  const WINDOW = { x_min: 0, x_max: 500, y_min: 0, y_max: 500 };
+  const TWO_ZONES = {
+    ...ZONE_PAYLOAD,
+    zones: { ...ZONE_PAYLOAD.zones, "2": { shape: "rect", data: WINDOW, name: "Window" } },
+  };
+
+  async function clearingCard() {
+    const hass = fakeHass(TWO_ZONES);
+    const card = await mountCard(hass, { start_locked: false });
+    hass.callService.mockClear();
+    const toasts = notifications(card);
+    return { card, hass, toasts };
+  }
+
+  function clearAll(card: any) {
+    card.shadowRoot.getElementById("clearBtn").click();
+  }
+
+  function undo(card: any) {
+    card.shadowRoot.getElementById("btnUndo").click();
+  }
+
+  /** Let the resolved callService calls run on to their toasts. */
+  async function settle() {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  function zoneSaves(hass: any): any[] {
+    return hass.callService.mock.calls
+      .filter((call: any[]) => call[1] === "update_zone")
+      .map((call: any[]) => call[2]);
+  }
+
+  /** Refuse the update_zone call for `zoneId` and let every other one land. */
+  function refuse(hass: any, zoneId: number) {
+    hass.callService.mockImplementation(async (_domain: string, _service: string, data: any) => {
+      if (data.zone_id === zoneId) throw new Error(`zone ${zoneId} is busy`);
+    });
+  }
+
+  function cleared(zoneId: number) {
+    return { device_id: "dev123", zone_id: zoneId, shape: "none", data: null, input_units: "mm" };
+  }
+
+  function restored(zoneId: number, data: any) {
+    return { device_id: "dev123", zone_id: zoneId, shape: "rect", data, input_units: "mm" };
+  }
+
+  it("clears one zone on a chip double-click, and Undo puts it back", async () => {
+    const { card, hass, toasts } = await clearingCard();
+    const chip = card.shadowRoot.querySelector('#zone-buttons .zone-btn[data-zone-id="1"]');
+
+    chip.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
+    await settle();
+
+    expect(zoneSaves(hass)).toEqual([cleared(1)]);
+    expect(card.zones).toEqual([{ id: 2, shape: "rect", data: WINDOW }]);
+    expect(toasts).toEqual(["Doorway cleared"]);
+    expect(card._undoSnapshot).toEqual([{ zoneId: 1, shape: "rect", data: DOORWAY }]);
+
+    hass.callService.mockClear();
+    undo(card);
+    await settle();
+
+    expect(zoneSaves(hass)).toEqual([restored(1, DOORWAY)]);
+    expect(card.zones).toContainEqual({ id: 1, shape: "rect", data: DOORWAY });
+    expect(toasts).toEqual(["Doorway cleared", "Undid last zone change"]);
+  });
+
+  it("clears every zone with a write each and one toast, and Undo restores them", async () => {
+    const { card, hass, toasts } = await clearingCard();
+
+    clearAll(card);
+    await settle();
+
+    expect(zoneSaves(hass)).toEqual([cleared(1), cleared(2)]);
+    expect(card.zones).toEqual([]);
+    expect(toasts).toEqual(["All zones cleared"]);
+    expect(card._undoSnapshot).toEqual([
+      { zoneId: 1, shape: "rect", data: DOORWAY },
+      { zoneId: 2, shape: "rect", data: WINDOW },
+    ]);
+
+    hass.callService.mockClear();
+    undo(card);
+    await settle();
+
+    expect(zoneSaves(hass)).toEqual([restored(1, DOORWAY), restored(2, WINDOW)]);
+    expect(card.zones).toEqual([
+      { id: 1, shape: "rect", data: DOORWAY },
+      { id: 2, shape: "rect", data: WINDOW },
+    ]);
+    expect(toasts).toEqual(["All zones cleared", "Undid last zone change"]);
+  });
+
+  it("does not say all zones were cleared when one of them was refused", async () => {
+    const { card, hass, toasts } = await clearingCard();
+    refuse(hass, 2);
+
+    clearAll(card);
+    await settle();
+
+    expect(zoneSaves(hass)).toEqual([cleared(1), cleared(2)]);
+    expect(toasts).toEqual(["Could not save: zone 2 is busy"]);
+  });
+
+  it("does not say the undo happened when one of its writes was refused", async () => {
+    const { card, hass, toasts } = await clearingCard();
+    clearAll(card);
+    await settle();
+    hass.callService.mockClear();
+    refuse(hass, 1);
+
+    undo(card);
+    await settle();
+
+    expect(zoneSaves(hass)).toEqual([restored(1, DOORWAY), restored(2, WINDOW)]);
+    expect(toasts).toEqual(["All zones cleared", "Could not save: zone 1 is busy"]);
   });
 });
