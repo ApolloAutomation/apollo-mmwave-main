@@ -58,25 +58,6 @@ export interface HassConnection {
   removeEventListener?(event: string, callback: () => void): void;
 }
 
-export type PanelKey =
-  | "controls"
-  | "zone_config"
-  | "gate_config"
-  | "occupancy"
-  | "distance_chart"
-  | "gate_energy_chart"
-  | "occupancy_history";
-
-export const ALL_PANEL_KEYS: PanelKey[] = [
-  "controls",
-  "zone_config",
-  "gate_config",
-  "occupancy",
-  "distance_chart",
-  "gate_energy_chart",
-  "occupancy_history",
-];
-
 /** Resolved entity ids. Arrays are indexed by gate 0..8. Any field may be
  *  an id that does not exist in hass.states; callers must existence-check. */
 export interface EntityMap {
@@ -123,7 +104,6 @@ export interface Ld2410CardConfig {
   device_id?: string;
   device_base_name?: string;
   entities?: Partial<EntityMap>;
-  panels?: Partial<Record<PanelKey, boolean>>;
   title?: string;
   distance_unit?: Uom;
 }
