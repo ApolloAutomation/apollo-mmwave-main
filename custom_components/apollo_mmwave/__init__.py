@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from typing import TYPE_CHECKING, Any
 
 import voluptuous as vol
@@ -78,29 +79,50 @@ PLATFORMS = [Platform.BINARY_SENSOR, Platform.SENSOR]
 # calls update_zone on every rotation drag, which would otherwise flood the log.
 _DATA_LOCATION_WARNED = "location_deprecation_warned"
 
+# The largest integer a zone coordinate or zone id may be: JavaScript's
+# Number.MAX_SAFE_INTEGER. Home Assistant writes the zone store, websocket
+# replies and recorder rows with orjson, which refuses integers outside 64
+# bits, so one bigger value made every later store write fail for every radar;
+# the card could not read such a number exactly either. This is a
+# serialization limit, not a geometry bound.
+_MAX_SAFE_INT = 2**53 - 1
+
 
 def get_store(hass: HomeAssistant) -> ZoneStore:
     """Return the loaded ZoneStore (setup guarantees it exists)."""
     return hass.data[DOMAIN][DATA_STORE]
 
 
-def _coerce_float(value: Any) -> float | None:
+def _finite_float(value: Any) -> float | None:
+    """Return the value as a finite float, or None if it is not one."""
     if value is None:
         return None
     try:
-        return float(value)
-    except TypeError, ValueError:
+        result = float(value)
+    except TypeError, ValueError, OverflowError:
+        # OverflowError: an int too large for a float, such as a long YAML
+        # integer literal.
         return None
+    # round() raises on inf (OverflowError) and nan (ValueError), so neither
+    # may reach it. They are treated like any other value that is not a number.
+    return result if math.isfinite(result) else None
+
+
+def _coerce_float(value: Any) -> float | None:
+    """Return a zone coordinate as a float, or None if it cannot be stored."""
+    result = _finite_float(value)
+    if result is None or abs(result) > _MAX_SAFE_INT:
+        return None
+    return result
 
 
 def _sanitize_rotation(rotation: Any) -> int | None:
-    if rotation is None:
+    # Not `_coerce_float`: a huge but finite angle still clamps to the nearest
+    # end of the range, as it always has. Only inf and nan are ignored.
+    value = _finite_float(rotation)
+    if value is None:
         return None
-    try:
-        value = round(float(rotation))
-    except TypeError, ValueError:
-        return None
-    return max(-180, min(180, value))
+    return max(-180, min(180, round(value)))
 
 
 def _coerce_zone_name(name: Any) -> str | None:
@@ -528,7 +550,12 @@ UPDATE_ZONE_SERVICE_SCHEMA = vol.All(
             vol.Optional("device_id"): vol.Any(cv.string, [cv.string]),
             vol.Optional("location"): cv.string,
             vol.Optional("clear_entities"): cv.boolean,
-            vol.Optional("zone_id"): cv.positive_int,
+            # Ids start at 1, as services.yaml documents and the card assumes;
+            # it refuses to edit, rename or delete a zone 0. The upper bound is
+            # the serialization limit above, not a zone count.
+            vol.Optional("zone_id"): vol.All(
+                vol.Coerce(int), vol.Range(min=1, max=_MAX_SAFE_INT)
+            ),
             vol.Optional("shape"): vol.In(list(SUPPORTED_SHAPES)),
             vol.Optional("data"): vol.Any(None, dict),
             vol.Optional(ATTR_ROTATION_DEG): vol.Coerce(float),

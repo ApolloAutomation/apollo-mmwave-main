@@ -5,8 +5,9 @@ from __future__ import annotations
 import pytest
 import voluptuous as vol
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.json import json_bytes
 
-from custom_components.apollo_mmwave import get_store
+from custom_components.apollo_mmwave import UPDATE_ZONE_SERVICE_SCHEMA, get_store
 from custom_components.apollo_mmwave.const import (
     ATTR_ROTATION_DEG,
     DOMAIN,
@@ -28,6 +29,15 @@ TRACKED = [
         "y": "sensor.r_pro_ld2450_target_1_y",
     }
 ]
+
+# JavaScript's Number.MAX_SAFE_INTEGER: the largest coordinate or zone id the
+# service stores, since anything past 64 bits cannot be serialized by HA.
+MAX_SAFE_INT = 2**53 - 1
+
+
+async def _update_zone(hass, data: dict) -> None:
+    await hass.services.async_call(DOMAIN, SERVICE_UPDATE_ZONE, data, blocking=True)
+    await hass.async_block_till_done()
 
 
 async def _create_rect_zone(hass, device_id: str) -> None:
@@ -467,3 +477,242 @@ async def test_zone_rename_updates_generated_names_only(
     await rename("Sofa")
     assert registry.async_get(sensor_eid).name == "Zone 1 - Sofa"
     assert registry.async_get(presence_eid).name == "Kitchen door"
+
+
+@pytest.mark.parametrize("angle", [float("inf"), float("-inf"), "inf", float("nan")])
+async def test_rotation_inf_is_ignored(
+    hass, init_integration, device_id, caplog, angle
+) -> None:
+    """An infinite angle is ignored like nan instead of raising OverflowError."""
+    _ = init_integration
+    await _update_zone(hass, {"device_id": device_id, ATTR_ROTATION_DEG: angle})
+
+    assert device_id not in get_store(hass).devices
+    assert "carried nothing to change" in caplog.text
+
+
+@pytest.mark.parametrize(("angle", "stored"), [(270.4, 180), (-12.6, -13), (1e20, 180)])
+async def test_finite_rotation_still_clamps(
+    hass, init_integration, device_id, angle, stored
+) -> None:
+    """Finite angles are still rounded and clamped, however large."""
+    _ = init_integration
+    await _update_zone(hass, {"device_id": device_id, ATTR_ROTATION_DEG: angle})
+
+    assert get_store(hass).device(device_id)[ATTR_ROTATION_DEG] == stored
+
+
+async def test_rect_with_infinite_bound_is_cleared(
+    hass, init_integration, device_id, caplog
+) -> None:
+    """A non-finite bound clears the zone, and the rest of the call still lands."""
+    _ = init_integration
+    events = []
+    hass.bus.async_listen(EVENT_ZONE_UPDATED, events.append)
+
+    await _update_zone(
+        hass,
+        {
+            "device_id": device_id,
+            "zone_id": 1,
+            "shape": "rect",
+            "data": {
+                "x_min": float("inf"),
+                "x_max": 1000,
+                "y_min": 0,
+                "y_max": 2000,
+            },
+            ATTR_ROTATION_DEG: 45,
+            "entities": TRACKED,
+        },
+    )
+
+    device = get_store(hass).device(device_id)
+    assert device[STORE_ZONES][1] == {"shape": "rect", "data": None}
+    # These used to be written to memory and then stranded by the exception,
+    # with no save scheduled and no signal sent.
+    assert device[ATTR_ROTATION_DEG] == 45
+    assert device[STORE_ENTITIES] == TRACKED
+    assert "non-numeric bounds" in caplog.text
+    assert len(events) == 1
+
+
+async def test_ellipse_with_nan_center_is_cleared(
+    hass, init_integration, device_id, caplog
+) -> None:
+    """A nan center clears the ellipse instead of raising ValueError."""
+    _ = init_integration
+    await _update_zone(
+        hass,
+        {
+            "device_id": device_id,
+            "zone_id": 1,
+            "shape": "ellipse",
+            "data": {"cx": float("nan"), "cy": 1000, "rx": 500, "ry": 500},
+        },
+    )
+
+    zone = get_store(hass).device(device_id)[STORE_ZONES][1]
+    assert zone == {"shape": "ellipse", "data": None}
+    assert "has invalid radii" in caplog.text
+
+
+async def test_polygon_point_with_infinite_coordinate_is_dropped(
+    hass, init_integration, device_id
+) -> None:
+    """Only the bad point goes; the polygon keeps the rest of its points."""
+    _ = init_integration
+    await _update_zone(
+        hass,
+        {
+            "device_id": device_id,
+            "zone_id": 1,
+            "shape": "polygon",
+            "data": {
+                "points": [
+                    {"x": 0, "y": 0},
+                    {"x": float("inf"), "y": 500},
+                    {"x": 1000, "y": 0},
+                    {"x": 500, "y": 1000},
+                ]
+            },
+        },
+    )
+
+    zone = get_store(hass).device(device_id)[STORE_ZONES][1]
+    assert zone["data"]["points"] == [
+        {"x": 0, "y": 0},
+        {"x": 1000, "y": 0},
+        {"x": 500, "y": 1000},
+    ]
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        (
+            "rect",
+            {"x_min": 0, "x_max": 1e20, "y_min": 0, "y_max": 10},
+            "non-numeric bounds",
+        ),
+        (
+            "rect",
+            {"x_min": -1e19, "x_max": 10, "y_min": 0, "y_max": 10},
+            "non-numeric bounds",
+        ),
+        # YAML keeps a long integer literal as an int, not a float.
+        (
+            "rect",
+            {"x_min": 0, "x_max": 10**20, "y_min": 0, "y_max": 10},
+            "non-numeric bounds",
+        ),
+        # Too large for a float at all: float() itself raises OverflowError.
+        (
+            "rect",
+            {"x_min": 0, "x_max": 10, "y_min": 0, "y_max": 10**400},
+            "non-numeric bounds",
+        ),
+        ("ellipse", {"cx": 0, "cy": 1000, "rx": 500, "ry": 1e25}, "invalid radii"),
+        (
+            "polygon",
+            {"points": [{"x": 0, "y": 0}, {"x": 1e30, "y": 0}, {"x": 0, "y": 10}]},
+            "insufficient points",
+        ),
+    ],
+    ids=[
+        "rect_x_max_1e20",
+        "rect_x_min_neg_1e19",
+        "rect_int_10e20",
+        "rect_int_10e400",
+        "ellipse_ry_1e25",
+        "polygon_x_1e30",
+    ],
+)
+@pytest.mark.usefixtures("init_integration")
+async def test_out_of_range_geometry_is_rejected(
+    hass, hass_ws_client, device_id, caplog, case
+) -> None:
+    """A value past 64 bits would make every later store write fail."""
+    shape, data, warning = case
+    await _update_zone(
+        hass, {"device_id": device_id, "zone_id": 1, "shape": shape, "data": data}
+    )
+
+    store = get_store(hass)
+    assert store.device(device_id)[STORE_ZONES][1] == {"shape": shape, "data": None}
+    assert warning in caplog.text
+    # The same serializer Home Assistant writes the store with.
+    json_bytes(store._data_to_save())  # noqa: SLF001
+
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id(
+        {"type": "apollo_mmwave/zones/get", "device_id": device_id}
+    )
+    msg = await client.receive_json()
+    assert msg["success"]
+    assert msg["result"]["zones"]["1"]["data"] is None
+
+
+async def test_geometry_at_the_safe_bound_is_kept(
+    hass, init_integration, device_id
+) -> None:
+    """The bound rejects only what cannot be stored; the limit itself is kept."""
+    _ = init_integration
+    data = {
+        "x_min": -MAX_SAFE_INT,
+        "x_max": MAX_SAFE_INT,
+        "y_min": -MAX_SAFE_INT,
+        "y_max": MAX_SAFE_INT,
+    }
+    await _update_zone(
+        hass, {"device_id": device_id, "zone_id": 1, "shape": "rect", "data": data}
+    )
+
+    store = get_store(hass)
+    assert store.device(device_id)[STORE_ZONES][1] == {"shape": "rect", "data": data}
+    json_bytes(store._data_to_save())  # noqa: SLF001
+
+
+async def test_zone_id_zero_is_rejected(hass, init_integration, device_id) -> None:
+    """Ids start at 1: the card cannot edit, rename or delete a zone 0."""
+    _ = init_integration
+    with pytest.raises(vol.Invalid):
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_UPDATE_ZONE,
+            {
+                "device_id": device_id,
+                "zone_id": 0,
+                "shape": "rect",
+                "data": {"x_min": -1000, "x_max": 1000, "y_min": 0, "y_max": 2000},
+            },
+            blocking=True,
+        )
+    await hass.async_block_till_done()
+
+    assert 0 not in get_store(hass).devices.get(device_id, {}).get(STORE_ZONES, {})
+    registry = er.async_get(hass)
+    assert registry.async_get_entity_id("sensor", DOMAIN, f"{device_id}_zone_0") is None
+    assert (
+        registry.async_get_entity_id(
+            "binary_sensor", DOMAIN, f"{device_id}_zone_0_presence"
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    ("zone_id", "expected"), [(1, 1), ("1", 1), (MAX_SAFE_INT, MAX_SAFE_INT)]
+)
+def test_zone_id_bounds_accept(zone_id, expected) -> None:
+    """Every id from 1 to the serialization limit is accepted."""
+    validated = UPDATE_ZONE_SERVICE_SCHEMA({"device_id": "abc", "zone_id": zone_id})
+    assert validated["zone_id"] == expected
+
+
+@pytest.mark.parametrize("zone_id", [0, 2**53, 2**64, 18446744073709551616.0])
+def test_zone_id_bounds_reject(zone_id) -> None:
+    """0 and anything past the serialization limit fail validation."""
+    # 18446744073709551616.0 is how a 2**64 JSON literal reaches the websocket.
+    with pytest.raises(vol.Invalid):
+        UPDATE_ZONE_SERVICE_SCHEMA({"device_id": "abc", "zone_id": zone_id})

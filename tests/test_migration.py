@@ -570,6 +570,21 @@ async def test_imports_zones_from_the_standalone_zone_mapper(
     assert entity_registry.async_get(legacy) is not None
 
 
+async def test_import_skips_a_non_finite_rotation(hass, device_registry) -> None:
+    """A legacy 'inf' rotation is dropped instead of failing the whole import."""
+    device = _make_radar(hass, device_registry, "Kitchen")
+    legacy = _register_zone_mapper_zone(hass, "Kitchen", 1)
+    attrs = {**ZONE_MAPPER_ATTRS, "rotation_deg": "inf"}
+    mock_restore_cache(hass, [State(legacy, "1", attrs)])
+    store = ZoneStore(hass)
+
+    imported = await async_import_zone_mapper(hass, store)
+
+    assert imported == 1
+    assert store.devices[device.id][STORE_ZONES][1]["shape"] == "rect"
+    assert "rotation_deg" not in store.devices[device.id]
+
+
 async def test_import_leaves_zone_mapper_entity_ids_alone(
     hass, entity_registry
 ) -> None:

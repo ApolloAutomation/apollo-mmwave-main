@@ -200,7 +200,8 @@ def _merge_legacy_location(
         if target.get(ATTR_ROTATION_DEG) is None:
             rotation = attributes.get(ATTR_ROTATION_DEG)
             if rotation is not None:
-                with suppress(TypeError, ValueError):
+                # OverflowError: round() of an inf rotation.
+                with suppress(TypeError, ValueError, OverflowError):
                     target[ATTR_ROTATION_DEG] = round(float(rotation))
 
 

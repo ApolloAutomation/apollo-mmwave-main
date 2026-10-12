@@ -75,7 +75,11 @@ def _build_point_rotator(
     rotation_raw: Any,
 ) -> Callable[[float, float], tuple[float, float]]:
     rotation_val = _coerce_float(rotation_raw)
-    if rotation_val is None:
+    # A stored inf would make math.cos raise inside async_added_to_hass, leaving
+    # an entity with no state that is never retried, and nan would silently stop
+    # the zone from ever detecting. Both read as "no rotation", like any other
+    # value that is not a number.
+    if rotation_val is None or not math.isfinite(rotation_val):
         cos_theta = 1.0
         sin_theta = 0.0
     else:
