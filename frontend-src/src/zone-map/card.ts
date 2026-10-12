@@ -389,7 +389,9 @@ export class ZoneMapCard extends HTMLElement {
     // millimetres, which is also this card's default.
     const request = { ...payload, input_units: this.inputUnits };
     try {
-      await this._hass.callService('apollo_mmwave', 'update_zone', request);
+      // notifyOnError false: the catch below raises the card's own toast, and
+      // HA's default would show a second one for the same rejection.
+      await this._hass.callService('apollo_mmwave', 'update_zone', request, undefined, false);
     } catch (error) {
       const reason = error?.message ? String(error.message) : 'Home Assistant rejected it.';
       this._notify(`Could not save: ${reason}`);

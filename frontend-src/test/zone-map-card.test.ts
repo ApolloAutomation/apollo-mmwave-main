@@ -649,13 +649,19 @@ describe("zone map card writes", () => {
 
     card.updateHomeAssistantShape(1, "rect", { x_min: 0, x_max: 1, y_min: 0, y_max: 1 });
 
-    expect(hass.callService).toHaveBeenCalledWith("apollo_mmwave", "update_zone", {
-      device_id: "dev123",
-      zone_id: 1,
-      shape: "rect",
-      data: { x_min: 0, x_max: 1, y_min: 0, y_max: 1 },
-      input_units: "mm",
-    });
+    expect(hass.callService).toHaveBeenCalledWith(
+      "apollo_mmwave",
+      "update_zone",
+      {
+        device_id: "dev123",
+        zone_id: 1,
+        shape: "rect",
+        data: { x_min: 0, x_max: 1, y_min: 0, y_max: 1 },
+        input_units: "mm",
+      },
+      undefined,
+      false
+    );
   });
 
   it("tells the backend which unit it draws in, so presence sensors scale the same way", async () => {
@@ -682,6 +688,43 @@ describe("zone map card writes", () => {
     expect(toasts[1]).toMatch(/could not save/i);
   });
 
+  it("asks Home Assistant not to toast a failed save itself, so it shows once", async () => {
+    const hass = fakeHass();
+    const card = await mountCard(hass);
+    const toasts = notifications(card);
+    // HA's hass.callService raises its own error toast unless the fifth
+    // argument (notifyOnError, default true) is false, then rethrows.
+    hass.callService.mockImplementation(
+      async (domain: string, service: string, _data: any, _target: any, notifyOnError = true) => {
+        if (notifyOnError) toasts.push(`Failed to perform the action ${domain}/${service}.`);
+        throw new Error("no such device");
+      }
+    );
+
+    const saved = await card.updateHomeAssistantShape(
+      1,
+      "rect",
+      { x_min: 0, x_max: 1 },
+      "Zone 1 saved"
+    );
+
+    expect(saved).toBe(false);
+    expect(hass.callService).toHaveBeenCalledWith(
+      "apollo_mmwave",
+      "update_zone",
+      {
+        device_id: "dev123",
+        zone_id: 1,
+        shape: "rect",
+        data: { x_min: 0, x_max: 1 },
+        input_units: "mm",
+      },
+      undefined,
+      false
+    );
+    expect(toasts).toEqual(["Could not save: no such device"]);
+  });
+
   it("persists rotation by device id", async () => {
     const hass = fakeHass();
     const card = await mountCard(hass);
@@ -690,11 +733,13 @@ describe("zone map card writes", () => {
 
     card._persistRotation();
 
-    expect(hass.callService).toHaveBeenCalledWith("apollo_mmwave", "update_zone", {
-      device_id: "dev123",
-      rotation_deg: 45,
-      input_units: "mm",
-    });
+    expect(hass.callService).toHaveBeenCalledWith(
+      "apollo_mmwave",
+      "update_zone",
+      { device_id: "dev123", rotation_deg: 45, input_units: "mm" },
+      undefined,
+      false
+    );
   });
 
   it("adds a zone by device id", async () => {
@@ -1122,11 +1167,13 @@ describe("zone map card rotation source", () => {
 
     expect(card.coneAngleDeg).toBe(45);
     expect(slider.value).toBe("45");
-    expect(hass.callService).toHaveBeenCalledWith("apollo_mmwave", "update_zone", {
-      device_id: "dev123",
-      rotation_deg: 45,
-      input_units: "mm",
-    });
+    expect(hass.callService).toHaveBeenCalledWith(
+      "apollo_mmwave",
+      "update_zone",
+      { device_id: "dev123", rotation_deg: 45, input_units: "mm" },
+      undefined,
+      false
+    );
   });
 
   it("draws a stored rotation over the YAML angle", async () => {
