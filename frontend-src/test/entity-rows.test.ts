@@ -8,7 +8,7 @@ import {
   occupancyRows,
   presentRows,
 } from "../src/panels/entity-rows";
-import { entityMapFromBaseName } from "../src/entities";
+import { entityMapFromBaseName, entityMapFromDevice } from "../src/entities";
 import { LD2412_PROFILE } from "../src/profiles";
 import type { HomeAssistant } from "../src/types";
 
@@ -68,6 +68,47 @@ describe("row builders", () => {
 
   it("occupancy has target/moving/still + 3 zones = 6 rows", () => {
     expect(occupancyRows(m)).toHaveLength(6);
+  });
+});
+
+describe("row builders on an LD2412 map", () => {
+  const b = "apollo_r_pro_1_abcd";
+  const m2 = LD2412_PROFILE.entityMap(b);
+  const gateNames = Array.from({ length: 14 }, (_, n) => `G${n}`);
+
+  it("splits thresholds into 14 move + 14 still rows, labelled G0..G13", () => {
+    expect(moveThresholdRows(m2).map((r) => r.name)).toEqual(gateNames);
+    expect(stillThresholdRows(m2).map((r) => r.name)).toEqual(gateNames);
+    expect(moveThresholdRows(m2)[13].entity).toBe(`number.${b}_ld2412_g13_move_threshold`);
+    expect(stillThresholdRows(m2)[0].entity).toBe(`number.${b}_ld2412_g00_still_threshold`);
+  });
+
+  it("labels the range rows from the profile, so the min gate slot reads 'Min Gate'", () => {
+    const rows = rangeRows(m2, LD2412_PROFILE.rangeLabels, LD2412_PROFILE.gateSizeLabel);
+    expect(rows).toEqual([
+      { entity: `number.${b}_ld2412_timeout`, name: "Radar Timeout" },
+      { entity: `select.${b}_ld2412_distance_resolution`, name: "Distance Resolution" },
+      { entity: `number.${b}_ld2412_max_distance_gate`, name: "Max Gate" },
+      { entity: `number.${b}_ld2412_min_distance_gate`, name: "Min Gate" },
+    ]);
+  });
+
+  it("has no zone config rows", () => {
+    expect(zoneConfigRows(m2)).toEqual([]);
+  });
+});
+
+describe("row builders on a sparse registry map", () => {
+  it("skips missing gates and keeps the real gate number in the label", () => {
+    const id = "number.kitchen_radar_g3_move_threshold";
+    const hass: HomeAssistant = {
+      states: { [id]: { entity_id: id, state: "50", attributes: {} } },
+      entities: { [id]: { device_id: "dev1" } },
+      devices: { dev1: { name: "Kitchen radar" } },
+    };
+    const sparse = entityMapFromDevice(hass, "dev1")!;
+    expect(moveThresholdRows(sparse)).toEqual([{ entity: id, name: "G3" }]);
+    expect(stillThresholdRows(sparse)).toEqual([]);
   });
 });
 

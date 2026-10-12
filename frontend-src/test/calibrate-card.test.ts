@@ -381,7 +381,7 @@ describe("calibrate card idle state", () => {
     expect(t).toContain(
       "Fans, curtains and plants that normally move are part of the background. Leave them as they usually are."
     );
-    expect(t).toContain("Home Assistant turns Radar Engineering Mode on for the listen and back off afterwards.");
+    expect(t).toContain("Home Assistant turns Radar Engineering Mode on for the listen and back off afterward.");
     expect(card.shadowRoot!.querySelectorAll("li")).toHaveLength(3);
     const primary = button(card, "Calibrate with empty room")!;
     expect(primary.classList.contains("primary")).toBe(true);
@@ -439,7 +439,7 @@ describe("calibrate card idle state", () => {
     const t = text(card);
     expect(t).toContain("LD2412 · Office R-PRO-1");
     expect(t).toContain(
-      "LD2412: run Start Dynamic Background Correction (Controls card) first with the room empty and wait for its status to turn off. Calibrate afterwards."
+      "LD2412: run Start Dynamic Background Correction (Controls card) first with the room empty and wait for its status to turn off. Calibrate afterward."
     );
     expect(t).toContain("Background correction is running on the LD2412. Wait for its status to turn off.");
     expect(button(card, "Calibrate with empty room")!.disabled).toBe(true);

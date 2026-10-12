@@ -34,6 +34,23 @@ describe("unit-convert", () => {
     expect(convert(2.54, "cm", "in")).toBeCloseTo(1, 6);
   });
 
+  it("pins every unit factor as both source and target", () => {
+    // mm and yd, which the cases above never touch, plus ft as a source.
+    expect(toMeters(1000, "mm")).toBeCloseTo(1, 6);
+    expect(toMeters(1, "yd")).toBeCloseTo(0.9144, 6);
+    expect(toMeters(1, "ft")).toBeCloseTo(0.3048, 6);
+    expect(convert(1000, "mm", "m")).toBeCloseTo(1, 6);
+    expect(convert(1, "m", "mm")).toBeCloseTo(1000, 6);
+    expect(convert(10, "mm", "cm")).toBeCloseTo(1, 6);
+    expect(convert(1, "yd", "m")).toBeCloseTo(0.9144, 6);
+    expect(convert(0.9144, "m", "yd")).toBeCloseTo(1, 6);
+    expect(convert(1, "yd", "in")).toBeCloseTo(36, 6);
+    expect(convert(1, "yd", "ft")).toBeCloseTo(3, 6);
+    expect(convert(3, "ft", "in")).toBeCloseTo(36, 6);
+    expect(convert(3, "ft", "yd")).toBeCloseTo(1, 6);
+    expect(convert(1, "ft", "mm")).toBeCloseTo(304.8, 6);
+  });
+
   it("defaults the chart unit from HA's unit system", () => {
     expect(
       defaultDistanceUnit({ config: { unit_system: { length: "mi" } } })

@@ -1,10 +1,14 @@
 import { describe, it, expect } from "vitest";
 import {
   anyResolved,
+  drawnStatesChanged,
   entityIds,
+  radarEntityIds,
   resolveRadar,
   resolvedDeviceId,
   resolvedStatesChanged,
+  watchedIds,
+  watchResolved,
 } from "../src/cards/resolution";
 import type { EntityMap, HomeAssistant, HassEntity } from "../src/types";
 
@@ -32,6 +36,96 @@ describe("entityIds", () => {
       still_energy: [],
     };
     expect(entityIds(m)).toEqual([eng, thr, `number.${base}_g2_move_threshold`]);
+  });
+});
+
+describe("watchedIds", () => {
+  const g2 = `number.${base}_g2_move_threshold`;
+  const energy = `sensor.${base}_g0_move_energy`;
+  const dist = `sensor.${base}_radar_detection_distance`;
+  const m: EntityMap = {
+    engineering_mode: eng,
+    detection_distance: dist,
+    gate_size: undefined,
+    move_threshold: [thr, undefined as any, g2],
+    still_threshold: [],
+    move_energy: [energy],
+    still_energy: [],
+  };
+
+  it("returns only the listed slots' ids, gate arrays flattened and holes skipped", () => {
+    expect(watchedIds(m, ["move_threshold", "detection_distance"])).toEqual([thr, g2, dist]);
+    expect(watchedIds(m, ["engineering_mode", "move_energy"])).toEqual([eng, energy]);
+  });
+
+  it("skips listed slots the map leaves empty", () => {
+    expect(watchedIds(m, ["gate_size", "still_energy", "zone_1_start"])).toEqual([]);
+  });
+});
+
+describe("watchResolved", () => {
+  const config = { type: "x", device_id: "dev1" };
+
+  it("keeps the watched ids while the resolution is the same object", () => {
+    const r = resolveRadar(undefined, hassWith([eng, thr]), config);
+    const w = watchResolved(undefined, r, ["engineering_mode"]);
+    expect(w).toEqual({ resolved: r, ids: [eng] });
+    expect(watchResolved(w, r, ["engineering_mode"])).toBe(w);
+  });
+
+  it("recomputes the watched ids for a new resolution", () => {
+    const hass = hassWith([eng, thr]);
+    const r = resolveRadar(undefined, hass, config);
+    const w = watchResolved(undefined, r, ["move_threshold"]);
+    const next = resolveRadar(r, { ...hass, entities: { ...hass.entities } }, config);
+    const w2 = watchResolved(w, next, ["move_threshold"]);
+    expect(w2).not.toBe(w);
+    expect(w2).toEqual({ resolved: next, ids: [thr] });
+  });
+});
+
+describe("drawnStatesChanged", () => {
+  const config = { type: "x", device_id: "dev1" };
+  const energy = `sensor.${base}_g0_move_energy`;
+
+  function withState(hass: HomeAssistant, id: string, state: string): HomeAssistant {
+    return { ...hass, states: { ...hass.states, [id]: { entity_id: id, state, attributes: {} } } };
+  }
+
+  it("ignores a tick of a resolved entity the card does not draw", () => {
+    const hass = hassWith([eng, thr, energy]);
+    const r = resolveRadar(undefined, hass, config);
+    const next = withState(hass, energy, "40");
+    expect(resolvedStatesChanged(hass, next, r.ids)).toBe(true);
+    expect(drawnStatesChanged(hass, next, r, r, [thr])).toBe(false);
+  });
+
+  it("is true for a tick of an entity the card draws", () => {
+    const hass = hassWith([eng, thr, energy]);
+    const r = resolveRadar(undefined, hass, config);
+    expect(drawnStatesChanged(hass, withState(hass, thr, "30"), r, r, [thr])).toBe(true);
+  });
+
+  it("is true when an undrawn radar entity flips the device-not-found decision", () => {
+    // Registered but with no states yet: the card says "device not found".
+    const registered = hassWith([eng, thr, energy]);
+    const empty: HomeAssistant = { ...registered, states: {} };
+    const r = resolveRadar(undefined, empty, config);
+    expect(anyResolved(empty, r.radarIds)).toBe(false);
+    const arrived = withState(empty, energy, "40");
+    expect(drawnStatesChanged(empty, arrived, r, r, [thr])).toBe(true);
+    // And back: the only state disappears again.
+    expect(drawnStatesChanged(arrived, empty, r, r, [thr])).toBe(true);
+  });
+
+  it("checks every resolved id when the resolution was recomputed on this tick", () => {
+    const hass = hassWith([eng, thr, energy]);
+    const r = resolveRadar(undefined, hass, config);
+    const next = withState(hass, energy, "40");
+    // A different cached object: this tick's resolution is a fresh one.
+    expect(drawnStatesChanged(hass, next, { ...r }, r, [thr])).toBe(true);
+    expect(drawnStatesChanged(hass, next, undefined, r, [thr])).toBe(true);
+    expect(drawnStatesChanged(hass, { ...hass }, undefined, r, [thr])).toBe(false);
   });
 });
 
@@ -71,6 +165,80 @@ describe("resolveRadar memoization", () => {
     expect(r.profile?.key).toBe("ld2410");
     expect(r.ids).toContain(eng);
     expect(r.ids).toContain(thr);
+  });
+});
+
+describe("resolveRadar base-name fallback", () => {
+  const rpro = "apollo_r_pro_1_abc123";
+  const ld2410Eng = `switch.${rpro}_radar_engineering_mode`;
+  const ld2412Eng = `switch.${rpro}_ld2412_engineering_mode`;
+
+  /** A states-only tick: new hass and states, same registry objects. */
+  function tick(hass: HomeAssistant, ids: string[]): HomeAssistant {
+    const states = { ...hass.states };
+    for (const id of ids) states[id] = { entity_id: id, state: "off", attributes: {} };
+    return { ...hass, states };
+  }
+
+  it("recomputes when a base-name fallback resolution later gains LD2412 states", () => {
+    const config = { type: "x", device_base_name: rpro };
+    const before: HomeAssistant = { states: {}, entities: {}, devices: {} };
+    const first = resolveRadar(undefined, before, config);
+    // No engineering-mode switch in states yet: the LD2410 default.
+    expect(first.map.engineering_mode).toBe(ld2410Eng);
+    expect(first.profile?.key).toBe("ld2410");
+
+    const after = tick(before, [ld2412Eng]);
+    expect(after.entities).toBe(before.entities);
+    expect(after.devices).toBe(before.devices);
+    const second = resolveRadar(first, after, config);
+    expect(second).not.toBe(first);
+    expect(second.map.engineering_mode).toBe(ld2412Eng);
+    expect(second.profile?.key).toBe("ld2412");
+    expect(anyResolved(after, second.radarIds)).toBe(true);
+    // The card's shouldUpdate sees the new ids change, so it re-renders.
+    expect(resolvedStatesChanged(before, after, second.ids)).toBe(true);
+
+    // Healed once, it stays cached while the detection holds.
+    expect(resolveRadar(second, tick(after, ["sensor.kitchen_temperature"]), config)).toBe(
+      second
+    );
+  });
+
+  it("recomputes a device_id config whose entities are not registered yet", () => {
+    // Strategy-shaped config: device_id plus device_base_name.
+    const config = { type: "x", device_id: "dev9", device_base_name: rpro };
+    const before: HomeAssistant = { states: {}, entities: {}, devices: {} };
+    const first = resolveRadar(undefined, before, config);
+    expect(first.map.engineering_mode).toBe(ld2410Eng);
+    const second = resolveRadar(first, tick(before, [ld2412Eng]), config);
+    expect(second.map.engineering_mode).toBe(ld2412Eng);
+  });
+
+  it("a fallback cache stays reference-equal across states-only ticks while the device has no states", () => {
+    const config = { type: "x", device_base_name: rpro };
+    const hass: HomeAssistant = { states: {}, entities: {}, devices: {} };
+    const first = resolveRadar(undefined, hass, config);
+    expect(first.fallbackBase).toBe(rpro);
+    const t1 = tick(hass, ["sensor.kitchen_temperature"]);
+    const t2 = tick(t1, ["light.hallway"]);
+    expect(resolveRadar(first, t1, config)).toBe(first);
+    expect(resolveRadar(first, t2, config)).toBe(first);
+    expect(anyResolved(t2, first.radarIds)).toBe(false);
+  });
+
+  it("a fallback cache for an LD2410 device stays reference-equal across ticks", () => {
+    const config = { type: "x", device_base_name: base };
+    const hass = tick({ states: {}, entities: {}, devices: {} }, [eng]);
+    const first = resolveRadar(undefined, hass, config);
+    expect(first.map.engineering_mode).toBe(eng);
+    expect(resolveRadar(first, tick(hass, [eng, thr]), config)).toBe(first);
+  });
+
+  it("records no fallback base when the registry resolves the device", () => {
+    const r = resolveRadar(undefined, hassWith([eng, thr]), { type: "x", device_id: "dev1" });
+    expect(r.fallbackBase).toBeUndefined();
+    expect(r.fallbackDetected).toBeUndefined();
   });
 });
 
@@ -117,6 +285,50 @@ describe("anyResolved", () => {
   it("is false when nothing resolves (device removed/renamed)", () => {
     expect(anyResolved(hass, ["switch.gone_radar_engineering_mode"])).toBe(false);
     expect(anyResolved(hass, [])).toBe(false);
+  });
+});
+
+describe("radar ids (not-found decision)", () => {
+  const reboot = `button.${base}_esp_reboot`;
+
+  it("radarEntityIds drops only the ESP Reboot button", () => {
+    const m: EntityMap = {
+      engineering_mode: eng,
+      esp_reboot: reboot,
+      move_threshold: [thr],
+      still_threshold: [],
+      move_energy: [],
+      still_energy: [],
+    };
+    expect(entityIds(m)).toContain(reboot);
+    expect(radarEntityIds(m)).toEqual([eng, thr]);
+  });
+
+  it("anyResolved over radarIds is false when only esp_reboot resolves", () => {
+    const air = "button.apollo_air_1_abc123_esp_reboot";
+    const hass = hassWith([air]);
+    const r = resolveRadar(undefined, hass, { type: "x", device_id: "dev1" });
+    // The full list still tracks the button for changed-state checks.
+    expect(r.ids).toEqual([air]);
+    expect(r.radarIds).toEqual([]);
+    expect(anyResolved(hass, r.ids)).toBe(true);
+    expect(anyResolved(hass, r.radarIds)).toBe(false);
+  });
+
+  it("is false for a base name whose only live entity is the ESP Reboot button", () => {
+    const air = "apollo_air_1_abc123";
+    const hass = hassWith([`button.${air}_esp_reboot`]);
+    const r = resolveRadar(undefined, hass, { type: "x", device_base_name: air });
+    expect(r.map.move_threshold.length).toBeGreaterThan(0);
+    expect(anyResolved(hass, r.ids)).toBe(true);
+    expect(anyResolved(hass, r.radarIds)).toBe(false);
+  });
+
+  it("is true when a gate radar entity exists beside the ESP Reboot button", () => {
+    const hass = hassWith([reboot, thr]);
+    const r = resolveRadar(undefined, hass, { type: "x", device_id: "dev1" });
+    expect(r.radarIds).toEqual([thr]);
+    expect(anyResolved(hass, r.radarIds)).toBe(true);
   });
 });
 

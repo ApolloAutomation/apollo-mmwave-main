@@ -1,8 +1,10 @@
 import { describe, it, expect, vi } from "vitest";
-import { nothing, render, type TemplateResult } from "lit";
+import { render } from "lit";
 import { gateEnergyModel, renderGateEnergyChart } from "../src/charts/gate-energy-chart";
-import { entityMapFromBaseName } from "../src/entities";
-import type { HomeAssistant, HassEntity } from "../src/types";
+import { entityMapFromBaseName, entityMapFromDevice } from "../src/entities";
+import { LD2412_PROFILE } from "../src/profiles";
+import type { EntityMap, HomeAssistant, HassEntity } from "../src/types";
+import { flat } from "./template-markup";
 
 const base = "apollo_msr_2_m4c4dd";
 const m = entityMapFromBaseName(base);
@@ -27,6 +29,21 @@ describe("gateEnergyModel", () => {
     expect(gateEnergyModel(h, m).engineeringMode).toBe(true);
   });
 
+  it("reports an unavailable switch as unavailable, not as engineering mode", () => {
+    const model = gateEnergyModel(hass({ [m.engineering_mode!]: ent("unavailable") }), m);
+    expect(model.engineeringMode).toBe(false);
+    expect(model.unavailable).toBe(true);
+  });
+
+  it("does not report an off, unknown or missing switch as unavailable", () => {
+    expect(gateEnergyModel(hass({ [m.engineering_mode!]: ent("off") }), m).unavailable).toBe(false);
+    // Only "unavailable" means offline, as in strategy-core's isLive.
+    expect(gateEnergyModel(hass({ [m.engineering_mode!]: ent("unknown") }), m).unavailable).toBe(
+      false
+    );
+    expect(gateEnergyModel(hass({}), m).unavailable).toBe(false);
+  });
+
   it("reads energies (default 0) and thresholds per gate", () => {
     const h = hass({
       [m.move_energy[0]]: ent("42"),
@@ -39,6 +56,26 @@ describe("gateEnergyModel", () => {
     expect(model.gates[0].stillThr).toBeUndefined();
     expect(model.gates[1].move).toBe(0);
   });
+
+  it("draws gate 8 energy when only its threshold is missing", () => {
+    // HA leaves a disabled entity out of hass.entities, so a device-resolved
+    // map whose g8 move threshold is disabled has move_threshold length 8.
+    const ids = [...m.move_threshold, ...m.still_threshold, ...m.move_energy, ...m.still_energy]
+      .filter((id) => id !== m.move_threshold[8]);
+    const h: HomeAssistant = { states: {}, entities: {}, devices: { dev1: { name: "MSR-2" } } };
+    for (const id of ids) {
+      h.states[id] = ent("0");
+      h.entities[id] = { device_id: "dev1" };
+    }
+    h.states[m.move_energy[8]] = ent("99");
+    const map = entityMapFromDevice(h, "dev1")!;
+    expect(map.move_threshold).toHaveLength(8);
+    const model = gateEnergyModel(h, map);
+    expect(model.gates).toHaveLength(9);
+    expect(model.gates[8].move).toBe(99);
+    expect(model.gates[8].moveThr).toBeUndefined();
+    expect(model.gates[8].stillThr).toBe(0);
+  });
 });
 
 /** Render the chart template into the document so focus and clicks work. */
@@ -49,28 +86,23 @@ function mountChart(h: HomeAssistant): HTMLElement {
   return container;
 }
 
-/**
- * Serialise a Lit template result to its markup, bindings inlined. happy-dom
- * drops Lit's child-part markers inside <svg>, so the bars never reach the
- * DOM here; the template itself is what a browser renders, so assert on it.
- */
-function flat(value: unknown): string {
-  if (value === nothing || value === null || value === undefined || value === false) return "";
-  if (Array.isArray(value)) return value.map(flat).join("");
-  if (typeof value === "object" && "strings" in (value as object)) {
-    const t = value as TemplateResult;
-    return t.strings.reduce(
-      (acc, s, i) => acc + s + (i < t.values.length ? flat(t.values[i]) : ""),
-      ""
-    );
-  }
-  return String(value);
-}
-
 /** The <rect> tags of the energy bars (threshold markers are <path>). */
 function barMarkup(h: HomeAssistant): string[] {
   return flat(renderGateEnergyChart(h, m)).match(/<rect[^>]*fill=#(?:4b0082|274e13)[^>]*>/g) ?? [];
 }
+
+describe("renderGateEnergyChart axis labels", () => {
+  it("give the secondary text color a fallback, like the distance chart", () => {
+    const markup = flat(
+      renderGateEnergyChart(hass({ [m.engineering_mode!]: ent("on"), [m.move_energy[0]]: ent("0") }), m)
+    );
+    const fallback = "fill=var(--secondary-text-color, #9aa0a6)>";
+    // Nine gate labels (G0..G8) and five gridline labels (0..100).
+    for (let g = 0; g <= 8; g++) expect(markup).toContain(`${fallback}G${g}</text>`);
+    for (const v of [0, 25, 50, 75, 100]) expect(markup).toContain(`${fallback}${v}</text>`);
+    expect(markup).not.toContain('"var(--secondary-text-color)"');
+  });
+});
 
 describe("renderGateEnergyChart engineering-mode overlay", () => {
   const off = { [m.engineering_mode!]: ent("off"), [m.move_energy[0]]: ent("0") };
@@ -156,6 +188,25 @@ describe("renderGateEnergyChart engineering-mode overlay", () => {
     );
   });
 
+  it("says the radar is unavailable instead of asking for engineering mode", () => {
+    const offline = flat(
+      renderGateEnergyChart(
+        hass({ [m.engineering_mode!]: ent("unavailable"), [m.move_energy[0]]: ent("unavailable") }),
+        m
+      )
+    );
+    expect(offline).toContain("Radar unavailable");
+    expect(offline).toContain("Waiting for the device to reconnect");
+    expect(offline).not.toContain("to see gate energy values");
+    expect(offline).not.toContain(">Turn on Radar Engineering Mode<");
+
+    const switchedOff = flat(renderGateEnergyChart(hass(off), m));
+    expect(switchedOff).toContain(">Turn on Radar Engineering Mode<");
+    expect(switchedOff).toContain("to see gate energy values");
+    expect(switchedOff).not.toContain("Radar unavailable");
+    expect(switchedOff).not.toContain("Waiting for the device to reconnect");
+  });
+
   it("renders no button and no turn-off text once engineering mode is on", () => {
     const h: HomeAssistant = {
       ...hass({ [m.engineering_mode!]: ent("on"), [m.move_energy[0]]: ent("0") }),
@@ -197,5 +248,60 @@ describe("renderGateEnergyChart threshold outline", () => {
     });
     expect(barMarkup(h)).toHaveLength(18);
     expect(barMarkup(h).some((r) => r.includes('stroke-width="2"'))).toBe(false);
+  });
+});
+
+describe("renderGateEnergyChart gates, triangles and clamping", () => {
+  /** Every gate of `map` at energy 30 under threshold 50, with the
+   *  engineering-mode switch reading `mode`. */
+  function allGates(map: EntityMap, mode: string): HomeAssistant {
+    const states: Record<string, HassEntity> = { [map.engineering_mode!]: ent(mode) };
+    for (const id of [...map.move_energy, ...map.still_energy]) states[id] = ent("30");
+    for (const id of [...map.move_threshold, ...map.still_threshold]) states[id] = ent("50");
+    return hass(states);
+  }
+
+  /** The threshold triangles (the chart's only <path> elements). */
+  function triangles(markup: string): string[] {
+    return markup.match(/<path d="M [^"]*"/g) ?? [];
+  }
+
+  it("draws 14 gate slots, G0..G13, for an LD2412", () => {
+    const r = LD2412_PROFILE.entityMap("apollo_r_pro_1_w_abc123");
+    const markup = flat(renderGateEnergyChart(allGates(r, "on"), r, "LD2412"));
+    for (let g = 0; g <= 13; g++) expect(markup).toContain(`>G${g}</text>`);
+    expect(markup).not.toContain(">G14</text>");
+    expect(markup.match(/<rect[^>]*fill=#(?:4b0082|274e13)[^>]*>/g)).toHaveLength(28);
+    expect(triangles(markup)).toHaveLength(28);
+  });
+
+  it("draws threshold triangles only while engineering mode is on", () => {
+    expect(triangles(flat(renderGateEnergyChart(allGates(m, "on"), m)))).toHaveLength(18);
+    expect(triangles(flat(renderGateEnergyChart(allGates(m, "off"), m)))).toEqual([]);
+  });
+
+  it("shows the overlay text only while engineering mode is off", () => {
+    // The <title> also mentions turning on Radar Engineering Mode, so assert
+    // on the overlay's second line, which only the overlay has.
+    const OVERLAY = "to see gate energy values";
+    expect(flat(renderGateEnergyChart(allGates(m, "off"), m))).toContain(OVERLAY);
+    expect(flat(renderGateEnergyChart(allGates(m, "on"), m))).not.toContain(OVERLAY);
+  });
+
+  it("clamps energies to the 0..100 plot", () => {
+    const at = (move: string, still: string) =>
+      flat(
+        renderGateEnergyChart(
+          hass({
+            [m.engineering_mode!]: ent("on"),
+            [m.move_energy[0]]: ent(move),
+            [m.still_energy[0]]: ent(still),
+          }),
+          m
+        )
+      );
+    // 150 draws as a full bar and -20 as an empty one, never past the axes.
+    expect(at("150", "-20")).toBe(at("100", "0"));
+    expect(at("150", "-20")).not.toMatch(/height=-/);
   });
 });

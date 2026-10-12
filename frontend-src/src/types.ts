@@ -1,3 +1,5 @@
+import type { Uom } from "./charts/unit-convert";
+
 export interface HassEntity {
   entity_id: string;
   state: string;
@@ -56,26 +58,9 @@ export interface HassConnection {
   removeEventListener?(event: string, callback: () => void): void;
 }
 
-export type PanelKey =
-  | "controls"
-  | "zone_config"
-  | "gate_config"
-  | "occupancy"
-  | "distance_chart"
-  | "gate_energy_chart"
-  | "occupancy_history";
-
-export const ALL_PANEL_KEYS: PanelKey[] = [
-  "controls",
-  "zone_config",
-  "gate_config",
-  "occupancy",
-  "distance_chart",
-  "gate_energy_chart",
-  "occupancy_history",
-];
-
-/** Resolved entity ids. Arrays are indexed by gate 0..8. Any field may be
+/** Resolved entity ids. Gate arrays are indexed by gate number (0..8 on an
+ *  LD2410, 0..13 on an LD2412) and may be sparse when built from the
+ *  registry, which skips gates the device does not expose. Any field may be
  *  an id that does not exist in hass.states; callers must existence-check. */
 export interface EntityMap {
   // controls
@@ -96,6 +81,9 @@ export interface EntityMap {
   end_zone_2?: string;
   end_zone_3?: string;
   // gate config + charts
+  // LD2410: max move / max still gate. LD2412: max_move_distance holds the
+  // max distance gate and max_still_distance the MIN distance gate. Label
+  // these via RadarProfile.rangeLabels / maxBarLabels, never by slot name.
   max_move_distance?: string;
   max_still_distance?: string;
   gate_size?: string;
@@ -121,9 +109,8 @@ export interface Ld2410CardConfig {
   device_id?: string;
   device_base_name?: string;
   entities?: Partial<EntityMap>;
-  panels?: Partial<Record<PanelKey, boolean>>;
   title?: string;
-  distance_unit?: "mm" | "cm" | "m" | "in" | "ft" | "yd";
+  distance_unit?: Uom;
 }
 
 /** Options the calibrate card forwards to `apollo_mmwave.calibrate_gates`.

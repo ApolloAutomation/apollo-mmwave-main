@@ -1,12 +1,27 @@
-import { html, svg, nothing, type TemplateResult } from "lit";
+import { css, html, svg, nothing, type TemplateResult } from "lit";
 import type { EntityMap, HomeAssistant } from "../types";
 import { numState } from "./entity-read";
+import { gateRegisterCount } from "./geometry";
 import { callService } from "../calibration/api";
 
 const MOVE_COLOR = "#4b0082";
 const MOVE_THR_COLOR = "#9467bd";
 const STILL_COLOR = "#274e13";
 const STILL_THR_COLOR = "#8cb640";
+const TXT2 = "var(--secondary-text-color, #9aa0a6)";
+
+/** Styles for the `.chart-legend` row renderGateEnergyChart emits, for the
+ *  card that hosts the chart to add to its own styles. */
+export const chartLegendStyles = css`
+  .chart-legend {
+    font-size: 0.8em;
+    color: var(--secondary-text-color);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 14px;
+    margin-top: 6px;
+  }
+`;
 
 export interface GateRow {
   index: number;
@@ -18,9 +33,23 @@ export interface GateRow {
 
 export interface GateEnergyModel {
   engineeringMode: boolean;
+  /** The engineering-mode switch exists but reads "unavailable": the radar is
+   *  offline, so the plot says so instead of asking for the switch. Only
+   *  "unavailable" counts, matching strategy-core's isLive. */
+  unavailable: boolean;
   present: boolean;
   gates: GateRow[];
 }
+
+/** The EntityMap slots whose states gateEnergyModel and renderGateEnergyChart
+ *  read, so the gate-energy card re-renders only when one of them changes. */
+export const GATE_ENERGY_CHART_SLOTS: readonly (keyof EntityMap)[] = [
+  "engineering_mode",
+  "move_threshold",
+  "still_threshold",
+  "move_energy",
+  "still_energy",
+];
 
 export function gateEnergyModel(hass: HomeAssistant, m: EntityMap): GateEnergyModel {
   let present = false;
@@ -28,7 +57,7 @@ export function gateEnergyModel(hass: HomeAssistant, m: EntityMap): GateEnergyMo
     if (id && id in hass.states) present = true;
   };
 
-  const count = m.move_threshold.length;
+  const count = gateRegisterCount(m);
   const gates: GateRow[] = Array.from({ length: count }, (_, n) => {
     seen(m.move_energy[n]);
     seen(m.still_energy[n]);
@@ -46,6 +75,8 @@ export function gateEnergyModel(hass: HomeAssistant, m: EntityMap): GateEnergyMo
   return {
     engineeringMode:
       !!m.engineering_mode && hass.states[m.engineering_mode]?.state === "on",
+    unavailable:
+      !!m.engineering_mode && hass.states[m.engineering_mode]?.state === "unavailable",
     present,
     gates,
   };
@@ -70,7 +101,8 @@ function yFor(energy: number): number {
 
 export function renderGateEnergyChart(
   hass: HomeAssistant,
-  m: EntityMap
+  m: EntityMap,
+  label = "LD2410"
 ): TemplateResult | typeof nothing {
   const model = gateEnergyModel(hass, m);
   if (!model.present) return nothing;
@@ -102,7 +134,7 @@ export function renderGateEnergyChart(
         stroke="${stillAbove ? STILL_THR_COLOR : nothing}"
         stroke-width="${stillAbove ? "2" : nothing}"></rect>
       <text x=${cx} y=${HEIGHT - 7} font-size="13" text-anchor="middle"
-        fill="var(--secondary-text-color)">G${g.index}</text>`);
+        fill=${TXT2}>G${g.index}</text>`);
     if (model.engineeringMode && g.moveThr !== undefined) {
       const ty = yFor(g.moveThr);
       const tx = moveX + barW / 2;
@@ -125,9 +157,15 @@ export function renderGateEnergyChart(
       <line x1=${PAD_L} y1=${yFor(v)} x2=${WIDTH} y2=${yFor(v)}
         stroke="var(--divider-color, #888)" stroke-width="1" opacity="0.3"></line>
       <text x=${PAD_L - 4} y=${yFor(v) + 3} font-size="11" text-anchor="end"
-        fill="var(--secondary-text-color)">${v}</text>`
+        fill=${TXT2}>${v}</text>`
   );
 
+  // An unavailable switch is not an "off" one: the radar is offline, and
+  // asking the user to turn the switch on would send them after a control
+  // that cannot respond. The same dimmed plot says so instead.
+  const [overlayLine1, overlayLine2] = model.unavailable
+    ? ["Radar unavailable", "Waiting for the device to reconnect"]
+    : ["Turn on Radar Engineering Mode", "to see gate energy values"];
   const overlay = model.engineeringMode
     ? nothing
     : svg`
@@ -135,8 +173,8 @@ export function renderGateEnergyChart(
           fill="var(--card-background-color, #000)" opacity="0.78"></rect>
         <text x=${(WIDTH + PAD_L) / 2} y=${PAD_T + PLOT_H / 2} font-size="20"
           font-weight="600" text-anchor="middle" fill="var(--primary-text-color, #e6e6e6)">
-          <tspan x=${(WIDTH + PAD_L) / 2} dy="-4">Turn on Radar Engineering Mode</tspan>
-          <tspan x=${(WIDTH + PAD_L) / 2} dy="28">to see gate energy values</tspan>
+          <tspan x=${(WIDTH + PAD_L) / 2} dy="-4">${overlayLine1}</tspan>
+          <tspan x=${(WIDTH + PAD_L) / 2} dy="28">${overlayLine2}</tspan>
         </text>`;
 
   // A real HTML button over the plot, not an SVG element with an ARIA role: a
@@ -189,7 +227,7 @@ export function renderGateEnergyChart(
   // that follows it. Browsers render both forms identically.
   const plot = html`
     <svg viewBox="0 0 ${WIDTH} ${HEIGHT}" width="100%" role="img"
-      aria-label="LD2410 gate energy">
+      aria-label="${label} gate energy">
       <title>
         Per-gate signal energy (bars) vs your thresholds (triangles). A gate
         detects a target when its energy rises above the threshold. Turn on

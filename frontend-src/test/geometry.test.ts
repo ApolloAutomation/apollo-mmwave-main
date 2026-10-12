@@ -3,8 +3,9 @@ import {
   parseGateSizeMeters,
   clamp,
   scaleX,
-  gateTicks,
+  gateRegisterCount,
 } from "../src/charts/geometry";
+import { entityMapFromBaseName } from "../src/entities";
 
 describe("parseGateSizeMeters", () => {
   it("parses common gate-size strings", () => {
@@ -38,11 +39,13 @@ describe("scaleX", () => {
   });
 });
 
-describe("gateTicks", () => {
-  it("returns one tick per gate, ending at the full width", () => {
-    const ticks = gateTicks(1, 8, 800);
-    expect(ticks).toHaveLength(8);
-    expect(ticks[0]).toBe(100);
-    expect(ticks[7]).toBe(800);
+describe("gateRegisterCount", () => {
+  it("is the longest of the four gate arrays", () => {
+    const m = entityMapFromBaseName("apollo_msr_2_m4c4dd");
+    expect(gateRegisterCount(m)).toBe(9);
+    expect(gateRegisterCount({ ...m, move_threshold: m.move_threshold.slice(0, 8) })).toBe(9);
+    expect(
+      gateRegisterCount({ ...m, move_threshold: [], still_threshold: [], move_energy: [], still_energy: [] })
+    ).toBe(0);
   });
 });

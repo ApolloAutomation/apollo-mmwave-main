@@ -1,4 +1,8 @@
 import { describe, it, expect } from "vitest";
+import { render } from "lit";
+import { renderDistanceChart } from "../src/charts/distance-chart";
+import { renderGateEnergyChart } from "../src/charts/gate-energy-chart";
+import { controlRows, moveThresholdRows } from "../src/panels/entity-rows";
 import {
   baseNameFromDevice,
   classifyObjectId,
@@ -6,11 +10,13 @@ import {
   entityMapFromBaseName,
   entityMapFromDevice,
   resolveEntities,
+  resolveEntitiesDetailed,
   resolveProfile,
   exists,
 } from "../src/entities";
-import { LD2412_PROFILE } from "../src/profiles";
-import type { HomeAssistant } from "../src/types";
+import { LD2412_PROFILE, detectProfile } from "../src/profiles";
+import type { EntityMap, HomeAssistant } from "../src/types";
+import { flat } from "./template-markup";
 
 const base = "apollo_msr_2_m4c4dd";
 
@@ -38,6 +44,65 @@ describe("baseNameFromDevice", () => {
     const hass = hassWith([`sensor.${base}_radar_detection_distance`]);
     expect(baseNameFromDevice(hass, "nope")).toBeUndefined();
   });
+
+  // Only a strictly higher count replaces the current best, so on a tie the
+  // base seen first in registry order wins.
+  it("keeps the first-seen base on a tie", () => {
+    const alpha = "switch.alpha_radar_engineering_mode";
+    const beta = "number.beta_radar_timeout";
+    expect(baseNameFromDevice(hassWith([alpha, beta]), "dev1")).toBe("alpha");
+    expect(baseNameFromDevice(hassWith([beta, alpha]), "dev1")).toBe("beta");
+  });
+
+  it("lets a strict majority win over the first-seen base", () => {
+    const ids = [
+      "switch.alpha_radar_engineering_mode",
+      "number.beta_radar_timeout",
+      "number.beta_g3_move_threshold",
+    ];
+    expect(baseNameFromDevice(hassWith(ids), "dev1")).toBe("beta");
+  });
+
+  // A device the user named after its chip ("Office LD2412") repeats the
+  // chip token in every entity id; the base must keep it, not stop at the
+  // first occurrence.
+  const ld2412Ids = (b: string, tail: string) => [
+    `switch.${b}_ld2412_engineering_mode${tail}`,
+    `number.${b}_ld2412_g00_move_threshold${tail}`,
+    `sensor.${b}_ld2412_g13_still_energy${tail}`,
+    `binary_sensor.${b}_ld2412_presence${tail}`,
+  ];
+  const ld2450Ids = (b: string, tail: string) => [
+    `sensor.${b}_ld2450_target_1_x${tail}`,
+    `sensor.${b}_ld2450_target_1_y${tail}`,
+    `sensor.${b}_ld2450_target_2_x${tail}`,
+  ];
+
+  for (const tail of ["", "_2"]) {
+    const label = tail ? ` with a \`${tail}\` dedup tail` : "";
+
+    it.each(["office_ld2412", "office_ld2412_radar"])(
+      `keeps the full LD2412 base %s when it contains the chip token${label}`,
+      (b) => {
+        expect(baseNameFromDevice(hassWith(ld2412Ids(b, tail)), "dev1")).toBe(b);
+      }
+    );
+
+    it.each(["den_ld2450", "den_ld2450_radar"])(
+      `keeps the full LD2450 base %s when it contains the chip token${label}`,
+      (b) => {
+        expect(baseNameFromDevice(hassWith(ld2450Ids(b, tail)), "dev1")).toBe(b);
+      }
+    );
+
+    it.each(["office", "apollo_r_pro_1_abcd"])(
+      `still strips the chip suffix from a token-free base %s${label}`,
+      (b) => {
+        expect(baseNameFromDevice(hassWith(ld2412Ids(b, tail)), "dev1")).toBe(b);
+        expect(baseNameFromDevice(hassWith(ld2450Ids(b, tail)), "dev1")).toBe(b);
+      }
+    );
+  }
 });
 
 describe("entityMapFromBaseName", () => {
@@ -84,6 +149,185 @@ describe("resolveEntities", () => {
   it("returns empty gate arrays when nothing resolves", () => {
     const map = resolveEntities(hassWith([]), { type: "x" });
     expect(map.move_threshold).toEqual([]);
+  });
+
+  // YAML `move_threshold:` parses to null, and a single id is a string; the
+  // casts stand in for that untyped card config.
+  const badGateOverrides: [string, Partial<EntityMap>][] = [
+    ["null", { move_threshold: null as unknown as string[] }],
+    ["a string", { move_threshold: "number.foo" as unknown as string[] }],
+    [
+      "non-arrays in every gate slot",
+      {
+        move_threshold: null as unknown as string[],
+        still_threshold: "number.foo" as unknown as string[],
+        move_energy: undefined,
+        still_energy: 3 as unknown as string[],
+      },
+    ],
+  ];
+
+  for (const [what, entities] of badGateOverrides) {
+    it(`keeps the resolved gate arrays when a gate override is ${what}`, () => {
+      const resolved = entityMapFromBaseName(base);
+      const map = resolveEntities(hassWith([]), { type: "x", device_base_name: base, entities });
+      expect(resolved.move_threshold).toHaveLength(9);
+      expect(map.move_threshold).toEqual(resolved.move_threshold);
+      expect(map.still_threshold).toEqual(resolved.still_threshold);
+      expect(map.move_energy).toEqual(resolved.move_energy);
+      expect(map.still_energy).toEqual(resolved.still_energy);
+      expect(moveThresholdRows(map)).toHaveLength(9);
+    });
+
+    it(`renders the gate charts when a gate override is ${what}`, () => {
+      const resolved = entityMapFromBaseName(base);
+      const hass = hassWith([
+        resolved.gate_size!,
+        resolved.engineering_mode!,
+        ...resolved.move_threshold,
+        ...resolved.move_energy,
+      ]);
+      const map = resolveEntities(hass, { type: "x", device_base_name: base, entities });
+      const distance = renderDistanceChart(hass, map, "m");
+      const energy = renderGateEnergyChart(hass, map);
+      expect(() => render(distance, document.createElement("div"))).not.toThrow();
+      expect(() => render(energy, document.createElement("div"))).not.toThrow();
+      // Both charts drew the nine resolved gates (G0..G8 on the energy chart).
+      expect(flat(distance)).toContain(">G1</text>");
+      expect(flat(energy)).toContain(">G8</text>");
+      expect(flat(energy)).not.toContain(">G9</text>");
+    });
+  }
+
+  it("lets an array gate override replace the resolved array", () => {
+    const map = resolveEntities(hassWith([]), {
+      type: "x",
+      device_base_name: base,
+      entities: { move_threshold: ["number.a", "number.b"] },
+    });
+    expect(map.move_threshold).toEqual(["number.a", "number.b"]);
+  });
+
+  it("still lets a null scalar override clear its slot", () => {
+    const resolved = entityMapFromBaseName(base);
+    const map = resolveEntities(hassWith([]), {
+      type: "x",
+      device_base_name: base,
+      entities: { bluetooth: null as unknown as string },
+    });
+    expect(resolved.bluetooth).toBeDefined();
+    expect(map.bluetooth).toBeNull();
+    expect(controlRows(map).map((r) => r.entity)).not.toContain(resolved.bluetooth);
+  });
+});
+
+describe("resolveEntitiesDetailed", () => {
+  it("reports the base name only when the base-name fallback ran", () => {
+    const hass = hassWith([`sensor.${base}_radar_detection_distance`]);
+    expect(
+      resolveEntitiesDetailed(hass, { type: "x", device_id: "dev1" }).fallbackBase
+    ).toBeUndefined();
+    expect(
+      resolveEntitiesDetailed(hassWith([]), { type: "x", device_base_name: base })
+        .fallbackBase
+    ).toBe(base);
+    // A device_id whose entities are not registered falls back too.
+    expect(
+      resolveEntitiesDetailed(hassWith([]), {
+        type: "x",
+        device_id: "dev1",
+        device_base_name: base,
+      }).fallbackBase
+    ).toBe(base);
+    expect(resolveEntitiesDetailed(hassWith([]), { type: "x" }).fallbackBase).toBeUndefined();
+  });
+
+  it("returns the same map resolveEntities does", () => {
+    const config = {
+      type: "x",
+      device_base_name: base,
+      entities: { engineering_mode: "switch.custom_mode" },
+    };
+    const hass = hassWith([]);
+    expect(resolveEntitiesDetailed(hass, config).map).toEqual(resolveEntities(hass, config));
+  });
+});
+
+describe("resolveEntities base-name fallback profile", () => {
+  // The device's only registered entity is an LD2450 target: it yields the
+  // base name but classifies into no EntityMap slot, so the fallback runs.
+  const target = "sensor.office_ld2450_target_1_x";
+
+  it("base-name fallback builds the map with the registry profile", () => {
+    const hass = hassWith([target]);
+    hass.devices.dev1 = { manufacturer: "ApolloAutomation", model: "R-PRO-1-W" };
+    const config = { type: "x", device_id: "dev1" };
+    const { map, fallbackBase } = resolveEntitiesDetailed(hass, config);
+    expect(fallbackBase).toBe("office");
+    expect(resolveProfile(hass, config)?.key).toBe("ld2412");
+    expect(map.engineering_mode).toBe("switch.office_ld2412_engineering_mode");
+    expect(map.move_threshold).toHaveLength(14);
+    expect(map).toEqual(LD2412_PROFILE.entityMap("office"));
+  });
+
+  it("keeps the LD2410 default for a registry-matched zone-only model (MTR-1)", () => {
+    const hass = hassWith([target]);
+    hass.devices.dev1 = { manufacturer: "ApolloAutomation", model: "MTR-1" };
+    const config = { type: "x", device_id: "dev1" };
+    const { map, fallbackBase } = resolveEntitiesDetailed(hass, config);
+    expect(fallbackBase).toBe("office");
+    expect(map.engineering_mode).toBe("switch.office_radar_engineering_mode");
+    expect(map).toEqual(entityMapFromBaseName("office"));
+  });
+
+  it("keeps the LD2410 default for a device the registry no longer has", () => {
+    const hass = hassWith([]);
+    const config = { type: "x", device_id: "gone", device_base_name: base };
+    expect(resolveEntities(hass, config)).toEqual(entityMapFromBaseName(base));
+  });
+
+  it("still probes states for a device_base_name-only config", () => {
+    expect(resolveEntities(hassWith([]), { type: "x", device_base_name: "office" })).toEqual(
+      entityMapFromBaseName("office")
+    );
+    const hass = hassWith(["switch.office_ld2412_engineering_mode"], "elsewhere");
+    expect(resolveEntities(hass, { type: "x", device_base_name: "office" })).toEqual(
+      LD2412_PROFILE.entityMap("office")
+    );
+  });
+});
+
+describe("device_base_name on an R-PRO-1 (LD2412)", () => {
+  const b = "apollo_r_pro_1_abcd";
+  const config = { type: "x", device_base_name: b };
+
+  it("resolves the LD2412 profile and 14-gate map", () => {
+    const hass = hassWith([`switch.${b}_ld2412_engineering_mode`]);
+    expect(detectProfile(hass, b)?.key).toBe("ld2412");
+    expect(resolveProfile(hass, config)?.key).toBe("ld2412");
+    const { map, fallbackBase } = resolveEntitiesDetailed(hass, config);
+    expect(fallbackBase).toBe(b);
+    expect(map.engineering_mode).toBe(`switch.${b}_ld2412_engineering_mode`);
+    expect(map.move_threshold).toHaveLength(14);
+    expect(map.move_threshold[0]).toBe(`number.${b}_ld2412_g00_move_threshold`);
+    expect(map.still_energy[13]).toBe(`sensor.${b}_ld2412_g13_still_energy`);
+    expect(map).toEqual(LD2412_PROFILE.entityMap(b));
+  });
+
+  // detectProfile probes only each profile's engineering-mode switch, so with
+  // that switch disabled or renamed the base-name path keeps the LD2410
+  // default even though other LD2412 entities exist. A device_id config still
+  // reads the chip from the device's registered entities.
+  it("falls back to LD2410 when no engineering-mode switch exists", () => {
+    const hass = hassWith([`number.${b}_ld2412_g00_move_threshold`]);
+    hass.devices.dev1 = { manufacturer: "ApolloAutomation", model: "R-PRO-1-W" };
+    expect(detectProfile(hass, b)).toBeUndefined();
+    expect(resolveProfile(hass, config)?.key).toBe("ld2410");
+    const map = resolveEntities(hass, config);
+    expect(map.engineering_mode).toBe(`switch.${b}_radar_engineering_mode`);
+    expect(map.move_threshold).toHaveLength(9);
+    expect(map).toEqual(entityMapFromBaseName(b));
+    expect(resolveProfile(hass, { type: "x", device_id: "dev1" })?.key).toBe("ld2412");
   });
 });
 
@@ -166,6 +410,17 @@ describe("classifyObjectId", () => {
   it("rejects a matching suffix in the wrong domain", () => {
     expect(classifyObjectId("automation", `${base}_radar_engineering_mode`)).toBeUndefined();
     expect(classifyObjectId("sensor", `${base}_g3_move_threshold`)).toBeUndefined();
+  });
+
+  // The first pattern whose suffix matches decides: a domain mismatch returns
+  // undefined at once instead of trying later patterns. No two suffixes
+  // overlap today; if one is added that also matches these ids in these
+  // domains, this pins which one wins.
+  it("a wrong-domain hit short-circuits classification", () => {
+    expect(classifyObjectId("sensor", `${base}_radar_engineering_mode`)).toBeUndefined();
+    expect(classifyObjectId("number", `${base}_g3_move_energy`)).toBeUndefined();
+    expect(classifyObjectId("sensor", `${base}_ld2412_presence`)).toBeUndefined();
+    expect(classifyObjectId("switch", `${base}_radar_timeout_2`)).toBeUndefined();
   });
 
   it("returns undefined for unrelated object ids", () => {

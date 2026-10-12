@@ -6,6 +6,8 @@ import "./cards/gate-energy-card";
 import "./cards/calibrate-card";
 import "./strategy";
 
+// TODO(REVIEW_REPORT.md X51): no ESLint is installed or run, so the directive below is inert;
+// adopt eslint + typescript-eslint in CI, or replace it with a plain version-banner comment.
 // eslint-disable-next-line no-console
 console.info(
   `%c APOLLO-MMWAVE %c v${CARD_VERSION} `,
