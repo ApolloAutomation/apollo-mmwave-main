@@ -47,6 +47,8 @@ from custom_components.apollo_mmwave.const import (
     WARN_ZONE_NO_GEOMETRY,
 )
 
+from .conftest import setup_integration
+
 TRACKED = [
     {
         "x": "sensor.r_pro_ld2450_target_1_x",
@@ -200,8 +202,6 @@ async def test_zones_reload_from_storage(
     hass, config_entry, esphome_device, hass_storage
 ) -> None:
     """A fresh setup reads zones straight from the store (no restore states)."""
-    from .conftest import setup_integration  # noqa: PLC0415 - avoids a cycle
-
     hass_storage[f"{DOMAIN}.zones"] = {
         "version": 2,
         "data": {
