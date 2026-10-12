@@ -16,6 +16,9 @@ export default defineConfig({
     // renderGateEnergyChart therefore assert on the returned TemplateResult,
     // flattened to markup by test/template-markup.ts, not on rendered nodes.
     environment: "happy-dom",
+    // Tests that format times compare against fixtures stamped in UTC; a fixed
+    // zone keeps "today" and the rendered times the same on every machine.
+    env: { TZ: "UTC" },
     include: ["test/**/*.test.ts"],
     setupFiles: ["test/setup-canvas.ts"],
   },

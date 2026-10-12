@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import {
   INITIAL_LOCAL_STATE,
   KEEP_ON_LD2410,
@@ -42,6 +42,17 @@ import type {
 import { LD2410_FACTORY_THRESHOLDS } from "../src/profiles";
 import { entityMapFromBaseName } from "../src/entities";
 import type { HomeAssistant } from "../src/types";
+
+// Fixtures are stamped 2026-10-11 and formatTime adds the date to any time that
+// is not today, so freeze today on the fixtures' day.
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-10-11T15:00:00Z"));
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 function job(overrides: Partial<JobState> = {}): JobState {
   return {

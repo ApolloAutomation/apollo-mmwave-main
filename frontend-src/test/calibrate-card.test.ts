@@ -5,7 +5,7 @@
  * copy, never the backend.
  */
 
-import { afterEach, describe, it, expect, vi } from "vitest";
+import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { ApolloRadarCalibrateCard, CALIBRATE_CARD_TAG } from "../src/cards/calibrate-card";
 import {
   CALIBRATION_RETRY_DELAYS_MS,
@@ -344,6 +344,17 @@ function button(card: ApolloRadarCalibrateCard, label: string | RegExp): HTMLBut
 function expectedTime(iso: string): string {
   return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(new Date(iso));
 }
+
+// The fixtures are stamped 2026-10-11, and the card adds the date to any time
+// that is not today. Freeze today on the fixtures' day (Date only, so tests
+// that fake setTimeout still install their own timers) or these tests fail on
+// any other date.
+const FIXTURE_NOW = new Date("2026-10-11T15:00:00Z");
+
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(FIXTURE_NOW);
+});
 
 afterEach(() => {
   document.body.innerHTML = "";
