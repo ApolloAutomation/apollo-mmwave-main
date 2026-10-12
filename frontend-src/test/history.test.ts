@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { historyEntities } from "../src/panels/history";
 import { entityMapFromBaseName } from "../src/entities";
+import { LD2412_PROFILE } from "../src/profiles";
 
 const base = "apollo_msr_2_m4c4dd";
 const m = entityMapFromBaseName(base);
@@ -21,5 +22,12 @@ describe("historyEntities", () => {
   it("does not include the gate threshold entities", () => {
     const ids = historyEntities(m).map((r) => r.entity);
     expect(ids.some((id) => id.includes("_threshold"))).toBe(false);
+  });
+
+  it("has only the 'Detected' row on an LD2412 (no distance zones)", () => {
+    const b = "apollo_r_pro_1_abcd";
+    expect(historyEntities(LD2412_PROFILE.entityMap(b))).toEqual([
+      { entity: `binary_sensor.${b}_ld2412_presence`, name: "Detected" },
+    ]);
   });
 });
