@@ -19,6 +19,8 @@ export interface ResolvedRadar {
   profile?: RadarProfile;
   /** Flat list of the map's entity ids, for cheap changed-state checks. */
   ids: string[];
+  /** `ids` minus the ESP Reboot button, for the "device not found" decision. */
+  radarIds: string[];
 }
 
 /** Every entity id in the map (gate arrays flattened, holes skipped). */
@@ -29,6 +31,13 @@ export function entityIds(m: EntityMap): string[] {
     else if (Array.isArray(v)) for (const id of v) if (id) out.push(id);
   }
   return out;
+}
+
+/** Every entity id in the map except the ESP Reboot button. Any ESPHome device
+ *  has that button (an AIR-1 or an MTR-1 too), so it says nothing about a gate
+ *  radar being there; strategy-core's radar evidence leaves it out as well. */
+export function radarEntityIds(m: EntityMap): string[] {
+  return entityIds(m).filter((id) => id !== m.esp_reboot);
 }
 
 /** Return `cache` untouched while its inputs are reference-equal, else resolve. */
@@ -53,6 +62,7 @@ export function resolveRadar(
     map,
     profile: resolveProfile(hass, config),
     ids: entityIds(map),
+    radarIds: radarEntityIds(map),
   };
 }
 

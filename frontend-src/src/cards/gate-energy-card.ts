@@ -54,9 +54,11 @@ export class ApolloLd2410GateEnergyCard extends LitElement {
   protected render(): TemplateResult | typeof nothing {
     if (!this.hass || !this._config) return nothing;
     this._resolved = resolveRadar(this._resolved, this.hass, this._config);
-    const { map: m, ids } = this._resolved;
+    const { map: m, radarIds } = this._resolved;
     // A configured card whose device vanished must say so, not render blank.
-    if (!anyResolved(this.hass, ids)) return this._renderNotFound();
+    // So must one pointed at a device with no gate radar (only its ESP Reboot
+    // button resolves), where the chart has nothing to draw.
+    if (!anyResolved(this.hass, radarIds)) return this._renderNotFound();
     const chart = renderGateEnergyChart(this.hass, m);
     if (chart === nothing) return nothing;
     return html`

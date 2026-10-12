@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   anyResolved,
   entityIds,
+  radarEntityIds,
   resolveRadar,
   resolvedDeviceId,
   resolvedStatesChanged,
@@ -117,6 +118,50 @@ describe("anyResolved", () => {
   it("is false when nothing resolves (device removed/renamed)", () => {
     expect(anyResolved(hass, ["switch.gone_radar_engineering_mode"])).toBe(false);
     expect(anyResolved(hass, [])).toBe(false);
+  });
+});
+
+describe("radar ids (not-found decision)", () => {
+  const reboot = `button.${base}_esp_reboot`;
+
+  it("radarEntityIds drops only the ESP Reboot button", () => {
+    const m: EntityMap = {
+      engineering_mode: eng,
+      esp_reboot: reboot,
+      move_threshold: [thr],
+      still_threshold: [],
+      move_energy: [],
+      still_energy: [],
+    };
+    expect(entityIds(m)).toContain(reboot);
+    expect(radarEntityIds(m)).toEqual([eng, thr]);
+  });
+
+  it("anyResolved over radarIds is false when only esp_reboot resolves", () => {
+    const air = "button.apollo_air_1_abc123_esp_reboot";
+    const hass = hassWith([air]);
+    const r = resolveRadar(undefined, hass, { type: "x", device_id: "dev1" });
+    // The full list still tracks the button for changed-state checks.
+    expect(r.ids).toEqual([air]);
+    expect(r.radarIds).toEqual([]);
+    expect(anyResolved(hass, r.ids)).toBe(true);
+    expect(anyResolved(hass, r.radarIds)).toBe(false);
+  });
+
+  it("is false for a base name whose only live entity is the ESP Reboot button", () => {
+    const air = "apollo_air_1_abc123";
+    const hass = hassWith([`button.${air}_esp_reboot`]);
+    const r = resolveRadar(undefined, hass, { type: "x", device_base_name: air });
+    expect(r.map.move_threshold.length).toBeGreaterThan(0);
+    expect(anyResolved(hass, r.ids)).toBe(true);
+    expect(anyResolved(hass, r.radarIds)).toBe(false);
+  });
+
+  it("is true when a gate radar entity exists beside the ESP Reboot button", () => {
+    const hass = hassWith([reboot, thr]);
+    const r = resolveRadar(undefined, hass, { type: "x", device_id: "dev1" });
+    expect(r.radarIds).toEqual([thr]);
+    expect(anyResolved(hass, r.radarIds)).toBe(true);
   });
 });
 
