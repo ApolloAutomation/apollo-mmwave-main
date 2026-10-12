@@ -35,6 +35,9 @@ export interface DistanceBar {
   label: string;
   value: number;
   color: string;
+  /** The row's target sensor (radar_target, moving_target or still_target)
+   *  is off, so the distance sensor holds an old value, not a live one. */
+  noTarget: boolean;
 }
 
 export interface DistanceZone {
@@ -80,6 +83,9 @@ export const DISTANCE_CHART_SLOTS: readonly (keyof EntityMap)[] = [
   "detection_distance",
   "moving_distance",
   "still_distance",
+  "radar_target",
+  "moving_target",
+  "still_target",
   "zone_1_start",
   "end_zone_1",
   "end_zone_2",
@@ -105,18 +111,33 @@ export function distanceModel(
   const maxRange = gateSizeChart * gateCount;
 
   const bars: DistanceBar[] = [];
-  const pushBar = (id: string | undefined, label: string, color: string) => {
+  const pushBar = (
+    id: string | undefined,
+    targetId: string | undefined,
+    label: string,
+    color: string
+  ) => {
     // Keep the row whenever the entity exists; show 0 when there's no target
     // (the distance sensors read non-numeric / unavailable with no target).
     // TODO(REVIEW_REPORT.md X21): an offline device also lands here and shows "0.0" bars on
     // the 0.75 m default axis; consider an unavailable flag and "n/a" rows; reword the note above.
     if (!id || !(id in hass.states)) return;
-    bars.push({ label, value: distInUnit(hass, id, unit) ?? 0, color });
+    // A distance sensor can also keep its last value (restored after an HA
+    // restart) while its target sensor reads off. The row stays, so the chart
+    // height does not jump, but it shows no distance. A missing, on or
+    // unavailable target sensor leaves the reading as it is.
+    const noTarget = !!targetId && hass.states[targetId]?.state === "off";
+    bars.push({
+      label,
+      value: noTarget ? 0 : (distInUnit(hass, id, unit) ?? 0),
+      color,
+      noTarget,
+    });
   };
   // Order matches the reference: Detection, Moving, Still.
-  pushBar(m.detection_distance, "Detection", DETECTION_COLOR);
-  pushBar(m.moving_distance, "Moving", MOVE_COLOR);
-  pushBar(m.still_distance, "Still", STILL_COLOR);
+  pushBar(m.detection_distance, m.radar_target, "Detection", DETECTION_COLOR);
+  pushBar(m.moving_distance, m.moving_target, "Moving", MOVE_COLOR);
+  pushBar(m.still_distance, m.still_target, "Still", STILL_COLOR);
 
   const zones: DistanceZone[] = [];
   const bounds = [
@@ -176,6 +197,9 @@ const BAR_H = ROW_H - 8;
 // margin. A smaller band lets the svg viewBox clip the leading digits.
 const AXIS_H = 52;
 const MID = BAR_H / 2 + 4; // text baseline offset to vertically center in a bar
+// Opacity of a Detection, Moving or Still row whose target sensor is off.
+const NO_TARGET_OPACITY = 0.45;
+const NO_TARGET_TEXT = "no target";
 
 type Row =
   | { kind: "zones" }
@@ -197,10 +221,13 @@ function rowTip(r: Row): string {
   if (r.kind === "gates")
     return "The radar splits its range into gates. Each colored segment is one distance bin (G1, G2, ...).";
   if (r.kind === "max") return r.tip ?? rangeLimitTip(r.label);
-  if (r.bar.label === "Detection")
-    return "Current distance to the detected target.";
-  if (r.bar.label === "Moving")
-    return "Current distance to a moving target.";
+  const tip = barTip(r.bar.label);
+  return r.bar.noTarget ? `${tip} The radar reports no target right now.` : tip;
+}
+
+function barTip(label: string): string {
+  if (label === "Detection") return "Current distance to the detected target.";
+  if (label === "Moving") return "Current distance to a moving target.";
   return "Current distance to a still (stationary) target.";
 }
 
@@ -303,10 +330,11 @@ export function renderDistanceChart(
       });
     } else if (r.kind === "bar") {
       const xe = x(r.bar.value);
+      const text = r.bar.noTarget ? NO_TARGET_TEXT : fmt(r.bar.value);
       content = svg`
         <rect x=${LBL} y=${y} width=${Math.max(1, xe - LBL)} height=${BAR_H}
           rx="4" fill=${r.bar.color}></rect>
-        ${valueLabel(xe, fmt(r.bar.value), y)}`;
+        ${valueLabel(xe, text, y)}`;
     } else if (r.kind === "gates") {
       const segs = [];
       for (let g = 0; g < model.gateCount; g++) {
@@ -330,11 +358,17 @@ export function renderDistanceChart(
           text-anchor="middle" fill="#fff">${text}</text>`;
     }
 
+    // A bar row with no current target is dimmed, its label included.
+    const body =
+      r.kind === "bar" && r.bar.noTarget
+        ? svg`<g opacity=${NO_TARGET_OPACITY}>${label}${content}</g>`
+        : svg`${label}${content}`;
+
     // Wrap the whole row so an SVG <title> tooltip shows on hover anywhere in it.
     return svg`<g>
       <title>${rowTip(r)}</title>
       <rect x="0" y=${y} width=${WIDTH} height=${BAR_H} fill="transparent"></rect>
-      ${label}${content}
+      ${body}
     </g>`;
   });
 

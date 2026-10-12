@@ -1,6 +1,10 @@
 import { describe, it, expect } from "vitest";
 import { nothing, render, type TemplateResult } from "lit";
-import { distanceModel, renderDistanceChart } from "../src/charts/distance-chart";
+import {
+  DISTANCE_CHART_SLOTS,
+  distanceModel,
+  renderDistanceChart,
+} from "../src/charts/distance-chart";
 import { entityMapFromBaseName, entityMapFromDevice } from "../src/entities";
 import { LD2410_PROFILE, LD2412_PROFILE } from "../src/profiles";
 import type { Uom } from "../src/charts/unit-convert";
@@ -354,5 +358,127 @@ describe("renderDistanceChart max rows", () => {
     const markup = flat(renderDistanceChart(h, m, "m"));
     expect(titles(markup)).toContain(`Max Move: ${LIMIT}`);
     expect(markup).not.toContain("Max Still");
+  });
+});
+
+// A distance sensor keeps a restored last value after an HA restart, while
+// its target sensor reads off. On an empty-room MSR-1 the chart once drew
+// "Detection 135.0 in" and "Still 179.5 in" bars from those old values.
+describe("distance rows with no current target", () => {
+  type Slot = "radar_target" | "moving_target" | "still_target";
+
+  /** Old distances on every row, and each target sensor as given (left out = absent). */
+  function staleHass(targets: Partial<Record<Slot, string>>): HomeAssistant {
+    const states: Record<string, HassEntity> = {
+      [m.gate_size!]: ent("0.75m"),
+      [m.detection_distance!]: ent("135", "in"),
+      [m.moving_distance!]: ent("42", "in"),
+      [m.still_distance!]: ent("179.5", "in"),
+    };
+    for (const [slot, state] of Object.entries(targets) as [Slot, string][]) {
+      states[m[slot]!] = ent(state);
+    }
+    return hass(states);
+  }
+
+  const ALL_OFF = { radar_target: "off", moving_target: "off", still_target: "off" };
+
+  /** The markup of the row whose tooltip starts with `tip`. */
+  function row(markup: string, tip: string): string {
+    const found = markup.split("<g>").find((g) => g.includes(`<title>${tip}`));
+    expect(found).toBeDefined();
+    return found!;
+  }
+
+  /** The svg viewBox height, which grows with the number of rows. */
+  function height(markup: string): number {
+    const vb = /viewBox="0 0 \d+ (\d+)"/.exec(markup);
+    expect(vb).not.toBeNull();
+    return Number(vb![1]);
+  }
+
+  const ROWS: [string, Slot, string][] = [
+    ["Detection", "radar_target", "Current distance to the detected target."],
+    ["Moving", "moving_target", "Current distance to a moving target."],
+    ["Still", "still_target", "Current distance to a still (stationary) target."],
+  ];
+  const READINGS: Record<string, number> = { Detection: 135, Moving: 42, Still: 179.5 };
+
+  it.each(ROWS)("drops the %s distance when %s is off", (label, slot) => {
+    const targets = { radar_target: "on", moving_target: "on", still_target: "on", [slot]: "off" };
+    const model = distanceModel(staleHass(targets), m, "in");
+    expect(model.bars.map((b) => b.label)).toEqual(["Detection", "Moving", "Still"]);
+    for (const bar of model.bars) {
+      if (bar.label === label) {
+        expect(bar).toMatchObject({ noTarget: true, value: 0 });
+      } else {
+        expect(bar.noTarget).toBe(false);
+        expect(bar.value).toBeCloseTo(READINGS[bar.label], 6);
+      }
+    }
+  });
+
+  it.each([["on"], ["unavailable"], ["unknown"]])(
+    "keeps every distance when the target sensors read %s",
+    (state) => {
+      const targets = { radar_target: state, moving_target: state, still_target: state };
+      const model = distanceModel(staleHass(targets), m, "in");
+      expect(model.bars.map((b) => [b.label, b.noTarget, b.value])).toEqual([
+        ["Detection", false, 135],
+        ["Moving", false, 42],
+        ["Still", false, 179.5],
+      ]);
+    }
+  );
+
+  it("keeps every distance when the target sensors are missing", () => {
+    const model = distanceModel(staleHass({}), m, "in");
+    expect(model.bars.every((b) => !b.noTarget)).toBe(true);
+    expect(model.bars.map((b) => b.value)).toEqual([135, 42, 179.5]);
+  });
+
+  it("writes no target in place of the old distances, on dimmed rows", () => {
+    const markup = flat(renderDistanceChart(staleHass(ALL_OFF), m, "in"));
+    expect(markup).not.toContain("135.0 in");
+    expect(markup).not.toContain("42.0 in");
+    expect(markup).not.toContain("179.5 in");
+    for (const [, , tip] of ROWS) {
+      const r = row(markup, tip);
+      expect(r).toContain(">no target</text>");
+      expect(r).toContain("<g opacity=0.45>");
+      expect(r).toContain(`<title>${tip} The radar reports no target right now.</title>`);
+    }
+  });
+
+  it("dims only the row whose target sensor is off", () => {
+    const targets = { radar_target: "on", moving_target: "on", still_target: "off" };
+    const markup = flat(renderDistanceChart(staleHass(targets), m, "in"));
+    expect(row(markup, "Current distance to the detected target.")).toContain(">135.0 in</text>");
+    expect(row(markup, "Current distance to a moving target.")).toContain(">42.0 in</text>");
+    const still = row(markup, "Current distance to a still (stationary) target.");
+    expect(still).toContain(">no target</text>");
+    expect(markup.match(/<g opacity=/g)).toHaveLength(1);
+    expect(markup.match(/>no target</g)).toHaveLength(1);
+  });
+
+  it("keeps the rows, so the chart height does not change", () => {
+    const on = { radar_target: "on", moving_target: "on", still_target: "on" };
+    const withTargets = flat(renderDistanceChart(staleHass(on), m, "in"));
+    const without = flat(renderDistanceChart(staleHass(ALL_OFF), m, "in"));
+    expect(withTargets).not.toContain("no target");
+    expect(withTargets).not.toContain("<g opacity=");
+    expect(height(without)).toBe(height(withTargets));
+  });
+
+  it("leaves the gate bands alone", () => {
+    const markup = flat(renderDistanceChart(staleHass(ALL_OFF), m, "in"));
+    expect(bandLabels(markup)).toEqual(gateLabels(8));
+    expect(ticks(markup)).toHaveLength(9);
+  });
+
+  it("watches the target sensors, so the card redraws when one changes", () => {
+    expect(DISTANCE_CHART_SLOTS).toEqual(
+      expect.arrayContaining(["radar_target", "moving_target", "still_target"])
+    );
   });
 });
