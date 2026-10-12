@@ -233,6 +233,46 @@ class _MigratingStore(Store[dict[str, Any]]):
         return {STORE_DEVICES: devices, STORE_ORPHANS: orphans}
 
 
+def _parse_zones(zones: Any, device_id: str | None) -> dict[int, dict[str, Any]]:
+    """Zones of one stored entry keyed by int id, reporting each one dropped."""
+    if zones is None:
+        return {}
+    if not isinstance(zones, dict):
+        _LOGGER.warning(
+            "Apollo mmWave: dropped every zone of '%s' from %s; its zones value"
+            " is a %s, not an object.",
+            device_id,
+            STORAGE_KEY,
+            type(zones).__name__,
+        )
+        return {}
+    parsed: dict[int, dict[str, Any]] = {}
+    # JSON object keys are strings; zone ids are ints in memory.
+    for zone_key, zone_def in zones.items():
+        try:
+            zone_id = int(zone_key)
+        except TypeError, ValueError:
+            _LOGGER.warning(
+                "Apollo mmWave: dropped zone '%s' of '%s' from %s; its key"
+                " is not a zone number.",
+                zone_key,
+                device_id,
+                STORAGE_KEY,
+            )
+            continue
+        if isinstance(zone_def, dict):
+            parsed[zone_id] = zone_def
+        else:
+            _LOGGER.warning(
+                "Apollo mmWave: dropped zone %s of '%s' from %s; its"
+                " definition is not an object.",
+                zone_key,
+                device_id,
+                STORAGE_KEY,
+            )
+    return parsed
+
+
 def _parse_entry(raw: Any, device_id: str | None = None) -> dict[str, Any] | None:
     """
     Normalise one stored device entry, or None if it is not a mapping.
@@ -243,31 +283,7 @@ def _parse_entry(raw: Any, device_id: str | None = None) -> dict[str, Any] | Non
     if not isinstance(raw, dict):
         return None
     entry = _empty_device()
-    zones = raw.get(STORE_ZONES)
-    if isinstance(zones, dict):
-        # JSON object keys are strings; zone ids are ints in memory.
-        for zone_key, zone_def in zones.items():
-            try:
-                zone_id = int(zone_key)
-            except TypeError, ValueError:
-                _LOGGER.warning(
-                    "Apollo mmWave: dropped zone '%s' of '%s' from %s; its key"
-                    " is not a zone number.",
-                    zone_key,
-                    device_id,
-                    STORAGE_KEY,
-                )
-                continue
-            if isinstance(zone_def, dict):
-                entry[STORE_ZONES][zone_id] = zone_def
-            else:
-                _LOGGER.warning(
-                    "Apollo mmWave: dropped zone %s of '%s' from %s; its"
-                    " definition is not an object.",
-                    zone_key,
-                    device_id,
-                    STORAGE_KEY,
-                )
+    entry[STORE_ZONES] = _parse_zones(raw.get(STORE_ZONES), device_id)
     entities = raw.get(STORE_ENTITIES)
     if isinstance(entities, list):
         entry[STORE_ENTITIES] = entities
@@ -288,6 +304,27 @@ def _parse_entry(raw: Any, device_id: str | None = None) -> dict[str, Any] | Non
     if isinstance(units, str) and units in INPUT_UNIT_FACTORS:
         entry[STORE_INPUT_UNITS] = units
     return entry
+
+
+def _section(data: dict[str, Any], key: str) -> dict[str, Any]:
+    """
+    Return the ``devices`` or ``orphans`` mapping of a payload, or {}.
+
+    Absent or null reads as empty. Any other value that is not an object is
+    reported and read as empty too, rather than failing setup with a
+    traceback; the next save then writes the section out empty.
+    """
+    section = data.get(key)
+    if section is None:
+        return {}
+    if not isinstance(section, dict):
+        _LOGGER.error(
+            "Apollo mmWave: zone store '%s' is a %s, not an object; ignoring it",
+            key,
+            type(section).__name__,
+        )
+        return {}
+    return section
 
 
 class ZoneStore:
@@ -318,7 +355,7 @@ class ZoneStore:
         self.orphans = {}
         # The next save writes out only what was kept, which makes every drop
         # permanent, so each one is reported by its key.
-        for device_id, raw in (data.get(STORE_DEVICES) or {}).items():
+        for device_id, raw in _section(data, STORE_DEVICES).items():
             entry = _parse_entry(raw, device_id)
             if entry is None:
                 _LOGGER.warning(
@@ -329,7 +366,7 @@ class ZoneStore:
                 )
                 continue
             self.devices[device_id] = entry
-        for location, raw in (data.get(STORE_ORPHANS) or {}).items():
+        for location, raw in _section(data, STORE_ORPHANS).items():
             entry = _parse_entry(raw, location)
             if entry is None:
                 _LOGGER.warning(

@@ -729,6 +729,92 @@ async def test_v2_list_data_is_reported_and_ignored(
     assert hass_storage[ZONE_STORAGE_KEY]["data"] == {"devices": {}, "orphans": {}}
 
 
+async def test_v2_list_devices_is_reported_and_ignored(
+    hass, hass_storage, config_entry, caplog
+) -> None:
+    """A v2 `devices` list reads as empty and is reported, not a traceback."""
+    hass_storage[ZONE_STORAGE_KEY] = _malformed_file(
+        2, {"devices": ["dev"], "orphans": {}}
+    )
+
+    store = await _assert_setup_survives(hass, config_entry, caplog)
+
+    assert store.devices == {}
+    assert store.orphans == {}
+    errors = [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno == logging.ERROR
+    ]
+    assert [e for e in errors if "'devices' is a list" in e]
+
+
+async def test_v2_string_orphans_is_reported_and_devices_kept(
+    hass, hass_storage, caplog
+) -> None:
+    """A malformed `orphans` value is dropped alone; the devices still load."""
+    good_zone = {"shape": "rect", "data": {}}
+    hass_storage[ZONE_STORAGE_KEY] = _malformed_file(
+        2, {"devices": {"dev": {"zones": {"1": good_zone}}}, "orphans": "Attic"}
+    )
+
+    store = ZoneStore(hass)
+    assert await store.async_load() is True
+
+    assert store.devices == {"dev": {"zones": {1: good_zone}}}
+    assert store.orphans == {}
+    assert any(
+        record.levelno == logging.ERROR and "'orphans' is a str" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+async def test_v2_absent_or_null_sections_load_quietly(
+    hass, hass_storage, caplog
+) -> None:
+    """A missing or null `devices` or `orphans` is simply empty, with no log."""
+    hass_storage[ZONE_STORAGE_KEY] = _malformed_file(2, {"devices": None})
+
+    store = ZoneStore(hass)
+    assert await store.async_load() is True
+
+    assert store.devices == {}
+    assert store.orphans == {}
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+async def test_non_object_zones_value_is_reported_when_dropped(
+    hass, hass_storage, caplog
+) -> None:
+    """An entry whose `zones` is not an object keeps its other keys and warns."""
+    good_zone = {"shape": "rect", "data": {}}
+    hass_storage[ZONE_STORAGE_KEY] = _malformed_file(
+        2,
+        {
+            "devices": {
+                "dev1": {"zones": [good_zone], "label": "Den"},
+                "dev2": {"zones": {"1": good_zone}},
+                "dev3": {"zones": None},
+            },
+            "orphans": {"Attic": {"zones": "4"}},
+        },
+    )
+
+    store = ZoneStore(hass)
+    assert await store.async_load() is True
+
+    assert store.devices == {
+        "dev1": {"zones": {}, "label": "Den"},
+        "dev2": {"zones": {1: good_zone}},
+        "dev3": {"zones": {}},
+    }
+    assert store.orphans == {"Attic": {"zones": {}}}
+    warnings = _store_warnings(caplog)
+    assert len(warnings) == 2
+    assert [w for w in warnings if "every zone of 'dev1'" in w and "a list" in w]
+    assert [w for w in warnings if "every zone of 'Attic'" in w and "a str" in w]
+
+
 async def test_newer_store_version_fails_setup(
     hass, hass_storage, config_entry
 ) -> None:
