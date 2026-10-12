@@ -472,6 +472,22 @@ async def test_calibration_subscribe_sends_current_state_immediately(
     assert payload["entities"]["engineering_mode_on"] is False
     assert payload["entities"]["max_move_gate"] == 6
     assert payload["entities"]["min_gate"] is None
+    assert payload["entities"]["query_params_button"] == msr.query_params
+
+
+async def test_calibration_payload_names_the_ld2412_query_params_button(
+    hass, hass_ws_client, init_integration, ld2412_device
+) -> None:
+    """The card finds the R PRO-1's button in the payload as it does the MSR's."""
+    _ = init_integration
+    rpro = radar_ids(ld2412_device)
+    client = await hass_ws_client(hass)
+
+    _, payload = await _subscribe(client, rpro.device_id)
+
+    assert payload["entities"]["profile"] == "ld2412"
+    assert payload["entities"]["query_params_button"] == rpro.query_params
+    assert rpro.query_params.endswith("_ld2412_query_params")
 
 
 async def test_calibration_subscribe_pushes_running_job_progress(

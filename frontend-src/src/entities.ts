@@ -128,6 +128,10 @@ const SCALAR_PATTERNS: ScalarPattern[] = [
   S("restart_radar", "button", "_restart_radar"),
   S("factory_reset_radar", "button", "_factory_reset_radar"),
   S("esp_reboot", "button", "_esp_reboot"),
+  // The MSR firmware's "Query Params" has no chip prefix, so this also matches
+  // the LD2412's `_ld2412_query_params`, which lands on the same slot. The
+  // backend's gates.py carries both suffixes; change both together.
+  S("query_params", "button", "_query_params"),
   S("radar_timeout", "number", "_radar_timeout"),
   S("zone_1_start", "number", "_radar_zone_1_start"),
   S("end_zone_1", "number", "_radar_end_zone_1"),
@@ -158,8 +162,9 @@ const SCALAR_PATTERNS: ScalarPattern[] = [
   S("moving_target", "binary_sensor", "_ld2412_moving_target"),
   S("still_target", "binary_sensor", "_ld2412_still_target"),
   // The chip's own background correction (a firmware button and a status
-  // flag) and the query-params button the calibration job presses. The
-  // backend's gates.py carries the same suffixes; change both together.
+  // flag) and the query-params button the calibration job presses (the LD2410
+  // spelling above already matches it). The backend's gates.py carries the
+  // same suffixes; change both together.
   S("background_correction", "button", "_ld2412_start_dynamic_background_correction"),
   S(
     "background_correction_status",

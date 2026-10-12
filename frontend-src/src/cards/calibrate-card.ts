@@ -34,9 +34,12 @@ import { registerElement } from "../register";
 import {
   CALIBRATION_RETRY_DELAYS_MS,
   ERR_NOT_LOADED,
+  ERR_THRESHOLDS_NOT_NUMERIC,
   cancelCalibration,
   describeError,
   describeServiceError,
+  pressButton,
+  refusalKey,
   restoreThresholds,
   startCalibration,
   subscribeCalibration,
@@ -64,20 +67,27 @@ import {
   idleSentence,
   isFactoryThresholds,
   isTerminal,
+  liveGateLimits,
   missingLine,
   nextLocalState,
+  offChannelsBeforeRun,
+  offGatesLine,
   offersUndo,
   phaseHeadline,
   phaseLabel,
   progress,
+  reenabledLines,
   restoreSource,
   restoreSummaryLines,
   restoredLine,
   resultHeading,
   resultRows,
+  savedLine,
   showsResultView,
   summaryLine,
+  thresholdMax,
   undoLabel,
+  undoTitle,
   unusedFootnote,
   warningLines,
   type LocalState,
@@ -97,6 +107,16 @@ const NOT_LOADED = "Apollo mmWave is not loaded, so calibration is unavailable."
 const PREVIEW_HELPER =
   "Computes new thresholds without changing any of them. Radar Engineering Mode is still turned on for the listen.";
 const FACTORY_HINT = "These look like factory thresholds. Calibrating sets them for your room.";
+/** Offered when the radar has not reported its thresholds yet: it presses the
+ *  radar's query params button, waits, then runs the refused job again. */
+export const READ_SETTINGS_LABEL = "Read settings from the radar";
+const READING_SETTINGS = "Reading settings from the radar...";
+/** Time the radar gets to report its thresholds after the button press (the
+ *  backend waits as long, `VERIFY_SETTLE_S`, after its own LD2412 press). */
+export const READ_SETTINGS_WAIT_MS = 3000;
+/** Without a query params button the card cannot ask, so it says where to. */
+const QUERY_PARAMS_HINT =
+  "Open the radar's device page, press its Query Params button in the Diagnostic section, wait a few seconds, then try again.";
 
 type LoadState = "loading" | "idle" | "retrying" | "not_loaded" | "error";
 
@@ -105,6 +125,8 @@ interface ServiceFailure {
   prefix: string;
   message: string;
   retry: () => void;
+  /** The refusal's translation key, e.g. `thresholds_not_numeric`. */
+  code?: string;
 }
 
 function safeUnsubscribe(unsubscribe: Unsubscribe): void {
@@ -132,6 +154,10 @@ export class ApolloRadarCalibrateCard extends LitElement {
   /** A rejected "Turn it off", shown inside the interrupted banner. */
   @state() private _turnOffError?: string;
   @state() private _showLastResult = false;
+  /** "Read settings from the radar" pressed the button and is waiting. */
+  @state() private _readingSettings = false;
+  /** A rejected press of the query params button. */
+  @state() private _readSettingsError?: string;
 
   private _resolved?: ResolvedRadar;
   private _deviceId?: string;
@@ -154,6 +180,10 @@ export class ApolloRadarCalibrateCard extends LitElement {
   /** `apply` of the last job a push showed, so "Try again" on a failed
    *  preview repeats the preview instead of writing thresholds. */
   private _lastJobApply: { jobId: string; apply: boolean } | null = null;
+  /** Bumped to drop a pending "Read settings" retry (Close, a new run, a
+   *  device change, leaving the page). */
+  private _readSettingsToken = 0;
+  private readonly _maxOf = (entityId: string | null): number => thresholdMax(this.hass, entityId);
 
   public setConfig(config: CalibrateCardConfig): void {
     this._config = config;
@@ -179,6 +209,9 @@ export class ApolloRadarCalibrateCard extends LitElement {
 
   disconnectedCallback(): void {
     super.disconnectedCallback();
+    // A retry that fires after the card left the page would start a job the
+    // user can no longer see.
+    this._cancelReadSettings();
     this._detachConnectionListeners();
     this._closeEntryFeed();
     this._close();
@@ -215,6 +248,7 @@ export class ApolloRadarCalibrateCard extends LitElement {
       this._turnOffError = undefined;
       this._lastJobApply = null;
       this._showLastResult = false;
+      this._cancelReadSettings();
       this._retryIndex = 0;
       this._loadState = "loading";
       this._close();
@@ -231,6 +265,9 @@ export class ApolloRadarCalibrateCard extends LitElement {
       m.engineering_mode,
       ...m.move_threshold,
       ...m.still_threshold,
+      // The gate range decides which turned-off gates the idle card names.
+      m.max_move_distance,
+      m.max_still_distance,
       m.radar_target,
       m.background_correction_status,
       entities?.engineering_mode,
@@ -411,6 +448,7 @@ export class ApolloRadarCalibrateCard extends LitElement {
     const hass = this._apiHass();
     const deviceId = this._deviceId;
     if (!hass || !deviceId) return;
+    this._cancelReadSettings();
     this._failure = undefined;
     this._showLastResult = false;
     this._local = { ...this._local, observedFinish: null };
@@ -432,7 +470,7 @@ export class ApolloRadarCalibrateCard extends LitElement {
     const deviceId = this._deviceId;
     const message = await describeServiceError(this.hass ?? {}, error);
     if (deviceId !== this._deviceId) return;
-    this._failure = { prefix, message, retry };
+    this._failure = { prefix, message, retry, code: refusalKey(error) };
   }
 
   private _stop(): void {
@@ -453,6 +491,7 @@ export class ApolloRadarCalibrateCard extends LitElement {
     const hass = this._apiHass();
     const deviceId = this._deviceId;
     if (!hass || !deviceId) return;
+    this._cancelReadSettings();
     this._failure = undefined;
     this._showLastResult = false;
     restoreThresholds(hass, deviceId, snapshotId).catch((error) =>
@@ -473,8 +512,50 @@ export class ApolloRadarCalibrateCard extends LitElement {
     });
   }
 
+  /**
+   * Answer `thresholds_not_numeric`: press the radar's query params button,
+   * give it `READ_SETTINGS_WAIT_MS` to report, then run the refused job again
+   * with `retry` (the same calibration, preview or restore). A press HA
+   * rejects is shown in the view instead.
+   */
+  private _readSettingsThenRetry(button: string, retry: () => void): void {
+    const hass = this._apiHass();
+    const deviceId = this._deviceId;
+    if (!hass || !deviceId || this._readingSettings) return;
+    const token = ++this._readSettingsToken;
+    const current = () => token === this._readSettingsToken && deviceId === this._deviceId;
+    this._readingSettings = true;
+    this._readSettingsError = undefined;
+    pressButton(hass, button).then(
+      () => {
+        setTimeout(() => {
+          if (!current()) return;
+          this._readingSettings = false;
+          // A job started elsewhere meanwhile (another tab, an automation):
+          // the running view shows it, and a second start would be refused.
+          const running = this._payload?.job;
+          if (running && !isTerminal(running.status)) return;
+          retry();
+        }, READ_SETTINGS_WAIT_MS);
+      },
+      async (error) => {
+        const message = await describeServiceError(this.hass ?? {}, error);
+        if (!current()) return;
+        this._readingSettings = false;
+        this._readSettingsError = `Could not ask the radar for its settings: ${message}`;
+      }
+    );
+  }
+
+  private _cancelReadSettings(): void {
+    this._readSettingsToken += 1;
+    this._readingSettings = false;
+    this._readSettingsError = undefined;
+  }
+
   /** "Close": back to Idle from a result or a failure. */
   private _closeResult(): void {
+    this._cancelReadSettings();
     this._failure = undefined;
     this._local = { ...this._local, observedFinish: null };
   }
@@ -508,6 +589,18 @@ export class ApolloRadarCalibrateCard extends LitElement {
     const live = id && this.hass ? this.hass.states[id]?.state : undefined;
     if (live !== undefined) return live === "on";
     return !!this._payload?.entities?.background_status_on;
+  }
+
+  /** The radar's query params button, from the payload (registry based) or
+   *  the resolved map, when HA has it. */
+  private _queryParamsButtonId(): string | undefined {
+    const id = this._payload?.entities?.query_params_button ?? this._resolved?.map.query_params;
+    return id && this.hass?.states[id] ? id : undefined;
+  }
+
+  /** The backend's warning codes, then the gates the run turned back on. */
+  private _warningLines(result: CalibrationResult): string[] {
+    return [...warningLines(result), ...reenabledLines(result, this._maxOf)];
   }
 
   private _online(): boolean {
@@ -666,13 +759,42 @@ export class ApolloRadarCalibrateCard extends LitElement {
         ${this._renderBanner(payload)}
         <div class="status" aria-live="polite">
           <p class="error">${failure.prefix}${failure.message}</p>
+          ${this._renderReadSettingsLines(failure.code)}
         </div>
         <div class="buttons">
-          <button type="button" class="primary" @click=${failure.retry}>Try again</button>
-          ${this._closeButton()}
+          ${this._renderRetryButton(failure.code, failure.retry)} ${this._closeButton()}
         </div>
       </div>
     `;
+  }
+
+  /** The `thresholds_not_numeric` extras under a failure: where the button
+   *  is when the card cannot press it, the wait, a rejected press. */
+  private _renderReadSettingsLines(code: string | undefined): TemplateResult | typeof nothing {
+    if (code !== ERR_THRESHOLDS_NOT_NUMERIC) return nothing;
+    const hint = this._queryParamsButtonId() ? "" : QUERY_PARAMS_HINT;
+    return html`<div class="read-settings">
+      ${hint ? html`<p>${hint}</p>` : nothing}
+      ${this._readingSettings ? html`<p>${READING_SETTINGS}</p>` : nothing}
+      ${this._readSettingsError ? html`<p class="error" role="alert">${this._readSettingsError}</p>` : nothing}
+    </div>`;
+  }
+
+  /** "Try again", or for thresholds the radar has not reported, "Read
+   *  settings from the radar" when the card knows its query params button. */
+  private _renderRetryButton(code: string | undefined, retry: () => void): TemplateResult {
+    const button = code === ERR_THRESHOLDS_NOT_NUMERIC ? this._queryParamsButtonId() : undefined;
+    if (!button) {
+      return html`<button type="button" class="primary" @click=${retry}>Try again</button>`;
+    }
+    return html`<button
+      type="button"
+      class="primary"
+      ?disabled=${this._readingSettings}
+      @click=${() => this._readSettingsThenRetry(button, retry)}
+    >
+      ${READ_SETTINGS_LABEL}
+    </button>`;
   }
 
   // --- finished job ---------------------------------------------------------
@@ -681,7 +803,12 @@ export class ApolloRadarCalibrateCard extends LitElement {
     const snapshots = payload.snapshots ?? [];
     const banner = this._renderBanner(payload);
     const undo = snapshots.length
-      ? html`<button type="button" class="secondary" @click=${() => this._undo()}>
+      ? html`<button
+          type="button"
+          class="secondary"
+          title=${undoTitle(snapshots) ?? nothing}
+          @click=${() => this._undo()}
+        >
           ${undoLabel(snapshots)}
         </button>`
       : nothing;
@@ -692,7 +819,10 @@ export class ApolloRadarCalibrateCard extends LitElement {
       return html`
         <div class="section">
           ${banner}
-          <div class="status" aria-live="polite"><p class="error">${failureLine(result)}</p></div>
+          <div class="status" aria-live="polite">
+            <p class="error">${failureLine(result)}</p>
+            ${this._renderReadSettingsLines(result.error?.code)}
+          </div>
           <div class="buttons">
             ${offersUndo(result) ? undo : nothing} ${this._renderTryAgain(result, snapshots)}
             ${this._closeButton()}
@@ -720,7 +850,7 @@ export class ApolloRadarCalibrateCard extends LitElement {
           <div class="status" aria-live="polite">
             <p class="headline">${restoredLine(result, snapshots)}</p>
             ${missing ? html`<p>${missing}</p>` : nothing}
-            ${warningLines(result).map((line) => html`<p class="warning">${line}</p>`)}
+            ${this._warningLines(result).map((line) => html`<p class="warning">${line}</p>`)}
           </div>
           ${this._renderIdleBody(payload)}
           <div class="buttons">${undo} ${again(PRIMARY_LABEL)}</div>
@@ -736,7 +866,7 @@ export class ApolloRadarCalibrateCard extends LitElement {
             <p>These are the thresholds calibration would set:</p>
           </div>
           ${this._renderTable(result)}
-          ${warningLines(result).map((line) => html`<p class="warning">${line}</p>`)}
+          ${this._warningLines(result).map((line) => html`<p class="warning">${line}</p>`)}
           <div class="buttons">${again("Calibrate and apply")} ${this._closeButton()}</div>
         </div>
       `;
@@ -749,7 +879,7 @@ export class ApolloRadarCalibrateCard extends LitElement {
           <p>${summaryLine(result)}</p>
         </div>
         ${this._renderTable(result)}
-        ${warningLines(result).map((line) => html`<p class="warning">${line}</p>`)}
+        ${this._warningLines(result).map((line) => html`<p class="warning">${line}</p>`)}
         <p>${WALK_AROUND_LINE}</p>
         <div class="buttons">${undo} ${again("Calibrate again")} ${this._closeButton()}</div>
       </div>
@@ -762,7 +892,8 @@ export class ApolloRadarCalibrateCard extends LitElement {
    * snapshot it was restoring, by id: once its redo snapshot is saved that is
    * the newest, and restoring the newest would put back the very values the
    * user was undoing. When the source cannot be told the button is left out
-   * (Close and Undo remain).
+   * (Close and Undo remain). For thresholds the radar has not reported, the
+   * button reads the radar's settings first (`_renderRetryButton`).
    */
   private _renderTryAgain(
     result: CalibrationResult,
@@ -779,11 +910,11 @@ export class ApolloRadarCalibrateCard extends LitElement {
       const apply = seen && seen.jobId === result.job_id ? seen.apply : true;
       retry = () => this._start(apply);
     }
-    return html`<button type="button" class="primary" @click=${retry}>Try again</button>`;
+    return this._renderRetryButton(result.error?.code, retry);
   }
 
   private _renderTable(result: CalibrationResult): TemplateResult {
-    const rows = resultRows(result);
+    const rows = resultRows(result, this._maxOf);
     const footnotes = unusedFootnote(result);
     const cellClass = (flags: string[]) => (flags.includes("unused") ? "unused" : "");
     const renderRow = (row: Row) => html`
@@ -846,6 +977,7 @@ export class ApolloRadarCalibrateCard extends LitElement {
       this.hass && this._resolved
         ? isFactoryThresholds(this.hass, this._resolved.map, this._profileKey(), payload.snapshots ?? [])
         : false;
+    const offLine = this._offGatesLine(payload);
     return html`
       <div class="idle-body">
         <p>${idleSentence(settle, duration)}</p>
@@ -868,9 +1000,21 @@ export class ApolloRadarCalibrateCard extends LitElement {
             </li>`
           : nothing}
         </ul>
+        ${offLine ? html`<p class="warning">${offLine}</p>` : nothing}
         ${factory ? html`<p class="hint">${FACTORY_HINT}</p>` : nothing}
       </div>
     `;
+  }
+
+  /** The in-use gates whose live threshold sits at the top (turned off), which
+   *  a calibration would turn back on; null when there are none. A gate the
+   *  last calibration turned off itself is not named: the user did not. */
+  private _offGatesLine(payload: CalibrationPayload): string | null {
+    if (!this.hass || !this._resolved) return null;
+    const map = this._resolved.map;
+    const profile = this._profileKey();
+    const limits = liveGateLimits(this.hass, map, profile, payload.entities);
+    return offGatesLine(offChannelsBeforeRun(this.hass, map, profile, limits, payload.last_result));
   }
 
   private _renderIdleButtons(payload: CalibrationPayload, online: boolean): TemplateResult {
@@ -896,6 +1040,9 @@ export class ApolloRadarCalibrateCard extends LitElement {
   ): TemplateResult | typeof nothing {
     const last = payload.last_result;
     if (!snapshots.length && !last) return nothing;
+    // The saved time as text too: a tooltip never shows on a touch screen,
+    // and these values may belong to an older run than the line above.
+    const saved = savedLine(snapshots);
     return html`
       <div class="footer">
         ${snapshots.length
@@ -903,10 +1050,16 @@ export class ApolloRadarCalibrateCard extends LitElement {
               <div class="last">
                 ${last ? html`<p>${footerLine(last)}</p>` : nothing}
                 <div class="buttons">
-                  <button type="button" class="secondary" @click=${() => this._undo()}>
+                  <button
+                    type="button"
+                    class="secondary"
+                    title=${undoTitle(snapshots) ?? nothing}
+                    @click=${() => this._undo()}
+                  >
                     ${undoLabel(snapshots)}
                   </button>
                 </div>
+                ${saved ? html`<p class="helper">${saved}</p>` : nothing}
               </div>
             `
           : nothing}
@@ -935,7 +1088,7 @@ export class ApolloRadarCalibrateCard extends LitElement {
     if (result.status === "failed" || result.outcome === "failed") {
       return html`<div class="stored"><p class="error">${failureLine(result)}</p></div>`;
     }
-    const warnings = warningLines(result).map((line) => html`<p class="warning">${line}</p>`);
+    const warnings = this._warningLines(result).map((line) => html`<p class="warning">${line}</p>`);
     // A restore result always carries `gates: []`: its lines are the summary
     // and the entities it could not find, never a table.
     if (result.kind === "restore") {

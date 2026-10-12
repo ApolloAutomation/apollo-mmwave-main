@@ -651,6 +651,7 @@ const LD2410_PROFILE = {
       restart_radar: `button.${base}_restart_radar`,
       factory_reset_radar: `button.${base}_factory_reset_radar`,
       esp_reboot: `button.${base}_esp_reboot`,
+      query_params: `button.${base}_query_params`,
       radar_timeout: `number.${base}_radar_timeout`,
       zone_1_start: `number.${base}_radar_zone_1_start`,
       end_zone_1: `number.${base}_radar_end_zone_1`,
@@ -841,6 +842,10 @@ const SCALAR_PATTERNS = [
   S2("restart_radar", "button", "_restart_radar"),
   S2("factory_reset_radar", "button", "_factory_reset_radar"),
   S2("esp_reboot", "button", "_esp_reboot"),
+  // The MSR firmware's "Query Params" has no chip prefix, so this also matches
+  // the LD2412's `_ld2412_query_params`, which lands on the same slot. The
+  // backend's gates.py carries both suffixes; change both together.
+  S2("query_params", "button", "_query_params"),
   S2("radar_timeout", "number", "_radar_timeout"),
   S2("zone_1_start", "number", "_radar_zone_1_start"),
   S2("end_zone_1", "number", "_radar_end_zone_1"),
@@ -871,8 +876,9 @@ const SCALAR_PATTERNS = [
   S2("moving_target", "binary_sensor", "_ld2412_moving_target"),
   S2("still_target", "binary_sensor", "_ld2412_still_target"),
   // The chip's own background correction (a firmware button and a status
-  // flag) and the query-params button the calibration job presses. The
-  // backend's gates.py carries the same suffixes; change both together.
+  // flag) and the query-params button the calibration job presses (the LD2410
+  // spelling above already matches it). The backend's gates.py carries the
+  // same suffixes; change both together.
   S2("background_correction", "button", "_ld2412_start_dynamic_background_correction"),
   S2(
     "background_correction_status",
@@ -1156,6 +1162,9 @@ const DISTANCE_CHART_SLOTS = [
   "detection_distance",
   "moving_distance",
   "still_distance",
+  "radar_target",
+  "moving_target",
+  "still_target",
   "zone_1_start",
   "end_zone_1",
   "end_zone_2",
@@ -1174,13 +1183,20 @@ function distanceModel(hass, m2, unit) {
   const gateCount = registers > 1 ? registers - 1 : GATE_COUNT;
   const maxRange = gateSizeChart * gateCount;
   const bars = [];
-  const pushBar = (id, label, color) => {
+  const pushBar = (id, targetId, label, color) => {
+    var _a3;
     if (!id || !(id in hass.states)) return;
-    bars.push({ label, value: distInUnit(hass, id, unit) ?? 0, color });
+    const noTarget = !!targetId && ((_a3 = hass.states[targetId]) == null ? void 0 : _a3.state) === "off";
+    bars.push({
+      label,
+      value: noTarget ? 0 : distInUnit(hass, id, unit) ?? 0,
+      color,
+      noTarget
+    });
   };
-  pushBar(m2.detection_distance, "Detection", DETECTION_COLOR);
-  pushBar(m2.moving_distance, "Moving", MOVE_COLOR$1);
-  pushBar(m2.still_distance, "Still", STILL_COLOR$1);
+  pushBar(m2.detection_distance, m2.radar_target, "Detection", DETECTION_COLOR);
+  pushBar(m2.moving_distance, m2.moving_target, "Moving", MOVE_COLOR$1);
+  pushBar(m2.still_distance, m2.still_target, "Still", STILL_COLOR$1);
   const zones = [];
   const bounds = [
     distInUnit(hass, m2.zone_1_start, unit),
@@ -1226,6 +1242,8 @@ const ROW_H = 30;
 const BAR_H = ROW_H - 8;
 const AXIS_H = 52;
 const MID = BAR_H / 2 + 4;
+const NO_TARGET_OPACITY = 0.45;
+const NO_TARGET_TEXT = "no target";
 function rowLabel(r2) {
   if (r2.kind === "zones") return "Zones";
   if (r2.kind === "gates") return "Gates";
@@ -1238,10 +1256,12 @@ function rowTip(r2) {
   if (r2.kind === "gates")
     return "The radar splits its range into gates. Each colored segment is one distance bin (G1, G2, ...).";
   if (r2.kind === "max") return r2.tip ?? rangeLimitTip(r2.label);
-  if (r2.bar.label === "Detection")
-    return "Current distance to the detected target.";
-  if (r2.bar.label === "Moving")
-    return "Current distance to a moving target.";
+  const tip = barTip(r2.bar.label);
+  return r2.bar.noTarget ? `${tip} The radar reports no target right now.` : tip;
+}
+function barTip(label) {
+  if (label === "Detection") return "Current distance to the detected target.";
+  if (label === "Moving") return "Current distance to a moving target.";
   return "Current distance to a still (stationary) target.";
 }
 function valueLabel(xEnd, text, y3) {
@@ -1309,10 +1329,11 @@ function renderDistanceChart(hass, m2, unit, maxLabels = LD2410_PROFILE.maxBarLa
       });
     } else if (r2.kind === "bar") {
       const xe = x2(r2.bar.value);
+      const text = r2.bar.noTarget ? NO_TARGET_TEXT : fmt(r2.bar.value);
       content = w`
         <rect x=${LBL} y=${y3} width=${Math.max(1, xe - LBL)} height=${BAR_H}
           rx="4" fill=${r2.bar.color}></rect>
-        ${valueLabel(xe, fmt(r2.bar.value), y3)}`;
+        ${valueLabel(xe, text, y3)}`;
     } else if (r2.kind === "gates") {
       const segs = [];
       for (let g2 = 0; g2 < model.gateCount; g2++) {
@@ -1334,10 +1355,11 @@ function renderDistanceChart(hass, m2, unit, maxLabels = LD2410_PROFILE.maxBarLa
         <text x=${(LBL + xe) / 2} y=${y3 + MID} font-size="13" font-weight="600"
           text-anchor="middle" fill="#fff">${text}</text>`;
     }
+    const body = r2.kind === "bar" && r2.bar.noTarget ? w`<g opacity=${NO_TARGET_OPACITY}>${label2}${content}</g>` : w`${label2}${content}`;
     return w`<g>
       <title>${rowTip(r2)}</title>
       <rect x="0" y=${y3} width=${WIDTH$1} height=${BAR_H} fill="transparent"></rect>
-      ${label2}${content}
+      ${body}
     </g>`;
   });
   return b`
@@ -1453,6 +1475,7 @@ const SERVICE_RESTORE_GATE_THRESHOLDS = "restore_gate_thresholds";
 const CALIBRATION_RETRY_DELAYS_MS = [1e3, 2e3, 5e3, 1e4, 2e4];
 const ERR_NOT_LOADED = "not_loaded";
 const ERR_NOT_FOUND = "not_found";
+const ERR_THRESHOLDS_NOT_NUMERIC = "thresholds_not_numeric";
 const NOT_LOADED_MESSAGE = "Apollo mmWave is not loaded, so calibration is unavailable.";
 const NO_DEVICE_MESSAGE = "Home Assistant has no device with this id. The radar was probably removed and re-added; reload the dashboard, or set device_id in the card YAML.";
 const REJECTED_MESSAGE = "Home Assistant rejected the request.";
@@ -1510,6 +1533,9 @@ function restoreThresholds(hass, deviceId, snapshotId) {
     ...snapshotId ? { snapshot_id: snapshotId } : {}
   });
 }
+function pressButton(hass, entityId) {
+  return callService(hass, "button", "press", { entity_id: entityId });
+}
 function turnEngineeringMode(hass, switchId, on) {
   return callService(hass, "switch", "turn_off", {
     entity_id: switchId
@@ -1521,6 +1547,11 @@ function errorPayload(error) {
     if (inner && typeof inner === "object") return inner;
   }
   return error;
+}
+function refusalKey(error) {
+  const err = errorPayload(error);
+  if ((err == null ? void 0 : err.translation_domain) !== DOMAIN) return void 0;
+  return typeof err.translation_key === "string" ? err.translation_key : void 0;
 }
 function sentence(text) {
   const trimmed = text.trim();
@@ -1847,6 +1878,8 @@ registerCustomCard(
 const DEFAULT_SETTLE_S = 15;
 const DEFAULT_DURATION_S = 60;
 const TOLERANCE = 0.5;
+const DEFAULT_THRESHOLD_MAX = 100;
+const CHANNELS = ["move", "still"];
 const KEEP_ON_LD2410 = "Leave Radar Engineering Mode on until this finishes.";
 const KEEP_ON_LD2412 = "Leave Radar Engineering Mode on and do not press Start Dynamic Background Correction until this finishes.";
 const WALK_AROUND_LINE = "Now walk around, then sit still for a minute: the Radar Target row in Target / Occupancy should stay on the whole time you are in the room and turn off a few seconds after you leave (Radar Timeout).";
@@ -1884,7 +1917,7 @@ function durationText(seconds) {
   return `${seconds} ${seconds === 1 ? "second" : "seconds"}`;
 }
 function idleSentence(settleS, durationS) {
-  const listen = `listens for ${durationText(durationS)}, then sets every gate's move and still threshold just above the background it heard.`;
+  const listen = `listens for ${durationText(durationS)}, then sets every gate's move and still threshold a margin above the background it heard.`;
   const middle = settleS > 0 ? `It counts down ${durationText(settleS)} so you can leave, ${listen}` : `It ${listen}`;
   return `Teach the radar what your empty room looks like. ${middle} Your current thresholds are saved first, so you can undo.`;
 }
@@ -2021,7 +2054,19 @@ function peakText(ch) {
   if (ch.peak === null || ch.peak === void 0) return "";
   return ch.flags.includes("spike") ? `${num(ch.peak)} (spike seen)` : num(ch.peak);
 }
-function thresholdText(ch, preview) {
+function thresholdMax(hass, entityId) {
+  var _a2, _b, _c;
+  const raw = entityId ? (_c = (_b = (_a2 = hass == null ? void 0 : hass.states) == null ? void 0 : _a2[entityId]) == null ? void 0 : _b.attributes) == null ? void 0 : _c.max : void 0;
+  const value = typeof raw === "number" ? raw : typeof raw === "string" ? parseFloat(raw) : NaN;
+  return Number.isFinite(value) ? value : DEFAULT_THRESHOLD_MAX;
+}
+const defaultMax = () => DEFAULT_THRESHOLD_MAX;
+function wasOff(ch, max) {
+  if (ch.skipped || ch.flags.includes("unused")) return false;
+  if (ch.old === null || ch.old === void 0 || ch.new === null || ch.new === void 0) return false;
+  return Math.abs(ch.old - max) <= TOLERANCE && ch.new < max - TOLERANCE;
+}
+function thresholdText(ch, preview, max) {
   if (ch.skipped === "not selected") {
     return ch.old === null ? "(not selected)" : `${num(ch.old)} (not selected)`;
   }
@@ -2034,28 +2079,34 @@ function thresholdText(ch, preview) {
   const changed = ch.old === null || Math.abs(ch.new - ch.old) > TOLERANCE;
   if (!changed) return off ? `${num(ch.new)} (off)` : `${num(ch.old)} (unchanged)`;
   const arrow = `${num(ch.old)} → ${num(ch.new)}`;
+  const tags = [];
+  if (off) tags.push("off");
+  if (wasOff(ch, max)) tags.push("was off");
   if (preview) {
-    return off ? `${arrow} (off, would set)` : `${arrow} (would set)`;
+    tags.push("would set");
+  } else if (ch.written && ch.confirmed === false) {
+    tags.push("not confirmed");
   }
-  if (ch.written && ch.confirmed === false) {
-    return off ? `${arrow} (off, not confirmed)` : `${arrow} (not confirmed)`;
-  }
-  return off ? `${arrow} (off)` : arrow;
+  return tags.length ? `${arrow} (${tags.join(", ")})` : arrow;
 }
-function cell(ch, preview) {
-  return { peak: peakText(ch), text: thresholdText(ch, preview), flags: [...ch.flags] };
+function cell(ch, preview, maxOf) {
+  return {
+    peak: peakText(ch),
+    text: thresholdText(ch, preview, maxOf(ch.entity_id)),
+    flags: [...ch.flags]
+  };
 }
 function rowUnused(gate) {
   const sampled = [gate.move, gate.still].filter((ch) => ch.skipped !== "not selected");
   return sampled.length > 0 && sampled.every((ch) => ch.flags.includes("unused"));
 }
-function resultRows(result) {
+function resultRows(result, maxOf = defaultMax) {
   const preview = result.outcome === "preview";
   return (result.gates ?? []).map((g2) => ({
     gate: g2.gate,
     label: `G${g2.gate}`,
-    move: cell(g2.move, preview),
-    still: cell(g2.still, preview),
+    move: cell(g2.move, preview, maxOf),
+    still: cell(g2.still, preview, maxOf),
     unused: rowUnused(g2)
   }));
 }
@@ -2136,10 +2187,134 @@ function warningLines(result) {
   }
   return lines;
 }
+function thresholdsCard(channel) {
+  return channel === "move" ? "Move Thresholds" : "Still Thresholds";
+}
+function reenabledLines(result, maxOf = defaultMax) {
+  const preview = result.outcome === "preview";
+  if (result.kind !== "calibrate") return [];
+  if (!preview && result.outcome !== "applied" && result.outcome !== "partial") return [];
+  const lines = [];
+  for (const g2 of result.gates ?? []) {
+    for (const channel of CHANNELS) {
+      const ch = g2[channel];
+      const max = maxOf(ch.entity_id);
+      if (!wasOff(ch, max)) continue;
+      if (!preview && (!ch.written || ch.confirmed === false)) continue;
+      const label = `G${g2.gate} ${channel}`;
+      const top = num(max);
+      const card = thresholdsCard(channel);
+      lines.push(
+        preview ? `${label} is off (set to ${top}) and calibration would turn it back on (would set ${num(ch.new)}). If you turned it off on purpose, set it back to ${top} on the ${card} card after you calibrate.` : `${label} was off (set to ${top}) and calibration turned it back on (now ${num(ch.new)}). If you turned it off on purpose, set it back to ${top} on the ${card} card, or press Undo to put back all your previous values.`
+      );
+    }
+  }
+  return lines;
+}
+function liveInt(hass, entityId) {
+  var _a2;
+  if (!entityId) return null;
+  const value = parseFloat(((_a2 = hass.states[entityId]) == null ? void 0 : _a2.state) ?? "");
+  return Number.isFinite(value) ? Math.trunc(value) : null;
+}
+function liveGateLimits(hass, map, profile, entities) {
+  if (profile === "ld2412") {
+    return {
+      max_move_gate: null,
+      max_still_gate: null,
+      min_gate: liveInt(hass, map.max_still_distance) ?? (entities == null ? void 0 : entities.min_gate) ?? null,
+      max_gate: liveInt(hass, map.max_move_distance) ?? (entities == null ? void 0 : entities.max_gate) ?? null
+    };
+  }
+  return {
+    max_move_gate: liveInt(hass, map.max_move_distance) ?? (entities == null ? void 0 : entities.max_move_gate) ?? null,
+    max_still_gate: liveInt(hass, map.max_still_distance) ?? (entities == null ? void 0 : entities.max_still_gate) ?? null,
+    min_gate: null,
+    max_gate: null
+  };
+}
+function gateInUse(profile, limits, gate, channel) {
+  if (profile === "ld2412") {
+    if (limits.min_gate !== null && gate < limits.min_gate) return false;
+    return limits.max_gate === null || gate <= limits.max_gate;
+  }
+  const limit = channel === "move" ? limits.max_move_gate : limits.max_still_gate;
+  return limit === null || gate <= limit;
+}
+function offByCalibration(result, gate, channel, max) {
+  var _a2, _b;
+  if (!result || result.kind !== "calibrate") return false;
+  if (result.outcome !== "applied" && result.outcome !== "partial") return false;
+  if ((result.gates_off ?? []).some((e2) => e2.gate === gate && e2.channel === channel)) return true;
+  const ch = (_b = (_a2 = result.gates) == null ? void 0 : _a2.find((g2) => g2.gate === gate)) == null ? void 0 : _b[channel];
+  if (!(ch == null ? void 0 : ch.written) || ch.new === null || ch.new === void 0) return false;
+  return Math.abs(ch.new - max) <= TOLERANCE;
+}
+function offChannelsBeforeRun(hass, map, profile, limits, lastResult) {
+  var _a2;
+  const out = [];
+  const gates = Math.max(map.move_threshold.length, map.still_threshold.length);
+  for (let gate = 0; gate < gates; gate++) {
+    for (const channel of CHANNELS) {
+      if (profile === "ld2410" && channel === "still" && gate <= 1) continue;
+      if (!gateInUse(profile, limits, gate, channel)) continue;
+      const threshold = (channel === "move" ? map.move_threshold : map.still_threshold)[gate];
+      const energy = (channel === "move" ? map.move_energy : map.still_energy)[gate];
+      if (!threshold || !energy || hass.states[energy] === void 0) continue;
+      const value = parseFloat(((_a2 = hass.states[threshold]) == null ? void 0 : _a2.state) ?? "");
+      if (!Number.isFinite(value)) continue;
+      const max = thresholdMax(hass, threshold);
+      if (Math.abs(value - max) > TOLERANCE) continue;
+      if (offByCalibration(lastResult, gate, channel, max)) continue;
+      out.push({ gate, channel, max });
+    }
+  }
+  return out;
+}
+function offGatesLine(channels) {
+  if (channels.length === 0) return null;
+  const label = (c2) => `G${c2.gate} ${c2.channel}`;
+  if (channels.length === 1) {
+    const c2 = channels[0];
+    return `${label(c2)} is off (set to ${num(c2.max)}). Calibrating will turn it back on.`;
+  }
+  const top = channels[0].max;
+  const names = channels.every((c2) => c2.max === top) ? `${channels.map(label).join(", ")} are off (set to ${num(top)}).` : `${channels.map((c2) => `${label(c2)} (set to ${num(c2.max)})`).join(", ")} are off.`;
+  return `${names} Calibrating will turn them back on.`;
+}
+const UNDO_LABEL = "Undo (restore your previous values)";
+const REDO_LABEL = "Redo (put the calibrated values back)";
+function snapshotContents(snapshots, index) {
+  let restores = 0;
+  for (let i2 = index; i2 < snapshots.length; i2++) {
+    if (snapshots[i2].reason === "calibrate") return restores % 2 === 0 ? "previous" : "calibrated";
+    restores += 1;
+  }
+  return null;
+}
 function undoLabel(snapshots, now = /* @__PURE__ */ new Date()) {
   const newest = snapshots[0];
   if (!newest) return NOTHING_TO_RESTORE;
-  return `Undo (restore ${formatTime(newest.taken_at, now)} values)`;
+  switch (snapshotContents(snapshots, 0)) {
+    case "previous":
+      return UNDO_LABEL;
+    case "calibrated":
+      return REDO_LABEL;
+    default:
+      return `Restore the values saved at ${formatTime(newest.taken_at, now)}`;
+  }
+}
+function undoTitle(snapshots, now = /* @__PURE__ */ new Date()) {
+  const newest = snapshots[0];
+  if (!newest) return void 0;
+  const taken = parseDate(newest.taken_at);
+  const when = formatTime(newest.taken_at, now);
+  return taken && sameDay(taken, now) ? `Saved at ${when}` : `Saved ${when}`;
+}
+function savedLine(snapshots) {
+  const newest = snapshots[0];
+  if (!newest || snapshotContents(snapshots, 0) === null) return null;
+  return `Saved ${formatDayTime(newest.taken_at)}.`;
 }
 function changedOfTotal(result, verb = "changed") {
   const changed = result.changed ?? 0;
@@ -2166,9 +2341,15 @@ function summaryLine(result, now = /* @__PURE__ */ new Date()) {
   }
   return `Calibrated at ${when} from ${samples}. ${changedOfTotal(result)}.`;
 }
+function writesTail(result) {
+  const writes = result.writes_done ?? 0;
+  if (writes === 0) return ". Nothing was changed.";
+  return ` after ${writes} of ${result.writes_total ?? writes} values were written.`;
+}
 function footerLine(result) {
+  var _a2;
   const when = formatDayTime(result.finished_at);
-  const job = result.kind === "restore" ? "restore" : "calibration";
+  const job = result.kind === "restore" ? "restore" : result.apply === false ? "preview" : "calibration";
   switch (result.outcome) {
     case "applied":
     case "partial":
@@ -2178,9 +2359,12 @@ function footerLine(result) {
     case "preview":
       return `Last previewed ${when}.`;
     case "cancelled":
-      return `Last ${job} ${when} was stopped.`;
+      return `Last ${job} ${when} was stopped${writesTail(result)}`;
     default:
-      return `Last ${job} ${when} failed.`;
+      if (((_a2 = result.error) == null ? void 0 : _a2.code) === "cancelled_by_shutdown") {
+        return `Last ${job} ${when} was stopped by a Home Assistant restart${writesTail(result)}`;
+      }
+      return `Last ${job} ${when} failed${writesTail(result)}`;
   }
 }
 function resultHeading(result) {
@@ -2215,9 +2399,23 @@ function restoreSource(result, snapshots) {
   const newest = snapshots[0];
   return newest ? { id: newest.id, taken_at: newest.taken_at } : null;
 }
+function restoredContents(result, snapshots, sourceId) {
+  const index = snapshots.findIndex((s2) => s2.id === sourceId);
+  if (index < 0) return null;
+  let expected = 0;
+  if (result.snapshot_id) {
+    const redo = snapshots.findIndex((s2) => s2.id === result.snapshot_id);
+    if (redo < 0) return null;
+    expected = redo + 1;
+  }
+  return index === expected ? snapshotContents(snapshots, index) : null;
+}
 function restoredLine(result, snapshots, now = /* @__PURE__ */ new Date()) {
-  var _a2;
-  const takenAt = (_a2 = restoreSource(result, snapshots)) == null ? void 0 : _a2.taken_at;
+  const source = restoreSource(result, snapshots);
+  const contents = (source == null ? void 0 : source.id) ? restoredContents(result, snapshots, source.id) : null;
+  if (contents === "previous") return "Restored your previous values.";
+  if (contents === "calibrated") return "Restored the calibrated values.";
+  const takenAt = source == null ? void 0 : source.taken_at;
   if (!takenAt) return "Restored the saved thresholds.";
   return `Restored the thresholds from ${formatTime(takenAt, now)}.`;
 }
@@ -2295,6 +2493,10 @@ const STILL_LOADING = "Apollo mmWave is still loading...";
 const NOT_LOADED = "Apollo mmWave is not loaded, so calibration is unavailable.";
 const PREVIEW_HELPER = "Computes new thresholds without changing any of them. Radar Engineering Mode is still turned on for the listen.";
 const FACTORY_HINT = "These look like factory thresholds. Calibrating sets them for your room.";
+const READ_SETTINGS_LABEL = "Read settings from the radar";
+const READING_SETTINGS = "Reading settings from the radar...";
+const READ_SETTINGS_WAIT_MS = 3e3;
+const QUERY_PARAMS_HINT = "Open the radar's device page, press its Query Params button in the Diagnostic section, wait a few seconds, then try again.";
 function safeUnsubscribe(unsubscribe) {
   try {
     const result = unsubscribe();
@@ -2311,6 +2513,7 @@ const _ApolloRadarCalibrateCard = class _ApolloRadarCalibrateCard extends i {
     this._loadState = "loading";
     this._loadError = "";
     this._showLastResult = false;
+    this._readingSettings = false;
     this._unsubscribe = null;
     this._serial = 0;
     this._pending = false;
@@ -2321,6 +2524,8 @@ const _ApolloRadarCalibrateCard = class _ApolloRadarCalibrateCard extends i {
     this._entryFeed = null;
     this._entryFeedSerial = 0;
     this._lastJobApply = null;
+    this._readSettingsToken = 0;
+    this._maxOf = (entityId) => thresholdMax(this.hass, entityId);
   }
   setConfig(config) {
     this._config = config;
@@ -2341,6 +2546,7 @@ const _ApolloRadarCalibrateCard = class _ApolloRadarCalibrateCard extends i {
   }
   disconnectedCallback() {
     super.disconnectedCallback();
+    this._cancelReadSettings();
     this._detachConnectionListeners();
     this._closeEntryFeed();
     this._close();
@@ -2371,6 +2577,7 @@ const _ApolloRadarCalibrateCard = class _ApolloRadarCalibrateCard extends i {
       this._turnOffError = void 0;
       this._lastJobApply = null;
       this._showLastResult = false;
+      this._cancelReadSettings();
       this._retryIndex = 0;
       this._loadState = "loading";
       this._close();
@@ -2387,6 +2594,9 @@ const _ApolloRadarCalibrateCard = class _ApolloRadarCalibrateCard extends i {
       m2.engineering_mode,
       ...m2.move_threshold,
       ...m2.still_threshold,
+      // The gate range decides which turned-off gates the idle card names.
+      m2.max_move_distance,
+      m2.max_still_distance,
       m2.radar_target,
       m2.background_correction_status,
       entities == null ? void 0 : entities.engineering_mode,
@@ -2551,6 +2761,7 @@ const _ApolloRadarCalibrateCard = class _ApolloRadarCalibrateCard extends i {
     const hass = this._apiHass();
     const deviceId = this._deviceId;
     if (!hass || !deviceId) return;
+    this._cancelReadSettings();
     this._failure = void 0;
     this._showLastResult = false;
     this._local = { ...this._local, observedFinish: null };
@@ -2566,7 +2777,7 @@ const _ApolloRadarCalibrateCard = class _ApolloRadarCalibrateCard extends i {
     const deviceId = this._deviceId;
     const message = await describeServiceError(this.hass ?? {}, error);
     if (deviceId !== this._deviceId) return;
-    this._failure = { prefix, message, retry };
+    this._failure = { prefix, message, retry, code: refusalKey(error) };
   }
   _stop() {
     const hass = this._apiHass();
@@ -2585,6 +2796,7 @@ const _ApolloRadarCalibrateCard = class _ApolloRadarCalibrateCard extends i {
     const hass = this._apiHass();
     const deviceId = this._deviceId;
     if (!hass || !deviceId) return;
+    this._cancelReadSettings();
     this._failure = void 0;
     this._showLastResult = false;
     restoreThresholds(hass, deviceId, snapshotId).catch(
@@ -2603,8 +2815,47 @@ const _ApolloRadarCalibrateCard = class _ApolloRadarCalibrateCard extends i {
       this._turnOffError = `Could not turn Radar Engineering Mode off: ${message}`;
     });
   }
+  /**
+   * Answer `thresholds_not_numeric`: press the radar's query params button,
+   * give it `READ_SETTINGS_WAIT_MS` to report, then run the refused job again
+   * with `retry` (the same calibration, preview or restore). A press HA
+   * rejects is shown in the view instead.
+   */
+  _readSettingsThenRetry(button, retry) {
+    const hass = this._apiHass();
+    const deviceId = this._deviceId;
+    if (!hass || !deviceId || this._readingSettings) return;
+    const token = ++this._readSettingsToken;
+    const current = () => token === this._readSettingsToken && deviceId === this._deviceId;
+    this._readingSettings = true;
+    this._readSettingsError = void 0;
+    pressButton(hass, button).then(
+      () => {
+        setTimeout(() => {
+          var _a2;
+          if (!current()) return;
+          this._readingSettings = false;
+          const running = (_a2 = this._payload) == null ? void 0 : _a2.job;
+          if (running && !isTerminal(running.status)) return;
+          retry();
+        }, READ_SETTINGS_WAIT_MS);
+      },
+      async (error) => {
+        const message = await describeServiceError(this.hass ?? {}, error);
+        if (!current()) return;
+        this._readingSettings = false;
+        this._readSettingsError = `Could not ask the radar for its settings: ${message}`;
+      }
+    );
+  }
+  _cancelReadSettings() {
+    this._readSettingsToken += 1;
+    this._readingSettings = false;
+    this._readSettingsError = void 0;
+  }
   /** "Close": back to Idle from a result or a failure. */
   _closeResult() {
+    this._cancelReadSettings();
     this._failure = void 0;
     this._local = { ...this._local, observedFinish: null };
   }
@@ -2635,6 +2886,17 @@ const _ApolloRadarCalibrateCard = class _ApolloRadarCalibrateCard extends i {
     const live = id && this.hass ? (_d = this.hass.states[id]) == null ? void 0 : _d.state : void 0;
     if (live !== void 0) return live === "on";
     return !!((_f = (_e = this._payload) == null ? void 0 : _e.entities) == null ? void 0 : _f.background_status_on);
+  }
+  /** The radar's query params button, from the payload (registry based) or
+   *  the resolved map, when HA has it. */
+  _queryParamsButtonId() {
+    var _a2, _b, _c, _d;
+    const id = ((_b = (_a2 = this._payload) == null ? void 0 : _a2.entities) == null ? void 0 : _b.query_params_button) ?? ((_c = this._resolved) == null ? void 0 : _c.map.query_params);
+    return id && ((_d = this.hass) == null ? void 0 : _d.states[id]) ? id : void 0;
+  }
+  /** The backend's warning codes, then the gates the run turned back on. */
+  _warningLines(result) {
+    return [...warningLines(result), ...reenabledLines(result, this._maxOf)];
   }
   _online() {
     var _a2;
@@ -2768,19 +3030,52 @@ const _ApolloRadarCalibrateCard = class _ApolloRadarCalibrateCard extends i {
         ${this._renderBanner(payload)}
         <div class="status" aria-live="polite">
           <p class="error">${failure.prefix}${failure.message}</p>
+          ${this._renderReadSettingsLines(failure.code)}
         </div>
         <div class="buttons">
-          <button type="button" class="primary" @click=${failure.retry}>Try again</button>
-          ${this._closeButton()}
+          ${this._renderRetryButton(failure.code, failure.retry)} ${this._closeButton()}
         </div>
       </div>
     `;
   }
+  /** The `thresholds_not_numeric` extras under a failure: where the button
+   *  is when the card cannot press it, the wait, a rejected press. */
+  _renderReadSettingsLines(code) {
+    if (code !== ERR_THRESHOLDS_NOT_NUMERIC) return A;
+    const hint = this._queryParamsButtonId() ? "" : QUERY_PARAMS_HINT;
+    return b`<div class="read-settings">
+      ${hint ? b`<p>${hint}</p>` : A}
+      ${this._readingSettings ? b`<p>${READING_SETTINGS}</p>` : A}
+      ${this._readSettingsError ? b`<p class="error" role="alert">${this._readSettingsError}</p>` : A}
+    </div>`;
+  }
+  /** "Try again", or for thresholds the radar has not reported, "Read
+   *  settings from the radar" when the card knows its query params button. */
+  _renderRetryButton(code, retry) {
+    const button = code === ERR_THRESHOLDS_NOT_NUMERIC ? this._queryParamsButtonId() : void 0;
+    if (!button) {
+      return b`<button type="button" class="primary" @click=${retry}>Try again</button>`;
+    }
+    return b`<button
+      type="button"
+      class="primary"
+      ?disabled=${this._readingSettings}
+      @click=${() => this._readSettingsThenRetry(button, retry)}
+    >
+      ${READ_SETTINGS_LABEL}
+    </button>`;
+  }
   // --- finished job ---------------------------------------------------------
   _renderResult(result, payload) {
+    var _a2;
     const snapshots = payload.snapshots ?? [];
     const banner = this._renderBanner(payload);
-    const undo = snapshots.length ? b`<button type="button" class="secondary" @click=${() => this._undo()}>
+    const undo = snapshots.length ? b`<button
+          type="button"
+          class="secondary"
+          title=${undoTitle(snapshots) ?? A}
+          @click=${() => this._undo()}
+        >
           ${undoLabel(snapshots)}
         </button>` : A;
     const again = (label) => b`<button type="button" class="primary" @click=${() => this._start(true)}>${label}</button>`;
@@ -2788,7 +3083,10 @@ const _ApolloRadarCalibrateCard = class _ApolloRadarCalibrateCard extends i {
       return b`
         <div class="section">
           ${banner}
-          <div class="status" aria-live="polite"><p class="error">${failureLine(result)}</p></div>
+          <div class="status" aria-live="polite">
+            <p class="error">${failureLine(result)}</p>
+            ${this._renderReadSettingsLines((_a2 = result.error) == null ? void 0 : _a2.code)}
+          </div>
           <div class="buttons">
             ${offersUndo(result) ? undo : A} ${this._renderTryAgain(result, snapshots)}
             ${this._closeButton()}
@@ -2816,7 +3114,7 @@ const _ApolloRadarCalibrateCard = class _ApolloRadarCalibrateCard extends i {
           <div class="status" aria-live="polite">
             <p class="headline">${restoredLine(result, snapshots)}</p>
             ${missing ? b`<p>${missing}</p>` : A}
-            ${warningLines(result).map((line) => b`<p class="warning">${line}</p>`)}
+            ${this._warningLines(result).map((line) => b`<p class="warning">${line}</p>`)}
           </div>
           ${this._renderIdleBody(payload)}
           <div class="buttons">${undo} ${again(PRIMARY_LABEL)}</div>
@@ -2832,7 +3130,7 @@ const _ApolloRadarCalibrateCard = class _ApolloRadarCalibrateCard extends i {
             <p>These are the thresholds calibration would set:</p>
           </div>
           ${this._renderTable(result)}
-          ${warningLines(result).map((line) => b`<p class="warning">${line}</p>`)}
+          ${this._warningLines(result).map((line) => b`<p class="warning">${line}</p>`)}
           <div class="buttons">${again("Calibrate and apply")} ${this._closeButton()}</div>
         </div>
       `;
@@ -2845,7 +3143,7 @@ const _ApolloRadarCalibrateCard = class _ApolloRadarCalibrateCard extends i {
           <p>${summaryLine(result)}</p>
         </div>
         ${this._renderTable(result)}
-        ${warningLines(result).map((line) => b`<p class="warning">${line}</p>`)}
+        ${this._warningLines(result).map((line) => b`<p class="warning">${line}</p>`)}
         <p>${WALK_AROUND_LINE}</p>
         <div class="buttons">${undo} ${again("Calibrate again")} ${this._closeButton()}</div>
       </div>
@@ -2857,9 +3155,11 @@ const _ApolloRadarCalibrateCard = class _ApolloRadarCalibrateCard extends i {
    * snapshot it was restoring, by id: once its redo snapshot is saved that is
    * the newest, and restoring the newest would put back the very values the
    * user was undoing. When the source cannot be told the button is left out
-   * (Close and Undo remain).
+   * (Close and Undo remain). For thresholds the radar has not reported, the
+   * button reads the radar's settings first (`_renderRetryButton`).
    */
   _renderTryAgain(result, snapshots) {
+    var _a2;
     let retry;
     if (result.kind === "restore") {
       const source = restoreSource(result, snapshots);
@@ -2871,10 +3171,10 @@ const _ApolloRadarCalibrateCard = class _ApolloRadarCalibrateCard extends i {
       const apply = seen && seen.jobId === result.job_id ? seen.apply : true;
       retry = () => this._start(apply);
     }
-    return b`<button type="button" class="primary" @click=${retry}>Try again</button>`;
+    return this._renderRetryButton((_a2 = result.error) == null ? void 0 : _a2.code, retry);
   }
   _renderTable(result) {
-    const rows = resultRows(result);
+    const rows = resultRows(result, this._maxOf);
     const footnotes = unusedFootnote(result);
     const cellClass = (flags) => flags.includes("unused") ? "unused" : "";
     const renderRow = (row2) => b`
@@ -2928,6 +3228,7 @@ const _ApolloRadarCalibrateCard = class _ApolloRadarCalibrateCard extends i {
     const ld2412 = this._profileKey() === "ld2412";
     const engineeringBullet = this._engineeringOn() ? "Radar Engineering Mode is already on and will stay on." : "Home Assistant turns Radar Engineering Mode on for the listen and back off afterward.";
     const factory = this.hass && this._resolved ? isFactoryThresholds(this.hass, this._resolved.map, this._profileKey(), payload.snapshots ?? []) : false;
+    const offLine = this._offGatesLine(payload);
     return b`
       <div class="idle-body">
         <p>${idleSentence(settle, duration)}</p>
@@ -2946,9 +3247,20 @@ const _ApolloRadarCalibrateCard = class _ApolloRadarCalibrateCard extends i {
               Background correction is running on the LD2412. Wait for its status to turn off.
             </li>` : A}
         </ul>
+        ${offLine ? b`<p class="warning">${offLine}</p>` : A}
         ${factory ? b`<p class="hint">${FACTORY_HINT}</p>` : A}
       </div>
     `;
+  }
+  /** The in-use gates whose live threshold sits at the top (turned off), which
+   *  a calibration would turn back on; null when there are none. A gate the
+   *  last calibration turned off itself is not named: the user did not. */
+  _offGatesLine(payload) {
+    if (!this.hass || !this._resolved) return null;
+    const map = this._resolved.map;
+    const profile = this._profileKey();
+    const limits = liveGateLimits(this.hass, map, profile, payload.entities);
+    return offGatesLine(offChannelsBeforeRun(this.hass, map, profile, limits, payload.last_result));
   }
   _renderIdleButtons(payload, online) {
     const enabled = canStart(payload, online, this._backgroundOn()) && !!this._apiHass();
@@ -2969,16 +3281,23 @@ const _ApolloRadarCalibrateCard = class _ApolloRadarCalibrateCard extends i {
   _renderFooter(payload, snapshots) {
     const last = payload.last_result;
     if (!snapshots.length && !last) return A;
+    const saved = savedLine(snapshots);
     return b`
       <div class="footer">
         ${snapshots.length ? b`
               <div class="last">
                 ${last ? b`<p>${footerLine(last)}</p>` : A}
                 <div class="buttons">
-                  <button type="button" class="secondary" @click=${() => this._undo()}>
+                  <button
+                    type="button"
+                    class="secondary"
+                    title=${undoTitle(snapshots) ?? A}
+                    @click=${() => this._undo()}
+                  >
                     ${undoLabel(snapshots)}
                   </button>
                 </div>
+                ${saved ? b`<p class="helper">${saved}</p>` : A}
               </div>
             ` : A}
         ${last ? b`
@@ -3003,7 +3322,7 @@ const _ApolloRadarCalibrateCard = class _ApolloRadarCalibrateCard extends i {
     if (result.status === "failed" || result.outcome === "failed") {
       return b`<div class="stored"><p class="error">${failureLine(result)}</p></div>`;
     }
-    const warnings = warningLines(result).map((line) => b`<p class="warning">${line}</p>`);
+    const warnings = this._warningLines(result).map((line) => b`<p class="warning">${line}</p>`);
     if (result.kind === "restore") {
       return b`<div class="stored">
         ${restoreSummaryLines(result).map((line) => b`<p>${line}</p>`)} ${warnings}
@@ -3217,6 +3536,12 @@ __decorateClass([
 __decorateClass([
   r()
 ], ApolloRadarCalibrateCard.prototype, "_showLastResult");
+__decorateClass([
+  r()
+], ApolloRadarCalibrateCard.prototype, "_readingSettings");
+__decorateClass([
+  r()
+], ApolloRadarCalibrateCard.prototype, "_readSettingsError");
 registerElement(CALIBRATE_CARD_TAG, ApolloRadarCalibrateCard);
 const customCards = window.customCards = window.customCards || [];
 if (!customCards.some((c2) => c2.type === CALIBRATE_CARD_TAG)) {
@@ -3683,7 +4008,7 @@ if (!window.customStrategies.some(
     documentationURL: "https://github.com/ApolloAutomation/apollo-mmwave-main"
   });
 }
-const CARD_VERSION = "2.2.0";
+const CARD_VERSION = "2.2.1";
 console.info(
   `%c APOLLO-MMWAVE %c v${CARD_VERSION} `,
   "color:#fff;background:#03a9f4;font-weight:700;",

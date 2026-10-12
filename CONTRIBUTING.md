@@ -28,8 +28,8 @@ Pull requests are the best way to propose changes to the codebase.
 6. Test your contribution (see [Test your code modification](#test-your-code-modification)).
 7. Issue that pull request!
 
-The README's [Development](README.md#development) section has the full command
-list, including the frontend build.
+The [Development](#development) section below has the full command list,
+including the frontend build.
 
 The pre-commit hook runs whichever `ruff` is on your `PATH`, so commit from a
 shell with the venv active (`. .venv/bin/activate`). Without it the commit
@@ -73,6 +73,107 @@ out):
 git grep -n "TODO(REVIEW_REPORT.md" -- ':!custom_components/apollo_mmwave/www'
 ```
 
+## Development
+
+### What's inside
+
+| Piece | Role |
+| --- | --- |
+| `custom_components/apollo_mmwave` | The integration: zone backend (occupancy sensors + `apollo_mmwave.update_zone` service), gate auto-calibration (`apollo_mmwave.calibrate_gates` and its companion services), serves the bundled JS, and registers the dashboard. |
+| `…/www/apollo-radar-tuning.js` | Tuning cards (including the Auto-calibrate card) + the `custom:apollo-radar-tuning` dashboard strategy (built from `frontend-src/`). |
+| `…/www/apollo-radar-zone-map-card.js` | The 2D zone-drawing card, forked from [zone-mapper-card](https://github.com/ApolloAutomation/zone-mapper-card) (also built from `frontend-src/`). |
+
+[ARCHITECTURE.md](ARCHITECTURE.md) has the full repository layout and shows how
+the pieces fit together.
+
+### Frontend
+
+Frontend source lives in `frontend-src/` (TypeScript + Lit + Vite, with Vitest
+tests). The build writes straight into the integration's `www/` folder, and the
+built bundles are committed. CI runs the first four steps, on Node 22:
+
+```bash
+cd frontend-src
+npm ci              # install exactly what package-lock.json pins
+npx tsc --noEmit    # type check
+npm test            # vitest
+npm run build       # → ../custom_components/apollo_mmwave/www/*.js (one pass per bundle)
+npm run watch       # rebuild both bundles on every save (Ctrl+C stops both)
+```
+
+Use `npm ci` rather than `npm install`, which can rewrite `package-lock.json`.
+CI rebuilds the bundles and fails if anything under
+`custom_components/apollo_mmwave/www/` differs from what is committed
+(including a new or deleted file), so run `npm run build` and commit `www/` with
+every frontend change. Build with Node 22 to match the committed output. The
+zone-map bundle keeps the comments from `src/zone-map/card.ts`, so even a
+comment-only change there needs a rebuild. `npm run watch` needs a POSIX shell
+(macOS, Linux, the devcontainer or WSL). On Windows npm runs scripts with
+`cmd.exe`, even from Git Bash, so run `npm run watch:tuning` and
+`npm run watch:zone-map` in two terminals.
+
+### Python backend
+
+The Python backend has a pytest suite (`pytest-homeassistant-custom-component`)
+and is linted with Ruff (see
+[Use a Consistent Coding Style](#use-a-consistent-coding-style)). Steps 2 and 3
+above set up `.venv` and uv. The Python 3.14.2 floor from step 2 is
+`requires-python` in `pyproject.toml`. The full command list:
+
+```bash
+scripts/bootstrap                        # .venv: Home Assistant, Ruff, pre-commit + git hook
+uv pip install -r requirements-test.txt  # test dependencies, same .venv
+uv run --no-project pytest tests/
+scripts/lint                             # Ruff: fix, format, then check
+scripts/lint-check                       # read-only check, as the Lint workflow runs it
+```
+
+Do not run `uv venv` after bootstrap: uv refuses to replace an existing
+`.venv`, and `uv venv --clear` would throw away Ruff and pre-commit.
+`.venv/bin/python -m pytest tests/` runs the suite as well.
+
+CI's test job starts from a clean checkout instead:
+
+```bash
+uv venv && uv pip install -r requirements-test.txt
+uv run --no-project pytest tests/ -q --cov=custom_components/apollo_mmwave --cov-report=term-missing
+```
+
+That environment has no Ruff, so `scripts/lint` and `scripts/lint-check` stop
+there with ".venv/bin/ruff not found: run scripts/bootstrap first". The coverage
+flags work locally too (`pytest-cov` comes with
+`pytest-homeassistant-custom-component`); CI prints the table and enforces no
+threshold.
+
+### Versions
+
+The version is kept in five places:
+`custom_components/apollo_mmwave/manifest.json`, `pyproject.toml`,
+`frontend-src/package.json`, `CARD_VERSION` in `frontend-src/src/index.ts`, and
+`frontend-src/package-lock.json` (refresh it with
+`cd frontend-src && npm install --package-lock-only`).
+`tests/test_versions.py` and `frontend-src/test/build.test.ts` fail if a copy
+is missed. The manifest version is the `?v=` on the served bundles, so a
+release that changes the bundles needs a bump, or browsers keep their cached
+copy. Rebuild after bumping, since `CARD_VERSION` is part of the tuning bundle.
+
+### Stored data
+
+Zone data is persisted in `.storage/apollo_mmwave.zones`; installs upgrading
+from ≤1.1.x are migrated automatically. 2.0 also rewrites zone entity unique
+ids from the display-name slug to the device-keyed form. Entity ids are left
+alone, and the card reads its configuration over the websocket API rather than
+off a fixed entity id. Calibration snapshots (the newest five per radar) live
+in a separate file, `.storage/apollo_mmwave.calibration`.
+
+### The zone map card
+
+The zone-drawing card is no longer vendored. It started as a copy of
+[zone-mapper-card](https://github.com/ApolloAutomation/zone-mapper-card) and is
+now a fork living in `frontend-src/src/zone-map/`: fixes land here first and
+get offered back upstream, rather than being re-applied as patches on every
+upstream drop.
+
 ## Test your code modification
 
 This custom component is based on [integration_blueprint template](https://github.com/ludeeus/integration_blueprint).
@@ -80,11 +181,9 @@ This custom component is based on [integration_blueprint template](https://githu
 Before opening a pull request, run what CI runs:
 
 - Python: `uv run --no-project pytest tests/` and `scripts/lint-check`.
-- Frontend, when you changed anything in `frontend-src/`: in that folder,
-  `npm ci`, `npx tsc --noEmit`, `npm test` and `npm run build`, then commit the
-  rebuilt files under `custom_components/apollo_mmwave/www/`. CI builds the
-  bundles on Node 22 and fails when a fresh build changes anything there, so
-  rebuild with Node 22 too.
+- Frontend, when you changed anything in `frontend-src/`: the four CI steps
+  under [Frontend](#frontend), run with Node 22, then commit the rebuilt files
+  under `custom_components/apollo_mmwave/www/`.
 
 The project comes with a development environment in a container for Visual
 Studio Code. It uses the `mcr.microsoft.com/devcontainers/python:3.14` image,
@@ -117,8 +216,7 @@ Notes for maintainers:
   `homeassistant==` in `requirements.txt`, the
   `pytest-homeassistant-custom-component` release that pins that same Home
   Assistant, and a `home-assistant-frontend` whose YYYYMMDD prefix matches it.
-- A version bump touches five files, all listed in the README's
-  [Development](README.md#development) section.
+- A version bump touches five files, all listed under [Versions](#versions).
 
 ## License
 

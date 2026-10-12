@@ -214,6 +214,7 @@ const LD2410_PROFILE = {
       restart_radar: `button.${base}_restart_radar`,
       factory_reset_radar: `button.${base}_factory_reset_radar`,
       esp_reboot: `button.${base}_esp_reboot`,
+      query_params: `button.${base}_query_params`,
       radar_timeout: `number.${base}_radar_timeout`,
       zone_1_start: `number.${base}_radar_zone_1_start`,
       end_zone_1: `number.${base}_radar_end_zone_1`,
@@ -563,6 +564,10 @@ const DEFAULT_CONE = Object.freeze({
 });
 const DEFAULT_SHOW_UNDO = true;
 const DEFAULT_UNIT_LABEL_SIZE = 18;
+const LABEL_GAP_CSS_PX = 4;
+const LABEL_FALLBACK_EM_PER_CHAR = 0.6;
+const RING_LABEL_REPEAT_EM = 2;
+const RING_LABEL_SAME_DISTANCE_MM = 1;
 const POLYGON_MAX_POINTS = 32;
 const POLY_DOUBLE_TAP_SLOP_PX = 24;
 const LOCK_STORAGE_PREFIX = "apollo-mmwave.zone-map.lock";
@@ -1654,6 +1659,7 @@ class ZoneMapCard extends HTMLElement {
     var _a, _b;
     const canvasWidth = ((_a = this.canvas) == null ? void 0 : _a.width) || 0;
     const canvasHeight = ((_b = this.canvas) == null ? void 0 : _b.height) || 0;
+    const labelGap = LABEL_GAP_CSS_PX * this._canvasScale();
     const keyParts = [
       this._normalizeUnit(this.gridUnits),
       this._roundKeyValue(this.xMin),
@@ -1665,7 +1671,8 @@ class ZoneMapCard extends HTMLElement {
       canvasWidth,
       canvasHeight,
       this.unitDisplay ? 1 : 0,
-      this.unitLabelSize
+      this.unitLabelSize,
+      this._roundKeyValue(labelGap, 1e3)
     ];
     const key = keyParts.join("|");
     if (this._gridCache && this._gridCache.key === key) {
@@ -1704,11 +1711,134 @@ class ZoneMapCard extends HTMLElement {
         pixelY += metrics.pixelStepY;
       }
     }
-    const labels = this._buildGridLabels(metrics, xLines, yLines, canvasWidth, canvasHeight);
-    this._gridCache = { key, metrics, gridPath, xLines, yLines, labels };
+    const labels = this._buildGridLabels(
+      metrics,
+      xLines,
+      yLines,
+      canvasWidth,
+      canvasHeight,
+      labelGap
+    );
+    this._gridCache = { key, metrics, gridPath, xLines, yLines, labels, labelGap };
     return this._gridCache;
   }
-  _buildGridLabels(metrics, xLines, yLines, canvasWidth, canvasHeight) {
+  /** Canvas backing px per CSS px. The backing store is a fixed 800 px that
+   *  the card scales to its width. 1 while the canvas has no layout box. */
+  _canvasScale() {
+    var _a, _b;
+    if (!this.canvas || !(this.canvas.width > 0)) return 1;
+    const rendered = (_b = (_a = this.canvas).getBoundingClientRect) == null ? void 0 : _b.call(_a).width;
+    if (!(rendered > 0)) return 1;
+    return this.canvas.width / rendered;
+  }
+  /** Sets `width` on each label: how wide its text draws at the label font,
+   *  in backing px. A canvas that cannot measure gets an estimate instead. */
+  _measureLabels(labels) {
+    if (!labels.length) return;
+    const ctx = this.ctx;
+    const estimatePerChar = this.unitLabelSize * LABEL_FALLBACK_EM_PER_CHAR;
+    if (ctx) {
+      ctx.save();
+      ctx.font = `${this.unitLabelSize}px sans-serif`;
+    }
+    labels.forEach((label) => {
+      var _a, _b;
+      const measured = (_b = (_a = ctx == null ? void 0 : ctx.measureText) == null ? void 0 : _a.call(ctx, label.text)) == null ? void 0 : _b.width;
+      label.width = typeof measured === "number" && measured > 0 ? measured : String(label.text).length * estimatePerChar;
+    });
+    if (ctx) ctx.restore();
+  }
+  /** The box a measured label covers when drawn at its align and baseline. */
+  _labelBox(label) {
+    const width = label.width || 0;
+    const height = this.unitLabelSize;
+    let left = label.x;
+    if (label.align === "center") left -= width / 2;
+    else if (label.align === "right") left -= width;
+    let top = label.y;
+    if (label.baseline === "middle") top -= height / 2;
+    else if (label.baseline === "bottom") top -= height;
+    return { left, right: left + width, top, bottom: top + height };
+  }
+  /** The clear space between two boxes, 0 when they touch or overlap. */
+  _boxGap(a, b) {
+    const dx = Math.max(0, a.left - b.right, b.left - a.right);
+    const dy = Math.max(0, a.top - b.bottom, b.top - a.bottom);
+    return Math.hypot(dx, dy);
+  }
+  /** Whether every two of `labels` keep `gap` backing px between them. */
+  _labelsClear(labels, gap) {
+    const boxes = labels.map((label) => this._labelBox(label));
+    return boxes.every(
+      (box, i) => boxes.slice(i + 1).every((other) => this._boxGap(box, other) >= gap)
+    );
+  }
+  /** One axis's labels thinned to every nth line, with n as small as keeps
+   *  `gap` backing px between any two. Lines are counted from the origin, so
+   *  the labels left are round values. Only labels go: every grid line stays. */
+  _thinAxisLabels(labels, gap) {
+    for (let every = 1; every <= labels.length; every += 1) {
+      const kept = labels.filter((label) => label.index % every === 0);
+      if (this._labelsClear(kept, gap)) return kept;
+    }
+    return [];
+  }
+  /**
+   * The grid labels and cone ring labels to draw, laid out together.
+   *
+   * A ring label is left out when a grid label at the same distance from the
+   * radar sits close by, because that grid label already names the ring. Any
+   * other ring label is drawn, and a grid label it would crowd is left out
+   * instead: that label's grid line and the labels on either side of it still
+   * give its value. Two kinds of grid label stay put: one that names a ring
+   * left out above, and one next to a ring label the canvas edge cuts. A ring
+   * label may crowd one of those, but it is left out if it would overlap one.
+   *
+   * Returns `{ grid: { x, y }, rings }`. The cached grid labels are not changed.
+   */
+  _layOutLabels(ringLabels, gridState) {
+    var _a, _b;
+    const grid = (gridState == null ? void 0 : gridState.labels) || { x: [], y: [] };
+    if (!(ringLabels == null ? void 0 : ringLabels.length)) return { grid, rings: [] };
+    const gap = (gridState == null ? void 0 : gridState.labelGap) ?? LABEL_GAP_CSS_PX;
+    const repeatGap = RING_LABEL_REPEAT_EM * this.unitLabelSize;
+    const width = ((_a = this.canvas) == null ? void 0 : _a.width) || 0;
+    const height = ((_b = this.canvas) == null ? void 0 : _b.height) || 0;
+    const placed = [...grid.x, ...grid.y].map((label) => ({ label, box: this._labelBox(label) }));
+    const rings = ringLabels.map((label) => ({ ...label, align: "center", baseline: "middle" }));
+    this._measureLabels(rings);
+    const ringBoxes = rings.map((ring) => this._labelBox(ring));
+    const namers = /* @__PURE__ */ new Set();
+    const named = rings.map((ring, i) => {
+      const repeats = placed.filter(
+        (item) => Math.abs(Math.abs(item.label.value) - ring.value) <= RING_LABEL_SAME_DISTANCE_MM && this._boxGap(ringBoxes[i], item.box) < repeatGap
+      );
+      repeats.forEach((item) => namers.add(item));
+      return repeats.length > 0;
+    });
+    const dropped = /* @__PURE__ */ new Set();
+    const shown = rings.filter((ring, i) => {
+      if (named[i]) return false;
+      const box = ringBoxes[i];
+      const onCanvas = box.left >= 0 && box.right <= width && box.top >= 0 && box.bottom <= height;
+      const crowded = placed.filter((item) => this._boxGap(box, item.box) < gap);
+      const fixed = crowded.filter((item) => !onCanvas || namers.has(item));
+      if (fixed.some((item) => this._boxGap(box, item.box) === 0)) return false;
+      crowded.forEach((item) => {
+        if (!fixed.includes(item)) dropped.add(item.label);
+      });
+      return true;
+    });
+    if (!dropped.size) return { grid, rings: shown };
+    return {
+      grid: {
+        x: grid.x.filter((label) => !dropped.has(label)),
+        y: grid.y.filter((label) => !dropped.has(label))
+      },
+      rings: shown
+    };
+  }
+  _buildGridLabels(metrics, xLines, yLines, canvasWidth, canvasHeight, gap = LABEL_GAP_CSS_PX) {
     const labelData = { x: [], y: [] };
     if (!this.unitDisplay) return labelData;
     const y0 = this.valueToPixels(0, "y");
@@ -1736,9 +1866,11 @@ class ZoneMapCard extends HTMLElement {
       labelData.x.push({
         x: pixel,
         y: xLabelY,
+        value,
         text: label,
         align: "center",
-        baseline: xBaseline
+        baseline: xBaseline,
+        index: Math.round(value / metrics.stepX)
       });
     });
     const x0 = this.valueToPixels(0, "x");
@@ -1764,11 +1896,24 @@ class ZoneMapCard extends HTMLElement {
       labelData.y.push({
         x: yLabelX,
         y: pixel,
+        value,
         text: label,
         align: yAlign,
-        baseline: "middle"
+        baseline: "middle",
+        index: Math.round(value / metrics.stepY)
       });
     });
+    this._measureLabels([...labelData.x, ...labelData.y]);
+    const xFits = labelData.x.filter((item) => {
+      const box = this._labelBox(item);
+      return box.left >= 0 && box.right <= width;
+    });
+    const yFits = labelData.y.filter((item) => {
+      const box = this._labelBox(item);
+      return box.top >= 0 && box.bottom <= height;
+    });
+    labelData.x = this._thinAxisLabels(xFits, gap);
+    labelData.y = this._thinAxisLabels(yFits, gap);
     return labelData;
   }
   _formatTickLabel(mmValue, stepMm, displayUnit) {
@@ -2348,10 +2493,15 @@ class ZoneMapCard extends HTMLElement {
       this._drawGridLines(ctx, gridState);
     }
     this._drawAxes(ctx);
-    if (this.unitDisplay && gridState) {
-      this._drawGridLabels(ctx, gridState.labels);
+    let ringLabels = [];
+    if (this.unitDisplay) {
+      const { thetaStart, thetaEnd, radius } = this._coneSector();
+      const rings = this._getConeRingsRenderState(thetaStart, thetaEnd, radius, gridMetrics);
+      const labels = this._layOutLabels(rings == null ? void 0 : rings.labels, gridState);
+      if (gridState) this._drawGridLabels(ctx, labels.grid);
+      ringLabels = labels.rings;
     }
-    this.drawDeviceCone(gridMetrics);
+    this.drawDeviceCone(gridMetrics, ringLabels);
     this.drawZones();
     this._drawInProgress();
     this._drawTrackedTargets();
@@ -2637,17 +2787,24 @@ class ZoneMapCard extends HTMLElement {
     ctx.fillText(label, cx, cy);
     ctx.restore();
   }
-  drawDeviceCone(gridMetrics) {
+  /** The cone's edges in radians, rotation applied, and its range in mm. A
+   *  positive rotation turns the cone to the device's right. */
+  _coneSector() {
+    const halfFovRad = this.coneFovDeg / 2 * Math.PI / 180;
+    const rotRad = this.coneAngleDeg * Math.PI / 180;
+    return {
+      thetaStart: -halfFovRad + rotRad,
+      thetaEnd: halfFovRad + rotRad,
+      radius: Math.max(0, this.coneYMax)
+    };
+  }
+  /** Draws the cone, its rings and `ringLabels`. Without them it labels every
+   *  ring, as no grid label has been laid out to make room for. */
+  drawDeviceCone(gridMetrics, ringLabels = null) {
     if (!this.ctx || !this.canvas) return;
     const ctx = this.ctx;
     const apex = { x: 0, y: 0 };
-    const halfFovRad = this.coneFovDeg / 2 * Math.PI / 180;
-    const phiL = -halfFovRad;
-    const phiR = halfFovRad;
-    const rotRad = this.coneAngleDeg * Math.PI / 180;
-    const thetaStart = phiL + rotRad;
-    const thetaEnd = phiR + rotRad;
-    const radius = Math.max(0, this.coneYMax);
+    const { thetaStart, thetaEnd, radius } = this._coneSector();
     const ax = this.valueToPixels(apex.x, "x");
     const ay = this.valueToPixels(apex.y, "y");
     const pAt = (ang) => ({ x: radius * Math.sin(ang), y: radius * Math.cos(ang) });
@@ -2676,7 +2833,7 @@ class ZoneMapCard extends HTMLElement {
     ctx.stroke();
     ctx.restore();
     if (this.unitDisplay) {
-      this._drawConeRings(thetaStart, thetaEnd, radius, gridMetrics);
+      this._drawConeRings(thetaStart, thetaEnd, radius, gridMetrics, ringLabels);
     }
   }
   _getConeRingsRenderState(thetaStart, thetaEnd, radius, gridMetrics) {
@@ -2753,13 +2910,14 @@ class ZoneMapCard extends HTMLElement {
       labels.push({
         x: lx,
         y: ly,
+        value: r,
         text: this._formatTickLabel(r, stepMm, labelUnit)
       });
     }
     this._coneRingsCache = { key, path: ringsPath, rings, labels };
     return this._coneRingsCache;
   }
-  _drawConeRings(thetaStart, thetaEnd, radius, gridMetrics) {
+  _drawConeRings(thetaStart, thetaEnd, radius, gridMetrics, ringLabels = null) {
     const ctx = this.ctx;
     if (!ctx) return;
     const state = this._getConeRingsRenderState(thetaStart, thetaEnd, radius, gridMetrics);
@@ -2785,11 +2943,9 @@ class ZoneMapCard extends HTMLElement {
       });
       ctx.stroke();
     }
-    if (state.labels && state.labels.length) {
-      state.labels.forEach((label) => {
-        ctx.fillText(label.text, label.x, label.y);
-      });
-    }
+    (ringLabels ?? state.labels).forEach((label) => {
+      ctx.fillText(label.text, label.x, label.y);
+    });
     ctx.restore();
   }
   setupCanvas() {

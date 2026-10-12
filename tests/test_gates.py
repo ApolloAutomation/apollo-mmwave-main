@@ -45,7 +45,9 @@ async def test_resolve_gate_entities_ld2410_naming(hass, ld2410_device) -> None:
     assert entities.max_gate is None
     assert entities.background_status is None
     assert entities.background_button is None
-    assert entities.query_params_button is None
+    # The MSR firmware spells it without the chip prefix the LD2412 uses.
+    assert entities.query_params_button == ids.query_params
+    assert ids.query_params == f"button.{LD2410_BASE}_query_params"
     assert entities.radar_target == ids.radar_target
     assert entities.moving_target == ids.moving_target
     assert entities.gate_count == LD2410_GATES

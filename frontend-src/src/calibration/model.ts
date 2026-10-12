@@ -12,6 +12,7 @@ import type {
   CalibrationResult,
   Channel,
   ChannelResult,
+  EntitiesInfo,
   JobState,
   ProfileKey,
   RestoredFrom,
@@ -22,6 +23,10 @@ export const DEFAULT_SETTLE_S = 15;
 export const DEFAULT_DURATION_S = 60;
 /** Mirrors the backend's VERIFY_TOLERANCE: within this of `old` is unchanged. */
 const TOLERANCE = 0.5;
+/** A threshold number's top value when its entity names none (the backend's
+ *  `number_bounds` fallback). At the top a gate can never trigger: it is off. */
+export const DEFAULT_THRESHOLD_MAX = 100;
+const CHANNELS: Channel[] = ["move", "still"];
 
 export const KEEP_ON_LD2410 = "Leave Radar Engineering Mode on until this finishes.";
 export const KEEP_ON_LD2412 =
@@ -85,7 +90,7 @@ export function durationText(seconds: number): string {
 
 /** The first idle paragraph. With `settleS` 0 the countdown clause is dropped. */
 export function idleSentence(settleS: number, durationS: number): string {
-  const listen = `listens for ${durationText(durationS)}, then sets every gate's move and still threshold just above the background it heard.`;
+  const listen = `listens for ${durationText(durationS)}, then sets every gate's move and still threshold a margin above the background it heard.`;
   const middle =
     settleS > 0
       ? `It counts down ${durationText(settleS)} so you can leave, ${listen}`
@@ -289,7 +294,30 @@ function peakText(ch: ChannelResult): string {
   return ch.flags.includes("spike") ? `${num(ch.peak)} (spike seen)` : num(ch.peak);
 }
 
-function thresholdText(ch: ChannelResult, preview: boolean): string {
+/** A threshold number's top value: its `max` attribute, else 100. */
+export function thresholdMax(
+  hass: Pick<HomeAssistant, "states"> | undefined,
+  entityId: string | null | undefined
+): number {
+  const raw = entityId ? hass?.states?.[entityId]?.attributes?.max : undefined;
+  const value = typeof raw === "number" ? raw : typeof raw === "string" ? parseFloat(raw) : NaN;
+  return Number.isFinite(value) ? value : DEFAULT_THRESHOLD_MAX;
+}
+
+/** Looks up a threshold entity's top value; the card reads it from HA. */
+export type MaxOf = (entityId: string | null) => number;
+const defaultMax: MaxOf = () => DEFAULT_THRESHOLD_MAX;
+
+/** A gate channel the user had turned off (threshold at the top) that the run
+ *  moved below the top, which turns it back on. A channel the radar does not
+ *  use is left out: lowering it turns nothing on. */
+function wasOff(ch: ChannelResult, max: number): boolean {
+  if (ch.skipped || ch.flags.includes("unused")) return false;
+  if (ch.old === null || ch.old === undefined || ch.new === null || ch.new === undefined) return false;
+  return Math.abs(ch.old - max) <= TOLERANCE && ch.new < max - TOLERANCE;
+}
+
+function thresholdText(ch: ChannelResult, preview: boolean, max: number): string {
   if (ch.skipped === "not selected") {
     return ch.old === null ? "(not selected)" : `${num(ch.old)} (not selected)`;
   }
@@ -305,22 +333,29 @@ function thresholdText(ch: ChannelResult, preview: boolean): string {
   const changed = ch.old === null || Math.abs(ch.new - ch.old) > TOLERANCE;
   if (!changed) return off ? `${num(ch.new)} (off)` : `${num(ch.old)} (unchanged)`;
   const arrow = `${num(ch.old)} → ${num(ch.new)}`;
+  // "off" (moved to the top) and "was off" (moved down from it) never meet.
+  const tags: string[] = [];
+  if (off) tags.push("off");
+  if (wasOff(ch, max)) tags.push("was off");
   if (preview) {
     // SPEC NOTE: the spec asks for "would set" in the threshold columns of a
     // preview without fixing the cell text; the arrow plus the tag keeps the
     // table identical to the applied one.
-    return off ? `${arrow} (off, would set)` : `${arrow} (would set)`;
-  }
-  if (ch.written && ch.confirmed === false) {
+    tags.push("would set");
+  } else if (ch.written && ch.confirmed === false) {
     // SPEC NOTE: a mismatch (actual differs from asked) has no cell text in the
     // spec; the warning line carries the numbers, the cell says it is unproven.
-    return off ? `${arrow} (off, not confirmed)` : `${arrow} (not confirmed)`;
+    tags.push("not confirmed");
   }
-  return off ? `${arrow} (off)` : arrow;
+  return tags.length ? `${arrow} (${tags.join(", ")})` : arrow;
 }
 
-function cell(ch: ChannelResult, preview: boolean): Cell {
-  return { peak: peakText(ch), text: thresholdText(ch, preview), flags: [...ch.flags] };
+function cell(ch: ChannelResult, preview: boolean, maxOf: MaxOf): Cell {
+  return {
+    peak: peakText(ch),
+    text: thresholdText(ch, preview, maxOf(ch.entity_id)),
+    flags: [...ch.flags],
+  };
 }
 
 function rowUnused(gate: { move: ChannelResult; still: ChannelResult }): boolean {
@@ -328,13 +363,15 @@ function rowUnused(gate: { move: ChannelResult; still: ChannelResult }): boolean
   return sampled.length > 0 && sampled.every((ch) => ch.flags.includes("unused"));
 }
 
-export function resultRows(result: CalibrationResult): Row[] {
+/** The table rows. `maxOf` gives each threshold number's top value, which
+ *  marks a channel the run turned back on ("100 → 15 (was off)"). */
+export function resultRows(result: CalibrationResult, maxOf: MaxOf = defaultMax): Row[] {
   const preview = result.outcome === "preview";
   return (result.gates ?? []).map((g) => ({
     gate: g.gate,
     label: `G${g.gate}`,
-    move: cell(g.move, preview),
-    still: cell(g.still, preview),
+    move: cell(g.move, preview, maxOf),
+    still: cell(g.still, preview, maxOf),
     unused: rowUnused(g),
   }));
 }
@@ -426,12 +463,237 @@ export function warningLines(result: CalibrationResult): string[] {
   return lines;
 }
 
+function thresholdsCard(channel: Channel): string {
+  return channel === "move" ? "Move Thresholds" : "Still Thresholds";
+}
+
+/**
+ * One line per gate channel the user had turned off (threshold at the top)
+ * that the run turned back on, under an applied or preview table. Calibration
+ * still sets those gates; this says so plainly, and how to turn one off again.
+ */
+export function reenabledLines(result: CalibrationResult, maxOf: MaxOf = defaultMax): string[] {
+  const preview = result.outcome === "preview";
+  if (result.kind !== "calibrate") return [];
+  if (!preview && result.outcome !== "applied" && result.outcome !== "partial") return [];
+  const lines: string[] = [];
+  for (const g of result.gates ?? []) {
+    for (const channel of CHANNELS) {
+      const ch = g[channel];
+      const max = maxOf(ch.entity_id);
+      if (!wasOff(ch, max)) continue;
+      // A write the radar did not confirm has its own line (`unverified`).
+      if (!preview && (!ch.written || ch.confirmed === false)) continue;
+      const label = `G${g.gate} ${channel}`;
+      const top = num(max);
+      const card = thresholdsCard(channel);
+      lines.push(
+        preview
+          ? `${label} is off (set to ${top}) and calibration would turn it back on (would set ${num(ch.new)}). If you turned it off on purpose, set it back to ${top} on the ${card} card after you calibrate.`
+          : `${label} was off (set to ${top}) and calibration turned it back on (now ${num(ch.new)}). If you turned it off on purpose, set it back to ${top} on the ${card} card, or press Undo to put back all your previous values.`
+      );
+    }
+  }
+  return lines;
+}
+
+// ---------------------------------------------------------------------------
+// Gates turned off before a run
+// ---------------------------------------------------------------------------
+
+/** The gate range the radar uses (`calibration.py` `_gate_unused` reads the
+ *  same four numbers). */
+export interface GateLimits {
+  max_move_gate: number | null;
+  max_still_gate: number | null;
+  min_gate: number | null;
+  max_gate: number | null;
+}
+
+function liveInt(hass: Pick<HomeAssistant, "states">, entityId: string | undefined): number | null {
+  if (!entityId) return null;
+  const value = parseFloat(hass.states[entityId]?.state ?? "");
+  return Number.isFinite(value) ? Math.trunc(value) : null;
+}
+
+/** The radar's gate range now: the live range numbers first, the payload's
+ *  copy (only as fresh as the last job push) when HA has no value. On the
+ *  LD2412 the map's `max_move_distance` is Max Gate and `max_still_distance`
+ *  Min Gate. */
+export function liveGateLimits(
+  hass: Pick<HomeAssistant, "states">,
+  map: EntityMap,
+  profile: ProfileKey | undefined,
+  entities: EntitiesInfo | null | undefined
+): GateLimits {
+  if (profile === "ld2412") {
+    return {
+      max_move_gate: null,
+      max_still_gate: null,
+      min_gate: liveInt(hass, map.max_still_distance) ?? entities?.min_gate ?? null,
+      max_gate: liveInt(hass, map.max_move_distance) ?? entities?.max_gate ?? null,
+    };
+  }
+  return {
+    max_move_gate: liveInt(hass, map.max_move_distance) ?? entities?.max_move_gate ?? null,
+    max_still_gate: liveInt(hass, map.max_still_distance) ?? entities?.max_still_gate ?? null,
+    min_gate: null,
+    max_gate: null,
+  };
+}
+
+/** The backend's `_gate_unused`, inverted. An unknown limit counts as in use. */
+function gateInUse(profile: ProfileKey | undefined, limits: GateLimits, gate: number, channel: Channel): boolean {
+  if (profile === "ld2412") {
+    if (limits.min_gate !== null && gate < limits.min_gate) return false;
+    return limits.max_gate === null || gate <= limits.max_gate;
+  }
+  const limit = channel === "move" ? limits.max_move_gate : limits.max_still_gate;
+  return limit === null || gate <= limit;
+}
+
+export interface OffChannel {
+  gate: number;
+  channel: Channel;
+  /** The number's top value, which is what its threshold reads. */
+  max: number;
+}
+
+/** Whether `result`, an applied calibration, set this channel to the top
+ *  itself: listed in its `gates_off`, or written at `max`. The run turned that
+ *  gate off because its background peaked near the top, not the user, and a
+ *  new run usually leaves it off too. */
+function offByCalibration(
+  result: CalibrationResult | null | undefined,
+  gate: number,
+  channel: Channel,
+  max: number
+): boolean {
+  if (!result || result.kind !== "calibrate") return false;
+  if (result.outcome !== "applied" && result.outcome !== "partial") return false;
+  if ((result.gates_off ?? []).some((e) => e.gate === gate && e.channel === channel)) return true;
+  const ch = result.gates?.find((g) => g.gate === gate)?.[channel];
+  if (!ch?.written || ch.new === null || ch.new === undefined) return false;
+  return Math.abs(ch.new - max) <= TOLERANCE;
+}
+
+/**
+ * The gate channels a calibration would turn back on: in use, calibrated (a
+ * threshold and an energy sensor in HA), and with a live threshold at its
+ * number's top, where the gate can never trigger. LD2410 G0 and G1 still are
+ * left out: their background idles near the top, so a calibration usually
+ * leaves them off, and the backend's `gate_off` warning skips them for the
+ * same reason. So is a channel that `lastResult`, an applied calibration, set
+ * to the top itself and that still reads the top: the user did not turn it
+ * off. Gate ascending, move then still.
+ */
+export function offChannelsBeforeRun(
+  hass: Pick<HomeAssistant, "states">,
+  map: EntityMap,
+  profile: ProfileKey | undefined,
+  limits: GateLimits,
+  lastResult?: CalibrationResult | null
+): OffChannel[] {
+  const out: OffChannel[] = [];
+  const gates = Math.max(map.move_threshold.length, map.still_threshold.length);
+  for (let gate = 0; gate < gates; gate++) {
+    for (const channel of CHANNELS) {
+      if (profile === "ld2410" && channel === "still" && gate <= 1) continue;
+      if (!gateInUse(profile, limits, gate, channel)) continue;
+      const threshold = (channel === "move" ? map.move_threshold : map.still_threshold)[gate];
+      const energy = (channel === "move" ? map.move_energy : map.still_energy)[gate];
+      if (!threshold || !energy || hass.states[energy] === undefined) continue;
+      const value = parseFloat(hass.states[threshold]?.state ?? "");
+      if (!Number.isFinite(value)) continue;
+      const max = thresholdMax(hass, threshold);
+      if (Math.abs(value - max) > TOLERANCE) continue;
+      if (offByCalibration(lastResult, gate, channel, max)) continue;
+      out.push({ gate, channel, max });
+    }
+  }
+  return out;
+}
+
+/** The idle card's warning before a run: "G2 still is off (set to 100).
+ *  Calibrating will turn it back on.", one sentence for several. */
+export function offGatesLine(channels: OffChannel[]): string | null {
+  if (channels.length === 0) return null;
+  const label = (c: OffChannel) => `G${c.gate} ${c.channel}`;
+  if (channels.length === 1) {
+    const c = channels[0];
+    return `${label(c)} is off (set to ${num(c.max)}). Calibrating will turn it back on.`;
+  }
+  const top = channels[0].max;
+  const names = channels.every((c) => c.max === top)
+    ? `${channels.map(label).join(", ")} are off (set to ${num(top)}).`
+    : `${channels.map((c) => `${label(c)} (set to ${num(c.max)})`).join(", ")} are off.`;
+  return `${names} Calibrating will turn them back on.`;
+}
+
+// ---------------------------------------------------------------------------
+// Undo and Redo
+// ---------------------------------------------------------------------------
+
+export const UNDO_LABEL = "Undo (restore your previous values)";
+export const REDO_LABEL = "Redo (put the calibrated values back)";
+
+/** What a snapshot holds: the values from before a calibration, or the
+ *  calibrated values a restore overwrote. */
+export type SnapshotContents = "previous" | "calibrated";
+
+/**
+ * Tell what the snapshot at `index` holds from the list alone, or null.
+ *
+ * A calibration's snapshot holds the values from before it. A restore takes
+ * its snapshot of the values it is about to overwrite, which are what the job
+ * before it wrote: the calibrated values right after a calibration, and after
+ * an earlier restore whatever that one put back. Every Undo or Redo restores
+ * the newest snapshot, so walking from `index` to the calibration, each
+ * restore flips the answer. Null when the calibration's snapshot has aged out
+ * of the list.
+ */
+export function snapshotContents(snapshots: SnapshotSummary[], index: number): SnapshotContents | null {
+  let restores = 0;
+  for (let i = index; i < snapshots.length; i++) {
+    if (snapshots[i].reason === "calibrate") return restores % 2 === 0 ? "previous" : "calibrated";
+    restores += 1;
+  }
+  return null;
+}
+
 /** The Undo button text. The newest snapshot is the one the restore service
- *  picks when no id is given, so the label names exactly that one. */
+ *  picks when no id is given, so the label says what that one holds: Undo
+ *  after a calibration, Redo after an Undo, Undo again after a Redo. */
 export function undoLabel(snapshots: SnapshotSummary[], now: Date = new Date()): string {
   const newest = snapshots[0];
   if (!newest) return NOTHING_TO_RESTORE;
-  return `Undo (restore ${formatTime(newest.taken_at, now)} values)`;
+  switch (snapshotContents(snapshots, 0)) {
+    case "previous":
+      return UNDO_LABEL;
+    case "calibrated":
+      return REDO_LABEL;
+    default:
+      return `Restore the values saved at ${formatTime(newest.taken_at, now)}`;
+  }
+}
+
+/** The Undo button's tooltip: when the values it restores were saved,
+ *  "Saved at 14:31" today and "Saved 10 Oct 14:31" on another day. */
+export function undoTitle(snapshots: SnapshotSummary[], now: Date = new Date()): string | undefined {
+  const newest = snapshots[0];
+  if (!newest) return undefined;
+  const taken = parseDate(newest.taken_at);
+  const when = formatTime(newest.taken_at, now);
+  return taken && sameDay(taken, now) ? `Saved at ${when}` : `Saved ${when}`;
+}
+
+/** The line under the idle footer's Undo button, "Saved 10 Oct 14:31.", so
+ *  the time shows on touch screens, where a tooltip never does. Null without
+ *  snapshots, and when the label already names the time. */
+export function savedLine(snapshots: SnapshotSummary[]): string | null {
+  const newest = snapshots[0];
+  if (!newest || snapshotContents(snapshots, 0) === null) return null;
+  return `Saved ${formatDayTime(newest.taken_at)}.`;
 }
 
 function changedOfTotal(result: CalibrationResult, verb = "changed"): string {
@@ -467,13 +729,21 @@ export function summaryLine(result: CalibrationResult, now: Date = new Date()): 
   return `Calibrated at ${when} from ${samples}. ${changedOfTotal(result)}.`;
 }
 
+/** " Nothing was changed." or " after 5 of 18 values were written.", the
+ *  tail of a footer line for a job that stopped early. */
+function writesTail(result: CalibrationResult): string {
+  const writes = result.writes_done ?? 0;
+  if (writes === 0) return ". Nothing was changed.";
+  return ` after ${writes} of ${result.writes_total ?? writes} values were written.`;
+}
+
 /** The idle footer line describing `last_result`. */
 export function footerLine(result: CalibrationResult): string {
   const when = formatDayTime(result.finished_at);
   // SPEC NOTE: the spec words the footer for applied and restored results
   // only; the other outcomes say what happened without claiming a change,
-  // and name a restore as a restore.
-  const job = result.kind === "restore" ? "restore" : "calibration";
+  // and name a restore as a restore and a preview as a preview.
+  const job = result.kind === "restore" ? "restore" : result.apply === false ? "preview" : "calibration";
   switch (result.outcome) {
     case "applied":
     case "partial":
@@ -483,9 +753,12 @@ export function footerLine(result: CalibrationResult): string {
     case "preview":
       return `Last previewed ${when}.`;
     case "cancelled":
-      return `Last ${job} ${when} was stopped.`;
+      return `Last ${job} ${when} was stopped${writesTail(result)}`;
     default:
-      return `Last ${job} ${when} failed.`;
+      if (result.error?.code === "cancelled_by_shutdown") {
+        return `Last ${job} ${when} was stopped by a Home Assistant restart${writesTail(result)}`;
+      }
+      return `Last ${job} ${when} failed${writesTail(result)}`;
   }
 }
 
@@ -543,13 +816,38 @@ export function restoreSource(
   return newest ? { id: newest.id, taken_at: newest.taken_at } : null;
 }
 
-/** "Restored the thresholds from 14:31." */
+/** What the snapshot a restore wrote back holds, when it was the newest one
+ *  at the time (the one the Undo or Redo label named), else null. */
+function restoredContents(
+  result: CalibrationResult,
+  snapshots: SnapshotSummary[],
+  sourceId: string
+): SnapshotContents | null {
+  const index = snapshots.findIndex((s) => s.id === sourceId);
+  if (index < 0) return null;
+  // A restore that wrote something took its own snapshot first, so the
+  // newest it could have restored sits just below that one.
+  let expected = 0;
+  if (result.snapshot_id) {
+    const redo = snapshots.findIndex((s) => s.id === result.snapshot_id);
+    if (redo < 0) return null;
+    expected = redo + 1;
+  }
+  return index === expected ? snapshotContents(snapshots, index) : null;
+}
+
+/** "Restored your previous values." after Undo, "Restored the calibrated
+ *  values." after Redo, else "Restored the thresholds from 14:31." */
 export function restoredLine(
   result: CalibrationResult,
   snapshots: SnapshotSummary[],
   now: Date = new Date()
 ): string {
-  const takenAt = restoreSource(result, snapshots)?.taken_at;
+  const source = restoreSource(result, snapshots);
+  const contents = source?.id ? restoredContents(result, snapshots, source.id) : null;
+  if (contents === "previous") return "Restored your previous values.";
+  if (contents === "calibrated") return "Restored the calibrated values.";
+  const takenAt = source?.taken_at;
   // SPEC NOTE: when neither the result nor the list reveals the restored
   // snapshot the line drops the time rather than guess one.
   if (!takenAt) return "Restored the saved thresholds.";

@@ -381,9 +381,10 @@ def _desired_config(
     Build the strategy config for the given device selection.
 
     Only ``type`` and ``devices`` are ours. Anything else under ``strategy``
-    (``distance_unit``, for one, is a user-settable strategy option; see the
-    README) was typed into the raw config editor by the user, and rewriting the
-    whole dict on every restart threw it away, so it is carried over.
+    (``distance_unit``, for one, is a user-settable strategy option; see
+    docs/configuration.md) was typed into the raw config editor by the user,
+    and rewriting the whole dict on every restart threw it away, so it is
+    carried over.
     """
     strategy: dict[str, Any] = {}
     if _is_ours(stored):
@@ -522,8 +523,9 @@ async def async_remove_dashboard(hass: HomeAssistant) -> None:
     # With the option off, each restart or reload deletes the dashboard on our
     # url path whenever its config is our strategy, even one the user built by
     # hand, which this docstring and the module docstring deny.
-    # Decide: keep it and fix both docstrings (README: use another url path), or
-    # remove only from the options listener and entry removal, with tests.
+    # Decide: keep it and fix both docstrings (docs/configuration.md: use
+    # another url path), or remove only from the options listener and entry
+    # removal, with tests.
     try:
         collection = _dashboards_collection(hass)
         if collection is None:

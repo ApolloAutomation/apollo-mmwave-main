@@ -6,7 +6,12 @@
  */
 
 import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
-import { ApolloRadarCalibrateCard, CALIBRATE_CARD_TAG } from "../src/cards/calibrate-card";
+import {
+  ApolloRadarCalibrateCard,
+  CALIBRATE_CARD_TAG,
+  READ_SETTINGS_LABEL,
+  READ_SETTINGS_WAIT_MS,
+} from "../src/cards/calibrate-card";
 import {
   CALIBRATION_RETRY_DELAYS_MS,
   CALIBRATION_SUBSCRIBE,
@@ -345,6 +350,15 @@ function expectedTime(iso: string): string {
   return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(new Date(iso));
 }
 
+function expectedDayTime(iso: string): string {
+  return new Intl.DateTimeFormat(undefined, {
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(iso));
+}
+
 // The fixtures are stamped 2026-10-11, and the card adds the date to any time
 // that is not today. Freeze today on the fixtures' day (Date only, so tests
 // that fake setTimeout still install their own timers) or these tests fail on
@@ -386,7 +400,7 @@ describe("calibrate card idle state", () => {
     const t = text(card);
     expect(t).toContain("LD2410 · Living Room MSR-2");
     expect(t).toContain(
-      "It counts down 15 seconds so you can leave, listens for 1 minute, then sets every gate's move and still threshold just above the background it heard."
+      "It counts down 15 seconds so you can leave, listens for 1 minute, then sets every gate's move and still threshold a margin above the background it heard."
     );
     expect(t).toContain("Nobody in the radar's view: people, pets, robot vacuums.");
     expect(t).toContain(
@@ -661,7 +675,7 @@ describe("calibrate card idle state", () => {
     });
     const card = await mount(hass);
     await push(card, hass, payload({ snapshots: [SNAPSHOT], last_result: result() }));
-    button(card, `Undo (restore ${expectedTime(SNAPSHOT_AT)} values)`)!.click();
+    button(card, "Undo (restore your previous values)")!.click();
     await settle(card);
     expect(text(card)).toContain(
       "Restore failed: The radar is unavailable right now. Check that it is online, then try again."
@@ -693,7 +707,10 @@ describe("calibrate card idle state", () => {
     expect(t).toContain("Nobody in the radar's view");
     expect(t).not.toContain("Thresholds updated");
     expect(t).toMatch(/Last calibrated .*16 of 18 thresholds changed\./);
-    expect(button(card, `Undo (restore ${expectedTime(SNAPSHOT_AT)} values)`)).toBeTruthy();
+    const undo = button(card, "Undo (restore your previous values)")!;
+    expect(undo).toBeTruthy();
+    // The label says what it restores; the time stays in the tooltip.
+    expect(undo.title).toBe(`Saved at ${expectedTime(SNAPSHOT_AT)}`);
     expect(card.shadowRoot!.querySelector("table")).toBeNull();
 
     button(card, "Show last result")!.click();
@@ -701,6 +718,21 @@ describe("calibrate card idle state", () => {
     expect(card.shadowRoot!.querySelector("table")).toBeTruthy();
     expect(text(card)).toContain("50 → 24");
     expect(button(card, "Hide last result")).toBeTruthy();
+  });
+
+  it("shows when the Undo values were saved as text under the button, not only in its tooltip", async () => {
+    const hass = ld2410Hass();
+    const card = await mount(hass);
+    // A later preview wrote nothing: the Undo still belongs to the calibration.
+    const preview = result({ outcome: "preview", apply: false, snapshot_id: null, writes_done: 0, writes_total: 0 });
+    await push(card, hass, payload({ snapshots: [SNAPSHOT], last_result: preview }));
+    expect(text(card)).toMatch(/Last previewed /);
+    const undo = button(card, "Undo (restore your previous values)")!;
+    expect(undo.title).toBe(`Saved at ${expectedTime(SNAPSHOT_AT)}`);
+    const helpers = Array.from(card.shadowRoot!.querySelectorAll(".footer .last p.helper")).map((p) =>
+      (p.textContent ?? "").trim()
+    );
+    expect(helpers).toEqual([`Saved ${expectedDayTime(SNAPSHOT_AT)}.`]);
   });
 
   it("shows a stored restore as its summary and missing entities, never an empty table", async () => {
@@ -939,7 +971,7 @@ describe("calibrate card finished states", () => {
     expect(t).toContain(
       "Now walk around, then sit still for a minute: the Radar Target row in Target / Occupancy should stay on the whole time you are in the room and turn off a few seconds after you leave (Radar Timeout)."
     );
-    const undo = button(card, `Undo (restore ${expectedTime(SNAPSHOT_AT)} values)`)!;
+    const undo = button(card, "Undo (restore your previous values)")!;
     expect(undo).toBeTruthy();
     expect(button(card, "Calibrate again")).toBeTruthy();
     undo.click();
@@ -1128,11 +1160,14 @@ describe("calibrate card finished states", () => {
     await push(card, hass, payload({ job: job({ job_id: "job2", kind: "restore", status: "applying" }) }));
     await push(card, hass, payload({ job: null, snapshots: [REDO, SNAPSHOT], last_result: restoreResult() }));
     const t = text(card);
-    expect(t).toContain(`Restored the thresholds from ${expectedTime(SNAPSHOT_AT)}.`);
+    expect(t).toContain("Restored your previous values.");
     expect(t).not.toContain("Not found any more");
     expect(t).toContain("Nobody in the radar's view");
     expect(card.shadowRoot!.querySelector("table")).toBeNull();
-    expect(button(card, `Undo (restore ${expectedTime(REDO_AT)} values)`)).toBeTruthy();
+    // The newest snapshot now holds the calibrated values the Undo replaced,
+    // so the button offers them back instead of naming a time.
+    expect(button(card, "Redo (put the calibrated values back)")).toBeTruthy();
+    expect(button(card, /^Undo/)).toBeUndefined();
     expect(button(card, "Calibrate with empty room")).toBeTruthy();
   });
 
@@ -1187,7 +1222,7 @@ describe("calibrate card finished states", () => {
       "Restore failed: The radar went offline after 4 of 18 values were written. Use Undo once it is back."
     );
     // Undo puts back what the partial restore overwrote: the redo snapshot.
-    expect(button(card, `Undo (restore ${expectedTime(REDO_AT)} values)`)).toBeTruthy();
+    expect(button(card, "Redo (put the calibrated values back)")).toBeTruthy();
     button(card, "Try again")!.click();
     expect(hass.callService).toHaveBeenCalledWith(
       "apollo_mmwave",
@@ -1606,5 +1641,373 @@ describe("calibrate card subscription lifecycle", () => {
     expect(text(card)).toContain("Home Assistant has no device with this id.");
     await vi.advanceTimersByTimeAsync(60000);
     expect(calSubscribes(hass)).toBe(1);
+  });
+});
+
+describe("calibrate card turned-off gates", () => {
+  function thresholds(edit: (t: { move: number[]; still: number[] }) => void) {
+    const t = { move: [...LD2410_FACTORY_THRESHOLDS.move], still: [...LD2410_FACTORY_THRESHOLDS.still] };
+    edit(t);
+    return t;
+  }
+
+  function idleWarnings(card: ApolloRadarCalibrateCard): string[] {
+    return Array.from(card.shadowRoot!.querySelectorAll(".idle-body p.warning")).map((p) =>
+      (p.textContent ?? "").trim()
+    );
+  }
+
+  it("warns before a run about the in-use gates that are turned off", async () => {
+    // G8 still is beyond Max Still Gate 6, so lowering it turns nothing on.
+    const hass = ld2410Hass({ thresholds: thresholds((t) => ((t.still[2] = 100), (t.still[8] = 100))) });
+    const card = await mount(hass);
+    await push(card, hass, payload());
+    expect(idleWarnings(card)).toEqual(["G2 still is off (set to 100). Calibrating will turn it back on."]);
+  });
+
+  it("names several gates in one sentence and drops the line once they are set", async () => {
+    let hass = ld2410Hass({ thresholds: thresholds((t) => ((t.still[2] = 100), (t.move[0] = 100))) });
+    const card = await mount(hass);
+    await push(card, hass, payload());
+    expect(idleWarnings(card)).toEqual([
+      "G0 move, G2 still are off (set to 100). Calibrating will turn them back on.",
+    ]);
+    hass = await setStates(card, hass, { [M.still_threshold[2]]: "40" });
+    expect(idleWarnings(card)).toEqual(["G0 move is off (set to 100). Calibrating will turn it back on."]);
+    await setStates(card, hass, { [M.move_threshold[0]]: "50" });
+    expect(idleWarnings(card)).toEqual([]);
+  });
+
+  it("does not warn about a gate the last calibration turned off itself", async () => {
+    const hass = ld2410Hass({ thresholds: thresholds((t) => (t.move[3] = 100)) });
+    const card = await mount(hass);
+    const last = result({
+      warnings: ["gate_off"],
+      gates_off: [{ gate: 3, channel: "move", peak: 96 }],
+      gates: [gate(0), gate(3, { old: 40, new: 100, flags: ["off"], actual: 100 })],
+    });
+    await push(card, hass, payload({ snapshots: [SNAPSHOT], last_result: last }));
+    expect(text(card)).toContain("Nobody in the radar's view");
+    expect(idleWarnings(card)).toEqual([]);
+  });
+
+  it("marks a gate the run turned back on and says how to turn it off again", async () => {
+    const hass = ld2410Hass();
+    const card = await mount(hass);
+    const last = result({ gates: [gate(0), gate(2, {}, { old: 100, new: 15, peak: 5, actual: 15 })] });
+    await push(card, hass, payload({ job: job({ job_id: last.job_id }) }));
+    await push(card, hass, payload({ job: null, last_result: last, snapshots: [SNAPSHOT] }));
+    const t = text(card);
+    expect(t).toContain("100 → 15 (was off)");
+    expect(t).toContain(
+      "G2 still was off (set to 100) and calibration turned it back on (now 15). If you turned it off on purpose, set it back to 100 on the Still Thresholds card, or press Undo to put back all your previous values."
+    );
+  });
+
+  it("words a preview as what calibration would do, against the number's own max", async () => {
+    const hass = ld2410Hass();
+    hass.states[M.move_threshold[3]] = {
+      entity_id: M.move_threshold[3],
+      state: "80",
+      attributes: { min: 0, max: 80, step: 1 },
+    };
+    const card = await mount(hass);
+    const last = result({
+      outcome: "preview",
+      snapshot_id: null,
+      writes_done: 0,
+      writes_total: 0,
+      gates: [gate(3, { old: 80, new: 30, written: false, confirmed: null, actual: null })],
+    });
+    await push(card, hass, payload({ job: job({ job_id: last.job_id, apply: false }) }));
+    await push(card, hass, payload({ job: null, last_result: last }));
+    const t = text(card);
+    expect(t).toContain("80 → 30 (was off, would set)");
+    expect(t).toContain(
+      "G3 move is off (set to 80) and calibration would turn it back on (would set 30). If you turned it off on purpose, set it back to 80 on the Move Thresholds card after you calibrate."
+    );
+  });
+});
+
+describe("calibrate card thresholds the radar has not reported", () => {
+  const QP = `button.${BASE}_query_params`;
+
+  /** The pre-flight refusal exactly as HA's websocket call_service sends it. */
+  function notReported(count = 18): Record<string, any> {
+    return {
+      code: "service_validation_error",
+      message: `Validation error: The radar has not reported ${count} of its threshold values yet`,
+      translation_domain: "apollo_mmwave",
+      translation_key: "thresholds_not_numeric",
+      translation_placeholders: { count: String(count), entity_ids: "number.a_g0_move_threshold" },
+    };
+  }
+
+  function withQueryParams(hass: FakeHass): FakeHass {
+    hass.states[QP] = ent(QP, "unknown");
+    hass.entities[QP] = { device_id: "dev1", platform: "esphome" };
+    return hass;
+  }
+
+  function fakeTimeouts(): void {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    vi.setSystemTime(FIXTURE_NOW);
+  }
+
+  it("reads the radar's settings, waits, then calibrates again", async () => {
+    const hass = withQueryParams(ld2410Hass());
+    hass.callService.mockRejectedValueOnce(notReported());
+    const card = await mount(hass, { device_id: "dev1", calibration: { duration_s: 30 } });
+    await push(card, hass, payload({ entities: { ...ENTITIES, query_params_button: QP } }));
+    button(card, "Calibrate with empty room")!.click();
+    await settle(card);
+    const t = text(card);
+    expect(t).toContain("Calibration failed: The radar has not reported 18 of its threshold values yet.");
+    expect(t).not.toContain("number.a_g0_move_threshold");
+    expect(button(card, "Try again")).toBeUndefined();
+    expect(button(card, "Close")).toBeTruthy();
+
+    fakeTimeouts();
+    const read = button(card, "Read settings from the radar")!;
+    expect(READ_SETTINGS_LABEL).toBe("Read settings from the radar");
+    expect(read.classList.contains("primary")).toBe(true);
+    read.click();
+    await settle(card);
+    expect(hass.callService.mock.calls[1]).toEqual(["button", "press", { entity_id: QP }, undefined, false]);
+    expect(text(card)).toContain("Reading settings from the radar...");
+    expect(button(card, "Read settings from the radar")!.disabled).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(READ_SETTINGS_WAIT_MS - 1);
+    expect(hass.callService).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    await settle(card);
+    expect(hass.callService).toHaveBeenCalledTimes(3);
+    expect(hass.callService.mock.calls[2].slice(0, 3)).toEqual([
+      "apollo_mmwave",
+      "calibrate_gates",
+      { device_id: "dev1", duration_s: 30 },
+    ]);
+    expect(text(card)).not.toContain("Calibration failed");
+    expect(text(card)).not.toContain("Reading settings");
+  });
+
+  it("repeats a preview as a preview", async () => {
+    const hass = withQueryParams(ld2410Hass());
+    hass.callService.mockRejectedValueOnce(notReported());
+    const card = await mount(hass);
+    await push(card, hass, payload());
+    button(card, "Preview only")!.click();
+    await settle(card);
+    fakeTimeouts();
+    // Found through the registry when the payload does not name it.
+    button(card, "Read settings from the radar")!.click();
+    await settle(card);
+    expect(hass.callService.mock.calls[1].slice(0, 3)).toEqual(["button", "press", { entity_id: QP }]);
+    await vi.advanceTimersByTimeAsync(READ_SETTINGS_WAIT_MS);
+    await settle(card);
+    expect(hass.callService.mock.calls[2].slice(0, 3)).toEqual([
+      "apollo_mmwave",
+      "calibrate_gates",
+      { device_id: "dev1", apply: false },
+    ]);
+  });
+
+  it("does not start a second job when one started during the wait", async () => {
+    const hass = withQueryParams(ld2410Hass());
+    hass.callService.mockRejectedValueOnce(notReported());
+    const card = await mount(hass);
+    await push(card, hass, payload());
+    button(card, "Calibrate with empty room")!.click();
+    await settle(card);
+    fakeTimeouts();
+    button(card, "Read settings from the radar")!.click();
+    await settle(card);
+    // An automation (or another tab) started a run before the wait ended.
+    await push(card, hass, payload({ job: job({ job_id: "elsewhere", status: "preparing", sub_phase: "settle" }) }));
+    await vi.advanceTimersByTimeAsync(READ_SETTINGS_WAIT_MS);
+    await settle(card);
+    expect(hass.callService).toHaveBeenCalledTimes(2);
+    expect(text(card)).toContain("Leave the room now.");
+  });
+
+  it("drops the retry when the failure is closed during the wait", async () => {
+    const hass = withQueryParams(ld2410Hass());
+    hass.callService.mockRejectedValueOnce(notReported());
+    const card = await mount(hass);
+    await push(card, hass, payload());
+    button(card, "Calibrate with empty room")!.click();
+    await settle(card);
+    fakeTimeouts();
+    button(card, "Read settings from the radar")!.click();
+    await settle(card);
+    button(card, "Close")!.click();
+    await settle(card);
+    await vi.advanceTimersByTimeAsync(READ_SETTINGS_WAIT_MS);
+    await settle(card);
+    expect(hass.callService).toHaveBeenCalledTimes(2);
+    expect(text(card)).toContain("Nobody in the radar's view");
+  });
+
+  it("reads the radar's settings, then repeats a refused Undo", async () => {
+    const hass = withQueryParams(ld2410Hass());
+    hass.callService.mockRejectedValueOnce(notReported());
+    const card = await mount(hass);
+    await push(card, hass, payload({ snapshots: [SNAPSHOT], last_result: result() }));
+    button(card, "Undo (restore your previous values)")!.click();
+    await settle(card);
+    expect(text(card)).toContain("Restore failed: The radar has not reported 18 of its threshold values yet.");
+    expect(button(card, "Try again")).toBeUndefined();
+    fakeTimeouts();
+    button(card, "Read settings from the radar")!.click();
+    await settle(card);
+    expect(hass.callService.mock.calls[1].slice(0, 3)).toEqual(["button", "press", { entity_id: QP }]);
+    await vi.advanceTimersByTimeAsync(READ_SETTINGS_WAIT_MS);
+    await settle(card);
+    expect(hass.callService).toHaveBeenCalledTimes(3);
+    expect(hass.callService.mock.calls[2].slice(0, 3)).toEqual([
+      "apollo_mmwave",
+      "restore_gate_thresholds",
+      { device_id: "dev1" },
+    ]);
+  });
+
+  it("drops the retry when the card leaves the page during the wait", async () => {
+    const hass = withQueryParams(ld2410Hass());
+    hass.callService.mockRejectedValueOnce(notReported());
+    const card = await mount(hass);
+    await push(card, hass, payload());
+    button(card, "Calibrate with empty room")!.click();
+    await settle(card);
+    fakeTimeouts();
+    button(card, "Read settings from the radar")!.click();
+    await settle(card);
+    card.remove();
+    await vi.advanceTimersByTimeAsync(READ_SETTINGS_WAIT_MS);
+    await settle(card);
+    expect(hass.callService).toHaveBeenCalledTimes(2);
+  });
+
+  it("drops the retry when the card's device changes during the wait", async () => {
+    const hass = withQueryParams(ld2410Hass());
+    hass.callService.mockRejectedValueOnce(notReported());
+    const card = await mount(hass);
+    await push(card, hass, payload());
+    button(card, "Calibrate with empty room")!.click();
+    await settle(card);
+    fakeTimeouts();
+    button(card, "Read settings from the radar")!.click();
+    await settle(card);
+    card.setConfig({ type: `custom:${CALIBRATE_CARD_TAG}`, device_id: "dev2" });
+    await settle(card);
+    await vi.advanceTimersByTimeAsync(READ_SETTINGS_WAIT_MS);
+    await settle(card);
+    // Only the refused start and the button press: no retry for dev1 or dev2.
+    expect(hass.callService).toHaveBeenCalledTimes(2);
+    expect(hass.callService.mock.calls.filter(([, service]) => service === "calibrate_gates")).toHaveLength(1);
+  });
+
+  it("shows a rejected button press and lets the user press again", async () => {
+    const hass = withQueryParams(ld2410Hass());
+    hass.callService
+      .mockRejectedValueOnce(notReported())
+      .mockRejectedValueOnce({ code: "home_assistant_error", message: "The button is unavailable." });
+    const card = await mount(hass);
+    await push(card, hass, payload());
+    button(card, "Calibrate with empty room")!.click();
+    await settle(card);
+    button(card, "Read settings from the radar")!.click();
+    await settle(card);
+    expect(text(card)).toContain("Could not ask the radar for its settings: The button is unavailable.");
+    expect(text(card)).not.toContain("Reading settings");
+    expect(button(card, "Read settings from the radar")!.disabled).toBe(false);
+  });
+
+  it("says where the button is when the card cannot press it", async () => {
+    const hass = ld2410Hass();
+    hass.callService.mockRejectedValueOnce(notReported());
+    const card = await mount(hass);
+    await push(card, hass, payload());
+    button(card, "Calibrate with empty room")!.click();
+    await settle(card);
+    expect(text(card)).toContain(
+      "Open the radar's device page, press its Query Params button in the Diagnostic section, wait a few seconds, then try again."
+    );
+    expect(button(card, "Read settings from the radar")).toBeUndefined();
+    button(card, "Try again")!.click();
+    expect(hass.callService.mock.calls[1][1]).toBe("calibrate_gates");
+  });
+
+  it("offers it for an LD2412 job that failed on unreported thresholds", async () => {
+    const hass = ld2412Hass();
+    const qp = RM.query_params!;
+    hass.states[qp] = ent(qp, "unknown");
+    const card = await mount(hass, { device_id: "rpro" });
+    const entities: EntitiesInfo = {
+      ...ENTITIES,
+      profile: "ld2412",
+      gate_count: 14,
+      engineering_mode: RM.engineering_mode!,
+      max_move_gate: null,
+      max_still_gate: null,
+      min_gate: 1,
+      max_gate: 13,
+      query_params_button: qp,
+    };
+    const failed = result({
+      device_id: "rpro",
+      profile: "ld2412",
+      status: "failed",
+      outcome: "failed",
+      writes_done: 0,
+      writes_total: 0,
+      snapshot_id: null,
+      gates: [],
+      error: {
+        code: "thresholds_not_numeric",
+        message: "The radar has not reported 1 of its threshold values. Nothing was changed.",
+      },
+    });
+    await push(card, hass, payload({ entities, job: job({ job_id: failed.job_id }) }));
+    await push(card, hass, payload({ entities, job: null, last_result: failed }));
+    expect(text(card)).toContain(
+      "Calibration failed: The radar has not reported 1 of its threshold values. Nothing was changed."
+    );
+    expect(button(card, "Try again")).toBeUndefined();
+    fakeTimeouts();
+    button(card, "Read settings from the radar")!.click();
+    await settle(card);
+    expect(hass.callService.mock.calls[0].slice(0, 3)).toEqual(["button", "press", { entity_id: qp }]);
+    await vi.advanceTimersByTimeAsync(READ_SETTINGS_WAIT_MS);
+    await settle(card);
+    expect(hass.callService.mock.calls[1].slice(0, 3)).toEqual([
+      "apollo_mmwave",
+      "calibrate_gates",
+      { device_id: "rpro" },
+    ]);
+  });
+});
+
+describe("calibrate card footer after a restart", () => {
+  it("says a restart stopped the last preview and nothing was changed", async () => {
+    const hass = ld2410Hass();
+    const card = await mount(hass);
+    const last = result({
+      status: "failed",
+      outcome: "failed",
+      apply: false,
+      writes_done: 0,
+      writes_total: 0,
+      snapshot_id: null,
+      gates: [],
+      error: {
+        code: "cancelled_by_shutdown",
+        message: "Home Assistant stopped or the integration reloaded during the calibration.",
+      },
+    });
+    await push(card, hass, payload({ snapshots: [SNAPSHOT], last_result: last }));
+    expect(text(card)).toMatch(
+      /Last preview .* was stopped by a Home Assistant restart\. Nothing was changed\./
+    );
+    expect(text(card)).not.toMatch(/Last (preview|calibration) .* failed/);
   });
 });

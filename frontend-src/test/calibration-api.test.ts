@@ -16,6 +16,8 @@ import {
   describeError,
   describeServiceError,
   fetchCalibration,
+  pressButton,
+  refusalKey,
   restoreThresholds,
   startCalibration,
   subscribeCalibration,
@@ -50,8 +52,7 @@ function validationError(
 const DEVICE_OFFLINE_EN =
   "The radar is unavailable right now. Check that it is online, then try again.";
 const NO_SNAPSHOT_EN = "There are no saved thresholds to restore for this radar.";
-const NOT_NUMERIC_EN =
-  "Some threshold entities have no value yet ({entity_ids}). Press the radar's query params button or wait a moment, then try again.";
+const NOT_NUMERIC_EN = "The radar has not reported {count} of its threshold values yet.";
 
 /** HA's localize over a table of this integration's exception messages. */
 function localizeFrom(table: Record<string, string>) {
@@ -203,6 +204,34 @@ describe("turnEngineeringMode", () => {
   });
 });
 
+describe("pressButton", () => {
+  it("presses the button through button.press without HA's toast", async () => {
+    const hass = fakeHass();
+    await pressButton(hass, "button.radar_query_params");
+    expect(hass.callService).toHaveBeenCalledWith(
+      "button",
+      "press",
+      { entity_id: "button.radar_query_params" },
+      undefined,
+      false
+    );
+  });
+});
+
+describe("refusalKey", () => {
+  it("reads this integration's pre-flight key and nothing else", () => {
+    const error = validationError("thresholds_not_numeric", NOT_NUMERIC_EN, { count: "18" });
+    expect(refusalKey(error)).toBe("thresholds_not_numeric");
+    // A lost connection rejects with the whole result message.
+    expect(refusalKey({ type: "result", success: false, error })).toBe("thresholds_not_numeric");
+    expect(
+      refusalKey({ code: "not_found", translation_domain: "homeassistant", translation_key: "service_not_found" })
+    ).toBeUndefined();
+    expect(refusalKey({ code: "unknown_error", message: "boom" })).toBeUndefined();
+    expect(refusalKey(undefined)).toBeUndefined();
+  });
+});
+
 describe("describeError", () => {
   it("explains an unknown device from the subscription with advice that fits any card", () => {
     const text = describeError({ code: "not_found", message: "x" });
@@ -247,9 +276,9 @@ describe("describeError", () => {
     expect(describeError(validationError("no_snapshot", NO_SNAPSHOT_EN), { source: "service" })).toBe(
       NO_SNAPSHOT_EN
     );
-    const placeholders = { entity_ids: "number.a_g0_move_threshold, number.a_g1_move_threshold" };
+    const placeholders = { count: "2", entity_ids: "number.a_g0_move_threshold, number.a_g1_move_threshold" };
     expect(describeError(validationError("thresholds_not_numeric", NOT_NUMERIC_EN, placeholders))).toBe(
-      "Some threshold entities have no value yet (number.a_g0_move_threshold, number.a_g1_move_threshold). Press the radar's query params button or wait a moment, then try again."
+      "The radar has not reported 2 of its threshold values yet."
     );
   });
 

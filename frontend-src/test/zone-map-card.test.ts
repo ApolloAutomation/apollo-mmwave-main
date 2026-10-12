@@ -499,13 +499,29 @@ describe("zone map card grid and cone config", () => {
       .map((value) => `${value}${unit}`);
   }
 
-  it("labels the default mm grid every half meter when unit_display is on", async () => {
+  /** Each grid line's value, in `unitMm` units. */
+  function lineValues(lines: any[], unitMm: number): number[] {
+    return lines.map((line: any) => Number((line.value / unitMm).toFixed(6)));
+  }
+
+  /** Every step from `from` to `to`, the origin included. */
+  function steps(from: number, to: number, step: number): number[] {
+    return Array.from({ length: Math.round((to - from) / step) + 1 }, (_, i) => from + i * step);
+  }
+
+  it("draws a line every half meter on the default mm grid and labels every meter", async () => {
     const card = await mountCard(fakeHass(), { unit_display: true });
 
-    const { labels } = card._getGridRenderState();
+    const { labels, xLines, yLines } = card._getGridRenderState();
 
-    expect(labels.x.map((label: any) => label.text)).toEqual(tickLabels(-5, 5, 0.5, "m"));
-    expect(labels.y.map((label: any) => label.text)).toEqual(tickLabels(0, 10, 0.5, "m"));
+    // Every half-meter line stays. The test canvas cannot measure text, so
+    // the card estimates it: "-4.5m" is wider than the 40 px between two
+    // lines, and the X axis labels every other line. A label the canvas
+    // edge would cut (-5m, 5m and 10m) is left out.
+    expect(lineValues(xLines, 1000)).toEqual(steps(-5, 5, 0.5));
+    expect(lineValues(yLines, 1000)).toEqual(steps(0, 10, 0.5));
+    expect(labels.x.map((label: any) => label.text)).toEqual(tickLabels(-4, 4, 1, "m"));
+    expect(labels.y.map((label: any) => label.text)).toEqual(tickLabels(0, 9.5, 0.5, "m"));
   });
 
   it("labels an inch grid in feet", async () => {
@@ -515,10 +531,363 @@ describe("zone map card grid and cone config", () => {
       grid: { x_min: -96, x_max: 96, y_min: 0, y_max: 192 },
     });
 
-    const { labels } = card._getGridRenderState();
+    const { labels, xLines } = card._getGridRenderState();
 
-    expect(labels.x.map((label: any) => label.text)).toEqual(tickLabels(-8, 8, 1, "ft"));
-    expect(labels.y.map((label: any) => label.text)).toEqual(tickLabels(0, 16, 1, "ft"));
+    // One foot is 50 px here, room for every label but the two the edge cuts.
+    expect(lineValues(xLines, 304.8)).toEqual(steps(-8, 8, 1));
+    expect(labels.x.map((label: any) => label.text)).toEqual(tickLabels(-7, 7, 1, "ft"));
+    expect(labels.y.map((label: any) => label.text)).toEqual(tickLabels(0, 15, 1, "ft"));
+  });
+});
+
+/** Arial-like advance widths, in em, of the characters axis labels use. */
+const GLYPH_EM: Record<string, number> = {
+  "-": 0.333,
+  ".": 0.278,
+  c: 0.5,
+  f: 0.278,
+  m: 0.833,
+  t: 0.278,
+};
+
+/** How wide `text` draws at `fontPx` in a browser's sans-serif. Digits are 0.556 em. */
+function browserTextWidth(text: string, fontPx: number): number {
+  return [...text].reduce((sum, ch) => sum + (GLYPH_EM[ch] ?? 0.556) * fontPx, 0);
+}
+
+interface DrawnText {
+  text: string;
+  x: number;
+  y: number;
+  align: string;
+  baseline: string;
+  size: number;
+}
+
+/**
+ * A 2D context whose measureText answers with `measure`, and that notes each
+ * fillText with the font size, alignment and baseline it ran under.
+ */
+function textRecordingContext(measure: (text: string, fontPx: number) => number) {
+  const texts: DrawnText[] = [];
+  const state: Record<string | symbol, any> = {
+    font: "10px sans-serif",
+    textAlign: "start",
+    textBaseline: "alphabetic",
+  };
+  const ctx = new Proxy(state, {
+    get(target, prop) {
+      if (prop === "measureText") {
+        return (text: string) => ({ width: measure(text, parseFloat(target.font)) });
+      }
+      if (prop === "fillText") {
+        return (text: string, x: number, y: number) => {
+          texts.push({
+            text,
+            x,
+            y,
+            align: target.textAlign,
+            baseline: target.textBaseline,
+            size: parseFloat(target.font),
+          });
+        };
+      }
+      if (prop in target) return target[prop];
+      return () => undefined;
+    },
+    set(target, prop, value) {
+      target[prop] = value;
+      return true;
+    },
+  });
+  return { ctx, texts };
+}
+
+/** The canvas laid out `cssWidth` CSS px square, as a card that wide shows it. */
+function layOut(card: any, cssWidth: number) {
+  vi.spyOn(card.canvas, "getBoundingClientRect").mockReturnValue({
+    left: 0,
+    top: 0,
+    right: cssWidth,
+    bottom: cssWidth,
+    x: 0,
+    y: 0,
+    width: cssWidth,
+    height: cssWidth,
+    toJSON: () => ({}),
+  } as DOMRect);
+}
+
+/** The box a drawn label covers, measured the way the browser would. */
+function boxOf(label: DrawnText) {
+  const width = browserTextWidth(label.text, label.size);
+  let left = label.x;
+  if (label.align === "center") left -= width / 2;
+  else if (label.align === "right") left -= width;
+  let top = label.y;
+  if (label.baseline === "middle") top -= label.size / 2;
+  else if (label.baseline === "bottom") top -= label.size;
+  return { left, right: left + width, top, bottom: top + label.size };
+}
+
+/** The clear space between two drawn labels, 0 when they overlap. */
+function spaceBetween(a: DrawnText, b: DrawnText): number {
+  const boxA = boxOf(a);
+  const boxB = boxOf(b);
+  const dx = Math.max(0, boxA.left - boxB.right, boxB.left - boxA.right);
+  const dy = Math.max(0, boxA.top - boxB.bottom, boxB.top - boxA.bottom);
+  return Math.hypot(dx, dy);
+}
+
+/** Every two of `items`, once each. */
+function pairs<T>(items: T[]): Array<[T, T]> {
+  return items.flatMap((a, i) => items.slice(i + 1).map((b): [T, T] => [a, b]));
+}
+
+/**
+ * Axis and cone ring labels on a narrow card.
+ *
+ * On a real R PRO-1 card about 500 CSS px wide the top axis read as one run,
+ * "m-4.5m-4m-3.5m...". Lines were spaced 40 backing px apart, and "-4.5m" at
+ * the 18 px label font is wider than that. The center axis printed "2m2m": a
+ * cone ring label sat on top of the Y axis label with the same text. Labels
+ * are now measured and thinned, and a ring label that a grid label at the
+ * same distance repeats is left out. A ring label nothing repeats is kept, and
+ * a grid label it would crowd makes room. The grid lines, the rings and every
+ * saved value stay as they were.
+ */
+describe("zone map card axis labels", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** A card with unit labels and `config`, rotated `rotationDeg`, drawn
+   *  `cssWidth` CSS px wide on a context that measures text with `measure`. */
+  async function drawnLabels(
+    config: Record<string, any>,
+    rotationDeg: number,
+    cssWidth = 500,
+    measure = browserTextWidth
+  ) {
+    const hass = fakeHass({ ...ZONE_PAYLOAD, zones: {}, rotation_deg: rotationDeg });
+    const card = await mountCard(hass, { unit_display: true, ...config });
+    layOut(card, cssWidth);
+    const { ctx, texts } = textRecordingContext(measure);
+    card.ctx = ctx;
+    card._invalidateGridCache();
+    card.drawGrid();
+    const labels = texts.filter((label) => label.size === card.unitLabelSize);
+    // The grid labels draw first, then the cone's. Ring labels are the only
+    // ones centered on both axes.
+    const rings = labels.filter((label) => label.align === "center" && label.baseline === "middle");
+    const grid = labels.filter((label) => !rings.includes(label));
+    return { card, hass, labels, rings, grid };
+  }
+
+  /** A default R PRO-1 card, drawn the way drawnLabels draws one. */
+  async function drawnCard(rotationDeg: number, cssWidth = 500) {
+    return drawnLabels({}, rotationDeg, cssWidth);
+  }
+
+  /** The grid labels within two label heights of `ring` that name its
+   *  distance from the radar, whatever their sign or unit. */
+  function repeatsOf(ring: DrawnText, grid: DrawnText[], ringMm: number, unitMm: number) {
+    return grid.filter(
+      (label) =>
+        Math.abs(Math.abs(parseFloat(label.text)) * unitMm - ringMm) < 1 &&
+        spaceBetween(ring, label) < 2 * ring.size
+    );
+  }
+
+  /** Whether `label` draws wholly inside the 800 px canvas. */
+  function onCanvas(label: DrawnText): boolean {
+    const box = boxOf(label);
+    return box.left >= 0 && box.right <= 800 && box.top >= 0 && box.bottom <= 800;
+  }
+
+  /** A 40 m square grid, 20 backing px to the meter, with the 6 m cone. Its
+   *  Y axis labels every 2 m, and the rings are 1 m apart. */
+  const WIDE_GRID = {
+    grid: { x_min: -20000, x_max: 20000, y_min: 0, y_max: 40000 },
+    cone: { y_max: 6000 },
+  };
+
+  it.each([0, 12, 45])("keeps every label clear of the others at %i degrees", async (rotation) => {
+    const { labels } = await drawnCard(rotation);
+
+    expect(labels.length).toBeGreaterThan(20);
+    const crowded = pairs(labels)
+      .filter(([a, b]) => spaceBetween(a, b) < 4)
+      .map(([a, b]) => `${a.text} at ${a.x},${a.y} / ${b.text} at ${b.x},${b.y}`);
+    expect(crowded).toEqual([]);
+    // No label hangs off the canvas, where only a fragment of it would show.
+    const cut = labels.filter((label) => {
+      const box = boxOf(label);
+      return box.left < 0 || box.right > 800 || box.top < 0 || box.bottom > 800;
+    });
+    expect(cut.map((label) => label.text)).toEqual([]);
+  });
+
+  it("labels the top axis every meter and keeps every half-meter line", async () => {
+    const { card, labels } = await drawnCard(0);
+
+    const top = labels.filter((label) => label.baseline === "top");
+    expect(top.map((label) => label.text)).toEqual(
+      ["-4", "-3", "-2", "-1", "1", "2", "3", "4"].map((v) => `${v}m`)
+    );
+    expect(card._getGridRenderState().xLines).toHaveLength(21);
+  });
+
+  it("leaves out a ring label that sits on the Y axis label with the same text", async () => {
+    const { card, labels, rings } = await drawnCard(0);
+
+    expect(rings).toEqual([]);
+    // The Y axis still names each ring's distance, once.
+    const yAxis = labels.filter((label) => label.align === "right");
+    for (const text of ["1m", "2m", "3m", "4m", "5m", "6m"]) {
+      expect(yAxis.filter((label) => label.text === text)).toHaveLength(1);
+    }
+    // The rings themselves are all still drawn, out to the 6 m cone range.
+    expect(card._coneRingsCache.rings).toHaveLength(6);
+    expect(card.coneYMax).toBe(6000);
+  });
+
+  it("leaves out a ring label that sits close beside the same text", async () => {
+    // Turned 12 degrees, the 1 m and 2 m ring labels sit a few px right of the
+    // Y axis labels "1m" and "2m". The ones farther out read as their own.
+    const { labels, rings } = await drawnCard(12);
+
+    expect(rings.map((label) => label.text)).toEqual(["3m", "4m", "5m", "6m"]);
+    const repeats = pairs(labels).filter(
+      ([a, b]) => a.text === b.text && spaceBetween(a, b) < 2 * a.size
+    );
+    expect(repeats).toEqual([]);
+  });
+
+  it("keeps a ring label that no grid label repeats close by", async () => {
+    const { rings } = await drawnCard(45);
+
+    // Only the 1 m label goes: it sits right below the X axis label "1m".
+    expect(rings.map((label) => label.text)).toEqual(["2m", "3m", "4m", "5m", "6m"]);
+  });
+
+  it("leaves out a ring label that a centimeter Y axis label repeats", async () => {
+    // "200cm" on the Y axis names the same distance as the "2m" ring label.
+    const { grid, rings } = await drawnLabels(
+      { grid_units: "cm", grid: { x_min: -500, x_max: 500, y_min: 0, y_max: 1000 } },
+      0
+    );
+
+    expect(rings).toEqual([]);
+    const yAxis = grid.filter((label) => label.align === "right").map((label) => label.text);
+    for (const text of ["100cm", "200cm", "300cm", "400cm", "500cm", "600cm"]) {
+      expect(yAxis.filter((label) => label === text)).toHaveLength(1);
+    }
+  });
+
+  it.each([-90, -80])(
+    "leaves out a ring label that a negative X axis label repeats at %i degrees",
+    async (rotation) => {
+      // Turned toward the radar's left, the ring labels sit along the X axis
+      // labels "-1m", "-2m" and so on, which name the same distances.
+      const { grid, rings } = await drawnLabels({}, rotation);
+
+      for (const ring of rings) {
+        expect(repeatsOf(ring, grid, parseFloat(ring.text) * 1000, 1000)).toEqual([]);
+      }
+      const top = grid.filter((label) => label.baseline === "top").map((label) => label.text);
+      expect(top).toEqual(["-4", "-3", "-2", "-1", "1", "2", "3", "4"].map((v) => `${v}m`));
+      // At -80 degrees the 3 m and 4 m labels sit 13 px below "-3m" and "-4m".
+      expect(rings.map((label) => label.text)).not.toContain("3m");
+    }
+  );
+
+  it("keeps a crowded ring label that no grid label repeats", async () => {
+    // The Y axis labels 2m, 4m and 6m. The 1 m, 3 m and 5 m ring labels sit
+    // 2 px from them, and nothing else names those distances.
+    const { grid, rings } = await drawnLabels({ ...WIDE_GRID, unit_label_size: 18 }, 0);
+
+    expect(rings.map((label) => label.text)).toEqual(["1m", "3m", "5m"]);
+    const yAxis = grid.filter((label) => label.align === "right").map((label) => label.text);
+    expect(yAxis.slice(0, 3)).toEqual(["2m", "4m", "6m"]);
+    const overlapping = pairs([...grid, ...rings]).filter(([a, b]) => spaceBetween(a, b) === 0);
+    expect(overlapping).toEqual([]);
+  });
+
+  it("leaves out a ring label that would overlap the grid label naming another ring", async () => {
+    // At 24 px the ring labels are taller than the 20 px between rings, so
+    // "1m" would cover "2m", which names the 2 m ring.
+    const { grid, rings } = await drawnLabels({ ...WIDE_GRID, unit_label_size: 24 }, 0);
+
+    expect(rings).toEqual([]);
+    const yAxis = grid.filter((label) => label.align === "right").map((label) => label.text);
+    expect(yAxis.slice(0, 3)).toEqual(["2m", "4m", "6m"]);
+  });
+
+  it("drops a grid label that a ring label nothing repeats would crowd", async () => {
+    // Turned to -84 degrees on a 3 m grid, the "1m" ring label sits beside
+    // the X axis label "-0.8m". That label goes; its grid line and "-1.2m"
+    // and "-0.4m" on either side still give its value.
+    const { grid, rings } = await drawnLabels(
+      { grid: { x_min: -1500, x_max: 1500, y_min: 0, y_max: 3000 }, unit_label_size: 24 },
+      -84
+    );
+
+    expect(rings.map((label) => label.text)).toContain("1m");
+    const top = grid.filter((label) => label.baseline === "top").map((label) => label.text);
+    expect(top).toEqual(["-1.2m", "-0.4m", "0.4m", "0.8m", "1.2m"]);
+    const crowded = pairs([...grid, ...rings].filter(onCanvas))
+      .filter(([a, b]) => spaceBetween(a, b) < 4)
+      .map(([a, b]) => `${a.text} / ${b.text}`);
+    expect(crowded).toEqual([]);
+  });
+
+  it("keeps a grid label beside a ring label the canvas edge cuts", async () => {
+    // The 20 ft ring label hangs a few px off the bottom edge, and the grid's
+    // own 20ft label is cut, so the ring label is the only one that names
+    // 20 ft. It is drawn, but it does not push out "19ft", the full label
+    // beside it. This canvas cannot measure text, so the card estimates.
+    const { grid, rings } = await drawnLabels(
+      {
+        grid_units: "ft",
+        grid: { x_min: -10, x_max: 10, y_min: 0, y_max: 20 },
+        cone: { y_max: 20 },
+        unit_label_size: 24,
+      },
+      -6,
+      250,
+      () => 0
+    );
+
+    const edge = rings.find((label) => label.text === "20ft");
+    expect(edge).toBeDefined();
+    expect(onCanvas(edge!)).toBe(false);
+    expect(grid.map((label) => label.text)).toContain("19ft");
+  });
+
+  it("keeps more room between labels on a narrower card", async () => {
+    const card = await mountCard(fakeHass(), { unit_display: true });
+    // Every label measures 30 px, 10 px less than the 40 px between lines.
+    const { ctx } = textRecordingContext(() => 30);
+    card.ctx = ctx;
+    card._invalidateGridCache();
+    const xTexts = () => card._getGridRenderState().labels.x.map((label: any) => label.text);
+    const halfMeters = ["-4.5", "-4", "-3.5", "-3", "-2.5", "-2", "-1.5", "-1", "-0.5"];
+    const meters = ["-4", "-3", "-2", "-1"];
+
+    // At 800 CSS px a backing px is a CSS px, and 10 px is room enough.
+    layOut(card, 800);
+    expect(xTexts()).toEqual(
+      [...halfMeters, ...halfMeters.map((v) => v.slice(1)).reverse()].map((v) => `${v}m`)
+    );
+
+    // At 250 CSS px the 4 CSS px gap takes 12.8 backing px, so the labels thin
+    // out. The grid lines do not.
+    layOut(card, 250);
+    expect(xTexts()).toEqual(
+      [...meters, ...meters.map((v) => v.slice(1)).reverse()].map((v) => `${v}m`)
+    );
+    expect(card._getGridRenderState().xLines).toHaveLength(21);
   });
 });
 

@@ -20,7 +20,10 @@ TypeScript side cannot, so do not loosen this side to match it.
 
 The MSR-2 firmware names the LD2410's ``has_target`` sensor "Radar Target" and
 the R-PRO-1 firmware names the LD2412's "LD2412 Presence", which is where the
-two ``RADAR_TARGET`` suffixes come from.
+two ``RADAR_TARGET`` suffixes come from. The query params button is the same
+story: "Query Params" on the MSR-1 and MSR-2 (``<base>_query_params``) and
+"LD2412 Query Params" on the R-PRO-1. ESPHome's LD2450 has no such button, so on
+the R-PRO-1 the shorter suffix only ever meets the LD2412's.
 """
 
 from __future__ import annotations
@@ -74,7 +77,7 @@ MOVING_TARGET = ("_radar_moving_target", "_ld2412_moving_target")  # binary_sens
 RADAR_TARGET = ("_radar_target", "_ld2412_presence")  # binary_sensor (has_target)
 BG_BUTTON = "_ld2412_start_dynamic_background_correction"  # button
 BG_STATUS = "_ld2412_dynamic_background_correction_status"  # binary_sensor
-QUERY_PARAMS = "_ld2412_query_params"  # button
+QUERY_PARAMS = ("_ld2412_query_params", "_query_params")  # button
 
 _DEDUP = r"(?:_\d+)?$"
 _LD2412_MARKER = "_ld2412_"
@@ -96,7 +99,7 @@ _SCALAR_PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = tuple(
         *(("radar_target", "binary_sensor", suffix) for suffix in RADAR_TARGET),
         ("background_button", "button", BG_BUTTON),
         ("background_status", "binary_sensor", BG_STATUS),
-        ("query_params_button", "button", QUERY_PARAMS),
+        *(("query_params_button", "button", suffix) for suffix in QUERY_PARAMS),
     )
 )
 
