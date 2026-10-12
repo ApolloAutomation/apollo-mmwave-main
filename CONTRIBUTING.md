@@ -105,9 +105,10 @@ Use `npm ci` rather than `npm install`, which can rewrite `package-lock.json`.
 CI rebuilds the bundles and fails if anything under
 `custom_components/apollo_mmwave/www/` differs from what is committed
 (including a new or deleted file), so run `npm run build` and commit `www/` with
-every frontend change. Build with Node 22 to match the committed output. The
-zone-map bundle keeps the comments from `src/zone-map/card.ts`, so even a
-comment-only change there needs a rebuild. `npm run watch` needs a POSIX shell
+every frontend change. Build with Node 22 to match the committed output. Terser
+strips most comments from the bundles, so a comment-only change usually leaves
+them as they are, but comments inside template strings (CSS in the card
+styles) do ship; run the build and let the check decide. `npm run watch` needs a POSIX shell
 (macOS, Linux, the devcontainer or WSL). On Windows npm runs scripts with
 `cmd.exe`, even from Git Bash, so run `npm run watch:tuning` and
 `npm run watch:zone-map` in two terminals.

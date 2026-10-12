@@ -453,7 +453,7 @@ A finder marked these as touching a tuning parameter, or the work list names a t
 11. **Decide the flagged behavior items with user impact.** X07 (configured pairs do not follow renames), X09 (presence reads off while the radar is offline), X08 (zones of a removed radar cannot be deleted), X03 (auto-create off deletes a hand-built dashboard), X28, X48, X01, X04, and X06 with X46 (lock semantics and touch scrolling).
 12. **Fix two drawing bugs the fix agents reported but left out of scope.** F24: when a payload removes the selected zone mid-drag and other zones remain, the card selects the first remaining zone, so the drag commits to a different zone than the one the user started on. F21 and F23: in ellipse mode a click or tap still saves a 1 mm radius ellipse (the `Math.max(1, ...)` floor).
 13. **Add brand images for HACS and HA (X54).** Done in 2.2.1: the icons ship in `brand/`, and `ignore: brands` is gone.
-14. **Upgrade the remaining frontend tools.** TypeScript 5.9 to 7 (type check only, likely new errors) and terser 5.48 to 5.51 (changes the minified output, so rebuild and review the bundle diff). Consider vite 8 at the same time.
+14. **Upgrade the remaining frontend tools.** Done in 2.2.3: TypeScript 7.0 type checks the project with no new errors, and terser 5.51 and Vite 8.3 build the bundles. Unlike Vite 6, Vite 8 runs terser on ES library output, so the bundles are now minified.
 15. **Reword or retarget the `TODO(REVIEW_REPORT.md ...)` comments that ship inside the bundles** (X24, X32, X42 and X61). The X61 one tells users a wiki page returns 404.
 
 ### Low
