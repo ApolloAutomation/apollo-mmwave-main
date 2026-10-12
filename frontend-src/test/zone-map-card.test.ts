@@ -630,10 +630,93 @@ describe("zone map card connection ownership", () => {
 
     card.remove();
     expect(card._onKeyDown).toBeNull();
+    expect(card._outsideClickHandler).toBeNull();
 
     document.body.appendChild(card);
     expect(card._onKeyDown).toBeTruthy();
-    expect(card._outsideClickHandler).toBeTruthy();
+    // Behavior, not just presence: the re-attached handler still cancels.
+    startPolygon(card);
+    pressOn(card, "mousedown");
+    expect(card.isDrawing).toBe(false);
     card.remove();
+  });
+});
+
+/** Put the card mid-polygon, two vertices in, the way a touch user leaves it. */
+function startPolygon(card: any) {
+  card.drawMode = "polygon";
+  card.isDrawing = true;
+  card._polyPoints = [
+    { x: 100, y: 200 },
+    { x: 300, y: 400 },
+  ];
+}
+
+/** Dispatch a composed press, so it reaches the card's document listener. */
+function pressOn(target: EventTarget, type: "mousedown" | "touchstart") {
+  const event =
+    type === "mousedown"
+      ? new MouseEvent(type, { bubbles: true, composed: true })
+      : new Event(type, { bubbles: true, composed: true });
+  target.dispatchEvent(event);
+}
+
+/**
+ * A press elsewhere in the card cancels the shape being drawn.
+ *
+ * The listener sits on document, and a browser retargets `event.target` there
+ * to the outermost shadow host, so the handler has to read the composed path.
+ * happy-dom does not retarget: dispatched on an inner chip, document would see
+ * the chip and the old `shadowRoot.contains(event.target)` check would pass
+ * for the wrong reason. Dispatching on the card element itself gives document
+ * the target a browser would, which is what makes these tests discriminate.
+ */
+describe("zone map card outside clicks", () => {
+  afterEach(() => {
+    document.body.replaceChildren();
+  });
+
+  it("cancels an in-progress polygon on a press that document sees on the card host", async () => {
+    const card = await mountCard(fakeHass());
+    document.body.appendChild(card);
+    startPolygon(card);
+
+    pressOn(card, "mousedown");
+
+    expect(card.isDrawing).toBe(false);
+    expect(card._polyPoints).toHaveLength(0);
+  });
+
+  it("leaves the drawing alone for the Finish button inside the canvas container", async () => {
+    const card = await mountCard(fakeHass());
+    document.body.appendChild(card);
+    startPolygon(card);
+
+    pressOn(card.shadowRoot.getElementById("btnPolyFinish"), "mousedown");
+
+    expect(card.isDrawing).toBe(true);
+    expect(card._polyPoints).toHaveLength(2);
+  });
+
+  it("leaves the drawing alone for a press outside the card", async () => {
+    const card = await mountCard(fakeHass());
+    document.body.appendChild(card);
+    startPolygon(card);
+
+    pressOn(document.body, "mousedown");
+
+    expect(card.isDrawing).toBe(true);
+    expect(card._polyPoints).toHaveLength(2);
+  });
+
+  it("cancels on a touch on Add Zone, where no mouseleave fires first", async () => {
+    const card = await mountCard(fakeHass());
+    document.body.appendChild(card);
+    startPolygon(card);
+
+    pressOn(card.shadowRoot.getElementById("btnAddZone"), "touchstart");
+
+    expect(card.isDrawing).toBe(false);
+    expect(card._polyPoints).toHaveLength(0);
   });
 });

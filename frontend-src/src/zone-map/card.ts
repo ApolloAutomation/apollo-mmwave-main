@@ -944,8 +944,15 @@ export class ZoneMapCard extends HTMLElement {
     const canvasContainer = this.canvas.parentElement;
     this._outsideClickHandler = (event) => {
       if (!this.canvas) return;
-      if (canvasContainer && canvasContainer.contains(event.target)) return;
-      if (!this.shadowRoot.contains(event.target)) return;
+      // A listener on document sees `event.target` retargeted to the
+      // outermost shadow host (this card, or Home Assistant's wrapper when
+      // nested), which neither the shadow root nor the canvas container
+      // contains. The composed path still lists the real nodes, so ask it.
+      const path = event.composedPath();
+      // The overlay buttons (Finish, Undo, mode, lock) live in the container
+      // and act on the drawing, so a press on them must not cancel it.
+      if (canvasContainer && path.includes(canvasContainer)) return;
+      if (!path.includes(this)) return;
       if (this.isDrawing) this.cancelDrawing();
     };
     document.addEventListener('mousedown', this._outsideClickHandler, true);
