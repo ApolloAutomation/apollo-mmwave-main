@@ -438,7 +438,10 @@ export class ZoneMapCard extends HTMLElement {
       const themeDark = !!hass?.themes?.darkMode;
       if (themeDark !== this.darkMode) {
         this.darkMode = themeDark;
-        if (this.canvas) {
+        // The error screen has no canvas but carries the same "dark" class on
+        // its container, so it repaints too. _loadError is only ever set by
+        // _setLoadError, which renders, so this never renders before setConfig.
+        if (this.canvas || this._loadError) {
           // The palette lives in the geometry caches' draw calls, not their
           // keys, so this is belt and suspenders with the rest of the card's
           // cache-then-render pattern (see setConfig). A full render() is what

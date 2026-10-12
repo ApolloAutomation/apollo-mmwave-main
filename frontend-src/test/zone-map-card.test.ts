@@ -256,6 +256,34 @@ describe("zone map card theme", () => {
     expect(card.shadowRoot!.querySelector("canvas")).toBe(canvasAfter);
   });
 
+  it("repaints the load-error screen when the theme flips", async () => {
+    // The error screen replaces the map, so there is no canvas, but its
+    // container is themed the same way and has to follow a theme flip too.
+    const error = { code: "not_found", message: "No Home Assistant device with id dev123" };
+    const lightHass = fakeHass(ZONE_PAYLOAD, error);
+    lightHass.themes = { darkMode: false };
+    const card = await mountCard(lightHass);
+    expect(card.canvas).toBeNull();
+    expect(
+      card.shadowRoot!.querySelector(".container")?.classList.contains("dark")
+    ).toBe(false);
+
+    const darkHass = fakeHass(ZONE_PAYLOAD, error);
+    darkHass.themes = { darkMode: true };
+    card.hass = darkHass;
+
+    expect(card.darkMode).toBe(true);
+    const container = card.shadowRoot!.querySelector(".container");
+    expect(container?.classList.contains("dark")).toBe(true);
+    // Still the error screen, with its message, not a map brought back.
+    expect(card.shadowRoot!.querySelector("canvas")).toBeNull();
+    expect(card.shadowRoot!.getElementById("loadError")?.textContent).toContain("dev123");
+
+    // A push with no theme change must not rebuild the error screen either.
+    card.hass = darkHass;
+    expect(card.shadowRoot!.querySelector(".container")).toBe(container);
+  });
+
   it("omits dark_mode from the stub config so a manually added card follows the theme", () => {
     // HA's "Add Card" picker seeds a new card from this stub. A hardcoded key
     // here would ship every manually added card as a light-mode override, on
