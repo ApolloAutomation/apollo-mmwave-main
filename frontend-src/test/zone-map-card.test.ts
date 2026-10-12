@@ -1720,3 +1720,261 @@ describe("zone map card gestures without a shape", () => {
     expect(toasts).toEqual([]);
   });
 });
+
+/**
+ * A touch gesture follows the finger that started it.
+ *
+ * A second finger landing mid-drag (a resting thumb, a palm) used to restart
+ * the drag at the first finger's current position, and the lift of either
+ * finger then committed a collapsed or truncated shape over the saved zone
+ * and toasted "saved". A touchcancel, which the browser sends instead of a
+ * touchend when it takes a touch away, was not handled at all and left the
+ * drag half open. These tests dispatch real TouchEvents with identifiers on
+ * the canvas, laid out at 800x800 CSS px over the 800x800 bitmap, so one
+ * canvas px is 12.5 mm on the default grid.
+ */
+describe("zone map card multi-touch and touchcancel", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** Unlocked on ZONE_PAYLOAD with zone 1 (Doorway) selected in `mode`. */
+  async function drawingCard(mode: string) {
+    const hass = fakeHass();
+    const card = await mountCard(hass, { start_locked: false });
+    card._setSelectedZone(1);
+    card._setDrawMode(mode);
+    vi.spyOn(card.canvas, "getBoundingClientRect").mockReturnValue({
+      left: 0,
+      top: 0,
+      right: 800,
+      bottom: 800,
+      x: 0,
+      y: 0,
+      width: 800,
+      height: 800,
+      toJSON: () => ({}),
+    } as DOMRect);
+    hass.callService.mockClear();
+    const toasts = notifications(card);
+    return { card, hass, toasts };
+  }
+
+  /** Finger `id` on the canvas at (x, y). */
+  function finger(card: any, id: number, x: number, y: number): Touch {
+    return new Touch({ identifier: id, target: card.canvas, clientX: x, clientY: y });
+  }
+
+  /** Dispatch a TouchEvent the way a browser fills it: `down` is every finger
+   *  still on the screen, `changed` the fingers this event is about. */
+  function fire(card: any, type: string, down: Touch[], changed: Touch[]) {
+    card.canvas.dispatchEvent(
+      new TouchEvent(type, {
+        cancelable: true,
+        touches: down,
+        targetTouches: down,
+        changedTouches: changed,
+      })
+    );
+  }
+
+  /** Let a resolved callService run on to its success toast. */
+  async function settle() {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  function zoneSaves(hass: any): any[] {
+    return hass.callService.mock.calls
+      .filter((call: any[]) => call[1] === "update_zone")
+      .map((call: any[]) => call[2]);
+  }
+
+  it.each([
+    ["rect", { x_min: -3750, x_max: 1250, y_min: 1250, y_max: 5000 }],
+    ["ellipse", { cx: -1250, cy: 3125, rx: 2500, ry: 1875 }],
+  ])("keeps a %s drag on its first finger when a second one lands", async (mode, data) => {
+    const { card, hass, toasts } = await drawingCard(mode as string);
+
+    fire(card, "touchstart", [finger(card, 1, 100, 100)], [finger(card, 1, 100, 100)]);
+    fire(card, "touchmove", [finger(card, 1, 300, 300)], [finger(card, 1, 300, 300)]);
+    const both = [finger(card, 1, 300, 300), finger(card, 2, 500, 500)];
+    fire(card, "touchstart", both, [finger(card, 2, 500, 500)]);
+
+    expect(card.startPoint).toEqual({ x: 100, y: 100 });
+    expect(card._cursorPoint).toEqual({ x: 300, y: 300 });
+
+    // The second finger moving does not move the shape, and its lift does
+    // not end the drag.
+    fire(
+      card,
+      "touchmove",
+      [finger(card, 1, 300, 300), finger(card, 2, 600, 600)],
+      [finger(card, 2, 600, 600)]
+    );
+    expect(card._cursorPoint).toEqual({ x: 300, y: 300 });
+    fire(card, "touchend", [finger(card, 1, 300, 300)], [finger(card, 2, 600, 600)]);
+    await settle();
+
+    expect(card.isDrawing).toBe(true);
+    expect(card.startPoint).toEqual({ x: 100, y: 100 });
+    expect(hass.callService).not.toHaveBeenCalled();
+
+    fire(card, "touchmove", [finger(card, 1, 500, 400)], [finger(card, 1, 500, 400)]);
+    expect(card._cursorPoint).toEqual({ x: 500, y: 400 });
+    fire(card, "touchend", [], [finger(card, 1, 500, 400)]);
+    await settle();
+
+    expect(zoneSaves(hass)).toEqual([
+      expect.objectContaining({ device_id: "dev123", zone_id: 1, shape: mode, data }),
+    ]);
+    expect(toasts.filter((message) => /saved/i.test(message))).toEqual(["Doorway saved"]);
+    expect(card.isDrawing).toBe(false);
+    expect(card.startPoint).toBeNull();
+    expect(card._activeInput).toBeNull();
+    expect(card._activeTouchId).toBeNull();
+  });
+
+  it("commits the first finger's drag when it lifts before the second one", async () => {
+    const { card, hass } = await drawingCard("rect");
+
+    fire(card, "touchstart", [finger(card, 1, 100, 100)], [finger(card, 1, 100, 100)]);
+    fire(card, "touchmove", [finger(card, 1, 300, 300)], [finger(card, 1, 300, 300)]);
+    fire(
+      card,
+      "touchstart",
+      [finger(card, 1, 300, 300), finger(card, 2, 500, 500)],
+      [finger(card, 2, 500, 500)]
+    );
+    fire(card, "touchend", [finger(card, 2, 500, 500)], [finger(card, 1, 300, 300)]);
+
+    expect(zoneSaves(hass).map((call) => call.data)).toEqual([
+      { x_min: -3750, x_max: -1250, y_min: 1250, y_max: 3750 },
+    ]);
+
+    // The finger left behind draws nothing of its own.
+    fire(card, "touchmove", [finger(card, 2, 700, 700)], [finger(card, 2, 700, 700)]);
+    fire(card, "touchend", [], [finger(card, 2, 700, 700)]);
+
+    expect(zoneSaves(hass)).toHaveLength(1);
+    expect(card.isDrawing).toBe(false);
+  });
+
+  it.each(["rect", "ellipse"])(
+    "drops a %s drag on touchcancel and leaves the mouse free",
+    async (mode) => {
+      const { card, hass, toasts } = await drawingCard(mode);
+
+      fire(card, "touchstart", [finger(card, 1, 100, 100)], [finger(card, 1, 100, 100)]);
+      fire(card, "touchmove", [finger(card, 1, 300, 300)], [finger(card, 1, 300, 300)]);
+      fire(card, "touchcancel", [], [finger(card, 1, 300, 300)]);
+      await settle();
+
+      expect(card.isDrawing).toBe(false);
+      expect(card.startPoint).toBeNull();
+      expect(card._cursorPoint).toBeNull();
+      expect(card._activeInput).toBeNull();
+      expect(card._activeTouchId).toBeNull();
+      expect(hass.callService).not.toHaveBeenCalled();
+      expect(toasts).toEqual([]);
+
+      card.canvas.dispatchEvent(new MouseEvent("mousedown", { clientX: 100, clientY: 100 }));
+      card.canvas.dispatchEvent(new MouseEvent("mousemove", { clientX: 300, clientY: 300 }));
+      card.canvas.dispatchEvent(new MouseEvent("mouseup", { clientX: 300, clientY: 300 }));
+
+      const saves = zoneSaves(hass);
+      expect(saves).toHaveLength(1);
+      expect(saves[0].shape).toBe(mode);
+    }
+  );
+
+  it("keeps the drag when only the second finger is cancelled", async () => {
+    const { card, hass } = await drawingCard("rect");
+
+    fire(card, "touchstart", [finger(card, 1, 100, 100)], [finger(card, 1, 100, 100)]);
+    fire(card, "touchmove", [finger(card, 1, 300, 300)], [finger(card, 1, 300, 300)]);
+    fire(
+      card,
+      "touchstart",
+      [finger(card, 1, 300, 300), finger(card, 2, 500, 500)],
+      [finger(card, 2, 500, 500)]
+    );
+    fire(card, "touchcancel", [finger(card, 1, 300, 300)], [finger(card, 2, 500, 500)]);
+
+    expect(card.isDrawing).toBe(true);
+    expect(card.startPoint).toEqual({ x: 100, y: 100 });
+
+    fire(card, "touchend", [], [finger(card, 1, 300, 300)]);
+
+    expect(zoneSaves(hass).map((call) => call.data)).toEqual([
+      { x_min: -3750, x_max: -1250, y_min: 1250, y_max: 3750 },
+    ]);
+  });
+
+  /** One single-finger tap with finger `id`, never close enough to finish. */
+  function tap(card: any, id: number, x: number, y: number) {
+    card._lastPolyTap = 0;
+    fire(card, "touchstart", [finger(card, id, x, y)], [finger(card, id, x, y)]);
+    fire(card, "touchend", [], [finger(card, id, x, y)]);
+  }
+
+  it("adds a vertex for a single-finger polygon tap and none for a second finger", async () => {
+    const { card, hass } = await drawingCard("polygon");
+
+    tap(card, 1, 100, 100);
+    expect(card._polyPoints).toEqual([{ x: -3750, y: 1250 }]);
+
+    // A second finger tapped while the first is held adds nothing; the held
+    // finger's own lift is the next vertex.
+    card._lastPolyTap = 0;
+    fire(card, "touchstart", [finger(card, 2, 300, 100)], [finger(card, 2, 300, 100)]);
+    fire(
+      card,
+      "touchstart",
+      [finger(card, 2, 300, 100), finger(card, 3, 500, 500)],
+      [finger(card, 3, 500, 500)]
+    );
+    fire(card, "touchend", [finger(card, 2, 300, 100)], [finger(card, 3, 500, 500)]);
+    expect(card._polyPoints).toHaveLength(1);
+    fire(card, "touchend", [], [finger(card, 2, 300, 100)]);
+
+    expect(card._polyPoints).toEqual([
+      { x: -3750, y: 1250 },
+      { x: -1250, y: 1250 },
+    ]);
+    expect(card.isDrawing).toBe(true);
+    expect(hass.callService).not.toHaveBeenCalled();
+  });
+
+  it("keeps the placed polygon vertices on touchcancel and drops only the cursor", async () => {
+    const { card, hass } = await drawingCard("polygon");
+    tap(card, 1, 100, 100);
+    tap(card, 2, 300, 100);
+    tap(card, 3, 300, 300);
+
+    card._lastPolyTap = 0;
+    fire(card, "touchstart", [finger(card, 4, 150, 250)], [finger(card, 4, 150, 250)]);
+    fire(card, "touchmove", [finger(card, 4, 120, 280)], [finger(card, 4, 120, 280)]);
+    expect(card._cursorPoint).toEqual({ x: 120, y: 280 });
+    fire(card, "touchcancel", [], [finger(card, 4, 120, 280)]);
+
+    expect(card._polyPoints).toHaveLength(3);
+    expect(card.isDrawing).toBe(true);
+    expect(card._cursorPoint).toBeNull();
+    expect(card._activeInput).toBeNull();
+    expect(card._activeTouchId).toBeNull();
+    expect(hass.callService).not.toHaveBeenCalled();
+
+    tap(card, 5, 100, 300);
+    card.finishPolygon();
+
+    const saves = zoneSaves(hass).filter((call) => call.shape === "polygon");
+    expect(saves.map((call) => call.data.points)).toEqual([
+      [
+        { x: -3750, y: 1250 },
+        { x: -1250, y: 1250 },
+        { x: -1250, y: 3750 },
+        { x: -3750, y: 3750 },
+      ],
+    ]);
+  });
+});

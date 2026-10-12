@@ -126,6 +126,16 @@ function writeStoredLock(deviceId, locked) {
   }
 }
 
+/** The Touch with `identifier` in a TouchList, or null. A TouchList is
+ *  array-like, not an array, so walk it by index. */
+function findTouch(list, identifier) {
+  if (!list) return null;
+  for (let i = 0; i < list.length; i += 1) {
+    if (list[i] && list[i].identifier === identifier) return list[i];
+  }
+  return null;
+}
+
 const LENGTH_UNITS = Object.freeze({
   mm: 1,
   cm: 10,
@@ -181,6 +191,9 @@ export class ZoneMapCard extends HTMLElement {
     this.startPoint = null;
     this._cursorPoint = null;
     this._activeInput = null;
+    // The identifier of the finger a touch gesture follows, null when no
+    // finger is tracked (mouse input, or between gestures).
+    this._activeTouchId = null;
     this.trackedEntities = [];
     this.showZones = false;
     this.showConfig = false;
@@ -922,6 +935,11 @@ export class ZoneMapCard extends HTMLElement {
       },
       { passive: false },
     );
+    // The browser ends a touch it takes away (a system gesture, an incoming
+    // call, an app switch, palm rejection) with touchcancel, never touchend.
+    this.canvas.addEventListener('touchcancel', (event) => this._cancelTouch(event), {
+      passive: true,
+    });
 
     this.canvas.addEventListener('dblclick', () => {
       if (this.drawMode === DRAW_MODES.POLYGON) {
@@ -1573,6 +1591,7 @@ export class ZoneMapCard extends HTMLElement {
     this.startPoint = null;
     this._lastPolyTap = 0;
     this._activeInput = null;
+    this._activeTouchId = null;
   }
 
   _getZone(zoneId) {
@@ -1653,6 +1672,8 @@ export class ZoneMapCard extends HTMLElement {
     ) {
       return;
     }
+    // Another finger lifting is not the end of this gesture.
+    if (isTouch && !this._carriesTrackedTouch(e)) return;
     if (this.drawMode === DRAW_MODES.POLYGON) {
       const p = this._getPointFromEvent(e);
       if (!p) {
@@ -1688,9 +1709,11 @@ export class ZoneMapCard extends HTMLElement {
     this.isDrawing = false;
     if (!this.startPoint) {
       this._activeInput = null;
+      this._activeTouchId = null;
       return;
     }
     const endPoint = this._getPointFromEvent(e);
+    this._activeTouchId = null;
     if (!endPoint) {
       this.cancelDrawing();
       return;
@@ -1769,28 +1792,66 @@ export class ZoneMapCard extends HTMLElement {
 
   /** The event's position in canvas backing px, or null when there is no
    *  usable point: a canvas with no layout box (a hidden tab or a collapsed
-   *  container) would divide by zero and pin every shape to the grid corner. */
-  _getPointFromEvent(e) {
+   *  container) would divide by zero and pin every shape to the grid corner.
+   *  A touch event is read at finger `touchId` (the tracked one by default),
+   *  and has no point when that finger is not in it. */
+  _getPointFromEvent(e, touchId = this._activeTouchId) {
     if (!this.canvas) return null;
     const rect = this.canvas.getBoundingClientRect();
     if (!(rect.width > 0 && rect.height > 0)) return null;
     const scaleX = this.canvas.width / rect.width;
     const scaleY = this.canvas.height / rect.height;
-    let clientX, clientY;
-    if (e.touches && e.touches.length) {
-      clientX = e.touches[0].clientX;
-      clientY = e.touches[0].clientY;
-    } else if (e.changedTouches && e.changedTouches.length) {
-      clientX = e.changedTouches[0].clientX;
-      clientY = e.changedTouches[0].clientY;
-    } else {
-      clientX = e.clientX;
-      clientY = e.clientY;
+    let source = e;
+    if (e.touches || e.changedTouches) {
+      source = this._touchFor(e, touchId);
+      if (!source) return null;
     }
-    const x = (clientX - rect.left) * scaleX;
-    const y = (clientY - rect.top) * scaleY;
+    const x = (source.clientX - rect.left) * scaleX;
+    const y = (source.clientY - rect.top) * scaleY;
     if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
     return { x, y };
+  }
+
+  /** The Touch of finger `touchId` in a touch event: its live position in
+   *  `touches`, else its last one in `changedTouches` (a lifted finger is only
+   *  there). With no finger tracked the first touch stands in, which is all an
+   *  event without identifiers offers. Null when the finger is absent. */
+  _touchFor(e, touchId) {
+    if (touchId === null || touchId === undefined) {
+      return (e.touches && e.touches[0]) || (e.changedTouches && e.changedTouches[0]) || null;
+    }
+    return findTouch(e.touches, touchId) || findTouch(e.changedTouches, touchId);
+  }
+
+  /** The identifier of the finger a touchstart is about, or null when the
+   *  event carries none to track. */
+  _touchIdOf(e) {
+    const touch = e.changedTouches && e.changedTouches[0];
+    return touch && typeof touch.identifier === 'number' ? touch.identifier : null;
+  }
+
+  /** Whether a touch event is about the tracked finger. Every touch event is
+   *  when no finger is tracked. */
+  _carriesTrackedTouch(e) {
+    if (this._activeTouchId === null) return true;
+    return findTouch(e.changedTouches, this._activeTouchId) !== null;
+  }
+
+  /** A cancelled touch never finished, so nothing it drew is committed. A
+   *  rect or ellipse drag is dropped. A polygon keeps its placed vertices, as
+   *  when the mouse leaves the canvas, and only loses the rubber-band line and
+   *  the finger. A cancelled finger other than the tracked one changes
+   *  nothing, as its touchend would not. */
+  _cancelTouch(e) {
+    if (!this.isDrawing || !this._carriesTrackedTouch(e)) return;
+    if (this.drawMode === DRAW_MODES.POLYGON) {
+      this._cursorPoint = null;
+      this._activeInput = null;
+      this._activeTouchId = null;
+      this.drawGrid();
+      return;
+    }
+    this.cancelDrawing();
   }
 
   _snapshotZones(zoneIds) {
@@ -2580,6 +2641,11 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   startDrawing(e) {
+    const isTouch = !!e.touches;
+    // A second finger on the canvas is never a new gesture. Restarting here
+    // moved the drag's origin to the first finger, and the next lift of
+    // either finger committed a collapsed or truncated shape over the zone.
+    if (isTouch && e.touches.length > 1) return;
     if (this.isLocked) {
       const now = Date.now();
       if (!this._lastLockWarningTs || now - this._lastLockWarningTs > 1500) {
@@ -2590,10 +2656,12 @@ export class ZoneMapCard extends HTMLElement {
     }
     if (this.selectedZone === null) return;
     if (!this.canvas) return;
-    const point = this._getPointFromEvent(e);
+    const touchId = isTouch ? this._touchIdOf(e) : null;
+    const point = this._getPointFromEvent(e, touchId);
     if (!point) return;
     this.isDrawing = true;
-    this._activeInput = e.touches ? 'touch' : 'mouse';
+    this._activeInput = isTouch ? 'touch' : 'mouse';
+    this._activeTouchId = touchId;
     this.startPoint = point;
     this._cursorPoint = point;
     this.drawGrid();
@@ -2608,6 +2676,8 @@ export class ZoneMapCard extends HTMLElement {
     ) {
       return;
     }
+    // Only the tracked finger moves the shape.
+    if (isTouch && !this._carriesTrackedTouch(e)) return;
     // Every mode keeps the cursor point and lets drawGrid() rebuild the
     // preview from it, so any other repaint (a hass push, a zone payload)
     // redraws the rubber band instead of wiping it until the next move.
