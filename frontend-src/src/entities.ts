@@ -305,10 +305,11 @@ function emptyMap(): EntityMap {
 export interface EntityResolution {
   map: EntityMap;
   /** The base name the map was built from when resolution fell back to
-   *  base-name construction. That path picks the chip with
-   *  `detectProfile(hass, fallbackBase)`, which reads `hass.states`, so a
-   *  caller caching the map must recheck that detection on state ticks.
-   *  Undefined when the map came from the device's registered entities. */
+   *  base-name construction. That path picks the chip with `resolveProfile`,
+   *  whose last resort `detectProfile(hass, fallbackBase)` reads
+   *  `hass.states`, so a caller caching the map must recheck that detection
+   *  on state ticks. Undefined when the map came from the device's
+   *  registered entities. */
   fallbackBase?: string;
 }
 
@@ -332,8 +333,12 @@ export function resolveEntitiesDetailed(
   // or a device whose entities haven't registered yet).
   if (!resolved) {
     fallbackBase = resolveBase(hass, config);
+    // The same chip decision as resolveProfile (entities, then the registry
+    // model, then base-name probing), so the map matches the profile the card
+    // labels it with. Only a zone-only registry model (MTR-1) leaves that
+    // undefined, and it keeps the LD2410 default it always had.
     const profile = fallbackBase
-      ? detectProfile(hass, fallbackBase) ?? LD2410_PROFILE
+      ? resolveProfile(hass, config) ?? LD2410_PROFILE
       : undefined;
     resolved = fallbackBase && profile ? profile.entityMap(fallbackBase) : emptyMap();
   }

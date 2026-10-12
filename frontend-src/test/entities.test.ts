@@ -235,6 +235,50 @@ describe("resolveEntitiesDetailed", () => {
   });
 });
 
+describe("resolveEntities base-name fallback profile", () => {
+  // The device's only registered entity is an LD2450 target: it yields the
+  // base name but classifies into no EntityMap slot, so the fallback runs.
+  const target = "sensor.office_ld2450_target_1_x";
+
+  it("base-name fallback builds the map with the registry profile", () => {
+    const hass = hassWith([target]);
+    hass.devices.dev1 = { manufacturer: "ApolloAutomation", model: "R-PRO-1-W" };
+    const config = { type: "x", device_id: "dev1" };
+    const { map, fallbackBase } = resolveEntitiesDetailed(hass, config);
+    expect(fallbackBase).toBe("office");
+    expect(resolveProfile(hass, config)?.key).toBe("ld2412");
+    expect(map.engineering_mode).toBe("switch.office_ld2412_engineering_mode");
+    expect(map.move_threshold).toHaveLength(14);
+    expect(map).toEqual(LD2412_PROFILE.entityMap("office"));
+  });
+
+  it("keeps the LD2410 default for a registry-matched zone-only model (MTR-1)", () => {
+    const hass = hassWith([target]);
+    hass.devices.dev1 = { manufacturer: "ApolloAutomation", model: "MTR-1" };
+    const config = { type: "x", device_id: "dev1" };
+    const { map, fallbackBase } = resolveEntitiesDetailed(hass, config);
+    expect(fallbackBase).toBe("office");
+    expect(map.engineering_mode).toBe("switch.office_radar_engineering_mode");
+    expect(map).toEqual(entityMapFromBaseName("office"));
+  });
+
+  it("keeps the LD2410 default for a device the registry no longer has", () => {
+    const hass = hassWith([]);
+    const config = { type: "x", device_id: "gone", device_base_name: base };
+    expect(resolveEntities(hass, config)).toEqual(entityMapFromBaseName(base));
+  });
+
+  it("still probes states for a device_base_name-only config", () => {
+    expect(resolveEntities(hassWith([]), { type: "x", device_base_name: "office" })).toEqual(
+      entityMapFromBaseName("office")
+    );
+    const hass = hassWith(["switch.office_ld2412_engineering_mode"], "elsewhere");
+    expect(resolveEntities(hass, { type: "x", device_base_name: "office" })).toEqual(
+      LD2412_PROFILE.entityMap("office")
+    );
+  });
+});
+
 describe("classifyObjectId", () => {
   it("classifies gate entities and parses the gate index", () => {
     expect(classifyObjectId("number", `${base}_g1_move_threshold`)).toEqual({
