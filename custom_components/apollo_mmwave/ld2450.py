@@ -12,16 +12,17 @@ prefix does not break detection, and the optional trailing ``_2`` absorbs Home
 Assistant's dedup suffix. The target number sits before those dedup digits, so
 it cannot be misread as one.
 
-This is the Python twin of ``frontend-src/src/ld2450.ts``. The two regexes and
-the pairing rule (an X is only offered with the Y of the same target number)
-are shared, so change both together.
+This is the Python twin of ``frontend-src/src/ld2450.ts``. The two regexes are
+shared, so change both together.
 
-One difference is deliberate: this side drops disabled entities, the TypeScript
-does not. It cannot. It reads ``hass.entities``, which carries no reliable
-disabled signal, while this reads the entity registry, which does. So a target
-whose Y is disabled yields a pair there and nothing here. Do not "fix" that by
-loosening this side. From Task 6 on, the backend is the authoritative source of
-suggested pairs and the stricter answer is the correct one.
+The pairing rule (an X is only offered with the Y of the same target number)
+and the disabled-entity filter live only on this side. The TypeScript uses its
+regexes for radar detection alone and pairs nothing from the registry, and the
+``hass.entities`` it reads already leaves disabled entries out. This side is
+authoritative because it is what the presence and geometry sensors track and
+what the websocket payload offers the card as ``suggested_entities``. Do not
+"fix" a mismatch by loosening this side: a target whose Y is disabled has no
+drawable position, so dropping it is the correct answer.
 
 ``effective_target_pairs`` is the one answer to "which pairs does this zone
 use", shared by both platforms so the geometry sensor cannot advertise a
