@@ -128,6 +128,11 @@ def async_track_target_pairs(hass: HomeAssistant) -> CALLBACK_TYPE:
         # A rename also reports the id the entity had before, and a pair cached
         # under that id is just as stale as one under the new id.
         ids = {entity_id, event.data.get("old_entity_id")} - {None}
+        # TODO(REVIEW_REPORT.md X07): configured pairs go stale.  # noqa: FIX002, TD003
+        # A rename leaves the old id in STORE_ENTITIES, so presence reads off with
+        # no log. Rewrite exact old_entity_id matches in every stored list (save,
+        # signal each device), ahead of this filter: configured ids can be any
+        # sensor. Minimum: warn once per configured pair with no registry entry.
         # Pairs only ever hold target sensors, and resolving only ever finds
         # them, so no other entity's event can change an answer. That includes
         # this integration's own zone entities, which live on the radar device

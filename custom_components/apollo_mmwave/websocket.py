@@ -108,6 +108,10 @@ def _payload(hass: HomeAssistant, device_id: str) -> dict[str, Any]:
         STORE_LABEL: entry.get(STORE_LABEL),
         # What the presence sensor scales target readings by; null means mm.
         STORE_INPUT_UNITS: entry.get(STORE_INPUT_UNITS),
+        # TODO(REVIEW_REPORT.md X53): resolved per subscriber.  # noqa: FIX002, TD003
+        # Every subscriber re-resolves on every signal (about 66 us each). Low
+        # priority now that zone edits send one signal; reusing DATA_PAIR_CACHE
+        # would change what zone-less devices are pushed.
         # Raw detection, not `effective_target_pairs`: this field is what the
         # radar offers, which stays meaningful next to whatever the user picked.
         KEY_SUGGESTED_ENTITIES: resolve_target_pairs(hass, device_id),
@@ -147,6 +151,10 @@ def _answerable(
 # tracked pairs from the zone sensors' state attributes. `update_zone` is
 # likewise a plain service, not an admin one. Adding `require_admin` here would
 # quietly break the dashboard for every non-admin user.
+# TODO(REVIEW_REPORT.md X52): device_id "" is not_found.  # noqa: FIX002, TD003
+# Both zone schemas accept an empty device_id, which _answerable answers
+# not_found. Keep as is; optionally pin it in tests (missing gives
+# invalid_format, "" gives not_found with no store entry or forwarder).
 @websocket_api.websocket_command(
     {vol.Required("type"): TYPE_GET, vol.Required("device_id"): str}
 )

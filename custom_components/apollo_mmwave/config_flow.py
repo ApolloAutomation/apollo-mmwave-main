@@ -55,6 +55,10 @@ class ApolloMmwaveConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self, user_input: dict | None = None
     ) -> config_entries.ConfigFlowResult:
         """Ask about the auto-dashboard and create the entry when submitted."""
+        # TODO(REVIEW_REPORT.md X18): not via the manifest.  # noqa: FIX002, TD003
+        # Optionally add "single_config_entry": true to manifest.json; the abort
+        # reason becomes single_instance_allowed (update test_single_instance).
+        # Keep the unique-id guard below for the entry's unique-id stamp.
         if self._async_current_entries():
             return self.async_abort(reason="already_configured")
 

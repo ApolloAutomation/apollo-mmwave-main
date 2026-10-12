@@ -12,6 +12,11 @@ attempt dead, and a dead attempt is retried on the next zone signal, with one
 more nudge when the entity that was in the way finishes leaving.
 """
 
+# TODO(REVIEW_REPORT.md X58): re-verify the retry path.  # noqa: FIX002, TD003
+# The race above cannot happen on the pinned HA (registry removal finishes
+# eagerly), and the removal-time nudge runs before HA frees the old state,
+# so a same-zone retry could get a `_2` entity id. Unverified; check first.
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
@@ -178,6 +183,11 @@ def async_setup_zone_platform(
         for key in sorted(current):
             if not tracker.needs_entity(key):
                 continue
+            # TODO(REVIEW_REPORT.md X58): built, then dropped.  # noqa: FIX002, TD003
+            # A disabled entity is constructed on every signal (it may re-log the
+            # missing-device warning) before is_disabled skips it; check the unique
+            # id first. An add that raises inside HA instead of aborting stays
+            # pending and is never retried. Both unverified; check before changing.
             entity = factory(*key)
             if tracker.is_disabled(entity.unique_id):
                 # Refused for good (the entity, or its device, is disabled), so

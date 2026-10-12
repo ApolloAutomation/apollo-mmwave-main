@@ -93,6 +93,11 @@ def _base_url(item: dict[str, Any]) -> str:
 
 async def async_register_frontend_assets(hass: HomeAssistant) -> None:
     """Serve and register the bundled JS so the cards/strategy load globally."""
+    # TODO(REVIEW_REPORT.md X28): a reload skips resources.  # noqa: FIX002, TD003
+    # This guard also skips the resource reconciliation, so a deleted resource
+    # row only comes back at the next restart. Keep static paths and
+    # add_extra_js_url once per run, but run _async_register_lovelace_resources
+    # on every setup, with a reload-recreates-the-row test.
     if hass.data.setdefault(DOMAIN, {}).get(DATA_ASSETS_REGISTERED):
         return
 
@@ -182,6 +187,10 @@ async def _async_register_lovelace_resources(
                 ", ".join(js_urls),
             )
             return
+        # The storage collection loads lazily: async_items() reads [] until it
+        # has loaded, and only HA's own create/update/delete load it first
+        # (through the private _async_ensure_loaded). This does the same by
+        # hand, so it depends on HA internals; recheck it on HA upgrades.
         if not getattr(resources, "loaded", True):
             await resources.async_load()
             resources.loaded = True
@@ -509,6 +518,12 @@ async def async_remove_dashboard(hass: HomeAssistant) -> None:
     dashboard the user built or took control of here is left standing, and so
     is a row a YAML dashboard on the same url path is shadowing.
     """
+    # TODO(REVIEW_REPORT.md X03): every setup calls this too.  # noqa: FIX002, TD003
+    # With the option off, each restart or reload deletes the dashboard on our
+    # url path whenever its config is our strategy, even one the user built by
+    # hand, which this docstring and the module docstring deny.
+    # Decide: keep it and fix both docstrings (README: use another url path), or
+    # remove only from the options listener and entry removal, with tests.
     try:
         collection = _dashboards_collection(hass)
         if collection is None:

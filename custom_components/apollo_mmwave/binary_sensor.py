@@ -57,6 +57,9 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
+# TODO(REVIEW_REPORT.md X59): this is never used.  # noqa: FIX002, TD003
+# The crossing guard in _point_in_polygon already excludes y1 == y2, so its
+# `or` fallback never runs. Removing both is output-neutral.
 _LINE_INTERSECTION_EPSILON = 1e-12
 
 type ShapeData = Any
@@ -250,6 +253,9 @@ class ZonePresenceBinarySensor(ZoneEntityMixin, BinarySensorEntity):
     def _tracked_pairs(self) -> list[dict[str, str]]:
         return effective_target_pairs(self.hass, self._store, self._device_id)
 
+    # TODO(REVIEW_REPORT.md X07): a renamed pair goes dead.  # noqa: FIX002, TD003
+    # A configured pair keeps the id it had before a rename, so this watches an
+    # entity that no longer reports. See _registry_updated in ld2450.py.
     def _track_coordinate_entities(self) -> None:
         if self._unsub_state_listener:
             self._unsub_state_listener()
@@ -291,6 +297,11 @@ class ZonePresenceBinarySensor(ZoneEntityMixin, BinarySensorEntity):
         self._evaluate_and_write()
 
     def _evaluate_and_write(self, *, write: bool = True) -> None:
+        # TODO(REVIEW_REPORT.md X09): offline radar reads off.  # noqa: FIX002, TD003
+        # With every tracked coordinate unavailable this writes off, unlike HA's
+        # group and trend sensors. Suggested: unavailable when the pair list is
+        # non-empty and every tracked id that has a state is unavailable (all ids
+        # missing, or an empty list, stays off), with a test and a changelog note.
         self._attr_is_on = self._evaluate_presence()
         if write:
             self.async_write_ha_state()
