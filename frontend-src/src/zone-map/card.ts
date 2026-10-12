@@ -269,8 +269,9 @@ export class ZoneMapCard extends HTMLElement {
       input_units: 'mm',
       grid_units: 'mm',
       // A card dragged out of the Lovelace picker opened straight onto the
-      // "device_id required" error while this was blank. Empty only when the
-      // system has no tracking radar at all, and then the error is the truth.
+      // "device_id required" error while this was blank. Empty when no device
+      // has registered LD2450 target sensors, which includes a radar whose
+      // sensors are not in yet even though the editor's picker offers it.
       device_id: firstLd2450DeviceId(hass) ?? '',
       title: '',
       // Units support: 'mm', 'cm', 'm', 'in', 'ft' converts to millimeters internally
@@ -383,10 +384,14 @@ export class ZoneMapCard extends HTMLElement {
    * Send one update_zone call and say whether it landed.
    *
    * Fire and forget told users a save had happened when it had not. The call is
-   * rejected while the config entry is reloading and when the radar has left
-   * the device registry, and the next payload then reverts what they were
-   * looking at, with no error anywhere. Nothing here reports success before
-   * Home Assistant has accepted the change.
+   * rejected, and the card says it could not save, while the config entry is
+   * reloading (the service is unregistered, so Home Assistant answers
+   * not_found) and when the call fails the service schema. A radar that has
+   * left the device registry is not a rejection: the backend logs a warning
+   * and ignores the call, Home Assistant still answers success, and no new
+   * payload arrives, so the edit stays on the canvas until the page reloads.
+   * The success toast therefore means Home Assistant accepted the call, not
+   * that the zone store took the change.
    */
   async _saveZoneUpdate(payload, successMessage) {
     if (!this._hass) return false;

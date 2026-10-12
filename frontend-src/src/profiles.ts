@@ -127,8 +127,9 @@ export const LD2410_PROFILE: RadarProfile = {
   },
 };
 
-/** R-PRO-1 — LD2412, 14 gates (g00..g13), `ld2412_` naming, no distance zones
- *  (those come from the LD2450, which this dashboard does not cover). */
+/** R-PRO-1: LD2412, 14 gates (g00..g13), `ld2412_` naming, no distance zones.
+ *  The R-PRO-1's LD2450 has no gate-tuning profile; its X/Y zones are handled
+ *  by the Zone Map card (ld2450.ts, strategy-core.ts), not by this profile. */
 export const LD2412_PROFILE: RadarProfile = {
   key: "ld2412",
   label: "LD2412",
@@ -181,7 +182,9 @@ export const LD2412_PROFILE: RadarProfile = {
   },
 };
 
-// LD2412 is checked first (more specific naming) so it wins on an R-PRO-1.
+// detectProfile probes each profile's exact engineering-mode switch id, and the
+// two ids never coincide, so the order only matters if one device exposed both
+// switches (none does). LD2412 is listed first for that hypothetical case.
 export const PROFILES: RadarProfile[] = [LD2412_PROFILE, LD2410_PROFILE];
 
 /** What the device registry tells us about an Apollo device's radar hardware. */

@@ -6,11 +6,15 @@ import { gateRegisterCount, parseGateSizeMeters, scaleX } from "./geometry";
 import { LD2410_PROFILE, rangeLimitTip } from "../profiles";
 
 // Gate numbering (HLK-LD2410 manual): the farthest-gate setting N means
-// "detect within N x 0.75 m", so gate N is the band ENDING at N x 0.75 m —
+// "detect within N x 0.75 m", so gate N is the band ENDING at N x 0.75 m:
 // gate 1 covers 0-0.75 m and gate 0 is the zero-distance bin at the sensor
 // itself (it has a sensitivity register but no spatial width). That's why
 // this chart draws thresholds-1 bands labeled G1..G8 while the gate-energy
 // chart shows one G0..G8 slider per sensitivity register. Not an off-by-one.
+// The LD2412 follows the same convention (ESPHome ld2412 component): 14
+// threshold registers g00..g13 and a max_distance_gate clamped to 2..13, so
+// its chart draws 13 bands ending at 13 x gate size, which is exactly the
+// reachable range (9.75 m at 0.75 m gates).
 const DEFAULT_GATE_SIZE_M = 0.75;
 const GATE_COUNT = 8;
 
