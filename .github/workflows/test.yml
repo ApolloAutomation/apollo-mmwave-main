@@ -31,8 +31,14 @@ jobs:
           uv venv
           uv pip install -r requirements-test.txt
 
+      # pytest-cov comes in with pytest-homeassistant-custom-component, so
+      # this needs no extra requirement. The table is informational only: no
+      # threshold is enforced.
       - name: Run pytest
-        run: uv run --no-project pytest tests/ -q
+        run: >-
+          uv run --no-project pytest tests/ -q
+          --cov=custom_components/apollo_mmwave
+          --cov-report=term-missing
 
   frontend:
     name: "vitest + bundle sync"
