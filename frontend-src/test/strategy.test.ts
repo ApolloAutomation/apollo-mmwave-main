@@ -1,4 +1,7 @@
 /**
+ * The strategy elements Home Assistant looks up by tag: the view, section and
+ * dashboard strategies and the shapes their generate() returns.
+ *
  * The dashboard strategy's empty states. With no device selection an empty
  * dashboard means no radar was found; with an explicit selection it means
  * every selected id has left the device registry (replaced hardware, a re-add
@@ -9,12 +12,18 @@
  * shows verbatim, so it has to name every supported device family.
  */
 
-import { describe, it, expect } from "vitest";
-import "../src/strategy";
-import { strategyDevices, type StrategyConfig } from "../src/strategy-core";
+import { describe, it, expect, vi } from "vitest";
+import { shouldRegenerate } from "../src/strategy";
+import {
+  generateCards,
+  generateSections,
+  strategyDevices,
+  type StrategyConfig,
+} from "../src/strategy-core";
 import type { HomeAssistant } from "../src/types";
 
-type DashboardStrategy = {
+type Strategy = {
+  shouldRegenerate: unknown;
   generate(config: StrategyConfig, hass: HomeAssistant): Promise<Record<string, any>>;
 };
 
@@ -23,10 +32,18 @@ const EMPTY_TEXT =
   "No Apollo mmWave devices found. Make sure your MSR-1/MSR-2 (LD2410), " +
   "R-PRO-1 (LD2412 + LD2450), or MTR-1 (LD2450) is added to Home Assistant.";
 
-function dashboardStrategy(): DashboardStrategy {
-  const ctor = customElements.get("ll-strategy-dashboard-apollo-radar-tuning");
+const VIEW_TAG = "ll-strategy-view-apollo-radar-tuning";
+const SECTION_TAG = "ll-strategy-section-apollo-radar-tuning";
+const DASHBOARD_TAG = "ll-strategy-dashboard-apollo-radar-tuning";
+
+function strategyElement(tag: string): Strategy {
+  const ctor = customElements.get(tag);
   expect(ctor).toBeDefined();
-  return ctor as unknown as DashboardStrategy;
+  return ctor as unknown as Strategy;
+}
+
+function dashboardStrategy(): Strategy {
+  return strategyElement(DASHBOARD_TAG);
 }
 
 const emptyHass: HomeAssistant = { states: {}, entities: {}, devices: {} };
@@ -41,12 +58,65 @@ function hassWithLiveRadar(): HomeAssistant {
   };
 }
 
+/** The live MSR-2 plus a live R-PRO-1 LD2412. */
+function hassWithTwoRadars(): HomeAssistant {
+  const hass = hassWithLiveRadar();
+  const eng = "switch.apollo_r_pro_1_abcd_ld2412_engineering_mode";
+  return {
+    states: { ...hass.states, [eng]: { entity_id: eng, state: "off", attributes: {} } },
+    entities: { ...hass.entities, [eng]: { device_id: "dev2" } },
+    devices: { ...hass.devices, dev2: { name: "Office R-PRO-1" } },
+  };
+}
+
 function markdownOf(dashboard: Record<string, any>): string {
   expect(dashboard.views).toHaveLength(1);
   const card = dashboard.views[0].cards[0];
   expect(card.type).toBe("markdown");
   return card.content;
 }
+
+describe("strategy elements", () => {
+  const config = { type: TYPE } as StrategyConfig;
+
+  it("defines the view, section and dashboard strategies with one regeneration hook", () => {
+    for (const tag of [VIEW_TAG, SECTION_TAG, DASHBOARD_TAG]) {
+      expect(strategyElement(tag).shouldRegenerate).toBe(shouldRegenerate);
+    }
+  });
+
+  it("view strategy returns one sections view holding every device's sections", async () => {
+    const view = strategyElement(VIEW_TAG);
+    expect(await view.generate(config, emptyHass)).toEqual({
+      type: "sections",
+      sections: [],
+    });
+    const hass = hassWithTwoRadars();
+    const result = await view.generate(config, hass);
+    expect(result.type).toBe("sections");
+    expect(result.sections.length).toBeGreaterThan(0);
+    expect(result.sections).toEqual(generateSections(hass, config));
+  });
+
+  it("section strategy returns one grid section holding every device's cards", async () => {
+    const section = strategyElement(SECTION_TAG);
+    expect(await section.generate(config, emptyHass)).toEqual({ type: "grid", cards: [] });
+    const hass = hassWithTwoRadars();
+    const result = await section.generate(config, hass);
+    expect(result.type).toBe("grid");
+    expect(result.cards.length).toBeGreaterThan(0);
+    expect(result.cards).toEqual(generateCards(hass, config));
+  });
+
+  it("dashboard strategy returns one sections view (tab) per device", async () => {
+    const dashboard = await dashboardStrategy().generate(config, hassWithTwoRadars());
+    expect(dashboard.title).toBe("Apollo Radar Tuning");
+    expect(dashboard.views.map((v: any) => [v.type, v.title])).toEqual([
+      ["sections", "Living Room MSR-2"],
+      ["sections", "Office R-PRO-1"],
+    ]);
+  });
+});
 
 describe("dashboard strategy empty states", () => {
   it("explains a stale devices selection while a live radar exists", async () => {
@@ -123,5 +193,23 @@ describe("dashboard picker entry", () => {
     for (const family of ["MSR", "LD2410", "R-PRO", "LD2412", "LD2450", "MTR-1"]) {
       expect(description).toContain(family);
     }
+  });
+
+  it("stays one entry when the bundle is evaluated again", async () => {
+    // If the bundle is evaluated a second time (a second copy under a
+    // different URL, say), the guard must keep the picker to one entry.
+    vi.resetModules();
+    const again = await import("../src/strategy");
+    // A fresh module instance, so the registration code really ran again.
+    expect(again.shouldRegenerate).not.toBe(shouldRegenerate);
+    const entries = pickerEntries();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      type: "apollo-radar-tuning",
+      strategyType: "dashboard",
+    });
+    expect(entries[0].description).toContain("MTR-1");
+    // The first definitions stay in place.
+    expect(strategyElement(DASHBOARD_TAG).shouldRegenerate).toBe(shouldRegenerate);
   });
 });

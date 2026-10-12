@@ -274,6 +274,21 @@ describe("shouldRegenerate with a device selection", () => {
     const moved = hassWith({ ...both.states, [eng2]: state(eng2, "on") }, entities, devices);
     expect(shouldRegenerate({ devices: ["dev2"] }, both, moved)).toBe(false);
   });
+
+  it("regenerates when a selected device is deleted, not when an unselected one is", () => {
+    // Deleting a device replaces both registries and drops its entities and
+    // their states.
+    const deleting = (deviceId: string) => {
+      const kept = Object.keys(entities).filter((id) => entities[id].device_id !== deviceId);
+      return hassWith(
+        Object.fromEntries(kept.map((id) => [id, both.states[id]])),
+        Object.fromEntries(kept.map((id) => [id, entities[id]])),
+        Object.fromEntries(Object.entries(devices).filter(([id]) => id !== deviceId))
+      );
+    };
+    expect(shouldRegenerate({ devices: ["dev1"] }, both, deleting("dev1"))).toBe(true);
+    expect(shouldRegenerate({ devices: ["dev1"] }, both, deleting("dev2"))).toBe(false);
+  });
 });
 
 describe('shouldRegenerate treats "unknown" as live', () => {

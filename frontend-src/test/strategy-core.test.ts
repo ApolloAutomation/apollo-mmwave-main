@@ -5,6 +5,7 @@ import {
   buildDeviceSections,
   deviceView,
   generateCards,
+  generateSections,
   generateViews,
   type RadarDevice,
 } from "../src/strategy-core";
@@ -12,26 +13,49 @@ import { LD2410_PROFILE, LD2412_PROFILE } from "../src/profiles";
 import type { HomeAssistant, HassEntity } from "../src/types";
 
 const base = "apollo_msr_2_m4c4dd";
+const m410 = LD2410_PROFILE.entityMap(base);
 
-function deviceHass(): HomeAssistant {
-  const m = LD2410_PROFILE.entityMap(base);
+/** The MSR-2 fixture's entities: one of each card's rows. */
+const DEVICE_IDS = [
+  m410.engineering_mode!,
+  m410.radar_timeout!,
+  m410.zone_1_start!,
+  m410.max_move_distance!,
+  m410.move_threshold[0],
+  m410.radar_target!,
+  m410.detection_distance!,
+];
+
+/** One device (`dev1` by default) owning `ids`, each with a "0" state. */
+function hassWithIds(
+  ids: string[],
+  device: HomeAssistant["devices"][string] = { name: "Living Room MSR-2" },
+  deviceId = "dev1"
+): HomeAssistant {
   const states: Record<string, HassEntity> = {};
   const entities: Record<string, { device_id?: string }> = {};
-  const ids = [
-    m.engineering_mode!,
-    m.radar_timeout!,
-    m.zone_1_start!,
-    m.max_move_distance!,
-    m.move_threshold[0],
-    m.radar_target!,
-    m.detection_distance!,
-  ];
   for (const id of ids) {
     states[id] = { entity_id: id, state: "0", attributes: {} };
-    entities[id] = { device_id: "dev1" };
+    entities[id] = { device_id: deviceId };
   }
-  return { states, entities, devices: { dev1: { name: "Living Room MSR-2" } } };
+  return { states, entities, devices: { [deviceId]: device } };
 }
+
+function deviceHass(): HomeAssistant {
+  return hassWithIds(DEVICE_IDS);
+}
+
+/** The MSR-2 fixture without the given entities. */
+function deviceHassWithout(...drop: string[]): HomeAssistant {
+  return hassWithIds(DEVICE_IDS.filter((id) => !drop.includes(id)));
+}
+
+/** Each section's cards, by title (or by type for untitled cards). */
+function layout(sections: Record<string, any>[]): string[][] {
+  return sections.map((s) => s.cards.map((c: any) => c.title ?? c.type));
+}
+
+const DISTANCE_CARD = "custom:apollo-radar-distance-card";
 
 const ld2410Dev: RadarDevice = {
   deviceId: "dev1",
@@ -88,6 +112,19 @@ describe("buildDeviceCards", () => {
     expect(distance).toMatchObject({ device_base_name: base, distance_unit: "in" });
   });
 
+  it("leaves distance_unit off the distance card when the config sets none", () => {
+    const byCards = buildDeviceCards(deviceHass(), ld2410Dev).find(
+      (c: any) => c.type === DISTANCE_CARD
+    );
+    expect(byCards).toBeDefined();
+    expect(byCards).not.toHaveProperty("distance_unit");
+    const byView = generateViews(deviceHass(), {})[0]
+      .sections.flatMap((s: any) => s.cards)
+      .find((c: any) => c.type === DISTANCE_CARD);
+    expect(byView).toBeDefined();
+    expect(byView).not.toHaveProperty("distance_unit");
+  });
+
   it("titles entity cards with the device's chip label", () => {
     const titles = cards
       .filter((c: any) => c.type === "entities")
@@ -131,6 +168,41 @@ describe("buildDeviceCards", () => {
       (c: any) => c.type === "custom:apollo-radar-calibrate-card"
     ) as any;
     expect(fromConfig.calibration).toEqual(calibration);
+  });
+});
+
+describe("tuning notes", () => {
+  const titles = (hass: HomeAssistant) =>
+    buildDeviceCards(hass, ld2410Dev).map((c: any) => c.title);
+  const notes = (hass: HomeAssistant) =>
+    buildDeviceCards(hass, ld2410Dev)
+      .filter((c: any) => c.type === "markdown")
+      .map((c: any) => c.content);
+
+  it("adds the range tip only under a Detection Range card", () => {
+    expect(titles(deviceHass())).toContain("LD2410 Detection Range");
+    expect(notes(deviceHass())).toContain(LD2410_PROFILE.rangeTip);
+
+    const noRange = deviceHassWithout(m410.radar_timeout!, m410.max_move_distance!);
+    expect(titles(noRange)).not.toContain("LD2410 Detection Range");
+    expect(notes(noRange)).not.toContain(LD2410_PROFILE.rangeTip);
+  });
+
+  it("adds the gate tip only with a threshold card", () => {
+    expect(titles(deviceHass())).toContain("LD2410 Move Thresholds");
+    expect(notes(deviceHass())).toContain(LD2410_PROFILE.gateTip);
+
+    const noThresholds = deviceHassWithout(m410.move_threshold[0]);
+    expect(titles(noThresholds)).not.toContain("LD2410 Move Thresholds");
+    expect(notes(noThresholds)).not.toContain(LD2410_PROFILE.gateTip);
+
+    // A still threshold alone is enough.
+    const stillOnly = hassWithIds([
+      ...DEVICE_IDS.filter((id) => id !== m410.move_threshold[0]),
+      m410.still_threshold[0],
+    ]);
+    expect(titles(stillOnly)).toContain("LD2410 Still Thresholds");
+    expect(notes(stillOnly)).toContain(LD2410_PROFILE.gateTip);
   });
 });
 
@@ -191,6 +263,14 @@ describe("occupancy history card", () => {
     };
     expect(historyCard(hass)).toBeUndefined();
   });
+
+  it("is left out of the sections when the device has no occupancy sensor", () => {
+    const sections = buildDeviceSections(deviceHassWithout(m410.radar_target!), ld2410Dev);
+    const types = sections.flatMap((s) => s.cards.map((c: any) => c.type));
+    expect(types).not.toContain("history-graph");
+    // Its column held only the history card, so it is dropped entirely.
+    expect(sections).toHaveLength(3);
+  });
 });
 
 describe("calibrate card placement in sections", () => {
@@ -241,6 +321,101 @@ describe("calibrate card placement in sections", () => {
   });
 });
 
+describe("buildDeviceSections column layout", () => {
+  const rproBase = "apollo_r_pro_1_abcd";
+
+  /** An LD2412 with one of each card's rows; optionally its LD2450 too. */
+  function ld2412Hass(
+    device: HomeAssistant["devices"][string],
+    withLd2450: boolean
+  ): HomeAssistant {
+    const m = LD2412_PROFILE.entityMap(rproBase);
+    const ids = [
+      m.engineering_mode!,
+      m.radar_timeout!,
+      m.max_move_distance!,
+      m.move_threshold[0],
+      m.radar_target!,
+    ];
+    if (withLd2450) ids.push(`sensor.${rproBase}_ld2450_target_1_x`);
+    return hassWithIds(ids, device, "rpro");
+  }
+
+  const LD2412_COLUMNS = [
+    ["Auto-calibrate", "markdown", "LD2412 Controls", "LD2412 Target / Occupancy"],
+    ["LD2412 Distances", "LD2412 Detection Range", "markdown"],
+    ["LD2412 Gate Energy", "LD2412 Move Thresholds", "markdown"],
+    ["LD2412 Occupancy History"],
+  ];
+
+  it("lays an MSR-2 out in four grid columns, occupancy in column 2", () => {
+    const sections = buildDeviceSections(deviceHass(), ld2410Dev);
+    for (const section of sections) expect(section.type).toBe("grid");
+    expect(layout(sections)).toEqual([
+      ["Auto-calibrate", "markdown", "LD2410 Controls", "LD2410 Zone Config"],
+      [
+        "LD2410 Distances",
+        "LD2410 Detection Range",
+        "markdown",
+        "LD2410 Target / Occupancy",
+      ],
+      ["LD2410 Gate Energy", "LD2410 Move Thresholds", "markdown"],
+      ["LD2410 Occupancy History"],
+    ]);
+  });
+
+  it("moves occupancy into column 1 on a DIY LD2412, which has no Zone Config", () => {
+    const hass = ld2412Hass({ name: "Office radar" }, false);
+    const [dev] = detectRadarDevices(hass);
+    expect(dev.profile?.key).toBe("ld2412");
+    expect(dev.ld2450).toBe(false);
+    const sections = buildDeviceSections(hass, dev);
+    for (const section of sections) expect(section.type).toBe("grid");
+    expect(layout(sections)).toEqual(LD2412_COLUMNS);
+  });
+
+  it("adds a fifth Zone Map section after the tuning columns on an R-PRO-1", () => {
+    const hass = ld2412Hass(
+      { name: "Office R-PRO-1", manufacturer: "ApolloAutomation", model: "R-PRO-1-W" },
+      true
+    );
+    const [dev] = detectRadarDevices(hass);
+    expect(dev.ld2450).toBe(true);
+    const sections = buildDeviceSections(hass, dev);
+    expect(sections).toHaveLength(5);
+    expect(layout(sections.slice(0, 4))).toEqual(LD2412_COLUMNS);
+    expect(sections[4].type).toBe("grid");
+    expect(sections[4].cards).toHaveLength(2);
+    expect(sections[4].cards[0]).toEqual({ type: "heading", heading: "Zone Map" });
+    expect(sections[4].cards[1]).toMatchObject({
+      type: "custom:apollo-radar-zone-map-card",
+      device_id: "rpro",
+    });
+  });
+
+  it("puts the offline note and the wiki link on an offline MSR-2's help card", () => {
+    const live = hassWithIds(DEVICE_IDS, {
+      name: "Living Room MSR-2",
+      manufacturer: "ApolloAutomation",
+      model: "MSR-2",
+    });
+    const states = Object.fromEntries(
+      Object.keys(live.states).map((id) => [
+        id,
+        { entity_id: id, state: "unavailable", attributes: {} },
+      ])
+    );
+    const hass = { ...live, states };
+    const [dev] = detectRadarDevices(hass);
+    expect(dev.profile?.key).toBe("ld2410");
+    expect(dev.online).toBe(false);
+    const help = buildDeviceSections(hass, dev)[0].cards[1];
+    expect(help.type).toBe("markdown");
+    expect(help.content).toContain("**Offline right now.**");
+    expect(help.content).toContain(LD2410_PROFILE.wikiUrl);
+  });
+});
+
 describe("profile tips", () => {
   it("point the gate tip at the calibrate card and explain the timeout in the range tip", () => {
     for (const profile of [LD2410_PROFILE, LD2412_PROFILE]) {
@@ -285,6 +460,58 @@ describe("deviceView / generateViews", () => {
   it("produces one view (tab) per detected device", () => {
     expect(generateViews(deviceHass(), {})).toHaveLength(1);
   });
+
+  it("gives three radars sharing one base three distinct paths", () => {
+    // Three R-PRO-1s renamed to the same name with "rename entity ids"
+    // ticked: HA's `_2`/`_3` dedup tails are stripped with the suffix, so
+    // every base is `office`. Later tabs get their device id appended.
+    const ids: Record<string, string> = {
+      "switch.office_ld2412_engineering_mode": "a",
+      "switch.office_ld2412_engineering_mode_2": "b",
+      "switch.office_ld2412_engineering_mode_3": "c",
+    };
+    const hass: HomeAssistant = {
+      states: Object.fromEntries(
+        Object.keys(ids).map((id) => [id, { entity_id: id, state: "off", attributes: {} }])
+      ),
+      entities: Object.fromEntries(
+        Object.entries(ids).map(([id, deviceId]) => [id, { device_id: deviceId }])
+      ),
+      devices: { a: { name: "Office" }, b: { name: "Office" }, c: { name: "Office" } },
+    };
+    expect(detectRadarDevices(hass).map((d) => d.base)).toEqual([
+      "office",
+      "office",
+      "office",
+    ]);
+    expect(generateViews(hass, {}).map((v) => v.path)).toEqual([
+      "office",
+      "office_b",
+      "office_c",
+    ]);
+  });
+
+  it("falls back to the device id for a registry MSR-2 renamed beyond recognition", () => {
+    // No entity id yields a base, so the device id is the base: the view
+    // path and the cards' device_base_name.
+    const renamed = "sensor.den_motion_distance";
+    const hass: HomeAssistant = {
+      states: { [renamed]: { entity_id: renamed, state: "42", attributes: {} } },
+      entities: { [renamed]: { device_id: "msr" } },
+      devices: {
+        msr: { name: "Den MSR-2", manufacturer: "ApolloAutomation", model: "MSR-2" },
+      },
+    };
+    const [dev] = detectRadarDevices(hass);
+    expect(dev.profile?.key).toBe("ld2410");
+    expect(dev.base).toBe(dev.deviceId);
+    expect(dev.base).toBe("msr");
+    expect(generateViews(hass, {}).map((v) => v.path)).toEqual(["msr"]);
+    const distance = buildDeviceCards(hass, dev).find(
+      (c: any) => c.type === DISTANCE_CARD
+    );
+    expect(distance).toMatchObject({ device_id: "msr", device_base_name: "msr" });
+  });
 });
 
 describe("generateCards (section strategy)", () => {
@@ -301,6 +528,40 @@ describe("generateCards (section strategy)", () => {
     expect(
       generateCards(deviceHass(), { device_id: "dev1" }).length
     ).toBeGreaterThan(1);
+  });
+});
+
+describe("generateSections (view strategy)", () => {
+  /** The MSR-2 fixture plus a live R-PRO-1 LD2412 on `rpro`. */
+  function twoRadarHass(): HomeAssistant {
+    const hass = deviceHass();
+    const eng = "switch.apollo_r_pro_1_abcd_ld2412_engineering_mode";
+    return {
+      states: { ...hass.states, [eng]: { entity_id: eng, state: "off", attributes: {} } },
+      entities: { ...hass.entities, [eng]: { device_id: "rpro" } },
+      devices: { ...hass.devices, rpro: { name: "Office R-PRO-1" } },
+    };
+  }
+
+  it("flattens every device's sections into one list, in device order", () => {
+    const hass = twoRadarHass();
+    const [msr, rpro] = detectRadarDevices(hass);
+    expect([msr.deviceId, rpro.deviceId]).toEqual(["dev1", "rpro"]);
+    const sections = generateSections(hass, {});
+    expect(sections).toEqual([
+      ...buildDeviceSections(hass, msr),
+      ...buildDeviceSections(hass, rpro),
+    ]);
+    for (const section of sections) expect(section.type).toBe("grid");
+  });
+
+  it("limits to one device when device_id is set", () => {
+    const hass = twoRadarHass();
+    const rpro = detectRadarDevices(hass)[1];
+    expect(generateSections(hass, { device_id: "rpro" })).toEqual(
+      buildDeviceSections(hass, rpro)
+    );
+    expect(generateSections(hass, { device_id: "nope" })).toEqual([]);
   });
 });
 
