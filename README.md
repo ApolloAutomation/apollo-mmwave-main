@@ -375,6 +375,10 @@ upstream drop.
 
 ## Credits
 
+- **Brandon Harvey ([@bharvey88](https://github.com/bharvey88))** got this
+  project started and published the original Apollo mmWave repository, which
+  this one continues. Thank you, Brandon, for all the work that went into
+  getting it off the ground.
 - Zone-mapping backend & card: Apollo Automation's
   [zone-mapper](https://github.com/ApolloAutomation/zone-mapper) /
   [zone-mapper-card](https://github.com/ApolloAutomation/zone-mapper-card).
