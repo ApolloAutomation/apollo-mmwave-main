@@ -74,6 +74,14 @@ def _coerce_float(value: Any) -> float | None:
 def _build_point_rotator(
     rotation_raw: Any,
 ) -> Callable[[float, float], tuple[float, float]]:
+    """
+    Return a function that rotates a target point by the device's rotation_deg.
+
+    Positive degrees swing the device's facing direction toward its right (+X):
+    90 maps (x, y) to (y, -x), so a target straight ahead at (0, d) lands at
+    (d, 0). Must match `_drawTrackedTargets` / `drawDeviceCone` in
+    frontend-src/src/zone-map/card.ts.
+    """
     rotation_val = _coerce_float(rotation_raw)
     # A stored inf would make math.cos raise inside async_added_to_hass, leaving
     # an entity with no state that is never retried, and nan would silently stop

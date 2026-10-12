@@ -44,7 +44,7 @@ update_zone:
         object: {}
     name:
       name: Zone Name
-      description: Optional friendly name for the zone. When provided, entity friendly names will be updated.
+      description: "Optional friendly name for the zone. Naming a zone that already exists also renames its entities: naming zone 1 'Couch' makes them 'Zone 1 - Couch' and 'Zone 1 presence - Couch'. Once a zone is named, the radar name is no longer part of those entity friendly names. An entity you renamed yourself in its settings keeps your name. An empty name sets them back to 'Zone 1' and 'Zone 1 presence', still without the radar name."
       required: false
       selector:
         text: {}
@@ -69,7 +69,7 @@ update_zone:
             - yd
     rotation_deg:
       name: Rotation Angle (deg)
-      description: Optional device rotation angle (-180..180). Device-wide; if provided without zone fields, only the angle is updated for the device.
+      description: "Optional device rotation angle (-180..180). Positive degrees swing the device's facing direction toward its right (+X): 90 maps (x, y) to (y, -x), so a target straight ahead at (0, d) lands at (d, 0). Device-wide; if provided without zone fields, only the angle is updated for the device."
       required: false
       selector:
         number:
