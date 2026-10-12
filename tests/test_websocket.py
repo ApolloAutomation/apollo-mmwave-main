@@ -274,6 +274,37 @@ async def test_zone_commands_survive_a_reload(
     assert get_store(hass).device(device_id)[STORE_ZONES][1]["shape"] == "rect"
 
 
+async def test_one_zone_edit_pushes_exactly_once(
+    hass, hass_ws_client, init_integration, device_id
+) -> None:
+    """Our own zone entities landing in the registry are not a second change."""
+    _ = init_integration
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id({"type": SUBSCRIBE, "device_id": device_id})
+    assert (await client.receive_json())["success"] is True
+
+    # The first zone creates both of its entities on the radar device.
+    await hass.services.async_call(
+        DOMAIN, "update_zone", {"device_id": device_id, **RECT_CALL}, blocking=True
+    )
+    await hass.async_block_till_done()
+    created = await _drain(client)
+    assert len(created) == 1
+    assert created[0]["zones"]["1"]["shape"] == "rect"
+
+    # A rename rewrites both entities' registry names.
+    await hass.services.async_call(
+        DOMAIN,
+        "update_zone",
+        {"device_id": device_id, "zone_id": 1, "name": "Couch"},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+    renamed = await _drain(client)
+    assert len(renamed) == 1
+    assert renamed[0]["zones"]["1"]["name"] == "Couch"
+
+
 # ---------------------------------------------------------------------------
 # Calibration commands
 # ---------------------------------------------------------------------------

@@ -52,6 +52,14 @@ TARGET_X = re.compile(r"(?:_ld2450)?_target_(\d+)_x(?:_\d+)?$")
 TARGET_Y = re.compile(r"(?:_ld2450)?_target_(\d+)_y(?:_\d+)?$")
 
 
+def _is_target_sensor(entity_id: str) -> bool:
+    """Report whether an entity id is one `resolve_target_pairs` would pair."""
+    domain, _, object_id = entity_id.partition(".")
+    return domain == "sensor" and bool(
+        TARGET_X.search(object_id) or TARGET_Y.search(object_id)
+    )
+
+
 def resolve_target_pairs(hass: HomeAssistant, device_id: str) -> list[dict[str, str]]:
     """Return the device's LD2450 X/Y sensor pairs, ordered by target number."""
     xs: dict[int, str] = {}
@@ -107,7 +115,7 @@ def async_track_target_pairs(hass: HomeAssistant) -> CALLBACK_TYPE:
     @callback
     def _invalidate(device_ids: list[str]) -> None:
         for device_id in device_ids:
-            del cache[device_id]
+            cache.pop(device_id, None)
             # Both platforms already refresh on this signal, so reusing it keeps
             # the geometry sensor and its presence sensor in step by
             # construction rather than by two parallel subscriptions.
@@ -116,19 +124,29 @@ def async_track_target_pairs(hass: HomeAssistant) -> CALLBACK_TYPE:
     @callback
     def _registry_updated(event: Event[Any]) -> None:
         entity_id = event.data["entity_id"]
+        # A rename also reports the id the entity had before, and a pair cached
+        # under that id is just as stale as one under the new id.
+        ids = {entity_id, event.data.get("old_entity_id")} - {None}
+        # Pairs only ever hold target sensors, and resolving only ever finds
+        # them, so no other entity's event can change an answer. That includes
+        # this integration's own zone entities, which live on the radar device
+        # and would otherwise republish its zones on every zone create and
+        # rename, on top of the push the edit itself already sends.
+        if not any(_is_target_sensor(changed) for changed in ids):
+            return
+        # Every cached device whose pairs name the entity under either id. A
+        # removed entity has no entry left to point at its device, and a moved
+        # or renamed one leaves its old device holding a pair it no longer owns.
+        affected = {
+            device_id
+            for device_id, pairs in cache.items()
+            if any(pair["x"] in ids or pair["y"] in ids for pair in pairs)
+        }
+        # Plus the device it belongs to now, which may gain a pair it lacked.
         entry = er.async_get(hass).async_get(entity_id)
         if entry is not None and entry.device_id in cache:
-            _invalidate([entry.device_id])
-            return
-        # A removed entity has no entry left to point at its device, so ask the
-        # cache which devices were relying on it.
-        _invalidate(
-            [
-                device_id
-                for device_id, pairs in cache.items()
-                if any(entity_id in (pair["x"], pair["y"]) for pair in pairs)
-            ]
-        )
+            affected.add(entry.device_id)
+        _invalidate(sorted(affected))
 
     unsub_started: CALLBACK_TYPE | None = None
 
