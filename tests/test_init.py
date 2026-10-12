@@ -24,6 +24,7 @@ from custom_components.apollo_mmwave.const import (
     DATA_STORE,
     DOMAIN,
     EVENT_ZONE_UPDATED,
+    INPUT_UNIT_FACTORS,
     POLYGON_MAX_POINTS,
     POLYGON_MIN_POINTS,
     SERVICE_CALIBRATE_GATES,
@@ -32,6 +33,7 @@ from custom_components.apollo_mmwave.const import (
     SERVICE_UPDATE_ZONE,
     STORE_DEVICES,
     STORE_ENTITIES,
+    STORE_INPUT_UNITS,
     STORE_LABEL,
     STORE_ORPHANS,
     STORE_ZONES,
@@ -92,6 +94,15 @@ def _zone_entity_ids(hass, device_id: str) -> tuple[str | None, str | None]:
             "binary_sensor", DOMAIN, f"{device_id}_zone_1_presence"
         ),
     )
+
+
+def _set_target(hass, pair: dict[str, str], x: float, y: float) -> None:
+    hass.states.async_set(pair["x"], str(x))
+    hass.states.async_set(pair["y"], str(y))
+
+
+async def _rename_zone(hass, device_id: str, name: str) -> None:
+    await _update_zone(hass, {"device_id": device_id, "zone_id": 1, "name": name})
 
 
 async def test_service_creates_zone_entities(hass, init_integration, device_id) -> None:
@@ -708,7 +719,18 @@ async def test_rotation_inf_is_ignored(
     assert "carried nothing to change" in caplog.text
 
 
-@pytest.mark.parametrize(("angle", "stored"), [(270.4, 180), (-12.6, -13), (1e20, 180)])
+@pytest.mark.parametrize(
+    ("angle", "stored"),
+    [
+        (270.4, 180),
+        (450, 180),
+        (-12.6, -13),
+        (-200, -180),
+        (15.6, 16),
+        ("90", 90),
+        (1e20, 180),
+    ],
+)
 async def test_finite_rotation_still_clamps(
     hass, init_integration, device_id, angle, stored
 ) -> None:
@@ -827,7 +849,19 @@ async def test_polygon_point_with_infinite_coordinate_is_dropped(
         ),
         (
             "ellipse",
+            {"cx": 0, "cy": 1000, "rx": 500, "ry": -500},
+            WARN_ELLIPSE_NON_POSITIVE,
+            (),
+        ),
+        (
+            "ellipse",
             {"cx": 0, "cy": 1000, "rx": "wide", "ry": 500},
+            WARN_ELLIPSE_INVALID,
+            (),
+        ),
+        (
+            "ellipse",
+            {"cx": 0, "cy": 1000, "rx": 500},
             WARN_ELLIPSE_INVALID,
             (),
         ),
@@ -850,7 +884,9 @@ async def test_polygon_point_with_infinite_coordinate_is_dropped(
         "rect_non_numeric",
         "rect_invalid",
         "ellipse_non_positive",
+        "ellipse_negative",
         "ellipse_invalid",
+        "ellipse_missing_radius",
         "polygon_insufficient",
         "polygon_list_points",
     ],
@@ -894,12 +930,12 @@ async def test_polygon_insufficient_warning_text_is_unchanged(
     ) in caplog.messages
 
 
+@pytest.mark.parametrize("total", [POLYGON_MAX_POINTS + 1, 40])
 async def test_polygon_truncation_warning_names_the_device(
-    hass, init_integration, device_id, caplog
+    hass, init_integration, device_id, caplog, total
 ) -> None:
     """Too many points are truncated, and the warning says by how much."""
     _ = init_integration
-    total = POLYGON_MAX_POINTS + 1
     points = [{"x": i, "y": i * i} for i in range(total)]
     await _update_zone(
         hass,
@@ -1107,3 +1143,343 @@ def test_zone_id_bounds_reject(zone_id) -> None:
     # 18446744073709551616.0 is how a 2**64 JSON literal reaches the websocket.
     with pytest.raises(vol.Invalid):
         UPDATE_ZONE_SERVICE_SCHEMA({"device_id": "abc", "zone_id": zone_id})
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        (
+            {"x_min": "left", "x_max": 1000, "y_min": 0, "y_max": 2000},
+            WARN_RECT_NON_NUM,
+        ),
+        ({"x_min": -1000, "x_max": 1000, "y_min": 0}, WARN_RECT_NON_NUM),
+        ({"x_min": 1000, "x_max": -1000, "y_min": 0, "y_max": 2000}, WARN_RECT_INVALID),
+        ({"x_min": -1000, "x_max": 1000, "y_min": 2000, "y_max": 0}, WARN_RECT_INVALID),
+        ({"x_min": 500, "x_max": 500, "y_min": 0, "y_max": 2000}, WARN_RECT_INVALID),
+        (
+            {"x_min": -1000, "x_max": 1000, "y_min": 700, "y_max": 700},
+            WARN_RECT_INVALID,
+        ),
+        # Both bounds round to 0 mm, so the span is zero once stored.
+        ({"x_min": 0.2, "x_max": 0.4, "y_min": 0, "y_max": 2000}, WARN_RECT_INVALID),
+    ],
+    ids=[
+        "non_numeric",
+        "missing_bound",
+        "inverted_x",
+        "inverted_y",
+        "zero_width",
+        "zero_height",
+        "sub_mm_width",
+    ],
+)
+@pytest.mark.usefixtures("init_integration")
+async def test_invalid_rect_bounds_clear_the_geometry_but_keep_the_zone(
+    hass, device_id, caplog, case
+) -> None:
+    """A rejected rectangle drops its geometry; the zone, pairs and entities stay."""
+    data, template = case
+    await _create_rect_zone(hass, device_id)
+    sensor_id, presence_id = _zone_entity_ids(hass, device_id)
+    _set_target(hass, TRACKED[0], 0, 1000)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "on"
+
+    await _update_zone(
+        hass, {"device_id": device_id, "zone_id": 1, "shape": "rect", "data": data}
+    )
+
+    device = get_store(hass).device(device_id)
+    zone = device[STORE_ZONES][1]
+    assert zone["data"] is None
+    # Records current behavior rather than a contract: the zone keeps shape
+    # "rect" with no geometry instead of becoming "none".
+    assert zone["shape"] == "rect"
+    assert device[STORE_ENTITIES] == TRACKED
+    assert template % (1, device_id) in caplog.messages
+    assert _zone_entity_ids(hass, device_id) == (sensor_id, presence_id)
+    attributes = hass.states.get(sensor_id).attributes
+    assert attributes["shape"] == "rect"
+    assert attributes["data"] is None
+    assert hass.states.get(presence_id).state == "off"
+
+
+async def test_rect_bounds_are_rounded_to_whole_mm(
+    hass, init_integration, device_id
+) -> None:
+    """Fractional rectangle bounds are stored as whole millimeters."""
+    _ = init_integration
+    data = {"x_min": -1000.4, "x_max": 999.6, "y_min": 0.3, "y_max": 2000.7}
+    await _update_zone(
+        hass, {"device_id": device_id, "zone_id": 1, "shape": "rect", "data": data}
+    )
+
+    stored = get_store(hass).device(device_id)[STORE_ZONES][1]["data"]
+    bounds = {key: stored[key] for key in ("x_min", "x_max", "y_min", "y_max")}
+    assert bounds == {"x_min": -1000, "x_max": 1000, "y_min": 0, "y_max": 2001}
+    assert all(type(value) is int for value in bounds.values())
+
+
+async def test_ellipse_radii_are_rounded_and_floored_at_1mm(
+    hass, init_integration, device_id
+) -> None:
+    """A positive radius under half a millimeter is kept as 1 mm, not 0."""
+    _ = init_integration
+    data = {"cx": 10.4, "cy": 999.6, "rx": 0.2, "ry": 2.6}
+    await _update_zone(
+        hass, {"device_id": device_id, "zone_id": 1, "shape": "ellipse", "data": data}
+    )
+
+    zone = get_store(hass).device(device_id)[STORE_ZONES][1]
+    assert zone == {
+        "shape": "ellipse",
+        "data": {"cx": 10, "cy": 1000, "rx": 1, "ry": 3},
+    }
+
+
+async def test_polygon_malformed_points_are_dropped(
+    hass, init_integration, device_id, caplog
+) -> None:
+    """Points that are not {x, y} numbers go; the valid ones keep their order."""
+    _ = init_integration
+    points = [
+        {"x": 0, "y": 0},
+        [500, 500],
+        {"x": 1000.4, "y": 0},
+        {"x": "abc", "y": 1},
+        {"x": 1000, "y": 999.6},
+        {"y": 3},
+        None,
+        {"x": 0, "y": 1000},
+    ]
+    await _update_zone(
+        hass,
+        {
+            "device_id": device_id,
+            "zone_id": 1,
+            "shape": "polygon",
+            "data": {"points": points},
+        },
+    )
+
+    zone = get_store(hass).device(device_id)[STORE_ZONES][1]
+    assert zone["shape"] == "polygon"
+    assert zone["data"]["points"] == [
+        {"x": 0, "y": 0},
+        {"x": 1000, "y": 0},
+        {"x": 1000, "y": 1000},
+        {"x": 0, "y": 1000},
+    ]
+    assert "clearing zone" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "extra", [{}, {"input_units": "mm"}], ids=["service_call", "card_payload"]
+)
+async def test_add_zone_protocol_creates_a_named_empty_zone(
+    hass, init_integration, device_id, extra
+) -> None:
+    """The card's add-zone call stores an empty named zone and creates entities."""
+    _ = init_integration
+    # The payload the card's add-zone button sends; the card adds input_units
+    # to every write.
+    await _update_zone(
+        hass,
+        {
+            "device_id": device_id,
+            "zone_id": 1,
+            "shape": "none",
+            "data": None,
+            "name": "Zone 1",
+            **extra,
+        },
+    )
+
+    zone = get_store(hass).device(device_id)[STORE_ZONES][1]
+    assert zone == {"shape": "none", "data": None, "name": "Zone 1"}
+    sensor_id, presence_id = _zone_entity_ids(hass, device_id)
+    assert sensor_id
+    assert presence_id
+    sensor = hass.states.get(sensor_id)
+    assert sensor.state == "1"
+    assert sensor.attributes["shape"] == "none"
+    assert sensor.attributes["data"] is None
+    assert sensor.attributes["name"] == "Zone 1"
+    assert hass.states.get(presence_id).state == "off"
+
+
+async def test_clear_entities_wins_over_entities_in_the_same_call(
+    hass, init_integration, device_id
+) -> None:
+    """The explicit clear is never overridden by a pair list sent alongside it."""
+    _ = init_integration
+    await _create_rect_zone(hass, device_id)
+
+    await _update_zone(
+        hass,
+        {
+            "device_id": device_id,
+            "clear_entities": True,
+            "entities": [
+                {
+                    "x": "sensor.r_pro_ld2450_target_2_x",
+                    "y": "sensor.r_pro_ld2450_target_2_y",
+                }
+            ],
+        },
+    )
+
+    assert get_store(hass).device(device_id)[STORE_ENTITIES] == []
+
+
+async def test_entity_pairs_are_reduced_to_x_and_y(
+    hass, init_integration, device_id
+) -> None:
+    """Only the two entity ids of a pair are stored."""
+    _ = init_integration
+    await _update_zone(
+        hass,
+        {
+            "device_id": device_id,
+            "entities": [{**TRACKED[0], "label": "Target 1", "color": "red"}],
+        },
+    )
+
+    assert get_store(hass).device(device_id)[STORE_ENTITIES] == TRACKED
+
+
+@pytest.mark.parametrize(
+    "update",
+    [
+        {
+            "shape": "rect",
+            "data": {"x_min": 2000, "x_max": 3000, "y_min": 0, "y_max": 500},
+        },
+        {"shape": "none"},
+    ],
+    ids=["new_geometry", "cleared"],
+)
+async def test_geometry_update_keeps_the_existing_zone_name(
+    hass, init_integration, device_id, update
+) -> None:
+    """Redrawing or clearing a zone without a name keeps the one it has."""
+    _ = init_integration
+    await _create_rect_zone(hass, device_id)
+    await _rename_zone(hass, device_id, "Couch")
+    registry = er.async_get(hass)
+    sensor_id, presence_id = _zone_entity_ids(hass, device_id)
+    _set_target(hass, TRACKED[0], 0, 1000)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "on"
+
+    await _update_zone(hass, {"device_id": device_id, "zone_id": 1, **update})
+
+    zone = get_store(hass).device(device_id)[STORE_ZONES][1]
+    assert zone["shape"] == update["shape"]
+    assert zone["name"] == "Couch"
+    assert _zone_entity_ids(hass, device_id) == (sensor_id, presence_id)
+    assert registry.async_get(sensor_id).name == "Zone 1 - Couch"
+    assert registry.async_get(presence_id).name == "Zone 1 presence - Couch"
+    assert hass.states.get(sensor_id).attributes["name"] == "Couch"
+    # Both updates move the zone off the target, so presence follows.
+    assert hass.states.get(presence_id).state == "off"
+
+
+@pytest.mark.parametrize("unit", sorted(INPUT_UNIT_FACTORS))
+async def test_valid_input_units_are_stored(
+    hass, init_integration, device_id, unit
+) -> None:
+    """Every unit the presence sensor can scale by is accepted and stored."""
+    _ = init_integration
+    await _update_zone(hass, {"device_id": device_id, "input_units": unit})
+
+    assert get_store(hass).device(device_id)[STORE_INPUT_UNITS] == unit
+
+
+async def test_device_id_wins_over_location(
+    hass, init_integration, device_id, caplog
+) -> None:
+    """With both fields set, `location` is not consulted at all."""
+    _ = init_integration
+    await _update_zone(
+        hass,
+        {
+            "device_id": device_id,
+            "location": "Some Room That Never Existed",
+            ATTR_ROTATION_DEG: 90,
+        },
+    )
+
+    assert get_store(hass).device(device_id)[ATTR_ROTATION_DEG] == 90
+    assert "deprecated" not in caplog.text
+    assert "matches no known radar" not in caplog.text
+
+
+@pytest.mark.parametrize("empty", ["", "   ", []], ids=["empty", "blank", "no_items"])
+async def test_empty_device_id_writes_nothing(
+    hass, init_integration, caplog, empty
+) -> None:
+    """An empty device_id, in any spelling the schema admits, is refused."""
+    _ = init_integration
+    await _update_zone(hass, {"device_id": empty, ATTR_ROTATION_DEG: 90})
+
+    assert get_store(hass).devices == {}
+    assert "empty device_id" in caplog.text
+
+
+async def test_empty_name_clears_the_zone_name(
+    hass, init_integration, device_id
+) -> None:
+    """Renaming to '' drops the name, and a later rename still applies."""
+    _ = init_integration
+    await _create_rect_zone(hass, device_id)
+    # Renamed in its own call: a name sent with the creating call reaches the
+    # store but not the registry, since the entities do not exist yet.
+    await _rename_zone(hass, device_id, "Couch")
+    registry = er.async_get(hass)
+    sensor_id, presence_id = _zone_entity_ids(hass, device_id)
+    assert registry.async_get(sensor_id).name == "Zone 1 - Couch"
+
+    await _rename_zone(hass, device_id, "")
+
+    assert "name" not in hass.states.get(sensor_id).attributes
+    assert registry.async_get(sensor_id).name in (None, "Zone 1")
+    assert registry.async_get(presence_id).name in (None, "Zone 1 presence")
+
+    await _rename_zone(hass, device_id, "Sofa")
+
+    assert registry.async_get(sensor_id).name == "Zone 1 - Sofa"
+    assert registry.async_get(presence_id).name == "Zone 1 presence - Sofa"
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"bogus": 1},
+        {"input_units": "furlong"},
+        {"zone_id": 1, "shape": "triangle", "data": RECT},
+        {"entities": [{"x": "not an id", "y": "sensor.b"}]},
+        {"zone_id": -1},
+        {"zone_id": "abc"},
+    ],
+    ids=[
+        "unknown_key",
+        "unknown_unit",
+        "unknown_shape",
+        "pair_not_an_entity_id",
+        "negative_zone_id",
+        "non_integer_zone_id",
+    ],
+)
+async def test_schema_rejects_malformed_calls(
+    hass, init_integration, device_id, bad
+) -> None:
+    """A malformed field fails the whole call, and nothing is written."""
+    _ = init_integration
+    # The rotation alone would be stored if the call got past the schema.
+    call = {"device_id": device_id, ATTR_ROTATION_DEG: 90, **bad}
+    with pytest.raises(vol.Invalid):
+        await hass.services.async_call(DOMAIN, SERVICE_UPDATE_ZONE, call, blocking=True)
+    await hass.async_block_till_done()
+
+    assert device_id not in get_store(hass).devices
