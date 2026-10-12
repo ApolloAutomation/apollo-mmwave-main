@@ -18,12 +18,14 @@ from custom_components.apollo_mmwave.const import (
     DOMAIN,
     STORE_ALIASES,
     STORE_DEVICES,
+    STORE_ENTITIES,
     STORE_LABEL,
     STORE_ZONES,
 )
 from custom_components.apollo_mmwave.migration import (
     _parse_sensor_unique_id,
     async_import_zone_mapper,
+    async_migrate_legacy,
     async_migrate_unique_ids,
 )
 from custom_components.apollo_mmwave.store import ZoneStore
@@ -286,7 +288,9 @@ async def test_a_locations_zones_resolve_together(
     assert sorted(store.devices[esphome_device.id][STORE_ZONES]) == [1, 2]
     assert store.orphans == {}
     assert not [
-        record for record in caplog.records if "matches no Home Assistant" in record.msg
+        record
+        for record in caplog.records
+        if "matches no Home Assistant" in record.message
     ]
 
 
@@ -313,6 +317,38 @@ async def test_legacy_zones_with_no_matching_device_are_kept_as_orphans(
         record.levelname == "WARNING" and "Office" in record.message
         for record in caplog.records
     )
+
+
+async def test_legacy_rotation_is_rounded_to_whole_degrees(
+    hass, esphome_device
+) -> None:
+    """A fractional legacy rotation is stored rounded, as an int."""
+    legacy = _register_legacy_zone(hass, "Office", 1)
+    mock_restore_cache(
+        hass, [State(legacy, "1", {**LEGACY_ATTRS, "rotation_deg": 15.6})]
+    )
+    store = ZoneStore(hass)
+
+    await async_migrate_legacy(hass, store)
+
+    rotation = store.devices[esphome_device.id]["rotation_deg"]
+    assert rotation == 16
+    assert isinstance(rotation, int)
+
+
+async def test_non_numeric_legacy_rotation_is_dropped(hass, esphome_device) -> None:
+    """A rotation that is not a number is left out; the zone still migrates."""
+    legacy = _register_legacy_zone(hass, "Office", 1)
+    mock_restore_cache(
+        hass, [State(legacy, "1", {**LEGACY_ATTRS, "rotation_deg": "abc"})]
+    )
+    store = ZoneStore(hass)
+
+    await async_migrate_legacy(hass, store)
+
+    entry = store.devices[esphome_device.id]
+    assert entry[STORE_ZONES][1]["shape"] == "rect"
+    assert "rotation_deg" not in entry
 
 
 async def test_legacy_entity_ids_are_left_alone(
@@ -467,11 +503,13 @@ async def test_v1_locations_colliding_on_one_device_adopt_both_locations_entitie
     assert reloaded.devices[device_id][STORE_ALIASES] == [RADAR_NAME]
 
 
-async def _v2_store(hass, hass_storage, devices: dict) -> ZoneStore:
-    """Load a store from a v2 payload whose device entries are given as is."""
+async def _v2_store(
+    hass, hass_storage, devices: dict, orphans: dict | None = None
+) -> ZoneStore:
+    """Load a store from a v2 payload whose entries are given as is."""
     hass_storage[f"{DOMAIN}.zones"] = {
         "version": 2,
-        "data": {"devices": devices, "orphans": {}},
+        "data": {"devices": devices, "orphans": orphans or {}},
     }
     store = ZoneStore(hass)
     assert await store.async_load() is True
@@ -645,6 +683,7 @@ async def test_setup_migrates_unique_ids_before_entities_are_created(
         suggested_object_id=OLD_ZONE_UID,
     )
     entity_registry.async_update_entity(old.entity_id, name="Couch")
+    assert old.device_id is None
     hass_storage[f"{DOMAIN}.zones"] = {
         "version": 1,
         "data": {
@@ -664,7 +703,49 @@ async def test_setup_migrates_unique_ids_before_entities_are_created(
         )
         == old.entity_id
     )
-    assert entity_registry.async_get(old.entity_id).name == "Couch"
+    adopted = entity_registry.async_get(old.entity_id)
+    assert adopted.name == "Couch"
+    assert adopted.device_id == esphome_device.id
+
+
+async def test_adopted_entities_without_a_device_land_on_the_radar(
+    hass, config_entry, hass_storage, entity_registry, esphome_device
+) -> None:
+    """Pre-2.0 zone entities registered with no device end up on the radar's."""
+    # The unique-id rewrite leaves device_id alone. The link is made when each
+    # platform adds the adopted entity with its device entry set, so this pins
+    # that both platforms still do that for an entity they did not create.
+    old_ids = [
+        entity_registry.async_get_or_create(
+            domain, DOMAIN, unique_id, suggested_object_id=unique_id
+        ).entity_id
+        for domain, unique_id in (
+            ("sensor", OLD_ZONE_UID),
+            ("binary_sensor", OLD_PRESENCE_UID),
+        )
+    ]
+    assert [entity_registry.async_get(old).device_id for old in old_ids] == [
+        None,
+        None,
+    ]
+    hass_storage[f"{DOMAIN}.zones"] = {
+        "version": 1,
+        "data": {
+            "locations": {
+                RADAR_NAME: {"zones": {"1": {"shape": "rect", "data": {}}}},
+            }
+        },
+    }
+
+    await setup_integration(hass, config_entry)
+
+    device_id = esphome_device.id
+    adopted = [entity_registry.async_get(old) for old in old_ids]
+    assert [entity.unique_id for entity in adopted] == [
+        f"{device_id}_zone_1",
+        f"{device_id}_zone_1_presence",
+    ]
+    assert [entity.device_id for entity in adopted] == [device_id, device_id]
 
 
 async def test_orphaned_zones_are_promoted_when_their_device_resolves(
@@ -744,6 +825,66 @@ async def test_promotion_does_not_overwrite_zones_already_on_the_device(
     assert entry[STORE_ZONES][2]["shape"] == "polygon"
     assert entry["rotation_deg"] == 90
     assert store.orphans == {}
+
+
+async def _store_with_a_renamed_orphan(hass, hass_storage, device_id: str) -> ZoneStore:
+    """Load a store whose orphan resolves only through its tracked pairs."""
+    # No device is named "Old Office" and the entry already on the radar is
+    # labelled "Kitchen", so neither name leads the orphan to the radar. The
+    # entry was drawn in 2.0 with no coordinate sensors picked, so it has no
+    # `entities` of its own.
+    return await _v2_store(
+        hass,
+        hass_storage,
+        {
+            device_id: {
+                "zones": {"1": {"shape": "ellipse", "data": {}}},
+                "label": "Kitchen",
+            }
+        },
+        {
+            "Old Office": {
+                "zones": {"2": {"shape": "rect", "data": {}}},
+                "entities": [{"x": TARGET_X, "y": TARGET_Y}],
+            }
+        },
+    )
+
+
+async def test_orphan_promotes_via_its_tracked_entities(
+    hass, hass_storage, esphome_device
+) -> None:
+    """An orphan no name matches follows its pairs and fills the gap they leave."""
+    store = await _store_with_a_renamed_orphan(hass, hass_storage, esphome_device.id)
+
+    await async_migrate_unique_ids(hass, store)
+
+    assert store.orphans == {}
+    entry = store.devices[esphome_device.id]
+    assert entry[STORE_ENTITIES] == [{"x": TARGET_X, "y": TARGET_Y}]
+    assert entry[STORE_ZONES][1]["shape"] == "ellipse"
+    assert entry[STORE_ZONES][2]["shape"] == "rect"
+    assert entry[STORE_LABEL] == "Kitchen"
+    assert entry[STORE_ALIASES] == ["Old Office"]
+
+
+async def test_promoted_orphan_under_another_name_rekeys_its_entities(
+    hass, hass_storage, entity_registry, esphome_device
+) -> None:
+    """The orphan's own name bridges its old unique ids, not the device label."""
+    old = entity_registry.async_get_or_create(
+        "sensor",
+        DOMAIN,
+        f"{DOMAIN}_old_office_zone_2",
+        suggested_object_id="old_office_zone_2",
+    )
+    store = await _store_with_a_renamed_orphan(hass, hass_storage, esphome_device.id)
+
+    await async_migrate_unique_ids(hass, store)
+
+    assert entity_registry.async_get(old.entity_id).unique_id == (
+        f"{esphome_device.id}_zone_2"
+    )
 
 
 async def test_promotion_into_an_unlabelled_device_keeps_the_location_name(
@@ -888,14 +1029,89 @@ async def test_import_skips_a_non_finite_rotation(hass, device_registry) -> None
 
 
 async def test_import_leaves_zone_mapper_entity_ids_alone(
-    hass, entity_registry
+    hass, entity_registry, device_registry
 ) -> None:
     """The other integration may still be running; do not rename its entities."""
+    device = _make_radar(hass, device_registry, "Kitchen")
+    legacy = _register_zone_mapper_zone(hass, "Kitchen", 1)
+    mock_restore_cache(hass, [State(legacy, "1", ZONE_MAPPER_ATTRS)])
+    store = ZoneStore(hass)
+
+    imported = await async_import_zone_mapper(hass, store)
+
+    assert imported == 1
+    assert store.devices[device.id][STORE_ZONES][1]["shape"] == "rect"
+    # Looked up by the unique id it was registered under, so a re-key would
+    # show here as well as a rename.
+    assert (
+        entity_registry.async_get_entity_id(
+            "sensor", "zone_mapper", "zone_mapper_kitchen_zone_1"
+        )
+        == legacy
+    )
+
+
+async def test_import_skips_a_zone_mapper_zone_with_no_restored_shape(
+    hass, device_registry
+) -> None:
+    """A zone whose data is not in the restore cache is not imported as empty."""
+    _make_radar(hass, device_registry, "Kitchen")
+    _register_zone_mapper_zone(hass, "Kitchen", 1)
+    store = ZoneStore(hass)
+
+    imported = await async_import_zone_mapper(hass, store)
+
+    assert imported == 0
+    assert store.devices == {}
+
+
+async def test_import_skips_zone_mapper_entities_that_are_not_zone_sensors(
+    hass, device_registry
+) -> None:
+    """Only a zone sensor's unique id names a zone; anything else is skipped."""
+    _make_radar(hass, device_registry, "Kitchen")
+    other = (
+        er.async_get(hass)
+        .async_get_or_create(
+            "binary_sensor",
+            "zone_mapper",
+            "zone_mapper_kitchen_zone_1_presence",
+            suggested_object_id="zone_mapper_kitchen_zone_1_presence",
+            original_name="Zone Mapper Kitchen Zone 1 Presence",
+        )
+        .entity_id
+    )
+    # Restored with zone data, so only the unique id check keeps it out.
+    mock_restore_cache(hass, [State(other, "on", ZONE_MAPPER_ATTRS)])
+    store = ZoneStore(hass)
+
+    imported = await async_import_zone_mapper(hass, store)
+
+    assert imported == 0
+    assert store.devices == {}
+
+
+async def test_unmatched_zone_mapper_location_is_reported_and_not_imported(
+    hass, esphome_device, caplog
+) -> None:
+    """A location no device matches is named in a warning and stores nothing."""
+    _ = esphome_device
     legacy = _register_zone_mapper_zone(hass, "Ghost", 1)
+    mock_restore_cache(
+        hass, [State(legacy, "1", {**ZONE_MAPPER_ATTRS, "entities": []})]
+    )
+    store = ZoneStore(hass)
 
-    await async_import_zone_mapper(hass, ZoneStore(hass))
+    imported = await async_import_zone_mapper(hass, store)
 
-    assert entity_registry.async_get(legacy).entity_id == legacy
+    assert imported == 0
+    assert store.devices == {}
+    assert store.orphans == {}
+    assert any(
+        record.levelname == "WARNING"
+        and "could not match zone_mapper location 'Ghost'" in record.message
+        for record in caplog.records
+    )
 
 
 async def test_imported_locations_colliding_on_one_device_keep_both_zones(

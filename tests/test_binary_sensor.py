@@ -227,10 +227,9 @@ async def test_presence_scales_readings_by_the_devices_input_units(
     device_id, _ = setup_entry_with_zone
     presence_id = _presence_id(entity_registry, device_id)
 
-    # The zone spans y 0..2000 mm. A reading of 100 cm is inside; taken as
-    # millimetres it would be too, so use one that only fits when scaled: 150
-    # cm is 1500 mm (inside), but 150 mm is inside as well, so go the other
-    # way: 250 cm is 2500 mm (outside), while 250 mm would read inside.
+    # The zone spans y 0..2000 mm. 250 cm = 2500 mm is outside, while 250 mm
+    # would be inside, so only a scaled reading turns presence off; 150 cm =
+    # 1500 mm is inside.
     await hass.services.async_call(
         DOMAIN,
         SERVICE_UPDATE_ZONE,
