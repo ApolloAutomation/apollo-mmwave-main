@@ -10,9 +10,12 @@ element with no way to recover short of a hard refresh.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
 from homeassistant.components.frontend import DATA_PANELS
 from homeassistant.components.lovelace.const import LOVELACE_DATA, ConfigNotFound
+from homeassistant.loader import async_get_integration
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -32,6 +35,9 @@ from custom_components.apollo_mmwave.frontend import (
 )
 
 from .conftest import setup_integration
+
+if TYPE_CHECKING:
+    from homeassistant.components.lovelace.resources import ResourceStorageCollection
 
 
 async def test_lovelace_resources_registered(hass, config_entry) -> None:
@@ -110,6 +116,113 @@ async def test_stale_bundle_resource_is_removed(hass, config_entry) -> None:
     assert any(
         u.startswith("/apollo_mmwave/apollo-radar-zone-map-card.js") for u in urls
     )
+
+
+TUNING_URL = "/apollo_mmwave/apollo-radar-tuning.js"
+FOREIGN_URL = "/local/community/somebody-elses-card.js"
+
+
+async def _resources_before_setup(hass) -> ResourceStorageCollection:
+    """Return the storage resource collection, loaded, before our setup runs."""
+    assert await async_setup_component(hass, "lovelace", {})
+    resources = hass.data[LOVELACE_DATA].resources
+    if not resources.loaded:
+        await resources.async_load()
+        resources.loaded = True
+    return resources
+
+
+async def _current_tuning_url(hass) -> str:
+    """Return the tuning bundle's url with this version's cache-buster."""
+    version = (await async_get_integration(hass, DOMAIN)).version
+    return f"{TUNING_URL}?v={version}"
+
+
+def _tuning_rows(resources: ResourceStorageCollection) -> list[dict]:
+    """Return every resource row for the tuning bundle, any ?v= or none."""
+    return [
+        i
+        for i in resources.async_items()
+        if str(i.get("url", "")).partition("?")[0] == TUNING_URL
+    ]
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        pytest.param([TUNING_URL, f"{TUNING_URL}?v=0.0.1"], id="bare-then-stale"),
+        pytest.param([f"{TUNING_URL}?v=0.0.1", TUNING_URL], id="stale-then-bare"),
+        pytest.param(["{current}", TUNING_URL], id="current-then-bare"),
+        pytest.param([TUNING_URL, "{current}"], id="bare-then-current"),
+        pytest.param(["{current}", "{current}"], id="current-twice"),
+    ],
+)
+async def test_duplicate_resource_rows_collapse_to_one(
+    hass, config_entry, rows
+) -> None:
+    """
+    Two rows for one bundle end up as one row at the current version.
+
+    Keying rows by bundle used to hide every row but the last, so an old ?v=
+    copy or one added by hand without the cache-buster survived forever and
+    the browser fetched and ran the bundle twice. A row already at the
+    current version is the one kept when there is one.
+    """
+    resources = await _resources_before_setup(hass)
+    current = await _current_tuning_url(hass)
+    for url in rows:
+        await resources.async_create_item(
+            {"res_type": "module", "url": url.format(current=current)}
+        )
+    await resources.async_create_item({"res_type": "js", "url": FOREIGN_URL})
+    current_ids = {i["id"] for i in _tuning_rows(resources) if i["url"] == current}
+
+    await setup_integration(hass, config_entry)
+
+    ours = _tuning_rows(resources)
+    assert len(ours) == 1
+    assert ours[0]["url"] == current
+    assert ours[0]["type"] == "module"
+    if current_ids:
+        assert ours[0]["id"] in current_ids
+    # Somebody else's row is never touched.
+    foreign = [i for i in resources.async_items() if i["url"] == FOREIGN_URL]
+    assert len(foreign) == 1
+    assert foreign[0]["type"] == "js"
+
+    # The next boot finds nothing left to fix.
+    kept_id = ours[0]["id"]
+    hass.data[DOMAIN].pop(DATA_ASSETS_REGISTERED, None)
+    await async_register_frontend_assets(hass)
+    ours = _tuning_rows(resources)
+    assert [i["id"] for i in ours] == [kept_id]
+
+
+@pytest.mark.parametrize("version", ["0.0.1", None], ids=["stale-v", "current-v"])
+async def test_mistyped_resource_row_is_repointed_as_a_module(
+    hass, config_entry, version
+) -> None:
+    """
+    A row for our bundle added as a classic "js" script becomes a module row.
+
+    The bundles are ES modules, so loaded as a classic script they throw on
+    the top-level ``export`` and the strategy element never defines. Only the
+    url used to be compared, so the row kept its "js" type even after being
+    logged as updated, and a "js" row already at the current ?v= was left
+    alone entirely.
+    """
+    resources = await _resources_before_setup(hass)
+    current = await _current_tuning_url(hass)
+    url = f"{TUNING_URL}?v={version}" if version else current
+    created = await resources.async_create_item({"res_type": "js", "url": url})
+
+    await setup_integration(hass, config_entry)
+
+    ours = _tuning_rows(resources)
+    assert len(ours) == 1
+    assert ours[0]["id"] == created["id"]
+    assert ours[0]["url"] == current
+    assert ours[0]["type"] == "module"
 
 
 @pytest.fixture

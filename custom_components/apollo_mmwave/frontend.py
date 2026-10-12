@@ -85,6 +85,11 @@ def _frontend_path() -> Path:
     return Path(__file__).parent / FRONTEND_DIR
 
 
+def _base_url(item: dict[str, Any]) -> str:
+    """Return a resource row's url with the ``?v=`` cache-buster stripped."""
+    return str(item.get("url", "")).partition("?")[0]
+
+
 async def async_register_frontend_assets(hass: HomeAssistant) -> None:
     """Serve and register the bundled JS so the cards/strategy load globally."""
     if hass.data.setdefault(DOMAIN, {}).get(DATA_ASSETS_REGISTERED):
@@ -137,6 +142,14 @@ async def _async_register_lovelace_resources(
     dashboard times out waiting for the strategy element and only a hard
     refresh recovers. Every non-success branch logs at warning with the reason.
 
+    Each bundle keeps exactly one row. A second row for the same bundle (an
+    old ``?v=`` copy, or one added by hand without the cache-buster) makes the
+    browser fetch and run the module twice, and an un-versioned copy is served
+    with the long cache header and never busted, so the extras are deleted.
+    The row that stays is repointed at the current version as a ``module``: a
+    row added by hand as a classic ``js`` script throws on the bundle's
+    top-level ``export``.
+
     Entries under our static path that are no longer in ``JS_BUNDLES`` are
     deleted, so renaming a bundle does not leave a 404 behind on upgrade.
     """
@@ -165,24 +178,40 @@ async def _async_register_lovelace_resources(
             await resources.async_load()
             resources.loaded = True
 
-        existing: dict[str, dict[str, Any]] = {}
-        for item in resources.async_items():
-            url = str(item.get("url", ""))
-            existing[url.partition("?")[0]] = item
+        # Only rows under our own static path are ever looked at. All of them
+        # are collected, grouped by url with the ?v= cache-buster stripped, so
+        # a second row for one bundle is seen instead of hiding behind the last.
+        prefix = f"{STATIC_URL_BASE}/"
+        ours: list[dict[str, Any]] = [
+            item
+            for item in resources.async_items()
+            if str(item.get("url", "")).startswith(prefix)
+        ]
+        by_base: dict[str, list[dict[str, Any]]] = {}
+        for item in ours:
+            by_base.setdefault(_base_url(item), []).append(item)
 
         created: list[str] = []
         updated: list[str] = []
+        duplicate_ids: set[str] = set()
         for url in js_urls:
-            item = existing.get(url.partition("?")[0])
-            if item is None:
+            rows = by_base.get(url.partition("?")[0], [])
+            if not rows:
                 await resources.async_create_item({"res_type": "module", "url": url})
                 created.append(url)
-            elif item.get("url") != url:
-                # Same bundle, older ?v= cache-buster: point it at this version.
-                await resources.async_update_item(item["id"], {"url": url})
+                continue
+            # Keep one row, preferring one already at this version.
+            item = next((row for row in rows if row.get("url") == url), rows[0])
+            duplicate_ids.update(row["id"] for row in rows if row is not item)
+            if item.get("url") != url or item.get("type") != "module":
+                # Same bundle, older ?v= cache-buster or a classic "js" row:
+                # point it at this version as a module.
+                await resources.async_update_item(
+                    item["id"], {"url": url, "res_type": "module"}
+                )
                 updated.append(url)
 
-        removed = await _async_remove_stale_resources(resources, existing)
+        removed = await _async_remove_stale_resources(resources, ours, duplicate_ids)
 
         if created or updated or removed:
             _LOGGER.info(
@@ -204,7 +233,7 @@ async def _async_register_lovelace_resources(
 
 
 async def _async_remove_stale_resources(
-    resources: Any, existing: dict[str, dict[str, Any]]
+    resources: Any, items: list[dict[str, Any]], duplicate_ids: set[str]
 ) -> list[str]:
     """
     Delete resource entries under our static path that we no longer ship.
@@ -215,17 +244,21 @@ async def _async_remove_stale_resources(
     what we serve, so anything else below ``/apollo_mmwave/`` is ours and dead.
     Nothing outside that prefix is ever touched.
 
-    ``existing`` is keyed by url with the ``?v=`` cache-buster stripped.
+    ``items`` is every row under our static path, duplicates included, and
+    ``duplicate_ids`` names the extra rows for a bundle that already kept one.
     """
     if not hasattr(resources, "async_delete_item"):
         return []
     prefix = f"{STATIC_URL_BASE}/"
-    ours = {f"{prefix}{name}" for name in JS_BUNDLES}
+    shipped = {f"{prefix}{name}" for name in JS_BUNDLES}
     removed: list[str] = []
-    for url, item in existing.items():
-        if url.startswith(prefix) and url not in ours:
+    for item in items:
+        url = _base_url(item)
+        if not url.startswith(prefix):
+            continue
+        if url not in shipped or item["id"] in duplicate_ids:
             await resources.async_delete_item(item["id"])
-            removed.append(url)
+            removed.append(str(item.get("url", "")))
     return removed
 
 
