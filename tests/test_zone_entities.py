@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from homeassistant.const import ATTR_RESTORED, STATE_UNAVAILABLE
 from homeassistant.core import callback
 from homeassistant.helpers import device_registry as dr
@@ -12,7 +10,10 @@ from homeassistant.helpers.dispatcher import (
     async_dispatcher_connect,
     async_dispatcher_send,
 )
-from homeassistant.helpers.entity_platform import DATA_ENTITY_PLATFORM
+from homeassistant.helpers.entity_platform import (
+    DATA_ENTITY_PLATFORM,
+    EntityPlatform,
+)
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.apollo_mmwave import get_store
@@ -32,9 +33,6 @@ from custom_components.apollo_mmwave.zone_entities import (
 )
 
 from .conftest import RECT_ZONE, setup_integration
-
-if TYPE_CHECKING:
-    from homeassistant.helpers.entity_platform import EntityPlatform
 
 DISABLED_RADAR_SERIAL = "apollo_mtr_1_fed789"
 DISABLED_RADAR_NAME = "Apollo MTR-1 fed789"
@@ -92,17 +90,36 @@ def _live_zone_entities(platforms: list[EntityPlatform]) -> list[ZoneEntityMixin
     ]
 
 
+def _record_aborts(monkeypatch) -> list[ZoneEntityMixin]:
+    """Record every zone entity the platform refuses, then refuse it as before."""
+    aborted: list[ZoneEntityMixin] = []
+    real = ZoneEntityMixin.add_to_platform_abort
+
+    def _spy(self: ZoneEntityMixin) -> None:
+        aborted.append(self)
+        real(self)
+
+    monkeypatch.setattr(ZoneEntityMixin, "add_to_platform_abort", _spy)
+    return aborted
+
+
 async def test_delete_and_immediate_redraw_keeps_one_entity_per_zone(
     hass, init_integration, device_id
 ) -> None:
-    """Deleting a zone and redrawing it before HA finishes removing the old entity."""
+    """
+    Deleting a zone and redrawing it straight away leaves one entity per zone.
+
+    Home Assistant has finished removing the old entities by the time the
+    redraw runs, so no add is refused and the tracker's retry path is not
+    reached here; test_a_refused_add_is_retried_on_the_next_signal forces it.
+    """
     _ = init_integration
     await _draw(hass, device_id)
     await hass.async_block_till_done()
     before = _zone_entity_ids(hass, device_id)
     assert all(before)
 
-    # No block_till_done between the two: the old entities are still leaving.
+    # No block_till_done between the two: the redraw follows the delete at once.
     await hass.services.async_call(
         DOMAIN,
         SERVICE_UPDATE_ZONE,
@@ -150,6 +167,102 @@ async def test_refused_add_is_retried_on_the_next_zone_signal(
     tracker.mark_gone(key)
     assert tracker.needs_entity(key)
     assert not tracker.is_disabled(f"{device_id}_zone_1")
+
+
+async def test_a_user_disabled_zone_entity_is_not_re_added_on_every_signal(
+    hass, entity_registry, setup_entry_with_zone, monkeypatch
+) -> None:
+    """A zone sensor the user disabled is skipped, not offered and refused again."""
+    device_id, _ = setup_entry_with_zone
+    sensor_id, _presence_id = _zone_entity_ids(hass, device_id)
+    assert sensor_id is not None
+    entity_registry.async_update_entity(
+        sensor_id, disabled_by=er.RegistryEntryDisabler.USER
+    )
+    await hass.async_block_till_done()
+    assert hass.states.get(sensor_id) is None
+    aborted = _record_aborts(monkeypatch)
+
+    for _ in range(2):
+        async_dispatcher_send(hass, SIGNAL_ZONES_UPDATED, device_id)
+        await hass.async_block_till_done()
+
+    assert aborted == []
+    assert hass.states.get(sensor_id) is None
+
+
+async def test_a_refused_add_is_retried_on_the_next_signal(
+    hass, init_integration, device_id, entity_registry, monkeypatch
+) -> None:
+    """A zone sensor the real platform refused gets a live entity on the next signal."""
+    _ = init_integration
+    aborted = _record_aborts(monkeypatch)
+    real_exists = EntityPlatform._entity_id_already_exists  # noqa: SLF001 - forced below
+    refused: list[str] = []
+
+    def _exists_once(self: EntityPlatform, entity_id: str) -> tuple[bool, bool]:
+        sensor_id = entity_registry.async_get_entity_id(
+            "sensor", DOMAIN, f"{device_id}_zone_1"
+        )
+        if not refused and entity_id == sensor_id:
+            refused.append(entity_id)
+            # Taken and not a restored placeholder: the platform aborts the add.
+            return True, False
+        return real_exists(self, entity_id)
+
+    monkeypatch.setattr(EntityPlatform, "_entity_id_already_exists", _exists_once)
+    await _draw(hass, device_id)
+    await hass.async_block_till_done()
+
+    sensor_id, presence_id = _zone_entity_ids(hass, device_id)
+    assert sensor_id is not None
+    assert refused == [sensor_id]
+    assert [entity.unique_id for entity in aborted] == [f"{device_id}_zone_1"]
+    tracker = aborted[0]._tracker  # noqa: SLF001 - the tracker is the subject
+    assert tracker.has_aborted
+    assert hass.states.get(sensor_id) is None
+    assert hass.states.get(presence_id) is not None
+
+    async_dispatcher_send(hass, SIGNAL_ZONES_UPDATED, device_id)
+    await hass.async_block_till_done()
+
+    assert len(aborted) == 1
+    assert not tracker.has_aborted
+    assert hass.states.get(sensor_id) is not None
+
+
+async def test_removing_zone_entities_sends_no_nudge_when_no_add_was_refused(
+    hass, init_integration, device_id, monkeypatch
+) -> None:
+    """With every add accepted, deleting a zone sends only the service's signal."""
+    _ = init_integration
+    await _draw(hass, device_id)
+    await hass.async_block_till_done()
+    sensor_id, presence_id = _zone_entity_ids(hass, device_id)
+    assert hass.states.get(sensor_id) is not None
+    assert hass.states.get(presence_id) is not None
+    aborted = _record_aborts(monkeypatch)
+    signals: list[str] = []
+
+    @callback
+    def _record(signal_device_id: str) -> None:
+        signals.append(signal_device_id)
+
+    unsub = async_dispatcher_connect(hass, SIGNAL_ZONES_UPDATED, _record)
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_UPDATE_ZONE,
+        {"device_id": device_id, "zone_id": 1, "delete": True},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+    unsub()
+
+    assert hass.states.get(sensor_id) is None
+    assert hass.states.get(presence_id) is None
+    assert aborted == []
+    # Both zone entities left; neither removal re-sent the signal.
+    assert signals == [device_id]
 
 
 async def test_zone_on_a_disabled_device_does_not_keep_an_aborted_attempt(
