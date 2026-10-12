@@ -994,3 +994,178 @@ describe("zone map card pointer leaving the canvas", () => {
     expect(hass.callService).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * Mode changes, re-renders and retargets in the middle of a polygon.
+ *
+ * Every render() ends by re-applying the current draw mode, and so does a
+ * click on the mode button that is already active. That call used to clear
+ * `isDrawing` but keep the vertices, which hid them from the canvas while
+ * Finish, Backspace and the next click still used them. Only a real mode
+ * change, or pointing the card at another radar, drops a polygon in progress.
+ */
+describe("zone map card drawing across mode changes and re-renders", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** happy-dom has no layout: give the current canvas an 800x800 CSS box. */
+  function stubLayout(card: any) {
+    vi.spyOn(card.canvas, "getBoundingClientRect").mockReturnValue({
+      left: 0,
+      top: 0,
+      right: 800,
+      bottom: 800,
+      x: 0,
+      y: 0,
+      width: 800,
+      height: 800,
+      toJSON: () => ({}),
+    } as DOMRect);
+  }
+
+  /** Unlocked on dev123 with zone 1 selected and two polygon vertices placed. */
+  async function halfDrawnPolygon() {
+    const hass = fakeHass();
+    const card = await mountCard(hass, { start_locked: false });
+    expect(card.selectedZone).toBe(1);
+    card.shadowRoot.getElementById("btnModePolygon").click();
+    stubLayout(card);
+    click(card, 100, 100);
+    click(card, 300, 100);
+    expect(card.isDrawing).toBe(true);
+    expect(card._polyPoints).toHaveLength(2);
+    hass.callService.mockClear();
+    return { card, hass };
+  }
+
+  /** One mouse click on the canvas, never close enough in time to finish. */
+  function click(card: any, x: number, y: number) {
+    card._lastPolyTap = 0;
+    card.canvas.dispatchEvent(new MouseEvent("mousedown", { clientX: x, clientY: y }));
+    card.canvas.dispatchEvent(new MouseEvent("mouseup", { clientX: x, clientY: y }));
+  }
+
+  function polygonSaves(hass: any): any[] {
+    return hass.callService.mock.calls.filter(
+      (call: any[]) => call[1] === "update_zone" && call[2].shape === "polygon"
+    );
+  }
+
+  const TWO_CORNERS = [
+    { x: -3750, y: 1250 },
+    { x: -1250, y: 1250 },
+  ];
+
+  it("keeps the vertices visible when the active Polygon button is clicked again", async () => {
+    const { card, hass } = await halfDrawnPolygon();
+
+    card.shadowRoot.getElementById("btnModePolygon").click();
+
+    expect(card.drawMode).toBe("polygon");
+    expect(card.isDrawing).toBe(true);
+    expect(card._polyPoints).toEqual(TWO_CORNERS);
+    expect(card.shadowRoot.getElementById("btnModePolygon").classList.contains("active")).toBe(
+      true
+    );
+    expect(hass.callService).not.toHaveBeenCalled();
+  });
+
+  it("keeps the vertices visible and live across a theme-flip render", async () => {
+    const { card, hass } = await halfDrawnPolygon();
+    const canvasBefore = card.canvas;
+
+    hass.themes = { darkMode: true };
+    card.hass = hass;
+
+    // A fresh canvas proves render() ran and re-applied the draw mode.
+    expect(card.canvas).not.toBe(canvasBefore);
+    expect(card.drawMode).toBe("polygon");
+    expect(card.isDrawing).toBe(true);
+    expect(card._polyPoints).toEqual(TWO_CORNERS);
+    expect(card.shadowRoot.getElementById("btnModePolygon").classList.contains("active")).toBe(
+      true
+    );
+    expect(card.shadowRoot.getElementById("btnPolyFinish").style.display).toBe("block");
+
+    stubLayout(card);
+    click(card, 300, 300);
+    card.shadowRoot.getElementById("btnPolyFinish").click();
+
+    const saves = polygonSaves(hass);
+    expect(saves).toHaveLength(1);
+    expect(saves[0][2].zone_id).toBe(1);
+    expect(saves[0][2].data.points).toEqual([...TWO_CORNERS, { x: -1250, y: 3750 }]);
+  });
+
+  it("drops a half-drawn polygon when the mode actually changes", async () => {
+    const { card, hass } = await halfDrawnPolygon();
+
+    card.shadowRoot.getElementById("btnModeRect").click();
+
+    expect(card.drawMode).toBe("rect");
+    expect(card._polyPoints).toEqual([]);
+    expect(card.isDrawing).toBe(false);
+    expect(card.startPoint).toBeNull();
+    expect(card.shadowRoot.getElementById("btnPolyFinish").style.display).toBe("none");
+    expect(hass.callService).not.toHaveBeenCalled();
+  });
+
+  it("never leaves placed vertices behind a cleared isDrawing", async () => {
+    const { card } = await halfDrawnPolygon();
+
+    for (const mode of ["polygon", "rect", "rect", "polygon", "ellipse", "polygon", undefined]) {
+      if (card.drawMode === "polygon") {
+        click(card, 500, 500);
+        click(card, 700, 500);
+      }
+      card._setDrawMode(mode);
+      expect(card.isDrawing || card._polyPoints.length === 0).toBe(true);
+    }
+  });
+
+  it("drops a half-drawn polygon when pointed at another radar", async () => {
+    const { card, hass } = await halfDrawnPolygon();
+    hass.payload = {
+      ...ZONE_PAYLOAD,
+      zones: {
+        "7": { shape: "rect", data: { x_min: 0, x_max: 500, y_min: 0, y_max: 500 } },
+      },
+      label: "Bedroom",
+    };
+
+    card.setConfig({
+      type: "custom:apollo-radar-zone-map-card",
+      device_id: "devB",
+      start_locked: false,
+    });
+
+    expect(card._polyPoints).toEqual([]);
+    expect(card.isDrawing).toBe(false);
+    expect(card.startPoint).toBeNull();
+
+    // Once devB answers, its first zone is selected, so a commit would land
+    // there. One click starts a fresh polygon instead of extending dev123's.
+    await vi.waitFor(() => expect(card.selectedZone).toBe(7));
+    stubLayout(card);
+    click(card, 300, 300);
+    expect(card._polyPoints).toEqual([{ x: -1250, y: 3750 }]);
+    card.finishPolygon();
+
+    expect(polygonSaves(hass)).toEqual([]);
+  });
+
+  it("keeps a half-drawn polygon when the config changes but the radar does not", async () => {
+    const { card } = await halfDrawnPolygon();
+
+    card.setConfig({
+      type: "custom:apollo-radar-zone-map-card",
+      device_id: "dev123",
+      start_locked: false,
+      title: "Kitchen",
+    });
+
+    expect(card.isDrawing).toBe(true);
+    expect(card._polyPoints).toEqual(TWO_CORNERS);
+  });
+});

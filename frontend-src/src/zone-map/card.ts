@@ -283,11 +283,12 @@ export class ZoneMapCard extends HTMLElement {
     const previousDeviceId = this.deviceId;
     this.deviceId = String(config.device_id);
     if (previousDeviceId !== this.deviceId) {
-      // Home Assistant reuses a live element and calls setConfig again when the
-      // config changes: the editor preview on every keystroke, the generated
-      // dashboard when a device is added or removed and a per-position
-      // device_id shifts. Retargeting the writes without retargeting the reads
-      // would leave the card drawing one radar and saving to another.
+      // A live element can be pointed at another radar: a parent that
+      // reassigns `config` on the same hui-card, or a wrapper card that calls
+      // setConfig directly. (On supported Home Assistant the editor preview
+      // and a regenerated view or section build a fresh element instead.)
+      // Retargeting the writes without retargeting the reads would leave the
+      // card drawing one radar and saving to another.
       this._resetDeviceState();
     }
     // Display only, so a user can call the card "Kitchen" and still share zone
@@ -381,6 +382,9 @@ export class ZoneMapCard extends HTMLElement {
     // snapshot that outlives the retarget is the same cross-device overwrite as
     // a drag, just reached through Undo. render() disables the button from here.
     this._undoSnapshot = null;
+    // Same for a polygon in progress: its vertices were placed on the old
+    // radar's map, and Finish would save them under the new radar's zone.
+    this._resetDrawingState();
     // Cosmetic, but both belong to the radar that was being shown: the slider
     // would hold the old angle and the lock the old state until the new radar
     // answers. Both are re-applied from the new config below and from the first
@@ -1484,18 +1488,19 @@ export class ZoneMapCard extends HTMLElement {
 
   _setDrawMode(mode) {
     const nextMode = mode || DRAW_MODES.RECT;
-    if (this.drawMode === nextMode && !this.isDrawing) {
+    if (this.drawMode === nextMode) {
+      // Re-selecting the active mode, or the call at the end of every
+      // render() (a theme flip, a same-radar setConfig), leaves a shape in
+      // progress alone. Clearing just `isDrawing` would hide placed polygon
+      // vertices that Finish, Backspace and the next click still act on. The
+      // rebuilt buttons still need their highlight.
       this._highlightActiveModeButton();
       this._updatePolygonButtonsVisibility();
       return;
     }
     this.drawMode = nextMode;
-    if (this.drawMode !== DRAW_MODES.POLYGON) {
-      this._polyPoints = [];
-    }
-    this._cursorPoint = null;
-    this.startPoint = null;
-    this.isDrawing = false;
+    // A shape drawn in one mode cannot be finished in another.
+    this._resetDrawingState();
     this._highlightActiveModeButton();
     this._updatePolygonButtonsVisibility();
     this._invalidateGridCache();
