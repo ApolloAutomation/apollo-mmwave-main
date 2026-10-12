@@ -397,7 +397,7 @@ export class ZoneMapCard extends HTMLElement {
     if (!this._hass) return false;
     // The presence sensors scale target readings by the same unit this card
     // draws them in, so every write carries it. Absent on the backend means
-    // millimetres, which is also this card's default.
+    // millimeters, which is also this card's default.
     const request = { ...payload, input_units: this.inputUnits };
     try {
       // notifyOnError false: the catch below raises the card's own toast, and
@@ -2960,7 +2960,7 @@ export class ZoneMapCard extends HTMLElement {
 }
 
 // This used to be a hand-maintained copy of registerElement's define-then-
-// re-assert dance. Same behaviour, one implementation now.
+// re-assert dance. Same behavior, one implementation now.
 //
 // The name is in our own namespace and the old `zone-mapper-card` is not
 // aliased. Both bundles used to claim that one name, so whichever loaded first

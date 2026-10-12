@@ -58,7 +58,7 @@ update_zone:
         boolean: {}
     input_units:
       name: Target Sensor Units
-      description: "Unit the radar's X/Y target sensors report in. Zone geometry is always millimetres; presence detection scales readings by this before testing them. Device-wide. Apollo firmware reports millimetres, so leave this unset unless you are on DIY hardware."
+      description: "Unit the radar's X/Y target sensors report in. Zone geometry is always millimeters; presence detection scales readings by this before testing them. Device-wide. Apollo firmware reports millimeters, so leave this unset unless you are on DIY hardware."
       required: false
       selector:
         select:
@@ -96,7 +96,7 @@ update_zone:
 
 calibrate_gates:
   name: Calibrate gate thresholds (empty room)
-  description: "Listens to the radar's per-gate energy while the room is empty, then sets every gate's move and still threshold just above what it heard. The current thresholds are saved first; use restore_gate_thresholds to undo. Radar Engineering Mode is turned on for the listen and back off afterwards if it was off."
+  description: "Listens to the radar's per-gate energy while the room is empty, then sets every gate's move and still threshold a margin above what it heard. The current thresholds are saved first; use restore_gate_thresholds to undo. Radar Engineering Mode is turned on for the listen and back off afterward if it was off."
   fields:
     device_id:
       name: Radar Device

@@ -90,7 +90,7 @@ const PAD_T = 10;
 const PLOT_H = HEIGHT - PAD_B - PAD_T;
 const MAX_ENERGY = 100;
 /** Where the overlay button sits, as a fraction of the plot height: below the
- *  two-line SVG text centred at 0.5. */
+ *  two-line SVG text centered at 0.5. */
 const BUTTON_PLOT_FRACTION = 0.8;
 
 /** Y pixel for an energy value 0..100 (0 at the bottom axis). */
@@ -117,7 +117,7 @@ export function renderGateEnergyChart(
     const stillX = cx + 2;
     const els: TemplateResult[] = [];
     // A bar above its threshold is the gate detecting right now; outline it
-    // in the threshold colour so the walk test is visible on the chart.
+    // in the threshold color so the walk test is visible on the chart.
     // Lit drops an attribute whose value is `nothing`, so a quiet bar carries
     // no stroke at all.
     const moveAbove =
