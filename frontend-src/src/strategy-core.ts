@@ -82,6 +82,8 @@ function hasLiveRadarEvidence(
   const m = entityMapFromDevice(hass, deviceId);
   const radarIds: (string | undefined)[] = [];
   if (m) {
+    // TODO(REVIEW_REPORT.md X37): omits bluetooth and gate_size, so a no-model device live only
+    // on those is dropped; if changed, derive from entityIds(m) minus chip-agnostic buttons.
     radarIds.push(
       m.engineering_mode,
       m.radar_timeout,
@@ -183,6 +185,8 @@ export function strategyDevices(
     const d = deviceFromId(hass, config.device_id, true);
     return d ? [d] : [];
   }
+  // TODO(REVIEW_REPORT.md X34): a hand-written `devices: "id"` string throws in .map; consider
+  // normalizing (an array as is, a string to [string], else []) with a test.
   if (config.devices?.length) {
     return config.devices
       .map((id) => deviceFromId(hass, id, true))
@@ -323,6 +327,8 @@ function cardMap(
       `${label} Zone Config`,
       presentRows(hass, zoneConfigRows(m))
     );
+    // TODO(REVIEW_REPORT.md X35): emitted even for offline or unresolvable devices (deliberate,
+    // per OFFLINE_NOTE); at most drop device_base_name when dev.base === dev.deviceId.
     // device_id is the durable reference; device_base_name is kept so configs
     // still resolve on older card bundles (and as the in-card fallback).
     cards.distance = {
@@ -455,6 +461,8 @@ export function deviceView(
   path: string = dev.base,
   calibration?: CalibrationOptions
 ): Record<string, any> {
+  // TODO(REVIEW_REPORT.md X36): no max_columns, so an R-PRO-1's five sections wrap the Zone
+  // Map to a second row (HA default is 4); choose max_columns 5, a column_span, or accept it.
   return {
     title: dev.name,
     path,
@@ -477,6 +485,8 @@ export function generateViews(
 ): Record<string, any>[] {
   const used = new Set<string>();
   return strategyDevices(hass, config).map((d) => {
+    // TODO(REVIEW_REPORT.md X33): the bare path goes to whichever same-base device hass.devices
+    // lists first; if adopted, sort colliders by deviceId (or suffix all) with an order test.
     let path = d.base;
     if (used.has(path)) path = `${d.base}_${d.deviceId}`;
     used.add(path);
@@ -489,6 +499,8 @@ export function generateSections(
   hass: HomeAssistant,
   config: StrategyConfig
 ): Record<string, any>[] {
+  // TODO(REVIEW_REPORT.md X38): several devices run together in one grid with no separator;
+  // document the view strategy as single-device, or head each device when more than one.
   return strategyDevices(hass, config).flatMap((d) =>
     buildDeviceSections(hass, d, config.distance_unit, config.calibration)
   );

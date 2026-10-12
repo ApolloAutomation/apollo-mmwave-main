@@ -7,6 +7,8 @@ export function parseGateSizeMeters(state: string | undefined): number | undefin
   const match = state.replace(",", ".").match(/[0-9]*\.?[0-9]+/);
   if (!match) return undefined;
   const value = parseFloat(match[0]);
+  // TODO(REVIEW_REPORT.md X22): "0m" parses to 0 and collapses the chart axis (no real state
+  // does); if hardening, add only a value > 0 guard with geometry tests, keep the loose match.
   return Number.isFinite(value) ? value : undefined;
 }
 

@@ -74,6 +74,8 @@ export class ApolloLd2410DistanceCard extends LitElement {
     // So must one pointed at a device with no gate radar (only its ESP Reboot
     // button resolves), where the chart has nothing to draw.
     if (!anyResolved(this.hass, radarIds)) return this._renderNotFound();
+    // TODO(REVIEW_REPORT.md X50): an invalid distance_unit ("CM", "feet") falls back silently;
+    // throw in setConfig or warn once, document the six tokens, and do not fold case silently.
     const unit: Uom = isValidUom(this._config.distance_unit)
       ? this._config.distance_unit
       : defaultDistanceUnit(this.hass);
@@ -88,6 +90,8 @@ export class ApolloLd2410DistanceCard extends LitElement {
       label,
       profile?.maxBarTips
     );
+    // TODO(REVIEW_REPORT.md X20): a found device with no gate entities renders blank here;
+    // consider an ha-card note "No gate radar (LD2410/LD2412) entities found for this device".
     if (chart === nothing) return nothing;
     return html`
       <ha-card .header=${this._config.title ?? `${label} Distances`}>

@@ -67,8 +67,9 @@ const RADAR_TIMEOUT_TIP =
 /**
  * HLK-LD2410 factory thresholds per gate (g0..g8), from the manual. Used only
  * to show the "these look like factory thresholds" hint on the calibrate
- * card; a wrong value hides or shows one line. Confirm against a factory-reset
- * MSR-2 before release.
+ * card; a wrong value hides or shows one line.
+ * TODO(REVIEW_REPORT.md X60): these match the commonly published HLK defaults but
+ * were not confirmed on a factory-reset MSR-2 during the audit; check on hardware.
  */
 export const LD2410_FACTORY_THRESHOLDS: { move: number[]; still: number[] } = {
   move: [50, 50, 40, 30, 20, 15, 15, 15, 15],
@@ -87,12 +88,16 @@ export const LD2410_PROFILE: RadarProfile = {
     "💡 **Gate Size** sets how far each gate reaches (e.g. 0.75 m). **Max Move / Still Gate** cap the farthest gate used to detect moving vs. still targets; lower them to ignore distant motion. " +
     RADAR_TIMEOUT_TIP,
   gateTip: GATE_TIP,
+  // TODO(REVIEW_REPORT.md X61): once its wiki docs PR is live (it 404s until then), point both
+  // profiles at products/general/calibrating-and-updating/radar-tuning/apollo-mmwave-dashboard/.
   wikiUrl: "https://wiki.apolloautomation.com/products/msr2/setup/zones-ha/",
   entityMap(base: string): EntityMap {
     const gates = [0, 1, 2, 3, 4, 5, 6, 7, 8];
     const g = (suffix: (n: number) => string) => gates.map((n) => suffix(n));
     return {
       engineering_mode: `switch.${base}_radar_engineering_mode`,
+      // TODO(REVIEW_REPORT.md X24): bluetooth and gate_size use MSR-2 spellings only, so a
+      // base-name MSR-1 config hides both; use MSR-1 ids when present or document device_id.
       bluetooth: `switch.${base}_ld2410_bluetooth`,
       restart_radar: `button.${base}_restart_radar`,
       factory_reset_radar: `button.${base}_factory_reset_radar`,
@@ -139,6 +144,7 @@ export const LD2412_PROFILE: RadarProfile = {
     "💡 **Distance Resolution** sets gate spacing: smaller (0.5 m) gives finer tuning over a shorter range, larger (0.75 m) reaches farther. **Min / Max Gate** limit which gates are used for detection. " +
     RADAR_TIMEOUT_TIP,
   gateTip: GATE_TIP,
+  // TODO(REVIEW_REPORT.md X61): switch with LD2410_PROFILE.wikiUrl once the new guide is live.
   wikiUrl:
     "https://wiki.apolloautomation.com/products/rpro1/setup/zones-ha/#ld2412-configuration",
   entityMap(base: string): EntityMap {

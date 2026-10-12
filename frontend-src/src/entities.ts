@@ -171,6 +171,8 @@ const SCALAR_PATTERNS: ScalarPattern[] = [
 
 // Gate slots share their suffix with the slot name (`_g3_move_threshold`,
 // `_ld2412_g05_still_energy`) — one pattern per slot covers both chips.
+// TODO(REVIEW_REPORT.md X23): the gate index is unbounded, so a stray _g42_ entity yields a
+// 43-slot array and rescales both charts; unreachable with Apollo firmware; a bound is a tuning call.
 const GATE_PATTERNS: { slot: GateSlot; domain: string; re: RegExp }[] = (
   [
     ["move_threshold", "number"],

@@ -63,6 +63,10 @@ function isLegacyOptions(
  * fails at that moment. The follow-up updates only touch `hass.entities` — if
  * we short-circuited on `devices` alone, the new device's tab would never
  * appear until a manual page reload.
+ *
+ * TODO(REVIEW_REPORT.md X31): cost: any radar's online flip rebuilds every tab and drops
+ * an unfinished zone drawing; regenerate on liveness only when the rendered device set
+ * changes, or debounce liveness-only changes, with a flap test.
  */
 export function shouldRegenerate(
   config: StrategyConfig | LegacyStrategyConfig,
@@ -102,6 +106,8 @@ function availabilityChanged(oldHass: HomeAssistant, newHass: HomeAssistant): bo
 }
 
 const EMPTY_VIEW = {
+  // TODO(REVIEW_REPORT.md X32): differs from the "Apollo mmWave" sidebar name; to unify, set that
+  // here, in STALE_SELECTION_VIEW and the dashboard title, with a test (picker name can stay).
   title: "Apollo Radar Tuning",
   cards: [
     {
@@ -146,6 +152,8 @@ class ApolloLd2410ViewStrategy extends HTMLElement {
     config: StrategyConfig,
     hass: HomeAssistant
   ): Promise<Record<string, any>> {
+    // TODO(REVIEW_REPORT.md X30): a blank view when no device is found; consider a hint card
+    // like the dashboard strategy's EMPTY_VIEW / STALE_SELECTION_VIEW.
     return { type: "sections", sections: generateSections(hass, config) };
   }
 }
@@ -193,6 +201,8 @@ class ApolloRadarSectionStrategy extends HTMLElement {
     config: StrategyConfig,
     hass: HomeAssistant
   ): Promise<Record<string, any>> {
+    // TODO(REVIEW_REPORT.md X30): also blank when no device is found; keep it so, since the
+    // empty generateCards result is pinned by tests (only the view strategy needs a hint).
     return { type: "grid", cards: generateCards(hass, config) };
   }
 }

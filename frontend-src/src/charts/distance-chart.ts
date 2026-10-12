@@ -62,6 +62,8 @@ function distInUnit(
 ): number | undefined {
   const v = numState(hass, id);
   if (v === undefined) return undefined;
+  // TODO(REVIEW_REPORT.md X02): a unit-less or km/mi/nmi value is read as the chart unit;
+  // if hardening, use "cm" (device-native) as the fallback here and add tests for it.
   return convert(v, uomOf(hass, id, unit), unit);
 }
 
@@ -102,6 +104,8 @@ export function distanceModel(
   const pushBar = (id: string | undefined, label: string, color: string) => {
     // Keep the row whenever the entity exists; show 0 when there's no target
     // (the distance sensors read non-numeric / unavailable with no target).
+    // TODO(REVIEW_REPORT.md X21): an offline device also lands here and shows "0.0" bars on
+    // the 0.75 m default axis; consider an unavailable flag and "n/a" rows; reword the note above.
     if (!id || !(id in hass.states)) return;
     bars.push({ label, value: distInUnit(hass, id, unit) ?? 0, color });
   };
@@ -122,6 +126,8 @@ export function distanceModel(
     const start = bounds[i];
     const end = bounds[i + 1];
     if (start === undefined || end === undefined) continue;
+    // TODO(REVIEW_REPORT.md X21): inverted bounds (end < start) draw a 1 px rect and a stray
+    // circle; consider an invalid flag here and an outlined marker in the renderer.
     const occId = occ[i];
     zones.push({
       label: `Zone ${i + 1}`,
@@ -223,6 +229,8 @@ export function renderDistanceChart(
   if (model.zones.length) rows.push({ kind: "zones" });
   for (const bar of model.bars) rows.push({ kind: "bar", bar });
   rows.push({ kind: "gates" });
+  // TODO(REVIEW_REPORT.md X21): max and zone rows drop out when unavailable, shrinking the SVG
+  // 60-90 px; consider keeping them with a dash placeholder (then the max row's gate is optional).
   // distanceModel sets each max distance exactly when its gate is set; testing
   // both lets TypeScript see the gate is defined.
   if (model.maxMove !== undefined && model.maxMoveGate !== undefined)
@@ -250,6 +258,8 @@ export function renderDistanceChart(
   // Gate-boundary gridlines + rotated distance axis labels. Whole numbers for
   // coarse units (in/cm/mm), up to 2 decimals otherwise — `toFixed(0)` in
   // meters rendered 0.75 m gates as duplicate ticks ("1, 2, 2, 3, 4, 5, 5…").
+  // TODO(REVIEW_REPORT.md X21): ticks round each multiple (in: 30/59/89, ft: 12.3 vs 14.76) and
+  // the branch keys on gate size, not unit; use fixed decimals per unit or fix the note above.
   const tickFmt = (v: number) =>
     model.gateSizeChart >= 10 ? v.toFixed(0) : String(Number(v.toFixed(2)));
   const axis: TemplateResult[] = [];
