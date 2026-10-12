@@ -185,7 +185,7 @@ function rowTip(r: Row): string {
   if (r.kind === "zones")
     return "Detection zones. The circle shows whether a target is currently in each zone (filled = present).";
   if (r.kind === "gates")
-    return "The radar splits its range into gates — each colored segment is one distance bin (G1, G2, ...).";
+    return "The radar splits its range into gates. Each colored segment is one distance bin (G1, G2, ...).";
   if (r.kind === "max") return r.tip ?? rangeLimitTip(r.label);
   if (r.bar.label === "Detection")
     return "Current distance to the detected target.";

@@ -108,7 +108,7 @@ const EMPTY_VIEW = {
       type: "markdown",
       content:
         "No Apollo mmWave devices found. Make sure your MSR-1/MSR-2 (LD2410), " +
-        "R-PRO-1 (LD2412 + LD2450), or MTR-1 (LD2450) is added to Home Assistant.",
+        "R PRO-1 (LD2412 + LD2450), or MTR-1 (LD2450) is added to Home Assistant.",
     },
   ],
 };
@@ -221,7 +221,7 @@ if (
     name: "Apollo Radar Tuning",
     description:
       "Auto-built tuning dashboard for Apollo radar devices " +
-      "(MSR / LD2410, R-PRO / LD2412 + LD2450, MTR-1 / LD2450).",
+      "(MSR / LD2410, R PRO / LD2412 + LD2450, MTR-1 / LD2450).",
     documentationURL: "https://github.com/ApolloAutomation/apollo-mmwave-main",
   });
 }

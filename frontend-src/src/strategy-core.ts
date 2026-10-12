@@ -222,7 +222,7 @@ function helpCardBody(dev: RadarDevice): Record<string, any> {
     return {
       type: "markdown",
       content:
-        `**${dev.name}** — no radar data available right now.\n\n` +
+        `**${dev.name}**: no radar data available right now.\n\n` +
         `The device looks offline (or exposes no recognizable radar ` +
         `entities). Its cards will appear here once it reports in.`,
     };
@@ -231,7 +231,7 @@ function helpCardBody(dev: RadarDevice): Record<string, any> {
     return {
       type: "markdown",
       content:
-        `**${dev.name}** — Apollo mmWave (LD2450 tracking radar).\n\n` +
+        `**${dev.name}**, Apollo mmWave (LD2450 tracking radar).\n\n` +
         `Draw occupancy zones over the live target positions below.`,
     };
   }

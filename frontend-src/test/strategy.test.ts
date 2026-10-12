@@ -30,7 +30,7 @@ type Strategy = {
 const TYPE = "custom:apollo-radar-tuning";
 const EMPTY_TEXT =
   "No Apollo mmWave devices found. Make sure your MSR-1/MSR-2 (LD2410), " +
-  "R-PRO-1 (LD2412 + LD2450), or MTR-1 (LD2450) is added to Home Assistant.";
+  "R PRO-1 (LD2412 + LD2450), or MTR-1 (LD2450) is added to Home Assistant.";
 
 const VIEW_TAG = "ll-strategy-view-apollo-radar-tuning";
 const SECTION_TAG = "ll-strategy-section-apollo-radar-tuning";
@@ -190,7 +190,7 @@ describe("dashboard picker entry", () => {
 
   it("names every supported device family, including MTR-1", () => {
     const description = pickerEntries()[0].description ?? "";
-    for (const family of ["MSR", "LD2410", "R-PRO", "LD2412", "LD2450", "MTR-1"]) {
+    for (const family of ["MSR", "LD2410", "R PRO", "LD2412", "LD2450", "MTR-1"]) {
       expect(description).toContain(family);
     }
   });

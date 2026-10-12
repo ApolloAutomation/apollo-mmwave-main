@@ -101,7 +101,7 @@ export class ApolloLd2410DistanceCard extends LitElement {
     return html`
       <ha-card .header=${this._config?.title ?? `${label} Distances`}>
         <div class="not-found">
-          Apollo mmWave: device not found — check the card's device
+          Apollo mmWave: device not found. Check the card's device
           configuration.
         </div>
       </ha-card>
@@ -124,5 +124,5 @@ registerElement("apollo-radar-distance-card", ApolloLd2410DistanceCard);
 registerCustomCard(
   "apollo-radar-distance-card",
   "Apollo Radar Distance Chart",
-  "Distance / zone chart for Apollo MSR (LD2410) & R-PRO (LD2412)."
+  "Distance / zone chart for Apollo MSR (LD2410) & R PRO (LD2412)."
 );

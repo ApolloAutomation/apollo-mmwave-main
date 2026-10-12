@@ -117,6 +117,12 @@ describe.each(CARDS)("%s", (_name, make) => {
     expect(root.textContent).toContain(NOT_FOUND);
   });
 
+  it("words the device-not-found message as two sentences, with no em dash", async () => {
+    const card = await mount(make(), { device_id: "air" });
+    const text = card.shadowRoot!.querySelector(".not-found")!.textContent!.replace(/\s+/g, " ").trim();
+    expect(text).toBe("Apollo mmWave: device not found. Check the card's device configuration.");
+  });
+
   it("says device not found for a base name with only an ESP Reboot button", async () => {
     const card = await mount(make(), { device_base_name: AIR });
     const root = card.shadowRoot!;

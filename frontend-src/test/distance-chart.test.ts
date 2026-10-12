@@ -313,6 +313,14 @@ describe("renderDistanceChart max rows", () => {
     expect(markup).not.toContain(`Min Gate: ${LIMIT}`);
   });
 
+  it("explains the Gates row in plain sentences, with no em dash", () => {
+    const markup = flat(renderDistanceChart(ld2410Hass(), m, "m"));
+    expect(titles(markup)).toContain(
+      "The radar splits its range into gates. Each colored segment is one distance bin (G1, G2, ...)."
+    );
+    expect(titles(markup).filter((t) => t.includes("\u2014"))).toEqual([]);
+  });
+
   it("falls back to the range-limit tooltip when no tips are passed", () => {
     const markup = flat(
       renderDistanceChart(ld2412Hass(), ld2412, "m", LD2412_PROFILE.maxBarLabels, "LD2412")

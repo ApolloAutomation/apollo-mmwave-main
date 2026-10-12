@@ -93,7 +93,7 @@ export class ApolloLd2410GateEnergyCard extends LitElement {
     return html`
       <ha-card .header=${this._config?.title ?? `${label} Gate Energy`}>
         <div class="not-found">
-          Apollo mmWave: device not found — check the card's device
+          Apollo mmWave: device not found. Check the card's device
           configuration.
         </div>
       </ha-card>
@@ -133,5 +133,5 @@ registerElement("apollo-radar-gate-energy-card", ApolloLd2410GateEnergyCard);
 registerCustomCard(
   "apollo-radar-gate-energy-card",
   "Apollo Radar Gate Energy Chart",
-  "Per-gate move/still energy chart for Apollo MSR (LD2410) & R-PRO (LD2412)."
+  "Per-gate move/still energy chart for Apollo MSR (LD2410) & R PRO (LD2412)."
 );

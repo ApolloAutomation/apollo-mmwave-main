@@ -841,7 +841,7 @@ export class ApolloRadarCalibrateCard extends LitElement {
     const ld2412 = this._profileKey() === "ld2412";
     const engineeringBullet = this._engineeringOn()
       ? "Radar Engineering Mode is already on and will stay on."
-      : "Home Assistant turns Radar Engineering Mode on for the listen and back off afterwards.";
+      : "Home Assistant turns Radar Engineering Mode on for the listen and back off afterward.";
     const factory =
       this.hass && this._resolved
         ? isFactoryThresholds(this.hass, this._resolved.map, this._profileKey(), payload.snapshots ?? [])
@@ -859,7 +859,7 @@ export class ApolloRadarCalibrateCard extends LitElement {
         ${ld2412
           ? html`<li>
               LD2412: run Start Dynamic Background Correction (Controls card) first with the
-              room empty and wait for its status to turn off. Calibrate afterwards.
+              room empty and wait for its status to turn off. Calibrate afterward.
             </li>`
           : nothing}
         ${ld2412 && this._backgroundOn()
@@ -1144,7 +1144,7 @@ if (!customCards.some((c: { type?: string }) => c.type === CALIBRATE_CARD_TAG)) 
     type: CALIBRATE_CARD_TAG,
     name: "Apollo Radar Auto-Calibrate",
     description:
-      "One-button empty-room calibration of every gate threshold on an Apollo MSR (LD2410) or R-PRO (LD2412), with undo.",
+      "One-button empty-room calibration of every gate threshold on an Apollo MSR (LD2410) or R PRO (LD2412), with undo.",
     documentationURL: "https://github.com/ApolloAutomation/apollo-mmwave-main",
   });
 }
