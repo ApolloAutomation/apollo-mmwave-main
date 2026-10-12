@@ -6,7 +6,6 @@ on:
     - cron: "0 0 * * *"
   push:
     branches:
-      - Main
       - main
   pull_request:
 
@@ -30,7 +29,5 @@ jobs:
       - name: Run HACS validation
         uses: hacs/action@d556e736723344f83838d08488c983a15381059a # 22.5.0
         with:
+          # The brands check passes on custom_components/apollo_mmwave/brand/icon.png.
           category: integration
-          # Remove this 'ignore' key when you have added brand images for your custom integration to https://github.com/home-assistant/brands
-          # TODO(REVIEW_REPORT.md X54): this disables the brands check while no brand images exist; add custom_components/apollo_mmwave/brand/icon.png (HA 2026.3+ local brands), then drop this ignore and the dead `Main` push branch.
-          ignore: brands
