@@ -62,6 +62,9 @@ type ShapeData = Any
 type ShapeTester = Callable[[float, float, ShapeData], bool]
 
 
+# TODO(REVIEW_REPORT.md X13): a copy of the one in  # noqa: FIX002, TD003
+# __init__.py, now without its finite and size guard. Share one helper from
+# an import-safe module; keep the tester's shape checks (migrated data is raw).
 def _coerce_float(value: Any) -> float | None:
     if value is None:
         return None

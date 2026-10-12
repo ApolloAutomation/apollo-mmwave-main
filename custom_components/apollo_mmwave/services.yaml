@@ -24,6 +24,8 @@ update_zone:
       selector:
         number:
           min: 1
+          # TODO(REVIEW_REPORT.md X19): neither the schema nor Add Zone caps ids
+          # at 32. Drop the max (mode: box) or enforce one MAX_ZONE_ID everywhere.
           max: 32
     shape:
       name: Shape

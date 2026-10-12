@@ -105,6 +105,9 @@ def _payload(hass: HomeAssistant, device_id: str) -> dict[str, Any]:
         # it off, and re-enable it the moment they saved anything else.
         STORE_ENTITIES: entry.get(STORE_ENTITIES),
         ATTR_ROTATION_DEG: entry.get(ATTR_ROTATION_DEG),
+        # TODO(REVIEW_REPORT.md X27): a frozen v1 name that  # noqa: FIX002, TD003
+        # goes stale after a rename. Send the registry name_by_user or name,
+        # falling back to the label, and fix 'display only' in store and const.
         STORE_LABEL: entry.get(STORE_LABEL),
         # What the presence sensor scales target readings by; null means mm.
         STORE_INPUT_UNITS: entry.get(STORE_INPUT_UNITS),

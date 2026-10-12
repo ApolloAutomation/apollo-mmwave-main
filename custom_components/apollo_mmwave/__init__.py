@@ -111,6 +111,9 @@ def _finite_float(value: Any) -> float | None:
     return result if math.isfinite(result) else None
 
 
+# TODO(REVIEW_REPORT.md X17): booleans and YAML on/off  # noqa: FIX002, TD003
+# pass as 1/0 here, and for rotation and zone_id, as HA's own validators
+# do. If unwanted, refuse bool in both _coerce_float copies and the schema.
 def _coerce_float(value: Any) -> float | None:
     """Return a zone coordinate as a float, or None if it cannot be stored."""
     result = _finite_float(value)
@@ -128,6 +131,9 @@ def _sanitize_rotation(rotation: Any) -> int | None:
     return max(-180, min(180, round(value)))
 
 
+# TODO(REVIEW_REPORT.md X14): a blank name is stored and  # noqa: FIX002, TD003
+# pins the bare base as the registry name. Consider stripping it and
+# treating blank as a clear (services.yaml documents today's result).
 def _coerce_zone_name(name: Any) -> str | None:
     if name is None:
         return None
@@ -191,6 +197,8 @@ def _normalize_rect(data: Any, zone_id: int, device_id: str) -> dict[str, Any] |
         _LOGGER.warning(WARN_RECT_INVALID, zone_id, device_id)
         return None
     return {
+        # TODO(REVIEW_REPORT.md X10): extra caller keys are  # noqa: FIX002, TD003
+        # stored and published; return only the four bounds, as ellipse does.
         **data,
         ATTR_X_MIN: x_min_i,
         ATTR_X_MAX: x_max_i,
@@ -232,6 +240,8 @@ def _normalize_polygon(
         _LOGGER.warning(WARN_POLY_INSUFFICIENT, zone_id, device_id, POLYGON_MIN_POINTS)
         return None
     total_points = len(points)
+    # TODO(REVIEW_REPORT.md X11): slicing before the filter  # noqa: FIX002, TD003
+    # lets malformed points use up slots; filter, then slice (limit stays 32).
     trimmed = list(points[:POLYGON_MAX_POINTS])
     if total_points > POLYGON_MAX_POINTS:
         _LOGGER.warning(
@@ -256,6 +266,8 @@ def _normalize_polygon(
             POLYGON_MIN_POINTS,
         )
         return None
+    # TODO(REVIEW_REPORT.md X10): extra caller keys are  # noqa: FIX002, TD003
+    # stored and published; return only the points, as ellipse does.
     return {**data, ATTR_POINTS: normalized_points}
 
 
@@ -322,6 +334,9 @@ def _device_id_for_label(store: ZoneStore, location: Any) -> str | None:
     # service must not invent a target the store has never heard of.
     if not isinstance(location, str) or not location.strip():
         return None
+    # TODO(REVIEW_REPORT.md X16): labels that slugify alike  # noqa: FIX002, TD003
+    # resolve by store order with no warning, and '???' matches '!!!' via the
+    # 'unknown' slug. Try an exact match, then a unique slug match, else warn.
     wanted = slugify(location)
     for device_id, entry in store.devices.items():
         label = entry.get(STORE_LABEL)
@@ -368,6 +383,9 @@ def _device_id_from_call(hass: HomeAssistant, call: ServiceCall) -> str | None:
     device_id = raw.strip()
     # A stale id from a copied automation, or from a radar that was removed and
     # re-added, must not reach the store.
+    # TODO(REVIEW_REPORT.md X08): zones stored under an id  # noqa: FIX002, TD003
+    # that left the registry for good can never be deleted. Accept delete
+    # (only) for such an id; do not prune the store on device removal.
     if not _device_is_registered(hass, device_id):
         _LOGGER.warning(
             "Apollo mmWave: update_zone device id '%s' matches no Home Assistant"
@@ -419,6 +437,9 @@ def _resolve_target_device(
     hass: HomeAssistant, store: ZoneStore, call: ServiceCall
 ) -> str | None:
     """Return the device id a call targets, or None if it names no known radar."""
+    # TODO(REVIEW_REPORT.md X12): location is ignored with  # noqa: FIX002, TD003
+    # no deprecation warning when device_id is also given; warn whenever it
+    # is present. The schema's 'Exactly one' comment should say at least one.
     if "device_id" in call.data:
         return _device_id_from_call(hass, call)
     if "location" in call.data:
@@ -549,6 +570,9 @@ def _build_update_zone_handler(
         _apply_entity_pairs(device, call)
 
         if delete_zone and zone_id is not None:
+            # TODO(REVIEW_REPORT.md X15): an unknown zone id  # noqa: FIX002, TD003
+            # still mints a store entry and fires the event; warn and return
+            # when the call has nothing else to change.
             device[STORE_ZONES].pop(zone_id, None)
             _remove_zone_entities(hass, device_id, zone_id)
             _notify_zones_updated(hass, device_id)
@@ -585,6 +609,9 @@ def _build_update_zone_handler(
 
         device[STORE_ZONES][zone_id] = zone_entry
 
+        # TODO(REVIEW_REPORT.md X01): on the creating call the  # noqa: FIX002, TD003
+        # entities do not exist yet, so this name never reaches the registry. Fix
+        # only that call: a one-shot pending name applied when the entity is added.
         if zone_name is not None:
             _update_registry_names(hass, device_id, zone_id, zone_name)
 

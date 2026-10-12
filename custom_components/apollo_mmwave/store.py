@@ -98,6 +98,9 @@ def resolve_device_id(hass: HomeAssistant, location: str, entities: Any) -> str 
                 )
                 if entry and entry.device_id:
                     return entry.device_id
+    # TODO(REVIEW_REPORT.md X25): devices whose names slugify  # noqa: FIX002, TD003
+    # alike resolve by registry order with no log; at least warn and name the
+    # candidates (refusing to home the location is a product decision).
     wanted = slugify(location)
     for device in dr.async_get(hass).devices.values():
         name = device.name_by_user or device.name or ""
@@ -155,6 +158,9 @@ def _merge_location(
                 continue
             zones[zone_key] = zone_def
             zone_sources[zone_key] = location
+    # TODO(REVIEW_REPORT.md X26): v1 entities and rotation  # noqa: FIX002, TD003
+    # are copied unvalidated. For parity add type checks only: str ids and
+    # round(float()) rotation, without the [-180, 180] clamp (a tuning bound).
     entities = raw.get(STORE_ENTITIES)
     # v1 seeded `entities: []` on every location, so it had no way to say
     # "explicitly none" and an empty v1 list can only mean "never configured".

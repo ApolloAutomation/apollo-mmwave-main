@@ -458,6 +458,9 @@ async def async_migrate_unique_ids(hass: HomeAssistant, store: ZoneStore) -> Non
             # the platform is already driving. Renaming onto it would raise, and
             # removing either side would throw away a user's entity, so the old
             # one is left in place and named so the user can delete it.
+            # TODO(REVIEW_REPORT.md X29): repeats on every setup  # noqa: FIX002, TD003
+            # until the stale entity is deleted. Raise a repairs issue keyed by its
+            # entity id instead, or say here that the repetition is deliberate.
             _LOGGER.warning(
                 "Apollo mmWave: %s could not be migrated to unique id %s because"
                 " %s already uses it; %s is stale and can be deleted.",
