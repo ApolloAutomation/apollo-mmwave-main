@@ -901,3 +901,96 @@ describe("zone map card polygon double-tap", () => {
     ]);
   });
 });
+
+/**
+ * The pointer leaving the canvas container.
+ *
+ * In polygon mode `isDrawing` stays true for the whole multi-click session, so
+ * a blanket cancel on mouseleave threw away every placed vertex as soon as the
+ * pointer crossed onto the zone chips or the slider. Leaving now drops only the
+ * rubber-band line for a polygon, and still cancels a rect or ellipse drag,
+ * whose mouseup only the canvas hears.
+ */
+describe("zone map card pointer leaving the canvas", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  async function drawingCard(mode: string) {
+    const hass = fakeHass({ ...ZONE_PAYLOAD, zones: {} });
+    const card = await mountCard(hass, { start_locked: false });
+    card._setSelectedZone(1);
+    card._setDrawMode(mode);
+    vi.spyOn(card.canvas, "getBoundingClientRect").mockReturnValue({
+      left: 0,
+      top: 0,
+      right: 800,
+      bottom: 800,
+      x: 0,
+      y: 0,
+      width: 800,
+      height: 800,
+      toJSON: () => ({}),
+    } as DOMRect);
+    hass.callService.mockClear();
+    return { card, hass };
+  }
+
+  /** One mouse click on the canvas, never close enough in time to finish. */
+  function click(card: any, x: number, y: number) {
+    card._lastPolyTap = 0;
+    card.canvas.dispatchEvent(new MouseEvent("mousedown", { clientX: x, clientY: y }));
+    card.canvas.dispatchEvent(new MouseEvent("mouseup", { clientX: x, clientY: y }));
+  }
+
+  function leave(card: any) {
+    card.canvas.parentElement.dispatchEvent(new MouseEvent("mouseleave"));
+  }
+
+  it("keeps a half-drawn polygon and only drops the rubber-band line", async () => {
+    const { card, hass } = await drawingCard("polygon");
+
+    click(card, 100, 100);
+    click(card, 300, 100);
+    click(card, 300, 300);
+    card.canvas.dispatchEvent(new MouseEvent("mousemove", { clientX: 200, clientY: 400 }));
+    expect(card._cursorPoint).not.toBeNull();
+
+    leave(card);
+
+    expect(card._polyPoints).toHaveLength(3);
+    expect(card.isDrawing).toBe(true);
+    expect(card._cursorPoint).toBeNull();
+    expect(hass.callService).not.toHaveBeenCalled();
+
+    click(card, 100, 300);
+    card.finishPolygon();
+
+    const saves = hass.callService.mock.calls.filter(
+      (call: any[]) => call[1] === "update_zone" && call[2].shape === "polygon"
+    );
+    expect(saves).toHaveLength(1);
+    expect(saves[0][2].data.points).toEqual([
+      { x: -3750, y: 1250 },
+      { x: -1250, y: 1250 },
+      { x: -1250, y: 3750 },
+      { x: -3750, y: 3750 },
+    ]);
+  });
+
+  it.each(["rect", "ellipse"])("still cancels a %s drag", async (mode) => {
+    const { card, hass } = await drawingCard(mode);
+
+    card.canvas.dispatchEvent(new MouseEvent("mousedown", { clientX: 100, clientY: 100 }));
+    expect(card.isDrawing).toBe(true);
+
+    leave(card);
+
+    expect(card.isDrawing).toBe(false);
+    expect(card.startPoint).toBeNull();
+
+    card.canvas.dispatchEvent(new MouseEvent("mouseup", { clientX: 300, clientY: 300 }));
+
+    expect(hass.callService).not.toHaveBeenCalled();
+  });
+});

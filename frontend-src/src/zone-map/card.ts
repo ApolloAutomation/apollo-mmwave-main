@@ -921,7 +921,18 @@ export class ZoneMapCard extends HTMLElement {
     const canvasContainer = this.canvas.parentElement;
     if (canvasContainer) {
       canvasContainer.addEventListener('mouseleave', () => {
-        if (this.isDrawing) this.cancelDrawing();
+        if (!this.isDrawing) return;
+        // A polygon is a multi-click session with its own Finish, Undo,
+        // Escape and click-away cancel, so leaving the canvas only drops the
+        // rubber-band line. A rect or ellipse drag is still cancelled: only
+        // the canvas listens for its mouseup, so a release outside would
+        // leave the drag stuck.
+        if (this.drawMode === DRAW_MODES.POLYGON) {
+          this._cursorPoint = null;
+          this.drawGrid();
+          return;
+        }
+        this.cancelDrawing();
       });
     }
   }
