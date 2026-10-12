@@ -676,6 +676,140 @@ describe("zone map card renaming a zone only the YAML names", () => {
   });
 });
 
+describe("zone map card zone names across payloads", () => {
+  // Every payload rebuilds the zone manager rows, and the card's own Add Zone
+  // and rotation writes echo back as payloads. A rebuild used to put the
+  // stored name back over whatever was being typed and drop the focus.
+  const TWO_ZONES = {
+    ...ZONE_PAYLOAD,
+    zones: {
+      ...ZONE_PAYLOAD.zones,
+      "2": { shape: "none", data: null, name: "Couch" },
+    },
+  };
+
+  afterEach(() => {
+    document.body.replaceChildren();
+  });
+
+  async function attachedCard(payload: any = TWO_ZONES) {
+    const hass = fakeHass(payload);
+    const card = await mountCard(hass);
+    document.body.appendChild(card);
+    return { card, hass };
+  }
+
+  function push(hass: any, payload: any) {
+    hass.handlers[ZONES_SUBSCRIBE][0](payload);
+  }
+
+  function nameInput(card: any, zoneId: number): any {
+    return card.shadowRoot.querySelector(`#zoneManager input[data-zone-id="${zoneId}"]`);
+  }
+
+  function saveButton(card: any, zoneId: number): any {
+    const row = nameInput(card, zoneId).closest(".entity-row");
+    return Array.from(row.querySelectorAll("button")).find(
+      (b: any) => b.textContent === "Save"
+    );
+  }
+
+  function zoneSaves(hass: any): any[] {
+    return hass.callService.mock.calls
+      .filter((call: any[]) => call[1] === "update_zone")
+      .map((call: any[]) => call[2]);
+  }
+
+  it("keeps a name being typed, and its focus and caret, when a payload lands", async () => {
+    const { card, hass } = await attachedCard();
+    const input = nameInput(card, 1);
+    input.focus();
+    input.value = "Kit";
+    input.setSelectionRange(1, 2);
+    expect(card.shadowRoot.activeElement).toBe(input);
+
+    push(hass, { ...TWO_ZONES, rotation_deg: 20 });
+
+    expect(card.coneAngleDeg).toBe(20);
+    const after = nameInput(card, 1);
+    expect(after.value).toBe("Kit");
+    expect(card.shadowRoot.activeElement).toBe(after);
+    expect(after.selectionStart).toBe(1);
+    expect(after.selectionEnd).toBe(2);
+  });
+
+  it("gives a row nobody edited the name the payload carries", async () => {
+    const { card, hass } = await attachedCard();
+    // Typed into and then left, without saving.
+    nameInput(card, 1).value = "Kit";
+
+    push(hass, {
+      ...TWO_ZONES,
+      zones: { ...TWO_ZONES.zones, "2": { shape: "none", data: null, name: "Sofa" } },
+    });
+
+    expect(nameInput(card, 1).value).toBe("Kit");
+    expect(nameInput(card, 2).value).toBe("Sofa");
+  });
+
+  it("gives a focused row nobody edited a rename and keeps its focus", async () => {
+    const { card, hass } = await attachedCard();
+    nameInput(card, 2).focus();
+
+    push(hass, {
+      ...TWO_ZONES,
+      zones: { ...TWO_ZONES.zones, "2": { shape: "none", data: null, name: "Sofa" } },
+    });
+
+    const after = nameInput(card, 2);
+    expect(after.value).toBe("Sofa");
+    expect(card.shadowRoot.activeElement).toBe(after);
+  });
+
+  it("saves the kept draft after the push", async () => {
+    const { card, hass } = await attachedCard();
+    const input = nameInput(card, 1);
+    input.focus();
+    input.value = "Kit";
+    push(hass, { ...TWO_ZONES, rotation_deg: 20 });
+    hass.callService.mockClear();
+
+    saveButton(card, 1).click();
+
+    expect(zoneSaves(hass)).toEqual([
+      { device_id: "dev123", zone_id: 1, name: "Kit", input_units: "mm" },
+    ]);
+    expect(card.zoneConfig.find((z: any) => z.id === 1).name).toBe("Kit");
+  });
+
+  it("keeps a name typed into a new zone across its own Add Zone echo", async () => {
+    const { card, hass } = await attachedCard(ZONE_PAYLOAD);
+    card._handleAddZone();
+    const input = nameInput(card, 2);
+    expect(input.value).toBe("Zone 2");
+    input.focus();
+    input.value = "Sofa";
+
+    push(hass, {
+      ...ZONE_PAYLOAD,
+      zones: { ...ZONE_PAYLOAD.zones, "2": { shape: "none", data: null, name: "Zone 2" } },
+    });
+
+    expect(nameInput(card, 2).value).toBe("Sofa");
+    expect(card.shadowRoot.activeElement).toBe(nameInput(card, 2));
+  });
+
+  it("drops the draft of a zone the payload removed", async () => {
+    const { card, hass } = await attachedCard();
+    nameInput(card, 2).value = "Sofa";
+
+    push(hass, ZONE_PAYLOAD);
+
+    expect(nameInput(card, 2)).toBeNull();
+    expect(nameInput(card, 1).value).toBe("Doorway");
+  });
+});
+
 describe("zone map card rotation source", () => {
   // The presence sensors rotate targets by the store's rotation_deg, and by 0
   // when it was never set. A card that kept the YAML cone.angle_deg for such a

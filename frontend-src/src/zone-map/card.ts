@@ -1955,6 +1955,10 @@ export class ZoneMapCard extends HTMLElement {
   _renderZoneManager() {
     const host = this.shadowRoot?.getElementById('zoneManager');
     if (!host) return;
+    // Every payload rebuilds these rows, and the card's own Add Zone and
+    // rotation writes echo back as payloads, as does any other client's save.
+    // What the user is typing, and where the caret is, has to outlive that.
+    const drafts = this._captureZoneNameDrafts(host);
     host.innerHTML = '';
     const zones = (this.zoneConfig || []).slice().sort((a, b) => Number(a.id) - Number(b.id));
     zones.forEach((z) => {
@@ -1964,8 +1968,12 @@ export class ZoneMapCard extends HTMLElement {
       label.textContent = `Zone ${z.id}`;
       const input = document.createElement('input');
       input.type = 'text';
-      input.value = z.name || `Zone ${z.id}`;
+      const storedName = z.name || `Zone ${z.id}`;
+      input.value = storedName;
       input.placeholder = `Zone ${z.id}`;
+      // What the row was built with, so the next rebuild can tell an edit.
+      input.dataset.zoneId = String(z.id);
+      input.dataset.storedName = storedName;
       const saveBtn = document.createElement('button');
       saveBtn.textContent = 'Save';
       const delBtn = document.createElement('button');
@@ -1973,7 +1981,10 @@ export class ZoneMapCard extends HTMLElement {
 
       saveBtn.addEventListener('click', () => {
         const newName = input.value?.trim() || `Zone ${z.id}`;
-        z.name = newName;
+        // By id, at click time: _applyZones replaces every zoneConfig entry on
+        // each payload, so the `z` this row was built from may be a stale copy.
+        const current = (this.zoneConfig || []).find((zz) => String(zz.id) === String(z.id));
+        if (current) current.name = newName;
         // Persist the friendly name to backend. A stored zone keeps its
         // shape and data; one only the YAML names is created without a shape.
         if (this._hass) {
@@ -2021,6 +2032,53 @@ export class ZoneMapCard extends HTMLElement {
       row.appendChild(delBtn);
       host.appendChild(row);
     });
+    this._restoreZoneNameDrafts(host, drafts);
+  }
+
+  /**
+   * The zone-name edits a rebuild of the manager rows would throw away.
+   *
+   * `values` holds every input whose text differs from the name its row was
+   * built with, keyed by zone id; a row nobody edited is left out, so it picks
+   * up a rename from the payload. `focus` is the focused input's zone id and
+   * selection, or null when focus is elsewhere.
+   */
+  _captureZoneNameDrafts(host) {
+    const values = new Map();
+    let focus = null;
+    const active = this.shadowRoot?.activeElement;
+    host.querySelectorAll('input[data-zone-id]').forEach((input) => {
+      const zoneId = input.dataset.zoneId;
+      if (input.value !== input.dataset.storedName) values.set(zoneId, input.value);
+      if (input === active) {
+        focus = {
+          zoneId,
+          start: input.selectionStart,
+          end: input.selectionEnd,
+          direction: input.selectionDirection,
+        };
+      }
+    });
+    return { values, focus };
+  }
+
+  /** Lay captured drafts back over the rebuilt rows of the zones still listed. */
+  _restoreZoneNameDrafts(host, drafts) {
+    const inputs = new Map();
+    host.querySelectorAll('input[data-zone-id]').forEach((input) => {
+      inputs.set(input.dataset.zoneId, input);
+    });
+    drafts.values.forEach((value, zoneId) => {
+      const input = inputs.get(zoneId);
+      if (input) input.value = value;
+    });
+    const focused = drafts.focus ? inputs.get(drafts.focus.zoneId) : null;
+    if (!focused) return;
+    focused.focus({ preventScroll: true });
+    const { start, end, direction } = drafts.focus;
+    if (typeof start === 'number' && typeof end === 'number') {
+      focused.setSelectionRange(start, end, direction || undefined);
+    }
   }
 
   /**
