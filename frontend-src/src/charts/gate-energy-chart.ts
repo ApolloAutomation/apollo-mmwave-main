@@ -77,7 +77,8 @@ function yFor(energy: number): number {
 
 export function renderGateEnergyChart(
   hass: HomeAssistant,
-  m: EntityMap
+  m: EntityMap,
+  label = "LD2410"
 ): TemplateResult | typeof nothing {
   const model = gateEnergyModel(hass, m);
   if (!model.present) return nothing;
@@ -202,7 +203,7 @@ export function renderGateEnergyChart(
   // that follows it. Browsers render both forms identically.
   const plot = html`
     <svg viewBox="0 0 ${WIDTH} ${HEIGHT}" width="100%" role="img"
-      aria-label="LD2410 gate energy">
+      aria-label="${label} gate energy">
       <title>
         Per-gate signal energy (bars) vs your thresholds (triangles). A gate
         detects a target when its energy rises above the threshold. Turn on

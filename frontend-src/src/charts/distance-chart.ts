@@ -186,7 +186,8 @@ export function renderDistanceChart(
   hass: HomeAssistant,
   m: EntityMap,
   unit: Uom,
-  maxLabels: [string, string] = ["Max Move", "Max Still"]
+  maxLabels: [string, string] = ["Max Move", "Max Still"],
+  label = "LD2410"
 ): TemplateResult | typeof nothing {
   // Only bail when there's no device at all. A configured radar always has a
   // gate setup, so the chart renders (Gates row + axis) even if the optional
@@ -288,7 +289,7 @@ export function renderDistanceChart(
 
   return html`
     <svg viewBox="0 0 ${WIDTH} ${height}" width="100%" role="img"
-      aria-label="LD2410 distances">
+      aria-label="${label} distances">
       ${axis} ${rowEls}
     </svg>
   `;

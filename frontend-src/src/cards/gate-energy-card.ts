@@ -54,23 +54,27 @@ export class ApolloLd2410GateEnergyCard extends LitElement {
   protected render(): TemplateResult | typeof nothing {
     if (!this.hass || !this._config) return nothing;
     this._resolved = resolveRadar(this._resolved, this.hass, this._config);
-    const { map: m, radarIds } = this._resolved;
+    const { map: m, profile, radarIds } = this._resolved;
     // A configured card whose device vanished must say so, not render blank.
     // So must one pointed at a device with no gate radar (only its ESP Reboot
     // button resolves), where the chart has nothing to draw.
     if (!anyResolved(this.hass, radarIds)) return this._renderNotFound();
-    const chart = renderGateEnergyChart(this.hass, m);
+    // The chip the card is for; an undetermined profile keeps the LD2410
+    // wording the card has always used.
+    const label = profile?.label ?? "LD2410";
+    const chart = renderGateEnergyChart(this.hass, m, label);
     if (chart === nothing) return nothing;
     return html`
-      <ha-card .header=${this._config.title ?? "LD2410 Gate Energy"}>
+      <ha-card .header=${this._config.title ?? `${label} Gate Energy`}>
         <div class="wrap">${chart}</div>
       </ha-card>
     `;
   }
 
   private _renderNotFound(): TemplateResult {
+    const label = this._resolved?.profile?.label ?? "LD2410";
     return html`
-      <ha-card .header=${this._config?.title ?? "LD2410 Gate Energy"}>
+      <ha-card .header=${this._config?.title ?? `${label} Gate Energy`}>
         <div class="not-found">
           Apollo mmWave: device not found — check the card's device
           configuration.

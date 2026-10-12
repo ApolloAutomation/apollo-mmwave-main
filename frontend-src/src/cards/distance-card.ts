@@ -64,18 +64,22 @@ export class ApolloLd2410DistanceCard extends LitElement {
     const unit: Uom = isValidUom(this._config.distance_unit)
       ? this._config.distance_unit
       : defaultDistanceUnit(this.hass);
-    const chart = renderDistanceChart(this.hass, m, unit, profile?.maxBarLabels);
+    // The chip the card is for; an undetermined profile keeps the LD2410
+    // wording the card has always used.
+    const label = profile?.label ?? "LD2410";
+    const chart = renderDistanceChart(this.hass, m, unit, profile?.maxBarLabels, label);
     if (chart === nothing) return nothing;
     return html`
-      <ha-card .header=${this._config.title ?? "LD2410 Distances"}>
+      <ha-card .header=${this._config.title ?? `${label} Distances`}>
         <div class="wrap">${chart}</div>
       </ha-card>
     `;
   }
 
   private _renderNotFound(): TemplateResult {
+    const label = this._resolved?.profile?.label ?? "LD2410";
     return html`
-      <ha-card .header=${this._config?.title ?? "LD2410 Distances"}>
+      <ha-card .header=${this._config?.title ?? `${label} Distances`}>
         <div class="not-found">
           Apollo mmWave: device not found — check the card's device
           configuration.
