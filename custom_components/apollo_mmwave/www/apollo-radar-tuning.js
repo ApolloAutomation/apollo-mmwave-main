@@ -1849,7 +1849,7 @@ const DEFAULT_DURATION_S = 60;
 const TOLERANCE = 0.5;
 const KEEP_ON_LD2410 = "Leave Radar Engineering Mode on until this finishes.";
 const KEEP_ON_LD2412 = "Leave Radar Engineering Mode on and do not press Start Dynamic Background Correction until this finishes.";
-const WALK_AROUND_LINE = "Now walk around: the Radar Target row in Target / Occupancy should turn on when you move and off a few seconds after you stop (Radar Timeout).";
+const WALK_AROUND_LINE = "Now walk around, then sit still for a minute: the Radar Target row in Target / Occupancy should stay on the whole time you are in the room and turn off a few seconds after you leave (Radar Timeout).";
 const NOTHING_TO_RESTORE = "Nothing to restore yet";
 const TERMINAL = /* @__PURE__ */ new Set(["done", "cancelled", "failed"]);
 function isTerminal(status) {

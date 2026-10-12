@@ -27,7 +27,7 @@ export const KEEP_ON_LD2410 = "Leave Radar Engineering Mode on until this finish
 export const KEEP_ON_LD2412 =
   "Leave Radar Engineering Mode on and do not press Start Dynamic Background Correction until this finishes.";
 export const WALK_AROUND_LINE =
-  "Now walk around: the Radar Target row in Target / Occupancy should turn on when you move and off a few seconds after you stop (Radar Timeout).";
+  "Now walk around, then sit still for a minute: the Radar Target row in Target / Occupancy should stay on the whole time you are in the room and turn off a few seconds after you leave (Radar Timeout).";
 export const NOTHING_TO_RESTORE = "Nothing to restore yet";
 
 const TERMINAL: ReadonlySet<string> = new Set(["done", "cancelled", "failed"]);

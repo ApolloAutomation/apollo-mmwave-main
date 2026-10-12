@@ -926,7 +926,7 @@ describe("calibrate card finished states", () => {
     expect(t).toContain("G7: not used (beyond Max Still Gate 6)");
     expect(card.shadowRoot!.querySelector("tr.unused")).toBeTruthy();
     expect(t).toContain(
-      "Now walk around: the Radar Target row in Target / Occupancy should turn on when you move and off a few seconds after you stop (Radar Timeout)."
+      "Now walk around, then sit still for a minute: the Radar Target row in Target / Occupancy should stay on the whole time you are in the room and turn off a few seconds after you leave (Radar Timeout)."
     );
     const undo = button(card, `Undo (restore ${expectedTime(SNAPSHOT_AT)} values)`)!;
     expect(undo).toBeTruthy();
