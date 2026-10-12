@@ -1,4 +1,4 @@
-import { html, svg, nothing, type TemplateResult } from "lit";
+import { css, html, svg, nothing, type TemplateResult } from "lit";
 import type { EntityMap, HomeAssistant } from "../types";
 import { numState } from "./entity-read";
 import { gateRegisterCount } from "./geometry";
@@ -8,6 +8,20 @@ const MOVE_COLOR = "#4b0082";
 const MOVE_THR_COLOR = "#9467bd";
 const STILL_COLOR = "#274e13";
 const STILL_THR_COLOR = "#8cb640";
+const TXT2 = "var(--secondary-text-color, #9aa0a6)";
+
+/** Styles for the `.chart-legend` row renderGateEnergyChart emits, for the
+ *  card that hosts the chart to add to its own styles. */
+export const chartLegendStyles = css`
+  .chart-legend {
+    font-size: 0.8em;
+    color: var(--secondary-text-color);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 14px;
+    margin-top: 6px;
+  }
+`;
 
 export interface GateRow {
   index: number;
@@ -120,7 +134,7 @@ export function renderGateEnergyChart(
         stroke="${stillAbove ? STILL_THR_COLOR : nothing}"
         stroke-width="${stillAbove ? "2" : nothing}"></rect>
       <text x=${cx} y=${HEIGHT - 7} font-size="13" text-anchor="middle"
-        fill="var(--secondary-text-color)">G${g.index}</text>`);
+        fill=${TXT2}>G${g.index}</text>`);
     if (model.engineeringMode && g.moveThr !== undefined) {
       const ty = yFor(g.moveThr);
       const tx = moveX + barW / 2;
@@ -143,7 +157,7 @@ export function renderGateEnergyChart(
       <line x1=${PAD_L} y1=${yFor(v)} x2=${WIDTH} y2=${yFor(v)}
         stroke="var(--divider-color, #888)" stroke-width="1" opacity="0.3"></line>
       <text x=${PAD_L - 4} y=${yFor(v) + 3} font-size="11" text-anchor="end"
-        fill="var(--secondary-text-color)">${v}</text>`
+        fill=${TXT2}>${v}</text>`
   );
 
   // An unavailable switch is not an "off" one: the radar is offline, and

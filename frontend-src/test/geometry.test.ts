@@ -3,7 +3,6 @@ import {
   parseGateSizeMeters,
   clamp,
   scaleX,
-  gateTicks,
   gateRegisterCount,
 } from "../src/charts/geometry";
 import { entityMapFromBaseName } from "../src/entities";
@@ -37,15 +36,6 @@ describe("scaleX", () => {
   it("clamps out-of-range and guards zero range", () => {
     expect(scaleX(20, 8, 800)).toBe(800);
     expect(scaleX(5, 0, 800)).toBe(0);
-  });
-});
-
-describe("gateTicks", () => {
-  it("returns one tick per gate, ending at the full width", () => {
-    const ticks = gateTicks(1, 8, 800);
-    expect(ticks).toHaveLength(8);
-    expect(ticks[0]).toBe(100);
-    expect(ticks[7]).toBe(800);
   });
 });
 

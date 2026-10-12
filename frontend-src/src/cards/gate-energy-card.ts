@@ -16,8 +16,12 @@ import {
   type ResolvedRadar,
   type WatchedIds,
 } from "./resolution";
-import { registerElement } from "../register";
-import { GATE_ENERGY_CHART_SLOTS, renderGateEnergyChart } from "../charts/gate-energy-chart";
+import { registerCustomCard, registerElement } from "../register";
+import {
+  GATE_ENERGY_CHART_SLOTS,
+  chartLegendStyles,
+  renderGateEnergyChart,
+} from "../charts/gate-energy-chart";
 
 export class ApolloLd2410GateEnergyCard extends LitElement {
   @property({ attribute: false }) public hass?: HomeAssistant;
@@ -96,49 +100,38 @@ export class ApolloLd2410GateEnergyCard extends LitElement {
     `;
   }
 
-  static styles = css`
-    .wrap {
-      padding: 4px 12px 12px;
-    }
-    .not-found {
-      padding: 12px 16px 16px;
-      color: var(--error-color, #db4437);
-      font-size: 0.9em;
-    }
-    .chart-legend {
-      font-size: 0.8em;
-      color: var(--secondary-text-color);
-      display: flex;
-      flex-wrap: wrap;
-      gap: 4px 14px;
-      margin-top: 6px;
-    }
-    /* The chart's engineering-mode button; its position is inline so the
-       chart template is self-contained. */
-    button.overlay {
-      font: inherit;
-      font-size: 0.9em;
-      font-weight: 500;
-      cursor: pointer;
-      border: none;
-      border-radius: 4px;
-      padding: 8px 14px;
-      background: var(--primary-color);
-      color: var(--text-primary-color, #fff);
-      white-space: nowrap;
-    }
-  `;
+  static styles = [
+    chartLegendStyles,
+    css`
+      .wrap {
+        padding: 4px 12px 12px;
+      }
+      .not-found {
+        padding: 12px 16px 16px;
+        color: var(--error-color, #db4437);
+        font-size: 0.9em;
+      }
+      /* The chart's engineering-mode button; its position is inline so the
+         chart template is self-contained. */
+      button.overlay {
+        font: inherit;
+        font-size: 0.9em;
+        font-weight: 500;
+        cursor: pointer;
+        border: none;
+        border-radius: 4px;
+        padding: 8px 14px;
+        background: var(--primary-color);
+        color: var(--text-primary-color, #fff);
+        white-space: nowrap;
+      }
+    `,
+  ];
 }
 
 registerElement("apollo-radar-gate-energy-card", ApolloLd2410GateEnergyCard);
-
-const customCards = ((window as any).customCards =
-  (window as any).customCards || []);
-if (!customCards.some((c: { type?: string }) => c.type === "apollo-radar-gate-energy-card")) {
-  customCards.push({
-    type: "apollo-radar-gate-energy-card",
-    name: "Apollo Radar Gate Energy Chart",
-    description: "Per-gate move/still energy chart for Apollo MSR (LD2410) & R-PRO (LD2412).",
-    documentationURL: "https://github.com/ApolloAutomation/apollo-mmwave-main",
-  });
-}
+registerCustomCard(
+  "apollo-radar-gate-energy-card",
+  "Apollo Radar Gate Energy Chart",
+  "Per-gate move/still energy chart for Apollo MSR (LD2410) & R-PRO (LD2412)."
+);

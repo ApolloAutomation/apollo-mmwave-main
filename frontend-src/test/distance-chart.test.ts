@@ -2,9 +2,10 @@ import { describe, it, expect } from "vitest";
 import { render, type TemplateResult } from "lit";
 import { distanceModel, renderDistanceChart } from "../src/charts/distance-chart";
 import { entityMapFromBaseName, entityMapFromDevice } from "../src/entities";
-import { LD2412_PROFILE } from "../src/profiles";
+import { LD2410_PROFILE, LD2412_PROFILE } from "../src/profiles";
 import type { Uom } from "../src/charts/unit-convert";
 import type { EntityMap, HomeAssistant, HassEntity } from "../src/types";
+import { flat } from "./template-markup";
 
 const base = "apollo_msr_2_m4c4dd";
 const m = entityMapFromBaseName(base);
@@ -168,4 +169,90 @@ describe("renderDistanceChart axis band", () => {
       expect(axisBand(maps[chip], gateSize, unit)).toBeGreaterThanOrEqual(NEEDED);
     }
   );
+});
+
+describe("renderDistanceChart max rows", () => {
+  const ld2412 = LD2412_PROFILE.entityMap(base);
+  const LIMIT = "the configured detection-range limit, shown as a gate number.";
+
+  function ld2410Hass(): HomeAssistant {
+    return hass({
+      [m.gate_size!]: ent("0.75m"),
+      [m.max_move_distance!]: ent("6"),
+      [m.max_still_distance!]: ent("8"),
+    });
+  }
+
+  function ld2412Hass(): HomeAssistant {
+    return hass({
+      [ld2412.gate_size!]: ent("0.75m"),
+      [ld2412.max_move_distance!]: ent("12"),
+      [ld2412.max_still_distance!]: ent("1"),
+    });
+  }
+
+  /** The hover tooltip of every row, top to bottom. */
+  function titles(markup: string): string[] {
+    return [...markup.matchAll(/<title>([^<]*)<\/title>/g)].map((t) => t[1].trim());
+  }
+
+  /** The markup of the row whose tooltip starts with `tip`. */
+  function rowWithTip(markup: string, tip: string): string {
+    const row = markup.split("<g>").find((g) => g.includes(`<title>${tip}`));
+    expect(row).toBeDefined();
+    return row!;
+  }
+
+  it("keeps the LD2410 range-limit tooltip on both max rows", () => {
+    const markup = flat(
+      renderDistanceChart(ld2410Hass(), m, "m", LD2410_PROFILE.maxBarLabels, "LD2410", LD2410_PROFILE.maxBarTips)
+    );
+    expect(titles(markup).slice(-2)).toEqual([`Max Move: ${LIMIT}`, `Max Still: ${LIMIT}`]);
+  });
+
+  it("says the LD2412 Min Gate ignores the gates below it", () => {
+    const markup = flat(
+      renderDistanceChart(ld2412Hass(), ld2412, "m", LD2412_PROFILE.maxBarLabels, "LD2412", LD2412_PROFILE.maxBarTips)
+    );
+    expect(titles(markup).slice(-2)).toEqual([
+      `Max Gate: ${LIMIT}`,
+      "Min Gate: gates below this one are ignored for detection.",
+    ]);
+    expect(markup).not.toContain(`Min Gate: ${LIMIT}`);
+  });
+
+  it("falls back to the range-limit tooltip when no tips are passed", () => {
+    const markup = flat(
+      renderDistanceChart(ld2412Hass(), ld2412, "m", LD2412_PROFILE.maxBarLabels, "LD2412")
+    );
+    expect(titles(markup).slice(-2)).toEqual([`Max Gate: ${LIMIT}`, `Min Gate: ${LIMIT}`]);
+  });
+
+  it("defaults the max row labels to the LD2410 profile's", () => {
+    const byDefault = flat(renderDistanceChart(ld2410Hass(), m, "m"));
+    expect(byDefault).toBe(
+      flat(renderDistanceChart(ld2410Hass(), m, "m", LD2410_PROFILE.maxBarLabels))
+    );
+    expect(byDefault).toContain(">Max Move</text>");
+    expect(byDefault).toContain(">Max Still</text>");
+  });
+
+  it("labels each max row with its gate number", () => {
+    const markup = flat(renderDistanceChart(ld2410Hass(), m, "m"));
+    const move = rowWithTip(markup, "Max Move:");
+    const still = rowWithTip(markup, "Max Still:");
+    expect(move).toContain(">G6</text>");
+    expect(still).toContain(">G8</text>");
+    // Not the distance the bar reaches (6 x 0.75 m, 8 x 0.75 m).
+    expect(move).not.toContain("4.5 m");
+    expect(still).not.toContain("6.0 m");
+  });
+
+  it("leaves a max row out when its gate is not numeric", () => {
+    const h = ld2410Hass();
+    h.states[m.max_still_distance!] = ent("unavailable");
+    const markup = flat(renderDistanceChart(h, m, "m"));
+    expect(titles(markup)).toContain(`Max Move: ${LIMIT}`);
+    expect(markup).not.toContain("Max Still");
+  });
 });

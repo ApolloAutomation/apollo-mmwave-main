@@ -56,3 +56,15 @@ export function registerElement(tag: string, ctor: ElementCtor): void {
     window.customElements.whenDefined(marker).then(reassertAll, () => undefined);
   }
 }
+
+/** List a card in HA's card picker (`window.customCards`), once per type. */
+export function registerCustomCard(type: string, name: string, description: string): void {
+  const customCards = ((window as any).customCards = (window as any).customCards || []);
+  if (customCards.some((c: { type?: string }) => c.type === type)) return;
+  customCards.push({
+    type,
+    name,
+    description,
+    documentationURL: "https://github.com/ApolloAutomation/apollo-mmwave-main",
+  });
+}

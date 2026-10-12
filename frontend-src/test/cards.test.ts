@@ -14,10 +14,12 @@ import { entityIds, resolveRadar, watchedIds } from "../src/cards/resolution";
 import { DISTANCE_CHART_SLOTS, renderDistanceChart } from "../src/charts/distance-chart";
 import {
   GATE_ENERGY_CHART_SLOTS,
+  chartLegendStyles,
   renderGateEnergyChart,
 } from "../src/charts/gate-energy-chart";
 import { LD2410_PROFILE, LD2412_PROFILE } from "../src/profiles";
 import type { EntityMap, HassEntity, HomeAssistant } from "../src/types";
+import { flat } from "./template-markup";
 
 const NOT_FOUND = "device not found";
 const AIR = "apollo_air_1_abc123";
@@ -173,6 +175,38 @@ describe.each(TITLED)("%s title", (_name, make, what) => {
     const card = await mount(make(), { device_id: "air" });
     expect(card.shadowRoot!.textContent).toContain(NOT_FOUND);
     expect(header(card)).toBe(`LD2410 ${what}`);
+  });
+});
+
+describe("card picker and chart styles", () => {
+  it("lists both cards in window.customCards once, with the docs link", () => {
+    const cards = (window as any).customCards as { type: string }[];
+    for (const [type, name] of [
+      ["apollo-radar-distance-card", "Apollo Radar Distance Chart"],
+      ["apollo-radar-gate-energy-card", "Apollo Radar Gate Energy Chart"],
+    ]) {
+      const entries = cards.filter((c) => c.type === type);
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({
+        name,
+        documentationURL: "https://github.com/ApolloAutomation/apollo-mmwave-main",
+      });
+      expect(entries[0]).toHaveProperty("description");
+    }
+  });
+
+  it("styles the gate-energy chart's legend from the chart module", () => {
+    const styles = ApolloLd2410GateEnergyCard.styles as unknown[];
+    expect(styles).toContain(chartLegendStyles);
+    expect(String(chartLegendStyles)).toContain(".chart-legend");
+  });
+
+  it("passes the profile's max-row tooltips to the distance chart", async () => {
+    // The R-PRO-1 fixture registers both range gates (state "0"), so the
+    // chart draws the Max Gate and Min Gate rows.
+    const card = await mount(new ApolloLd2410DistanceCard(), { device_id: "rpro" });
+    const markup = flat((card as unknown as { render(): unknown }).render());
+    expect(markup).toContain("<title>Min Gate: gates below this one are ignored for detection.</title>");
   });
 });
 

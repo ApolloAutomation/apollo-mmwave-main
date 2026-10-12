@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { registerElement } from "../src/register";
+import { registerCustomCard, registerElement } from "../src/register";
 
 function tick(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
@@ -71,6 +71,41 @@ describe("registerElement", () => {
         value: native,
         configurable: true,
       });
+    }
+  });
+});
+
+describe("registerCustomCard", () => {
+  it("adds a card picker entry once per type, with the docs link", () => {
+    const before = (window as any).customCards;
+    (window as any).customCards = undefined;
+    try {
+      registerCustomCard("test-picker-card", "Test Card", "A card for tests.");
+      registerCustomCard("test-picker-card", "Test Card again", "Ignored.");
+      expect((window as any).customCards).toEqual([
+        {
+          type: "test-picker-card",
+          name: "Test Card",
+          description: "A card for tests.",
+          documentationURL: "https://github.com/ApolloAutomation/apollo-mmwave-main",
+        },
+      ]);
+    } finally {
+      (window as any).customCards = before;
+    }
+  });
+
+  it("keeps the entries other cards already added", () => {
+    const before = (window as any).customCards;
+    const other = { type: "someone-elses-card", name: "Other" };
+    (window as any).customCards = [other];
+    try {
+      registerCustomCard("test-picker-card", "Test Card", "A card for tests.");
+      const cards = (window as any).customCards as { type: string }[];
+      expect(cards[0]).toBe(other);
+      expect(cards.map((c) => c.type)).toEqual(["someone-elses-card", "test-picker-card"]);
+    } finally {
+      (window as any).customCards = before;
     }
   });
 });

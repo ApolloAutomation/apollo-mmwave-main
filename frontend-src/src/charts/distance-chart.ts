@@ -3,6 +3,7 @@ import type { EntityMap, HomeAssistant } from "../types";
 import { convert, type Uom } from "./unit-convert";
 import { numState, uomOf } from "./entity-read";
 import { gateRegisterCount, parseGateSizeMeters, scaleX } from "./geometry";
+import { LD2410_PROFILE, rangeLimitTip } from "../profiles";
 
 // Gate numbering (HLK-LD2410 manual): the farthest-gate setting N means
 // "detect within N x 0.75 m", so gate N is the band ENDING at N x 0.75 m —
@@ -170,7 +171,7 @@ type Row =
   | { kind: "zones" }
   | { kind: "bar"; bar: DistanceBar }
   | { kind: "gates" }
-  | { kind: "max"; label: string; value: number; gate?: number; color: string };
+  | { kind: "max"; label: string; value: number; gate: number; tip?: string; color: string };
 
 function rowLabel(r: Row): string {
   if (r.kind === "zones") return "Zones";
@@ -185,8 +186,7 @@ function rowTip(r: Row): string {
     return "Detection zones. The circle shows whether a target is currently in each zone (filled = present).";
   if (r.kind === "gates")
     return "The radar splits its range into gates — each colored segment is one distance bin (G1, G2, ...).";
-  if (r.kind === "max")
-    return `${r.label}: the configured detection-range limit, shown as a gate number.`;
+  if (r.kind === "max") return r.tip ?? rangeLimitTip(r.label);
   if (r.bar.label === "Detection")
     return "Current distance to the detected target.";
   if (r.bar.label === "Moving")
@@ -206,8 +206,9 @@ export function renderDistanceChart(
   hass: HomeAssistant,
   m: EntityMap,
   unit: Uom,
-  maxLabels: [string, string] = ["Max Move", "Max Still"],
-  label = "LD2410"
+  maxLabels: [string, string] = LD2410_PROFILE.maxBarLabels,
+  label = "LD2410",
+  maxTips?: [string, string]
 ): TemplateResult | typeof nothing {
   // Only bail when there's no device at all. A configured radar always has a
   // gate setup, so the chart renders (Gates row + axis) even if the optional
@@ -222,10 +223,26 @@ export function renderDistanceChart(
   if (model.zones.length) rows.push({ kind: "zones" });
   for (const bar of model.bars) rows.push({ kind: "bar", bar });
   rows.push({ kind: "gates" });
-  if (model.maxMove !== undefined)
-    rows.push({ kind: "max", label: maxLabels[0], value: model.maxMove, gate: model.maxMoveGate, color: MOVE_COLOR });
-  if (model.maxStill !== undefined)
-    rows.push({ kind: "max", label: maxLabels[1], value: model.maxStill, gate: model.maxStillGate, color: STILL_COLOR });
+  // distanceModel sets each max distance exactly when its gate is set; testing
+  // both lets TypeScript see the gate is defined.
+  if (model.maxMove !== undefined && model.maxMoveGate !== undefined)
+    rows.push({
+      kind: "max",
+      label: maxLabels[0],
+      value: model.maxMove,
+      gate: model.maxMoveGate,
+      tip: maxTips?.[0],
+      color: MOVE_COLOR,
+    });
+  if (model.maxStill !== undefined && model.maxStillGate !== undefined)
+    rows.push({
+      kind: "max",
+      label: maxLabels[1],
+      value: model.maxStill,
+      gate: model.maxStillGate,
+      tip: maxTips?.[1],
+      color: STILL_COLOR,
+    });
 
   const plotBottom = TOP + rows.length * ROW_H;
   const height = plotBottom + AXIS_H;
@@ -291,7 +308,7 @@ export function renderDistanceChart(
     } else {
       // max bar — gate count centered, like the reference
       const xe = x(r.value);
-      const text = r.gate !== undefined ? `G${r.gate}` : fmt(r.value);
+      const text = `G${r.gate}`;
       content = svg`
         <rect x=${LBL} y=${y} width=${Math.max(1, xe - LBL)} height=${BAR_H}
           rx="4" fill=${r.color} opacity="0.6"></rect>

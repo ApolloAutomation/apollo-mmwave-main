@@ -1,8 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
-import { nothing, render, type TemplateResult } from "lit";
+import { render } from "lit";
 import { gateEnergyModel, renderGateEnergyChart } from "../src/charts/gate-energy-chart";
 import { entityMapFromBaseName, entityMapFromDevice } from "../src/entities";
 import type { HomeAssistant, HassEntity } from "../src/types";
+import { flat } from "./template-markup";
 
 const base = "apollo_msr_2_m4c4dd";
 const m = entityMapFromBaseName(base);
@@ -84,28 +85,23 @@ function mountChart(h: HomeAssistant): HTMLElement {
   return container;
 }
 
-/**
- * Serialise a Lit template result to its markup, bindings inlined. happy-dom
- * drops Lit's child-part markers inside <svg>, so the bars never reach the
- * DOM here; the template itself is what a browser renders, so assert on it.
- */
-function flat(value: unknown): string {
-  if (value === nothing || value === null || value === undefined || value === false) return "";
-  if (Array.isArray(value)) return value.map(flat).join("");
-  if (typeof value === "object" && "strings" in (value as object)) {
-    const t = value as TemplateResult;
-    return t.strings.reduce(
-      (acc, s, i) => acc + s + (i < t.values.length ? flat(t.values[i]) : ""),
-      ""
-    );
-  }
-  return String(value);
-}
-
 /** The <rect> tags of the energy bars (threshold markers are <path>). */
 function barMarkup(h: HomeAssistant): string[] {
   return flat(renderGateEnergyChart(h, m)).match(/<rect[^>]*fill=#(?:4b0082|274e13)[^>]*>/g) ?? [];
 }
+
+describe("renderGateEnergyChart axis labels", () => {
+  it("give the secondary text color a fallback, like the distance chart", () => {
+    const markup = flat(
+      renderGateEnergyChart(hass({ [m.engineering_mode!]: ent("on"), [m.move_energy[0]]: ent("0") }), m)
+    );
+    const fallback = "fill=var(--secondary-text-color, #9aa0a6)>";
+    // Nine gate labels (G0..G8) and five gridline labels (0..100).
+    for (let g = 0; g <= 8; g++) expect(markup).toContain(`${fallback}G${g}</text>`);
+    for (const v of [0, 25, 50, 75, 100]) expect(markup).toContain(`${fallback}${v}</text>`);
+    expect(markup).not.toContain('"var(--secondary-text-color)"');
+  });
+});
 
 describe("renderGateEnergyChart engineering-mode overlay", () => {
   const off = { [m.engineering_mode!]: ent("off"), [m.move_energy[0]]: ent("0") };

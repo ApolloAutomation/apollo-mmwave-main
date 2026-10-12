@@ -20,21 +20,6 @@ export function scaleX(value: number, maxRange: number, width: number): number {
   return clamp((value / maxRange) * width, 0, width);
 }
 
-/** X pixel positions for gate ticks G1..Gcount along a chart of pixel `width`
- *  representing 0..(gateSizeChart * count) in chart units. */
-export function gateTicks(
-  gateSizeChart: number,
-  count: number,
-  width: number
-): number[] {
-  const maxRange = gateSizeChart * count;
-  const ticks: number[] = [];
-  for (let i = 1; i <= count; i++) {
-    ticks.push(scaleX(gateSizeChart * i, maxRange, width));
-  }
-  return ticks;
-}
-
 /** Number of gate registers the map describes: the longest of its four gate
  *  arrays. A device-resolved map sizes each array by that slot's highest
  *  registered gate, so a disabled top-gate threshold leaves move_threshold

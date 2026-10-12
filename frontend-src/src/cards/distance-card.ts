@@ -16,7 +16,7 @@ import {
   type ResolvedRadar,
   type WatchedIds,
 } from "./resolution";
-import { registerElement } from "../register";
+import { registerCustomCard, registerElement } from "../register";
 import { DISTANCE_CHART_SLOTS, renderDistanceChart } from "../charts/distance-chart";
 import { defaultDistanceUnit, isValidUom, type Uom } from "../charts/unit-convert";
 
@@ -80,7 +80,14 @@ export class ApolloLd2410DistanceCard extends LitElement {
     // The chip the card is for; an undetermined profile keeps the LD2410
     // wording the card has always used.
     const label = profile?.label ?? "LD2410";
-    const chart = renderDistanceChart(this.hass, m, unit, profile?.maxBarLabels, label);
+    const chart = renderDistanceChart(
+      this.hass,
+      m,
+      unit,
+      profile?.maxBarLabels,
+      label,
+      profile?.maxBarTips
+    );
     if (chart === nothing) return nothing;
     return html`
       <ha-card .header=${this._config.title ?? `${label} Distances`}>
@@ -114,14 +121,8 @@ export class ApolloLd2410DistanceCard extends LitElement {
 }
 
 registerElement("apollo-radar-distance-card", ApolloLd2410DistanceCard);
-
-const customCards = ((window as any).customCards =
-  (window as any).customCards || []);
-if (!customCards.some((c: { type?: string }) => c.type === "apollo-radar-distance-card")) {
-  customCards.push({
-    type: "apollo-radar-distance-card",
-    name: "Apollo Radar Distance Chart",
-    description: "Distance / zone chart for Apollo MSR (LD2410) & R-PRO (LD2412).",
-    documentationURL: "https://github.com/ApolloAutomation/apollo-mmwave-main",
-  });
-}
+registerCustomCard(
+  "apollo-radar-distance-card",
+  "Apollo Radar Distance Chart",
+  "Distance / zone chart for Apollo MSR (LD2410) & R-PRO (LD2412)."
+);

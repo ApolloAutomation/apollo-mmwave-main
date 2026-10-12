@@ -1,3 +1,5 @@
+import type { Uom } from "./charts/unit-convert";
+
 export interface HassEntity {
   entity_id: string;
   state: string;
@@ -123,7 +125,7 @@ export interface Ld2410CardConfig {
   entities?: Partial<EntityMap>;
   panels?: Partial<Record<PanelKey, boolean>>;
   title?: string;
-  distance_unit?: "mm" | "cm" | "m" | "in" | "ft" | "yd";
+  distance_unit?: Uom;
 }
 
 /** Options the calibrate card forwards to `apollo_mmwave.calibrate_gates`.
