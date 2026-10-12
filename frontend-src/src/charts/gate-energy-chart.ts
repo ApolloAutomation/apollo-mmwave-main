@@ -1,6 +1,7 @@
 import { html, svg, nothing, type TemplateResult } from "lit";
 import type { EntityMap, HomeAssistant } from "../types";
 import { numState } from "./entity-read";
+import { gateRegisterCount } from "./geometry";
 import { callService } from "../calibration/api";
 
 const MOVE_COLOR = "#4b0082";
@@ -28,7 +29,7 @@ export function gateEnergyModel(hass: HomeAssistant, m: EntityMap): GateEnergyMo
     if (id && id in hass.states) present = true;
   };
 
-  const count = m.move_threshold.length;
+  const count = gateRegisterCount(m);
   const gates: GateRow[] = Array.from({ length: count }, (_, n) => {
     seen(m.move_energy[n]);
     seen(m.still_energy[n]);

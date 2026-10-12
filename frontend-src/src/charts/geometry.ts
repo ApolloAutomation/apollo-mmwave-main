@@ -1,3 +1,5 @@
+import type { EntityMap } from "../types";
+
 /** Parse an LD2410 gate-size select state like "0.75m" / "0.2 m" into meters.
  *  Returns undefined if no numeric value can be parsed. */
 export function parseGateSizeMeters(state: string | undefined): number | undefined {
@@ -31,4 +33,17 @@ export function gateTicks(
     ticks.push(scaleX(gateSizeChart * i, maxRange, width));
   }
   return ticks;
+}
+
+/** Number of gate registers the map describes: the longest of its four gate
+ *  arrays. A device-resolved map sizes each array by that slot's highest
+ *  registered gate, so a disabled top-gate threshold leaves move_threshold
+ *  one short while the gate's energy sensors still report. */
+export function gateRegisterCount(m: EntityMap): number {
+  return Math.max(
+    m.move_threshold.length,
+    m.still_threshold.length,
+    m.move_energy.length,
+    m.still_energy.length
+  );
 }

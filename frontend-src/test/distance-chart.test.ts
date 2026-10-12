@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { distanceModel } from "../src/charts/distance-chart";
-import { entityMapFromBaseName } from "../src/entities";
+import { entityMapFromBaseName, entityMapFromDevice } from "../src/entities";
 import type { HomeAssistant, HassEntity } from "../src/types";
 
 const base = "apollo_msr_2_m4c4dd";
@@ -73,5 +73,50 @@ describe("distanceModel", () => {
     const model = distanceModel(h, m, "m");
     expect(model.maxStill).toBeCloseTo(6, 6); // 8 * 0.75
     expect(model.maxMove).toBeCloseTo(4.5, 6); // 6 * 0.75
+  });
+
+  // A device-resolved map sizes each gate array by that slot's highest
+  // registered gate, and HA leaves disabled entities out of hass.entities.
+  // Register every gate entity of the base-name map, plus the gate size and
+  // max move, except the ones named in `omit`.
+  function deviceMap(omit: string[], states: Record<string, HassEntity>) {
+    const ids = [
+      ...m.move_threshold,
+      ...m.still_threshold,
+      ...m.move_energy,
+      ...m.still_energy,
+      m.gate_size!,
+      m.max_move_distance!,
+    ].filter((id) => !omit.includes(id));
+    const h: HomeAssistant = { states: {}, entities: {}, devices: { dev1: { name: "MSR-2" } } };
+    for (const id of ids) {
+      h.states[id] = states[id] ?? ent("0");
+      h.entities[id] = { device_id: "dev1" };
+    }
+    return { h, map: entityMapFromDevice(h, "dev1")! };
+  }
+
+  it("keeps 8 bands when the g8 threshold is unregistered", () => {
+    const { h, map } = deviceMap([m.move_threshold[8]], {
+      [m.gate_size!]: ent("0.75m"),
+      [m.max_move_distance!]: ent("8"),
+    });
+    expect(map.move_threshold).toHaveLength(8);
+    expect(map.still_threshold).toHaveLength(9);
+    const model = distanceModel(h, map, "m");
+    expect(model.gateCount).toBe(8);
+    expect(model.maxRange).toBeCloseTo(6, 6);
+    expect(model.maxMove).toBeCloseTo(6, 6);
+    expect(model.maxMove!).toBeLessThanOrEqual(model.maxRange + 1e-9);
+  });
+
+  it("keeps 8 bands when a middle threshold is unregistered", () => {
+    const { h, map } = deviceMap([m.move_threshold[3]], {
+      [m.gate_size!]: ent("0.75m"),
+    });
+    expect(map.move_threshold[3]).toBeUndefined();
+    const model = distanceModel(h, map, "m");
+    expect(model.gateCount).toBe(8);
+    expect(model.maxRange).toBeCloseTo(6, 6);
   });
 });

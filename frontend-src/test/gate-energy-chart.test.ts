@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { nothing, render, type TemplateResult } from "lit";
 import { gateEnergyModel, renderGateEnergyChart } from "../src/charts/gate-energy-chart";
-import { entityMapFromBaseName } from "../src/entities";
+import { entityMapFromBaseName, entityMapFromDevice } from "../src/entities";
 import type { HomeAssistant, HassEntity } from "../src/types";
 
 const base = "apollo_msr_2_m4c4dd";
@@ -38,6 +38,26 @@ describe("gateEnergyModel", () => {
     expect(model.gates[0]).toMatchObject({ move: 42, still: 17, moveThr: 50 });
     expect(model.gates[0].stillThr).toBeUndefined();
     expect(model.gates[1].move).toBe(0);
+  });
+
+  it("draws gate 8 energy when only its threshold is missing", () => {
+    // HA leaves a disabled entity out of hass.entities, so a device-resolved
+    // map whose g8 move threshold is disabled has move_threshold length 8.
+    const ids = [...m.move_threshold, ...m.still_threshold, ...m.move_energy, ...m.still_energy]
+      .filter((id) => id !== m.move_threshold[8]);
+    const h: HomeAssistant = { states: {}, entities: {}, devices: { dev1: { name: "MSR-2" } } };
+    for (const id of ids) {
+      h.states[id] = ent("0");
+      h.entities[id] = { device_id: "dev1" };
+    }
+    h.states[m.move_energy[8]] = ent("99");
+    const map = entityMapFromDevice(h, "dev1")!;
+    expect(map.move_threshold).toHaveLength(8);
+    const model = gateEnergyModel(h, map);
+    expect(model.gates).toHaveLength(9);
+    expect(model.gates[8].move).toBe(99);
+    expect(model.gates[8].moveThr).toBeUndefined();
+    expect(model.gates[8].stillThr).toBe(0);
   });
 });
 

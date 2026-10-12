@@ -2,7 +2,7 @@ import { html, svg, nothing, type TemplateResult } from "lit";
 import type { EntityMap, HomeAssistant } from "../types";
 import { convert, type Uom } from "./unit-convert";
 import { numState, uomOf } from "./entity-read";
-import { parseGateSizeMeters, scaleX } from "./geometry";
+import { gateRegisterCount, parseGateSizeMeters, scaleX } from "./geometry";
 
 // Gate numbering (HLK-LD2410 manual): the farthest-gate setting N means
 // "detect within N x 0.75 m", so gate N is the band ENDING at N x 0.75 m —
@@ -73,8 +73,8 @@ export function distanceModel(
     parseGateSizeMeters(m.gate_size ? hass.states[m.gate_size]?.state : undefined) ??
     DEFAULT_GATE_SIZE_M;
   const gateSizeChart = convert(gateSizeM, "m", unit);
-  const gateCount =
-    m.move_threshold.length > 1 ? m.move_threshold.length - 1 : GATE_COUNT;
+  const registers = gateRegisterCount(m);
+  const gateCount = registers > 1 ? registers - 1 : GATE_COUNT;
   const maxRange = gateSizeChart * gateCount;
 
   const bars: DistanceBar[] = [];
