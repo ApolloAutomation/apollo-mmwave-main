@@ -800,6 +800,85 @@ describe("zone map card outside clicks", () => {
   });
 });
 
+/** Dispatch a composed keydown, so it bubbles out to the card's window listener. */
+function keyOn(target: EventTarget, key: string) {
+  target.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, composed: true }));
+}
+
+/**
+ * Backspace and Escape edit a half-drawn polygon, but not while the key is
+ * typed into a text field.
+ *
+ * The listener sits on window, so it hears every keydown on the page. Before
+ * the origin check, fixing a typo in a zone name popped a vertex per Backspace
+ * and Escape threw the whole polygon away. A browser retargets `event.target`
+ * at window to the outermost shadow host, which is why the handler reads the
+ * composed path; happy-dom does not retarget, so these tests pin the behavior
+ * rather than which of the two the handler reads.
+ */
+describe("zone map card polygon keyboard shortcuts", () => {
+  afterEach(() => {
+    document.body.replaceChildren();
+  });
+
+  async function polygonInProgress() {
+    const card = await mountCard(fakeHass());
+    document.body.appendChild(card);
+    startPolygon(card);
+    const nameInput = card.shadowRoot.querySelector("#zoneManager input");
+    expect(nameInput).toBeInstanceOf(HTMLInputElement);
+    return { card, nameInput };
+  }
+
+  it("ignores Backspace typed into the zone-name input", async () => {
+    const { card, nameInput } = await polygonInProgress();
+
+    keyOn(nameInput, "Backspace");
+
+    expect(card._polyPoints).toHaveLength(2);
+    expect(card.isDrawing).toBe(true);
+  });
+
+  it("ignores Escape typed into the zone-name input", async () => {
+    const { card, nameInput } = await polygonInProgress();
+
+    keyOn(nameInput, "Escape");
+
+    expect(card._polyPoints).toHaveLength(2);
+    expect(card.isDrawing).toBe(true);
+  });
+
+  it("ignores keys typed into a field elsewhere on the dashboard", async () => {
+    const { card } = await polygonInProgress();
+    const textarea = document.createElement("textarea");
+    document.body.appendChild(textarea);
+
+    keyOn(textarea, "Backspace");
+    keyOn(textarea, "Escape");
+
+    expect(card._polyPoints).toHaveLength(2);
+    expect(card.isDrawing).toBe(true);
+  });
+
+  it("pops one vertex on Backspace from the page body", async () => {
+    const { card } = await polygonInProgress();
+
+    keyOn(document.body, "Backspace");
+
+    expect(card._polyPoints).toEqual([{ x: 100, y: 200 }]);
+    expect(card.isDrawing).toBe(true);
+  });
+
+  it("clears the polygon on Escape from the page body", async () => {
+    const { card } = await polygonInProgress();
+
+    keyOn(document.body, "Escape");
+
+    expect(card._polyPoints).toHaveLength(0);
+    expect(card.isDrawing).toBe(false);
+  });
+});
+
 /**
  * Polygon finishing through the real canvas listeners.
  *

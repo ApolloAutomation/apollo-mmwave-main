@@ -958,6 +958,23 @@ export class ZoneMapCard extends HTMLElement {
     this._detachGlobalListeners();
 
     this._onKeyDown = (event) => {
+      // Keys typed into a text field belong to that field, not to the
+      // drawing: without this, editing a zone name (in this card's manager or
+      // anywhere else on the dashboard) popped a vertex per Backspace and
+      // Escape threw the polygon away. A listener on window sees
+      // `event.target` retargeted to the outermost shadow host, so ask the
+      // composed path for the real origin. A field inside a closed shadow
+      // root stays hidden from it and keeps the old behavior; Home
+      // Assistant's own fields use open roots.
+      const origin = event.composedPath()[0];
+      if (
+        origin instanceof HTMLInputElement ||
+        origin instanceof HTMLTextAreaElement ||
+        origin instanceof HTMLSelectElement ||
+        origin?.isContentEditable
+      ) {
+        return;
+      }
       if (this.drawMode !== DRAW_MODES.POLYGON) return;
       if (event.key === 'Escape') {
         this._polyPoints = [];
