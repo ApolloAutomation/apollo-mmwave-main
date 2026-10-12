@@ -934,6 +934,65 @@ describe("zone map card zone names across payloads", () => {
     expect(nameInput(card, 2)).toBeNull();
     expect(nameInput(card, 1).value).toBe("Doorway");
   });
+
+  // A zone written into the card YAML has no store entry until it is drawn,
+  // and a geometry write carries no name, so the store then holds the zone
+  // with its shape and no name. That used to swap the YAML name for "Zone 1"
+  // on the payload right after the "saved" toast.
+  const SEEDED = { zones: [{ id: 1, name: "Kitchen" }] };
+  const RECT = { x_min: 0, x_max: 1000, y_min: 0, y_max: 1000 };
+
+  async function seededCard() {
+    const hass = fakeHass({ ...ZONE_PAYLOAD, zones: {} });
+    const card = await mountCard(hass, SEEDED);
+    document.body.appendChild(card);
+    return { card, hass };
+  }
+
+  function chipText(card: any, zoneId: number): string | undefined {
+    const chips = Array.from(
+      card.shadowRoot.querySelectorAll("#zone-buttons .zone-btn[data-zone-id]")
+    );
+    const chip: any = chips.find((b: any) => b.dataset.zoneId === String(zoneId));
+    return chip?.textContent;
+  }
+
+  it("keeps a seeded name for a store zone with geometry but no name", async () => {
+    const { card, hass } = await seededCard();
+    expect(card._zoneLabel(1)).toBe("Kitchen");
+
+    push(hass, { ...ZONE_PAYLOAD, zones: { "1": { shape: "rect", data: RECT } } });
+
+    expect(card.zones).toEqual([{ id: 1, shape: "rect", data: RECT }]);
+    expect(card.zoneConfig).toEqual([{ id: 1, name: "Kitchen" }]);
+    expect(card._zoneLabel(1)).toBe("Kitchen");
+    expect(nameInput(card, 1).value).toBe("Kitchen");
+    expect(chipText(card, 1)).toBe("Kitchen");
+  });
+
+  it("a stored name wins over the seed", async () => {
+    const { card, hass } = await seededCard();
+
+    push(hass, {
+      ...ZONE_PAYLOAD,
+      zones: { "1": { shape: "rect", data: RECT, name: "Hall" } },
+    });
+
+    expect(card.zoneConfig).toEqual([{ id: 1, name: "Hall" }]);
+    expect(card._zoneLabel(1)).toBe("Hall");
+    expect(nameInput(card, 1).value).toBe("Hall");
+  });
+
+  it("still falls back to Zone N for a nameless store zone the YAML does not name", async () => {
+    const { card, hass } = await seededCard();
+
+    push(hass, { ...ZONE_PAYLOAD, zones: { "2": { shape: "rect", data: RECT } } });
+
+    expect(card.zoneConfig).toEqual([
+      { id: 1, name: "Kitchen" },
+      { id: 2, name: "Zone 2" },
+    ]);
+  });
 });
 
 describe("zone map card undo after a zone manager Delete", () => {

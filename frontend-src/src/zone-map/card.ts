@@ -552,9 +552,15 @@ export class ZoneMapCard extends HTMLElement {
       const id = Number(zone?.id);
       if (Number.isFinite(id)) names.set(id, zone.name || `Zone ${id}`);
     });
+    // A stored name wins. Geometry writes carry no name, so drawing on a
+    // seeded zone stores it without one, and that must not swap the YAML name
+    // for the fallback.
     ids.forEach((id) => {
-      const name = zones[String(id)]?.name;
-      names.set(id, typeof name === 'string' && name.trim() ? name : `Zone ${id}`);
+      const stored = zones[String(id)]?.name;
+      names.set(
+        id,
+        typeof stored === 'string' && stored.trim() ? stored : (names.get(id) ?? `Zone ${id}`)
+      );
     });
     this.zoneConfig = Array.from(names.keys())
       .sort((a, b) => a - b)
