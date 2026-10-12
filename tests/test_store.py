@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import copy
 import logging
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
 import pytest
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.exceptions import UnsupportedStorageVersionError
+from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
     async_fire_time_changed,
@@ -22,8 +24,8 @@ from custom_components.apollo_mmwave.const import (
     STORE_ZONES,
 )
 from custom_components.apollo_mmwave.sensor import ZoneCoordsSensor
+from custom_components.apollo_mmwave.store import SAVE_DELAY_SECONDS, ZoneStore
 from custom_components.apollo_mmwave.store import STORAGE_KEY as ZONE_STORAGE_KEY
-from custom_components.apollo_mmwave.store import ZoneStore
 
 from .conftest import CALIBRATION_STORAGE_KEY, radar_ids, setup_integration
 
@@ -189,6 +191,59 @@ async def test_v1_resolves_by_device_name_when_no_entities(
 
     assert list(store.devices) == [device.id]
     assert store.devices[device.id]["zones"][1]["shape"] == "rect"
+
+
+async def test_v1_resolves_by_the_user_given_device_name(
+    hass, hass_storage, device_registry
+) -> None:
+    """A radar renamed in the UI is matched by that name, not its factory one."""
+    device = _make_radar(hass, device_registry, "Apollo R_PRO-1 abc123")
+    device_registry.async_update_device(device.id, name_by_user="Living Room Radar")
+    hass_storage["apollo_mmwave.zones"] = {
+        "version": 1,
+        "data": {
+            "locations": {
+                "Living Room Radar": {
+                    "zones": {"1": {"shape": "rect", "data": {}}},
+                    "entities": [],
+                }
+            }
+        },
+    }
+
+    store = ZoneStore(hass)
+    assert await store.async_load() is True
+
+    assert list(store.devices) == [device.id]
+    assert store.orphans == {}
+    assert store.devices[device.id]["label"] == "Living Room Radar"
+
+
+async def test_v1_factory_name_does_not_match_a_renamed_device(
+    hass, hass_storage, device_registry
+) -> None:
+    """Once the user has named the radar, only that name resolves to it."""
+    # Renaming the radar back to its old name is the documented way to recover
+    # zones orphaned by a rename, which only works if the user-given name wins.
+    device = _make_radar(hass, device_registry, "Apollo R_PRO-1 abc123")
+    device_registry.async_update_device(device.id, name_by_user="Living Room Radar")
+    hass_storage["apollo_mmwave.zones"] = {
+        "version": 1,
+        "data": {
+            "locations": {
+                "Apollo R_PRO-1 abc123": {
+                    "zones": {"1": {"shape": "rect", "data": {}}},
+                    "entities": [],
+                }
+            }
+        },
+    }
+
+    store = ZoneStore(hass)
+    assert await store.async_load() is True
+
+    assert store.devices == {}
+    assert list(store.orphans) == ["Apollo R_PRO-1 abc123"]
 
 
 async def test_v1_locations_colliding_on_one_device_are_merged(
@@ -416,6 +471,28 @@ async def test_input_units_survive_a_round_trip(hass, hass_storage) -> None:
     assert await reloaded.async_load() is True
 
     assert reloaded.devices["dev"]["input_units"] == "cm"
+
+
+async def test_delayed_save_writes_after_the_delay(hass, hass_storage) -> None:
+    """A mutation reaches disk once the debounce elapses, not before."""
+    # Every zone edit after setup is persisted this way. The immediate
+    # `async_save` only runs during setup migrations and on unload.
+    store = ZoneStore(hass)
+    store.device("dev")[STORE_ZONES][1] = {"shape": "rect", "data": {}}
+    store.async_delay_save()
+
+    async_fire_time_changed(
+        hass, dt_util.utcnow() + timedelta(seconds=SAVE_DELAY_SECONDS / 2)
+    )
+    await hass.async_block_till_done()
+    assert ZONE_STORAGE_KEY not in hass_storage
+
+    async_fire_time_changed(
+        hass, dt_util.utcnow() + timedelta(seconds=SAVE_DELAY_SECONDS + 1)
+    )
+    await hass.async_block_till_done()
+    on_disk = hass_storage[ZONE_STORAGE_KEY]["data"]["devices"]["dev"]
+    assert on_disk["zones"]["1"]["shape"] == "rect"
 
 
 async def test_unknown_input_units_on_disk_are_dropped(hass, hass_storage) -> None:
