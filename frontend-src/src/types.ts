@@ -69,10 +69,10 @@ export interface EntityMap {
   restart_radar?: string;
   factory_reset_radar?: string;
   esp_reboot?: string;
-  // LD2412 only: the chip's own background correction and its status, plus
-  // the button that re-reads every threshold from the chip.
+  // LD2412 only: the chip's own background correction and its status.
   background_correction?: string;
   background_correction_status?: string;
+  // Both chips: the button that makes the radar report every threshold.
   query_params?: string;
   // zone config
   radar_timeout?: string;

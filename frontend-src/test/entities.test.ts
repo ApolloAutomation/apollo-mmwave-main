@@ -388,6 +388,12 @@ describe("classifyObjectId", () => {
     });
   });
 
+  it("classifies the MSR firmware's query params button, which has no chip prefix", () => {
+    expect(classifyObjectId("button", `${base}_query_params`)).toEqual({ slot: "query_params" });
+    expect(classifyObjectId("button", `${base}_query_params_2`)).toEqual({ slot: "query_params" });
+    expect(classifyObjectId("sensor", `${base}_query_params`)).toBeUndefined();
+  });
+
   it("rejects the LD2412 calibration entities in the wrong domain", () => {
     expect(
       classifyObjectId("switch", `${base}_ld2412_start_dynamic_background_correction`)
@@ -530,11 +536,12 @@ describe("LD2412_PROFILE.entityMap", () => {
     expect(map.query_params).toBe(`button.${b}_ld2412_query_params`);
   });
 
-  it("leaves the three slots unset on the LD2410 map", () => {
+  it("leaves the background-correction slots unset on the LD2410 map", () => {
     const map = entityMapFromBaseName(base);
     expect(map.background_correction).toBeUndefined();
     expect(map.background_correction_status).toBeUndefined();
-    expect(map.query_params).toBeUndefined();
+    // The MSR has a query params button too, spelled without the chip prefix.
+    expect(map.query_params).toBe(`button.${base}_query_params`);
   });
 });
 

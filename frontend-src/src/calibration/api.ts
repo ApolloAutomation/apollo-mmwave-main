@@ -33,6 +33,10 @@ export const ERR_NOT_LOADED = "not_loaded";
 export const ERR_NOT_FOUND = "not_found";
 /** HA's websocket code for a `ServiceValidationError` (pre-flight refusals). */
 export const ERR_SERVICE_VALIDATION = "service_validation_error";
+/** The radar has not reported some thresholds yet: a pre-flight translation
+ *  key and a job error code alike. Pressing the radar's query params button
+ *  makes it send them. */
+export const ERR_THRESHOLDS_NOT_NUMERIC = "thresholds_not_numeric";
 
 /** Sent for `not_loaded`, and for a service call HA could not find because
  *  the integration is unloaded or disabled. */
@@ -148,6 +152,8 @@ export interface CalibrationResult {
   margin?: number | null;
   margin_pct?: number | null;
   kind_filter?: "both" | Channel | null;
+  /** False for a preview; null on a restore, absent on older results. */
+  apply?: boolean | null;
   samples?: number;
   presence_fraction?: number | null;
   moving_fraction?: number | null;
@@ -202,6 +208,9 @@ export interface EntitiesInfo {
   engineering_mode_on: boolean;
   background_status: string | null;
   background_status_on: boolean;
+  /** The button that makes the radar report its thresholds, on either chip;
+   *  absent from a backend older than 2.2.1. */
+  query_params_button?: string | null;
   max_move_gate: number | null;
   max_still_gate: number | null;
   min_gate: number | null;
@@ -373,6 +382,14 @@ export function restoreThresholds(
   });
 }
 
+/** Press a button entity (the radar's query params button). */
+export function pressButton(
+  hass: Pick<CalibrationApiHass, "callService">,
+  entityId: string
+): Promise<any> {
+  return callService(hass, "button", "press", { entity_id: entityId });
+}
+
 export function turnEngineeringMode(
   hass: Pick<CalibrationApiHass, "callService">,
   switchId: string,
@@ -400,6 +417,14 @@ function errorPayload(error: any): any {
     if (inner && typeof inner === "object") return inner;
   }
   return error;
+}
+
+/** The translation key of this integration's pre-flight refusal
+ *  (`thresholds_not_numeric`, ...), or undefined for any other rejection. */
+export function refusalKey(error: any): string | undefined {
+  const err = errorPayload(error);
+  if (err?.translation_domain !== DOMAIN) return undefined;
+  return typeof err.translation_key === "string" ? err.translation_key : undefined;
 }
 
 /** HA strips the final period from a translated exception message. */

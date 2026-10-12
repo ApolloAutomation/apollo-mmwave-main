@@ -1,9 +1,12 @@
 import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import {
+  DEFAULT_THRESHOLD_MAX,
   INITIAL_LOCAL_STATE,
   KEEP_ON_LD2410,
   KEEP_ON_LD2412,
   NOTHING_TO_RESTORE,
+  REDO_LABEL,
+  UNDO_LABEL,
   canStart,
   canStop,
   cancelledLine,
@@ -13,21 +16,29 @@ import {
   formatTime,
   idleSentence,
   isFactoryThresholds,
+  liveGateLimits,
   livePeaksLine,
   missingLine,
   nextLocalState,
+  offChannelsBeforeRun,
+  offGatesLine,
   offersUndo,
   phaseHeadline,
   phaseLabel,
   progress,
+  reenabledLines,
   restoreSource,
   restoreSummaryLines,
   restoredLine,
   resultHeading,
   resultRows,
+  savedLine,
   showsResultView,
+  snapshotContents,
   summaryLine,
+  thresholdMax,
   undoLabel,
+  undoTitle,
   unusedFootnote,
   warningLines,
 } from "../src/calibration/model";
@@ -35,11 +46,12 @@ import type {
   CalibrationPayload,
   CalibrationResult,
   ChannelResult,
+  EntitiesInfo,
   GateResult,
   JobState,
   SnapshotSummary,
 } from "../src/calibration/api";
-import { LD2410_FACTORY_THRESHOLDS } from "../src/profiles";
+import { LD2410_FACTORY_THRESHOLDS, LD2412_PROFILE } from "../src/profiles";
 import { entityMapFromBaseName } from "../src/entities";
 import type { HomeAssistant } from "../src/types";
 
@@ -479,6 +491,36 @@ describe("resultRows", () => {
     expect(rows[0].move.text).toBe("50 → 24 (would set)");
   });
 
+  it("marks a channel that was off (at the number's max) and was turned back on", () => {
+    const gates = [
+      gate(2, {}, { old: 100, new: 15, peak: 5 }),
+      gate(3, { old: 100, new: 15, confirmed: false, actual: 100 }),
+      gate(7, { old: 100, new: 15, flags: ["unused"] }),
+      gate(8, { old: 100, new: 100, peak: 97, flags: ["off"], written: false, confirmed: null }),
+    ];
+    const rows = resultRows(result({ gates }));
+    expect(rows[0].still.text).toBe("100 → 15 (was off)");
+    expect(rows[0].move.text).toBe("50 → 24");
+    expect(rows[1].move.text).toBe("100 → 15 (was off, not confirmed)");
+    // A gate the radar does not use turns nothing on, and one left at the top
+    // was never turned back on.
+    expect(rows[2].move.text).toBe("100 → 15");
+    expect(rows[3].move.text).toBe("100 (off)");
+    const preview = resultRows(
+      result({ outcome: "preview", gates: [gate(2, {}, { old: 100, new: 15, written: false, confirmed: null, actual: null })] })
+    );
+    expect(preview[0].still.text).toBe("100 → 15 (was off, would set)");
+  });
+
+  it("reads off against each number's own max", () => {
+    const g = gate(2, { old: 80, new: 30 }, { old: 100, new: 30 });
+    const maxOf = (id: string | null) => (id === g.move.entity_id ? 80 : DEFAULT_THRESHOLD_MAX);
+    const rows = resultRows(result({ gates: [g] }), maxOf);
+    expect(rows[0].move.text).toBe("80 → 30 (was off)");
+    expect(rows[0].still.text).toBe("100 → 30 (was off)");
+    expect(resultRows(result({ gates: [g] }))[0].move.text).toBe("80 → 30");
+  });
+
   it("returns no rows for a result without a gate table", () => {
     expect(resultRows(result({ gates: undefined }))).toEqual([]);
   });
@@ -580,25 +622,267 @@ describe("warningLines", () => {
   });
 });
 
-describe("undoLabel", () => {
-  it("names the newest snapshot's time when it was taken today", () => {
-    const iso = todayAt(14, 31);
-    const snapshots: SnapshotSummary[] = [
-      { id: "b", taken_at: iso, reason: "calibrate", count: 18 },
-      { id: "a", taken_at: todayAt(9, 0), reason: "calibrate", count: 18 },
-    ];
-    expect(undoLabel(snapshots, NOW)).toBe(`Undo (restore ${expectedTime(iso)} values)`);
+describe("reenabledLines", () => {
+  it("says which gate an applied run turned back on and how to turn it off again", () => {
+    const r = result({ gates: [gate(0), gate(2, {}, { old: 100, new: 15 })] });
+    expect(reenabledLines(r)).toEqual([
+      "G2 still was off (set to 100) and calibration turned it back on (now 15). If you turned it off on purpose, set it back to 100 on the Still Thresholds card, or press Undo to put back all your previous values.",
+    ]);
+    const partial = result({ outcome: "partial", gates: [gate(1, { old: 100, new: 64 })] });
+    expect(reenabledLines(partial)).toEqual([
+      "G1 move was off (set to 100) and calibration turned it back on (now 64). If you turned it off on purpose, set it back to 100 on the Move Thresholds card, or press Undo to put back all your previous values.",
+    ]);
   });
 
-  it("adds the day for a snapshot taken yesterday", () => {
-    const iso = new Date(2026, 9, 10, 14, 31, 0).toISOString();
-    const label = undoLabel([{ id: "a", taken_at: iso, reason: "calibrate", count: 18 }], NOW);
-    expect(label).toBe(`Undo (restore ${expectedDayTime(iso)} values)`);
+  it("words a preview as what calibration would do", () => {
+    const r = result({
+      outcome: "preview",
+      gates: [gate(2, {}, { old: 100, new: 15, written: false, confirmed: null, actual: null })],
+    });
+    expect(reenabledLines(r)).toEqual([
+      "G2 still is off (set to 100) and calibration would turn it back on (would set 15). If you turned it off on purpose, set it back to 100 on the Still Thresholds card after you calibrate.",
+    ]);
+  });
+
+  it("leaves out unused gates, unconfirmed writes, unchanged gates, restores and failures", () => {
+    const gates = [
+      gate(7, { old: 100, new: 15, flags: ["unused"] }),
+      gate(3, { old: 100, new: 15, confirmed: false, actual: 100 }),
+      gate(8, {}, { old: 100, new: 100, flags: ["off"], written: false, confirmed: null }),
+    ];
+    expect(reenabledLines(result({ gates }))).toEqual([]);
+    const reenabled = [gate(2, {}, { old: 100, new: 15 })];
+    expect(reenabledLines(result({ gates: reenabled, outcome: "failed", status: "failed" }))).toEqual([]);
+    expect(reenabledLines(result({ gates: reenabled, outcome: "cancelled", status: "cancelled" }))).toEqual([]);
+    expect(reenabledLines(restoreResult())).toEqual([]);
+  });
+});
+
+describe("thresholdMax", () => {
+  it("reads the number's max attribute and falls back to 100", () => {
+    const hass = {
+      states: {
+        "number.a": { entity_id: "number.a", state: "5", attributes: { max: 80 } },
+        "number.b": { entity_id: "number.b", state: "5", attributes: { max: "90" } },
+        "number.c": { entity_id: "number.c", state: "5", attributes: {} },
+      },
+    };
+    expect(thresholdMax(hass, "number.a")).toBe(80);
+    expect(thresholdMax(hass, "number.b")).toBe(90);
+    expect(thresholdMax(hass, "number.c")).toBe(100);
+    expect(thresholdMax(hass, "number.missing")).toBe(100);
+    expect(thresholdMax(undefined, null)).toBe(100);
+  });
+});
+
+describe("gates turned off before a run", () => {
+  const base = "apollo_msr_2_m4c4dd";
+  const m = entityMapFromBaseName(base);
+  const LIMITS = { max_move_gate: 8, max_still_gate: 8, min_gate: null, max_gate: null };
+
+  /** An MSR whose thresholds are all 30 except `overrides`, every number
+   *  0..100 and every energy sensor present. */
+  function msrHass(overrides: Record<string, string> = {}): HomeAssistant {
+    const states: HomeAssistant["states"] = {};
+    const add = (id: string, state: string) => {
+      states[id] = { entity_id: id, state, attributes: { min: 0, max: 100, step: 1 } };
+    };
+    for (let g = 0; g < 9; g++) {
+      add(m.move_threshold[g], "30");
+      add(m.still_threshold[g], "30");
+      add(m.move_energy[g], "unknown");
+      add(m.still_energy[g], "unknown");
+    }
+    for (const [id, state] of Object.entries(overrides)) add(id, state);
+    return { states, entities: {}, devices: {} };
+  }
+
+  it("names one in-use gate at its max in one sentence", () => {
+    const hass = msrHass({ [m.still_threshold[2]]: "100" });
+    const off = offChannelsBeforeRun(hass, m, "ld2410", LIMITS);
+    expect(off).toEqual([{ gate: 2, channel: "still", max: 100 }]);
+    expect(offGatesLine(off)).toBe("G2 still is off (set to 100). Calibrating will turn it back on.");
+  });
+
+  it("combines several gates into one sentence, gate ascending, move before still", () => {
+    const hass = msrHass({ [m.still_threshold[2]]: "100", [m.move_threshold[0]]: "100.0" });
+    expect(offGatesLine(offChannelsBeforeRun(hass, m, "ld2410", LIMITS))).toBe(
+      "G0 move, G2 still are off (set to 100). Calibrating will turn them back on."
+    );
+    expect(
+      offGatesLine([
+        { gate: 0, channel: "move", max: 100 },
+        { gate: 2, channel: "still", max: 80 },
+      ])
+    ).toBe("G0 move (set to 100), G2 still (set to 80) are off. Calibrating will turn them back on.");
+    expect(offGatesLine([])).toBeNull();
+  });
+
+  it("leaves out gates the radar does not use and LD2410 G0 and G1 still", () => {
+    const hass = msrHass({
+      [m.move_threshold[7]]: "100",
+      [m.still_threshold[5]]: "100",
+      [m.still_threshold[0]]: "100",
+      [m.still_threshold[1]]: "100",
+    });
+    const limits = { ...LIMITS, max_move_gate: 6, max_still_gate: 4 };
+    expect(offChannelsBeforeRun(hass, m, "ld2410", limits)).toEqual([]);
+    // With the range widened the same two gates count again.
+    expect(offChannelsBeforeRun(hass, m, "ld2410", LIMITS).map((c) => `G${c.gate} ${c.channel}`)).toEqual([
+      "G5 still",
+      "G7 move",
+    ]);
+  });
+
+  it("leaves out a channel calibration cannot set and a threshold with no value", () => {
+    const hass = msrHass({ [m.still_threshold[2]]: "100", [m.move_threshold[3]]: "unknown" });
+    delete hass.states[m.still_energy[2]];
+    expect(offChannelsBeforeRun(hass, m, "ld2410", LIMITS)).toEqual([]);
+  });
+
+  it("uses the number's own max", () => {
+    const hass = msrHass({ [m.move_threshold[4]]: "100" });
+    hass.states[m.move_threshold[3]] = {
+      entity_id: m.move_threshold[3],
+      state: "80",
+      attributes: { min: 0, max: 80, step: 1 },
+    };
+    expect(offChannelsBeforeRun(hass, m, "ld2410", LIMITS)).toEqual([
+      { gate: 3, channel: "move", max: 80 },
+      { gate: 4, channel: "move", max: 100 },
+    ]);
+  });
+
+  it("reads the LD2412 range as Min Gate and Max Gate for both channels", () => {
+    const rm = LD2412_PROFILE.entityMap("apollo_r_pro_1_abc123");
+    const states: HomeAssistant["states"] = {};
+    const add = (id: string, state: string) => {
+      states[id] = { entity_id: id, state, attributes: { min: 0, max: 100, step: 1 } };
+    };
+    for (let g = 0; g < 14; g++) {
+      add(rm.move_threshold[g], g === 0 || g === 1 || g === 12 ? "100" : "30");
+      add(rm.still_threshold[g], g === 1 ? "100" : "30");
+      add(rm.move_energy[g], "unknown");
+      add(rm.still_energy[g], "unknown");
+    }
+    add(rm.max_still_distance!, "1"); // Min Gate
+    add(rm.max_move_distance!, "11"); // Max Gate
+    const hass: HomeAssistant = { states, entities: {}, devices: {} };
+    const limits = liveGateLimits(hass, rm, "ld2412", null);
+    expect(limits).toEqual({ max_move_gate: null, max_still_gate: null, min_gate: 1, max_gate: 11 });
+    // G0 is below Min Gate and G12 above Max Gate; G1 still counts on the
+    // LD2412, where only the LD2410's G0 and G1 still idle near the top.
+    expect(offGatesLine(offChannelsBeforeRun(hass, rm, "ld2412", limits))).toBe(
+      "G1 move, G1 still are off (set to 100). Calibrating will turn them back on."
+    );
+  });
+
+  it("leaves out a gate the last calibration turned off itself while it still reads the top", () => {
+    const hass = msrHass({
+      [m.move_threshold[3]]: "100",
+      [m.still_threshold[4]]: "100",
+      [m.move_threshold[5]]: "100",
+    });
+    // G3 move is in gates_off; G4 still was written at the top (no entry, as
+    // for a gate the backend expects to be off); G5 move the user turned off.
+    const last = result({
+      warnings: ["gate_off"],
+      gates_off: [{ gate: 3, channel: "move", peak: 96 }],
+      gates: [
+        gate(3, { old: 30, new: 100, flags: ["off"], actual: 100 }),
+        gate(4, {}, { old: 30, new: 100, flags: ["off"], actual: 100 }),
+        gate(5, { old: 100, new: 100, written: false, confirmed: null, actual: null }),
+      ],
+    });
+    const names = (r: CalibrationResult | null | undefined) =>
+      offChannelsBeforeRun(hass, m, "ld2410", LIMITS, r).map((c) => `G${c.gate} ${c.channel}`);
+    expect(names(last)).toEqual(["G5 move"]);
+    expect(names(result({ outcome: "partial", gates_off: last.gates_off, gates: last.gates }))).toEqual(["G5 move"]);
+    // Only an applied calibration counts: a preview or a failed run wrote nothing.
+    expect(names(result({ ...last, outcome: "preview" }))).toEqual(["G3 move", "G4 still", "G5 move"]);
+    expect(names(result({ ...last, outcome: "failed", status: "failed" }))).toEqual([
+      "G3 move",
+      "G4 still",
+      "G5 move",
+    ]);
+    expect(names(restoreResult({ gates_off: last.gates_off }))).toEqual(["G3 move", "G4 still", "G5 move"]);
+    expect(names(null)).toEqual(["G3 move", "G4 still", "G5 move"]);
+  });
+
+  it("prefers the live range numbers and falls back to the payload's copy", () => {
+    const entities = { max_move_gate: 6, max_still_gate: 5, min_gate: null, max_gate: null } as EntitiesInfo;
+    const hass = msrHass({ [m.max_move_distance!]: "3" });
+    expect(liveGateLimits(hass, m, "ld2410", entities)).toEqual({
+      max_move_gate: 3,
+      max_still_gate: 5,
+      min_gate: null,
+      max_gate: null,
+    });
+    expect(liveGateLimits(hass, m, "ld2410", null).max_still_gate).toBeNull();
+  });
+});
+
+describe("undoLabel", () => {
+  const at = (h: number, m: number) => todayAt(h, m);
+  const calibrate = (id: string, iso: string): SnapshotSummary => ({ id, taken_at: iso, reason: "calibrate", count: 18 });
+  const restore = (id: string, iso: string): SnapshotSummary => ({ id, taken_at: iso, reason: "restore", count: 18 });
+
+  it("offers Undo after a calibration, Redo after an Undo and Undo again after a Redo", () => {
+    const cal = calibrate("a", at(14, 31));
+    expect(undoLabel([cal], NOW)).toBe("Undo (restore your previous values)");
+    expect(UNDO_LABEL).toBe("Undo (restore your previous values)");
+    // Undo restored `a` and first saved the calibrated values it overwrote.
+    const undo = restore("b", at(14, 40));
+    expect(undoLabel([undo, cal], NOW)).toBe("Redo (put the calibrated values back)");
+    expect(REDO_LABEL).toBe("Redo (put the calibrated values back)");
+    // Redo restored `b` and first saved the previous values it overwrote.
+    const redo = restore("c", at(14, 45));
+    expect(undoLabel([redo, undo, cal], NOW)).toBe("Undo (restore your previous values)");
+    expect(undoLabel([calibrate("d", at(14, 50)), redo, undo, cal], NOW)).toBe(UNDO_LABEL);
+  });
+
+  it("names the time when the calibration's snapshot has aged out of the list", () => {
+    const iso = todayAt(14, 31);
+    expect(undoLabel([restore("b", iso), restore("a", todayAt(9, 0))], NOW)).toBe(
+      `Restore the values saved at ${expectedTime(iso)}`
+    );
+    const yesterday = new Date(2026, 9, 10, 14, 31, 0).toISOString();
+    expect(undoLabel([restore("a", yesterday)], NOW)).toBe(
+      `Restore the values saved at ${expectedDayTime(yesterday)}`
+    );
+  });
+
+  it("keeps the time in the tooltip", () => {
+    const iso = todayAt(14, 31);
+    expect(undoTitle([calibrate("a", iso)], NOW)).toBe(`Saved at ${expectedTime(iso)}`);
+    // With the date it reads "Saved 10 Oct 14:31", not "Saved at 10 Oct 14:31".
+    const yesterday = new Date(2026, 9, 10, 14, 31, 0).toISOString();
+    expect(undoTitle([calibrate("a", yesterday)], NOW)).toBe(`Saved ${expectedDayTime(yesterday)}`);
+    expect(undoTitle([], NOW)).toBeUndefined();
+  });
+
+  it("gives the saved time as text for the footer, with the date even today", () => {
+    const iso = todayAt(14, 31);
+    const cal = calibrate("a", iso);
+    expect(savedLine([cal])).toBe(`Saved ${expectedDayTime(iso)}.`);
+    const undo = restore("b", todayAt(14, 40));
+    expect(savedLine([undo, cal])).toBe(`Saved ${expectedDayTime(undo.taken_at)}.`);
+    expect(savedLine([])).toBeNull();
+    // The fallback label already names the time.
+    expect(savedLine([restore("b", iso)])).toBeNull();
   });
 
   it("says there is nothing to restore without snapshots", () => {
     expect(undoLabel([], NOW)).toBe("Nothing to restore yet");
     expect(NOTHING_TO_RESTORE).toBe("Nothing to restore yet");
+  });
+
+  it("tells any snapshot's contents by walking to the calibration", () => {
+    const list = [restore("c", at(3, 0)), restore("b", at(2, 0)), calibrate("a", at(1, 0))];
+    expect(snapshotContents(list, 0)).toBe("previous");
+    expect(snapshotContents(list, 1)).toBe("calibrated");
+    expect(snapshotContents(list, 2)).toBe("previous");
+    expect(snapshotContents(list.slice(0, 2), 0)).toBeNull();
   });
 });
 
@@ -625,13 +909,13 @@ describe("durationText", () => {
 describe("idleSentence", () => {
   it("names both durations", () => {
     expect(idleSentence(15, 60)).toBe(
-      "Teach the radar what your empty room looks like. It counts down 15 seconds so you can leave, listens for 1 minute, then sets every gate's move and still threshold just above the background it heard. Your current thresholds are saved first, so you can undo."
+      "Teach the radar what your empty room looks like. It counts down 15 seconds so you can leave, listens for 1 minute, then sets every gate's move and still threshold a margin above the background it heard. Your current thresholds are saved first, so you can undo."
     );
   });
 
   it("drops the countdown clause with settle_s 0", () => {
     expect(idleSentence(0, 120)).toBe(
-      "Teach the radar what your empty room looks like. It listens for 2 minutes, then sets every gate's move and still threshold just above the background it heard. Your current thresholds are saved first, so you can undo."
+      "Teach the radar what your empty room looks like. It listens for 2 minutes, then sets every gate's move and still threshold a margin above the background it heard. Your current thresholds are saved first, so you can undo."
     );
   });
 });
@@ -657,19 +941,63 @@ describe("summaryLine / footerLine / resultHeading / failureLine", () => {
   it("words the footer for previews, stops and failures without claiming a change", () => {
     const iso = todayAt(14, 32);
     const when = expectedDayTime(iso);
+    const none = { writes_done: 0, writes_total: 0 };
     expect(footerLine(result({ finished_at: iso, outcome: "preview" }))).toBe(`Last previewed ${when}.`);
-    expect(footerLine(result({ finished_at: iso, status: "cancelled", outcome: "cancelled" }))).toBe(
-      `Last calibration ${when} was stopped.`
+    expect(footerLine(result({ finished_at: iso, status: "cancelled", outcome: "cancelled", ...none }))).toBe(
+      `Last calibration ${when} was stopped. Nothing was changed.`
     );
-    expect(footerLine(result({ finished_at: iso, status: "failed", outcome: "failed" }))).toBe(
-      `Last calibration ${when} failed.`
+    expect(footerLine(result({ finished_at: iso, status: "failed", outcome: "failed", ...none }))).toBe(
+      `Last calibration ${when} failed. Nothing was changed.`
     );
-    expect(footerLine(restoreResult({ finished_at: iso, status: "failed", outcome: "failed" }))).toBe(
-      `Last restore ${when} failed.`
+    expect(footerLine(restoreResult({ finished_at: iso, status: "failed", outcome: "failed", ...none }))).toBe(
+      `Last restore ${when} failed. Nothing was changed.`
     );
-    expect(footerLine(restoreResult({ finished_at: iso, status: "cancelled", outcome: "cancelled" }))).toBe(
-      `Last restore ${when} was stopped.`
+    expect(footerLine(restoreResult({ finished_at: iso, status: "cancelled", outcome: "cancelled", ...none }))).toBe(
+      `Last restore ${when} was stopped. Nothing was changed.`
     );
+  });
+
+  it("says how far a stop or failure got once values were written", () => {
+    const iso = todayAt(14, 32);
+    const when = expectedDayTime(iso);
+    const partway = { writes_done: 5, writes_total: 18 };
+    expect(footerLine(result({ finished_at: iso, status: "failed", outcome: "failed", ...partway }))).toBe(
+      `Last calibration ${when} failed after 5 of 18 values were written.`
+    );
+    expect(footerLine(result({ finished_at: iso, status: "cancelled", outcome: "cancelled", ...partway }))).toBe(
+      `Last calibration ${when} was stopped after 5 of 18 values were written.`
+    );
+  });
+
+  it("names a restart and a preview in the footer", () => {
+    const iso = todayAt(0, 37);
+    const when = expectedDayTime(iso);
+    // What a preview interrupted by an HA restart stores.
+    const restart = {
+      finished_at: iso,
+      status: "failed" as const,
+      outcome: "failed" as const,
+      writes_done: 0,
+      writes_total: 0,
+      error: {
+        code: "cancelled_by_shutdown",
+        message: "Home Assistant stopped or the integration reloaded during the calibration.",
+      },
+    };
+    expect(footerLine(result({ ...restart, apply: false }))).toBe(
+      `Last preview ${when} was stopped by a Home Assistant restart. Nothing was changed.`
+    );
+    expect(footerLine(result({ ...restart, apply: true }))).toBe(
+      `Last calibration ${when} was stopped by a Home Assistant restart. Nothing was changed.`
+    );
+    expect(footerLine(result({ ...restart, writes_done: 4, writes_total: 18 }))).toBe(
+      `Last calibration ${when} was stopped by a Home Assistant restart after 4 of 18 values were written.`
+    );
+    expect(footerLine(restoreResult({ ...restart, apply: null }))).toBe(
+      `Last restore ${when} was stopped by a Home Assistant restart. Nothing was changed.`
+    );
+    const stopped = result({ finished_at: iso, status: "cancelled", outcome: "cancelled", apply: false, writes_done: 0 });
+    expect(footerLine(stopped)).toBe(`Last preview ${when} was stopped. Nothing was changed.`);
   });
 
   it("summarises a preview as what it would change", () => {
@@ -758,8 +1086,7 @@ describe("failureLine with the backend's job messages", () => {
       "Radar Engineering Mode turned off during the listen. Nothing was changed. Leave it on until calibration finishes, then try again.",
     background_correction_started:
       "Dynamic Background Correction was started during the listen. Nothing was changed. Wait for its status to turn off, then calibrate again.",
-    thresholds_not_numeric:
-      "Some threshold entities still have no value after the radar was asked for them (number.a_g0_move_threshold). Nothing was changed. Check the radar's device page.",
+    thresholds_not_numeric: "The radar has not reported 1 of its threshold values. Nothing was changed.",
     snapshot_failed:
       "Could not save the current thresholds, so nothing was changed. Check the Home Assistant log and free disk space.",
     device_offline_none: "The radar went offline before any value was written. Nothing was changed.",
@@ -854,12 +1181,22 @@ describe("restoredLine / restoreSource", () => {
     );
   });
 
+  it("says what Undo and Redo put back", () => {
+    // Undo restored the calibration's snapshot: the values from before it.
+    expect(restoredLine(restoreResult(), [redo, orig], NOW)).toBe("Restored your previous values.");
+    // Redo restored the Undo's snapshot: the calibrated values.
+    const redo2: SnapshotSummary = { id: "redo2", taken_at: todayAt(14, 45), reason: "restore", count: 18 };
+    const r = restoreResult({ snapshot_id: "redo2", restored_from: { id: "redo", taken_at: redo.taken_at } });
+    expect(restoredLine(r, [redo2, redo, orig], NOW)).toBe("Restored the calibrated values.");
+    // A restore with nothing to write took no snapshot of its own.
+    const unchanged = restoreResult({ snapshot_id: null, restored: 0, restored_from: { id: "orig", taken_at: orig.taken_at } });
+    expect(restoredLine(unchanged, [orig], NOW)).toBe("Restored your previous values.");
+  });
+
   it("falls back to the snapshot older than the redo snapshot without restored_from", () => {
     const r = restoreResult({ restored_from: undefined });
     expect(restoreSource(r, [redo, orig])).toEqual({ id: "orig", taken_at: orig.taken_at });
-    expect(restoredLine(r, [redo, orig], NOW)).toBe(
-      `Restored the thresholds from ${expectedTime(orig.taken_at)}.`
-    );
+    expect(restoredLine(r, [redo, orig], NOW)).toBe("Restored your previous values.");
     expect(restoreSource(restoreResult({ restored_from: { id: null, taken_at: null } }), [redo, orig])).toEqual({
       id: "orig",
       taken_at: orig.taken_at,

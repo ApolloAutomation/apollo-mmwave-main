@@ -102,6 +102,7 @@ export const LD2410_PROFILE: RadarProfile = {
       restart_radar: `button.${base}_restart_radar`,
       factory_reset_radar: `button.${base}_factory_reset_radar`,
       esp_reboot: `button.${base}_esp_reboot`,
+      query_params: `button.${base}_query_params`,
       radar_timeout: `number.${base}_radar_timeout`,
       zone_1_start: `number.${base}_radar_zone_1_start`,
       end_zone_1: `number.${base}_radar_end_zone_1`,
