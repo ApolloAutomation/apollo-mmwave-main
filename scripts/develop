@@ -1,8 +1,17 @@
 #!/usr/bin/env bash
 
+# script/develop: Start Home Assistant with this integration
+
 set -e
 
 cd "$(dirname "$0")/.."
+
+# Use the virtual environment scripts/bootstrap installs Home Assistant into,
+# falling back to whatever hass is on PATH when there is none.
+if [[ -f .venv/bin/activate ]]; then
+    # shellcheck disable=SC1091
+    . .venv/bin/activate
+fi
 
 # Create config dir if not present
 if [[ ! -d "${PWD}/config" ]]; then
@@ -11,7 +20,7 @@ if [[ ! -d "${PWD}/config" ]]; then
 fi
 
 # Set the path to custom_components
-## This let's us have the structure we want <root>/custom_components/integration_blueprint
+## This lets us have the structure we want <root>/custom_components/apollo_mmwave
 ## while at the same time have Home Assistant configuration inside <root>/config
 ## without resulting to symlinks.
 export PYTHONPATH="${PYTHONPATH}:${PWD}/custom_components"

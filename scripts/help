@@ -20,7 +20,7 @@ find scripts -type f -perm -111 -print0 | sort -z | while IFS= read -r -d '' scr
     $0 ~ prefix {
       line = $0
       sub(prefix, "", line)
-      sub(/^# */, "", line)
+      sub(/^[[:space:]]+/, "", line)
       desc = desc (desc ? " " : "") line
       next
     }

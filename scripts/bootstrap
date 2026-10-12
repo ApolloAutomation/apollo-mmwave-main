@@ -6,14 +6,20 @@ set -e
 
 cd "$(dirname "$0")/.."
 
-echo "==> Checking for uv..."
-if ! command -v uv >/dev/null 2>&1; then
-  echo "UV not found, installing..."
-  pipx install uv
+# The interpreter the venv is built from. Override it when `python` is not the
+# right one, for example: PYTHON=python3.14 scripts/bootstrap
+PYTHON="${PYTHON:-python}"
+
+echo "==> Checking Python..."
+# Keep this floor in step with requires-python in pyproject.toml.
+if ! "$PYTHON" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 14, 2) else 1)'; then
+  echo "Python >= 3.14.2 required (see pyproject.toml requires-python)" >&2
+  echo "Set PYTHON to a suitable interpreter, for example: PYTHON=python3.14 scripts/bootstrap" >&2
+  exit 1
 fi
 
 echo "==> Installing dependencies..."
-python -m venv .venv
+"$PYTHON" -m venv .venv
 . .venv/bin/activate && pip install -r requirements.txt
 
 echo "==> Installing pre-commit hooks..."
