@@ -8,6 +8,7 @@ from custom_components.apollo_mmwave import get_store
 from custom_components.apollo_mmwave.const import (
     ATTR_ROTATION_DEG,
     DOMAIN,
+    SERVICE_UPDATE_ZONE,
     SIGNAL_ZONES_UPDATED,
     STORE_ENTITIES,
     STORE_ZONES,
@@ -106,6 +107,29 @@ async def test_zone_sensor_exposes_geometry(
     assert state.attributes[ATTR_ROTATION_DEG] == 90
 
 
+async def test_zone_sensor_exposes_the_zone_name(
+    hass, entity_registry, init_integration, device_id
+) -> None:
+    """A named zone publishes its name for automations; an unnamed one does not."""
+    _ = init_integration
+    for zone_id, name in ((1, {"name": "Couch"}), (2, {})):
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_UPDATE_ZONE,
+            {"device_id": device_id, "zone_id": zone_id, **RECT_ZONE, **name},
+            blocking=True,
+        )
+    await hass.async_block_till_done()
+
+    named = entity_registry.async_get_entity_id("sensor", DOMAIN, f"{device_id}_zone_1")
+    unnamed = entity_registry.async_get_entity_id(
+        "sensor", DOMAIN, f"{device_id}_zone_2"
+    )
+
+    assert hass.states.get(named).attributes["name"] == "Couch"
+    assert "name" not in hass.states.get(unnamed).attributes
+
+
 async def test_geometry_and_presence_agree_on_the_tracked_pairs(
     hass, entity_registry, setup_entry_with_zone
 ) -> None:
@@ -165,7 +189,16 @@ async def test_zone_on_a_missing_device_is_logged(
     async_dispatcher_send(hass, SIGNAL_ZONES_UPDATED, "gone_forever")
     await hass.async_block_till_done()
 
-    assert "gone_forever" in caplog.text
+    # Both platforms warn on their own, so each logger has to show up once:
+    # a substring check on the whole log would pass with either one deleted.
+    assert sorted(
+        record.name
+        for record in caplog.records
+        if record.levelname == "WARNING" and "gone_forever" in record.getMessage()
+    ) == [
+        "custom_components.apollo_mmwave.binary_sensor",
+        "custom_components.apollo_mmwave.sensor",
+    ]
 
 
 async def test_zones_on_two_devices_do_not_collide(
