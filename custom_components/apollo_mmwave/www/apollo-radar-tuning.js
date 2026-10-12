@@ -590,6 +590,24 @@ function n2(t2) {
 function r(r2) {
   return n2({ ...r2, state: true, attribute: false });
 }
+const NO_ENTITIES = [];
+const INDEX = /* @__PURE__ */ new WeakMap();
+function indexFor(entities) {
+  let index = INDEX.get(entities);
+  if (!index) {
+    index = /* @__PURE__ */ new Map();
+    for (const [id, e2] of Object.entries(entities)) {
+      const list = index.get(e2.device_id);
+      if (list) list.push([id, e2]);
+      else index.set(e2.device_id, [[id, e2]]);
+    }
+    INDEX.set(entities, index);
+  }
+  return index;
+}
+function entitiesForDevice(entities, deviceId) {
+  return indexFor(entities).get(deviceId) ?? NO_ENTITIES;
+}
 function emptyZones() {
   return {
     zone_1_start: void 0,
@@ -601,20 +619,34 @@ function emptyZones() {
     zone_3_occupancy: void 0
   };
 }
+const CALIBRATE_TIP = "Or press **Calibrate with empty room** on the Auto-calibrate card to set them from your empty room.";
+function rangeLimitTip(label) {
+  return `${label}: the configured detection-range limit, shown as a gate number.`;
+}
+const GATE_TIP = "💡 Each gate's **move / still threshold** is how strong a signal must be to count as presence at that distance. Lower = more sensitive (more false triggers), higher = less. Turn on **Radar Engineering Mode** and watch the Gate Energy chart while you move around to pick values. " + CALIBRATE_TIP;
+const RADAR_TIMEOUT_TIP = "**Radar Timeout** is how long presence stays on after the last detection; raise it if lights flick off while you sit still.";
+const LD2410_FACTORY_THRESHOLDS = {
+  move: [50, 50, 40, 30, 20, 15, 15, 15, 15],
+  still: [0, 0, 40, 40, 30, 30, 20, 20, 20]
+};
 const LD2410_PROFILE = {
   key: "ld2410",
   label: "LD2410",
   maxBarLabels: ["Max Move", "Max Still"],
   rangeLabels: ["Max Move Gate", "Max Still Gate"],
   gateSizeLabel: "Gate Size",
-  rangeTip: "💡 **Gate Size** sets how far each gate reaches (e.g. 0.75 m). **Max Move / Still Gate** cap the farthest gate used to detect moving vs. still targets — lower them to ignore distant motion.",
-  gateTip: "💡 Each gate's **move / still threshold** is how strong a signal must be to count as presence at that distance. Lower = more sensitive (more false triggers), higher = less. Turn on **Radar Engineering Mode** and watch the Gate Energy chart while you move around to pick values.",
+  rangeTip: "💡 **Gate Size** sets how far each gate reaches (e.g. 0.75 m). **Max Move / Still Gate** cap the farthest gate used to detect moving vs. still targets; lower them to ignore distant motion. " + RADAR_TIMEOUT_TIP,
+  gateTip: GATE_TIP,
+  // TODO(REVIEW_REPORT.md X61): once its wiki docs PR is live (it 404s until then), point both
+  // profiles at products/general/calibrating-and-updating/radar-tuning/apollo-mmwave-dashboard/.
   wikiUrl: "https://wiki.apolloautomation.com/products/msr2/setup/zones-ha/",
   entityMap(base) {
     const gates = [0, 1, 2, 3, 4, 5, 6, 7, 8];
     const g2 = (suffix) => gates.map((n3) => suffix(n3));
     return {
       engineering_mode: `switch.${base}_radar_engineering_mode`,
+      // TODO(REVIEW_REPORT.md X24): bluetooth and gate_size use MSR-2 spellings only, so a
+      // base-name MSR-1 config hides both; use MSR-1 ids when present or document device_id.
       bluetooth: `switch.${base}_ld2410_bluetooth`,
       restart_radar: `button.${base}_restart_radar`,
       factory_reset_radar: `button.${base}_factory_reset_radar`,
@@ -647,10 +679,16 @@ const LD2412_PROFILE = {
   key: "ld2412",
   label: "LD2412",
   maxBarLabels: ["Max Gate", "Min Gate"],
+  // The second bar is a near bound: the chip ignores the gates below it.
+  maxBarTips: [
+    rangeLimitTip("Max Gate"),
+    "Min Gate: gates below this one are ignored for detection."
+  ],
   rangeLabels: ["Max Gate", "Min Gate"],
   gateSizeLabel: "Distance Resolution",
-  rangeTip: "💡 **Distance Resolution** sets gate spacing — smaller (0.5 m) gives finer tuning over a shorter range, larger (0.75 m) reaches farther. **Min / Max Gate** limit which gates are used for detection.",
-  gateTip: "💡 Each gate's **move / still threshold** is how strong a signal must be to count as presence at that distance. Lower = more sensitive (more false triggers), higher = less. Turn on **Radar Engineering Mode** and watch the Gate Energy chart while you move around to pick values.",
+  rangeTip: "💡 **Distance Resolution** sets gate spacing: smaller (0.5 m) gives finer tuning over a shorter range, larger (0.75 m) reaches farther. **Min / Max Gate** limit which gates are used for detection. " + RADAR_TIMEOUT_TIP,
+  gateTip: GATE_TIP,
+  // TODO(REVIEW_REPORT.md X61): switch with LD2410_PROFILE.wikiUrl once the new guide is live.
   wikiUrl: "https://wiki.apolloautomation.com/products/rpro1/setup/zones-ha/#ld2412-configuration",
   entityMap(base) {
     const gates = Array.from({ length: 14 }, (_2, i2) => i2);
@@ -678,7 +716,10 @@ const LD2412_PROFILE = {
       detection_distance: void 0,
       radar_target: `binary_sensor.${base}_ld2412_presence`,
       moving_target: `binary_sensor.${base}_ld2412_moving_target`,
-      still_target: `binary_sensor.${base}_ld2412_still_target`
+      still_target: `binary_sensor.${base}_ld2412_still_target`,
+      background_correction: `button.${base}_ld2412_start_dynamic_background_correction`,
+      background_correction_status: `binary_sensor.${base}_ld2412_dynamic_background_correction_status`,
+      query_params: `button.${base}_ld2412_query_params`
     };
   }
 };
@@ -699,8 +740,7 @@ function apolloModelInfo(device) {
 function isEsphomeDevice(hass, deviceId) {
   let sawEntity = false;
   let sawPlatform = false;
-  for (const e2 of Object.values(hass.entities)) {
-    if (e2.device_id !== deviceId) continue;
+  for (const [, e2] of entitiesForDevice(hass.entities, deviceId)) {
     sawEntity = true;
     if (e2.platform === void 0) continue;
     sawPlatform = true;
@@ -717,10 +757,15 @@ function detectProfile(hass, base) {
 }
 const KNOWN_SUFFIXES = [
   // LD2412 — every entity is `{base}_ld2412_...`, so one pattern covers all.
-  /_ld2412_.+$/,
+  // The lookahead anchors on the LAST chip token so a base that itself holds
+  // it (device "Office LD2412" -> `office_ld2412_ld2412_engineering_mode`)
+  // keeps its full name. It must tolerate the two tokens sharing an
+  // underscore, which a `(?:(?!_ld2412_).)+` tail does not.
+  /_ld2412_(?!.*ld2412_).+$/,
   // LD2450 tracking radar — every entity is `{base}_ld2450_...`. Needed so
   // zone-only devices (e.g. MTR-1, no gate radar) still resolve to a base name.
-  /_ld2450_.+$/,
+  // Anchored on the last chip token for the same reason as LD2412 above.
+  /_ld2450_(?!.*ld2450_).+$/,
   // MTR-1 firmware names its target sensors "Target-1 X" with no chip prefix.
   /_target_\d+_[xy](?:_\d+)?$/,
   // LD2410 (MSR) — varied prefixes.
@@ -756,7 +801,9 @@ function baseFromObjectId(objectId) {
   return void 0;
 }
 function baseNameFromDevice(hass, deviceId) {
-  const objectIds = Object.entries(hass.entities).filter(([, e2]) => e2.device_id === deviceId).map(([id]) => id.slice(id.indexOf(".") + 1));
+  const objectIds = entitiesForDevice(hass.entities, deviceId).map(
+    ([id]) => id.slice(id.indexOf(".") + 1)
+  );
   const counts = /* @__PURE__ */ new Map();
   for (const oid of objectIds) {
     const base = baseFromObjectId(oid);
@@ -772,6 +819,12 @@ function baseNameFromDevice(hass, deviceId) {
   }
   return best;
 }
+const GATE_SLOTS = [
+  "move_threshold",
+  "still_threshold",
+  "move_energy",
+  "still_energy"
+];
 const DEDUP = "(?:_\\d+)?$";
 const S2 = (slot, domain, suffix) => ({
   slot,
@@ -816,7 +869,17 @@ const SCALAR_PATTERNS = [
   S2("gate_size", "select", "_ld2412_distance_resolution"),
   S2("radar_target", "binary_sensor", "_ld2412_presence"),
   S2("moving_target", "binary_sensor", "_ld2412_moving_target"),
-  S2("still_target", "binary_sensor", "_ld2412_still_target")
+  S2("still_target", "binary_sensor", "_ld2412_still_target"),
+  // The chip's own background correction (a firmware button and a status
+  // flag) and the query-params button the calibration job presses. The
+  // backend's gates.py carries the same suffixes; change both together.
+  S2("background_correction", "button", "_ld2412_start_dynamic_background_correction"),
+  S2(
+    "background_correction_status",
+    "binary_sensor",
+    "_ld2412_dynamic_background_correction_status"
+  ),
+  S2("query_params", "button", "_ld2412_query_params")
 ];
 const GATE_PATTERNS = [
   ["move_threshold", "number"],
@@ -848,8 +911,7 @@ const LD2410_MARKERS = [
 ];
 function detectProfileFromEntities(hass, deviceId) {
   let sawLd2410 = false;
-  for (const [id, e2] of Object.entries(hass.entities)) {
-    if (e2.device_id !== deviceId) continue;
+  for (const [id] of entitiesForDevice(hass.entities, deviceId)) {
     const oid = id.slice(id.indexOf(".") + 1);
     if (/_ld2412_/.test(oid)) return LD2412_PROFILE;
     if (!sawLd2410) sawLd2410 = LD2410_MARKERS.some((re) => re.test(oid));
@@ -859,8 +921,7 @@ function detectProfileFromEntities(hass, deviceId) {
 function entityMapFromDevice(hass, deviceId) {
   const map = emptyMap();
   let matched = false;
-  for (const [id, e2] of Object.entries(hass.entities)) {
-    if (e2.device_id !== deviceId) continue;
+  for (const [id] of entitiesForDevice(hass.entities, deviceId)) {
     const dot = id.indexOf(".");
     const c2 = classifyObjectId(id.slice(0, dot), id.slice(dot + 1));
     if (!c2) continue;
@@ -902,51 +963,87 @@ function emptyMap() {
     still_energy: []
   };
 }
-function resolveEntities(hass, config) {
+function resolveEntitiesDetailed(hass, config) {
   let resolved;
+  let fallbackBase;
   if (config.device_id) resolved = entityMapFromDevice(hass, config.device_id);
   if (!resolved) {
-    const base = resolveBase(hass, config);
-    const profile = base ? detectProfile(hass, base) ?? LD2410_PROFILE : void 0;
-    resolved = base && profile ? profile.entityMap(base) : emptyMap();
+    fallbackBase = resolveBase(hass, config);
+    const profile = fallbackBase ? resolveProfile(hass, config) ?? LD2410_PROFILE : void 0;
+    resolved = fallbackBase && profile ? profile.entityMap(fallbackBase) : emptyMap();
   }
-  if (config.entities) {
-    return { ...resolved, ...config.entities };
+  const map = config.entities ? withOverrides(resolved, config.entities) : resolved;
+  return fallbackBase ? { map, fallbackBase } : { map };
+}
+function withOverrides(resolved, overrides) {
+  const map = { ...resolved, ...overrides };
+  for (const slot of GATE_SLOTS) {
+    if (!Array.isArray(map[slot])) map[slot] = resolved[slot];
   }
-  return resolved;
+  return map;
 }
 function exists(hass, id) {
   return !!id && id in hass.states;
 }
+function pushIds(out, v2) {
+  if (typeof v2 === "string") out.push(v2);
+  else if (Array.isArray(v2)) {
+    for (const id of v2) if (id) out.push(id);
+  }
+}
 function entityIds(m2) {
   const out = [];
-  for (const v2 of Object.values(m2)) {
-    if (typeof v2 === "string") out.push(v2);
-    else if (Array.isArray(v2)) {
-      for (const id of v2) if (id) out.push(id);
-    }
-  }
+  for (const v2 of Object.values(m2)) pushIds(out, v2);
   return out;
 }
+function watchedIds(m2, slots) {
+  const out = [];
+  for (const slot of slots) pushIds(out, m2[slot]);
+  return out;
+}
+function watchResolved(cache, resolved, slots) {
+  return (cache == null ? void 0 : cache.resolved) === resolved ? cache : { resolved, ids: watchedIds(resolved.map, slots) };
+}
+function radarEntityIds(m2) {
+  return entityIds(m2).filter((id) => id !== m2.esp_reboot);
+}
 function resolveRadar(cache, hass, config) {
-  if (cache && cache.config === config && cache.entities === hass.entities && cache.devices === hass.devices) {
+  if (cache && cache.config === config && cache.entities === hass.entities && cache.devices === hass.devices && (cache.fallbackBase === void 0 || detectProfile(hass, cache.fallbackBase) === cache.fallbackDetected)) {
     return cache;
   }
-  const map = resolveEntities(hass, config);
+  const { map, fallbackBase } = resolveEntitiesDetailed(hass, config);
   return {
     config,
     entities: hass.entities,
     devices: hass.devices,
     map,
     profile: resolveProfile(hass, config),
-    ids: entityIds(map)
+    ids: entityIds(map),
+    radarIds: radarEntityIds(map),
+    fallbackBase,
+    fallbackDetected: fallbackBase === void 0 ? void 0 : detectProfile(hass, fallbackBase)
   };
 }
 function resolvedStatesChanged(oldHass, newHass, ids) {
   return ids.some((id) => oldHass.states[id] !== newHass.states[id]);
 }
+function drawnStatesChanged(oldHass, newHass, cached, resolved, watched) {
+  if (resolved !== cached) return resolvedStatesChanged(oldHass, newHass, resolved.ids);
+  const { radarIds } = resolved;
+  if (anyResolved(oldHass, radarIds) !== anyResolved(newHass, radarIds)) return true;
+  return resolvedStatesChanged(oldHass, newHass, watched);
+}
 function anyResolved(hass, ids) {
   return ids.some((id) => id in hass.states);
+}
+function resolvedDeviceId(hass, config, map) {
+  var _a2;
+  if (config.device_id) return config.device_id;
+  for (const id of entityIds(map)) {
+    const deviceId = (_a2 = hass.entities[id]) == null ? void 0 : _a2.device_id;
+    if (deviceId) return deviceId;
+  }
+  return void 0;
 }
 const pending = /* @__PURE__ */ new Map();
 let reassertHooked = false;
@@ -969,6 +1066,16 @@ function registerElement(tag, ctor) {
   for (const marker of ["home-assistant", "hc-main"]) {
     window.customElements.whenDefined(marker).then(reassertAll, () => void 0);
   }
+}
+function registerCustomCard(type, name, description) {
+  const customCards2 = window.customCards = window.customCards || [];
+  if (customCards2.some((c2) => c2.type === type)) return;
+  customCards2.push({
+    type,
+    name,
+    description,
+    documentationURL: "https://github.com/ApolloAutomation/apollo-mmwave-main"
+  });
 }
 const VALID_UOMS = ["mm", "cm", "m", "in", "ft", "yd"];
 const METERS_PER = {
@@ -1019,6 +1126,14 @@ function scaleX(value, maxRange, width) {
   if (maxRange <= 0) return 0;
   return clamp(value / maxRange * width, 0, width);
 }
+function gateRegisterCount(m2) {
+  return Math.max(
+    m2.move_threshold.length,
+    m2.still_threshold.length,
+    m2.move_energy.length,
+    m2.still_energy.length
+  );
+}
 const DEFAULT_GATE_SIZE_M = 0.75;
 const GATE_COUNT = 8;
 const STILL_COLOR$1 = "#2e7d32";
@@ -1030,17 +1145,33 @@ function gateColor(i2, count) {
   return `hsl(${hue}, 64%, 48%)`;
 }
 const TXT = "var(--primary-text-color, #e6e6e6)";
-const TXT2 = "var(--secondary-text-color, #9aa0a6)";
+const TXT2$1 = "var(--secondary-text-color, #9aa0a6)";
 function distInUnit(hass, id, unit) {
   const v2 = numState(hass, id);
   if (v2 === void 0) return void 0;
   return convert(v2, uomOf(hass, id, unit), unit);
 }
+const DISTANCE_CHART_SLOTS = [
+  "gate_size",
+  "detection_distance",
+  "moving_distance",
+  "still_distance",
+  "zone_1_start",
+  "end_zone_1",
+  "end_zone_2",
+  "end_zone_3",
+  "zone_1_occupancy",
+  "zone_2_occupancy",
+  "zone_3_occupancy",
+  "max_move_distance",
+  "max_still_distance"
+];
 function distanceModel(hass, m2, unit) {
   var _a2, _b;
   const gateSizeM = parseGateSizeMeters(m2.gate_size ? (_a2 = hass.states[m2.gate_size]) == null ? void 0 : _a2.state : void 0) ?? DEFAULT_GATE_SIZE_M;
   const gateSizeChart = convert(gateSizeM, "m", unit);
-  const gateCount = m2.move_threshold.length > 1 ? m2.move_threshold.length - 1 : GATE_COUNT;
+  const registers = gateRegisterCount(m2);
+  const gateCount = registers > 1 ? registers - 1 : GATE_COUNT;
   const maxRange = gateSizeChart * gateCount;
   const bars = [];
   const pushBar = (id, label, color) => {
@@ -1093,7 +1224,7 @@ const INNER = WIDTH$1 - LBL - RPAD;
 const TOP = 6;
 const ROW_H = 30;
 const BAR_H = ROW_H - 8;
-const AXIS_H = 36;
+const AXIS_H = 52;
 const MID = BAR_H / 2 + 4;
 function rowLabel(r2) {
   if (r2.kind === "zones") return "Zones";
@@ -1105,9 +1236,8 @@ function rowTip(r2) {
   if (r2.kind === "zones")
     return "Detection zones. The circle shows whether a target is currently in each zone (filled = present).";
   if (r2.kind === "gates")
-    return "The radar splits its range into gates — each colored segment is one distance bin (G1, G2, ...).";
-  if (r2.kind === "max")
-    return `${r2.label}: the configured detection-range limit, shown as a gate number.`;
+    return "The radar splits its range into gates. Each colored segment is one distance bin (G1, G2, ...).";
+  if (r2.kind === "max") return r2.tip ?? rangeLimitTip(r2.label);
   if (r2.bar.label === "Detection")
     return "Current distance to the detected target.";
   if (r2.bar.label === "Moving")
@@ -1118,7 +1248,7 @@ function valueLabel(xEnd, text, y3) {
   const inside = xEnd > WIDTH$1 * 0.62;
   return inside ? w`<text x=${xEnd - 6} y=${y3 + MID} font-size="13" text-anchor="end" fill="#fff">${text}</text>` : w`<text x=${xEnd + 6} y=${y3 + MID} font-size="13" fill=${TXT}>${text}</text>`;
 }
-function renderDistanceChart(hass, m2, unit, maxLabels = ["Max Move", "Max Still"]) {
+function renderDistanceChart(hass, m2, unit, maxLabels = LD2410_PROFILE.maxBarLabels, label = "LD2410", maxTips) {
   if (m2.move_threshold.length === 0) return A;
   const model = distanceModel(hass, m2, unit);
   const x2 = (v2) => LBL + scaleX(v2, model.maxRange, INNER);
@@ -1127,10 +1257,24 @@ function renderDistanceChart(hass, m2, unit, maxLabels = ["Max Move", "Max Still
   if (model.zones.length) rows.push({ kind: "zones" });
   for (const bar of model.bars) rows.push({ kind: "bar", bar });
   rows.push({ kind: "gates" });
-  if (model.maxMove !== void 0)
-    rows.push({ kind: "max", label: maxLabels[0], value: model.maxMove, gate: model.maxMoveGate, color: MOVE_COLOR$1 });
-  if (model.maxStill !== void 0)
-    rows.push({ kind: "max", label: maxLabels[1], value: model.maxStill, gate: model.maxStillGate, color: STILL_COLOR$1 });
+  if (model.maxMove !== void 0 && model.maxMoveGate !== void 0)
+    rows.push({
+      kind: "max",
+      label: maxLabels[0],
+      value: model.maxMove,
+      gate: model.maxMoveGate,
+      tip: maxTips == null ? void 0 : maxTips[0],
+      color: MOVE_COLOR$1
+    });
+  if (model.maxStill !== void 0 && model.maxStillGate !== void 0)
+    rows.push({
+      kind: "max",
+      label: maxLabels[1],
+      value: model.maxStill,
+      gate: model.maxStillGate,
+      tip: maxTips == null ? void 0 : maxTips[1],
+      color: STILL_COLOR$1
+    });
   const plotBottom = TOP + rows.length * ROW_H;
   const height = plotBottom + AXIS_H;
   const tickFmt = (v2) => model.gateSizeChart >= 10 ? v2.toFixed(0) : String(Number(v2.toFixed(2)));
@@ -1142,12 +1286,12 @@ function renderDistanceChart(hass, m2, unit, maxLabels = ["Max Move", "Max Still
       <line x1=${gx} y1=${TOP} x2=${gx} y2=${plotBottom}
         stroke="var(--divider-color, #555)" stroke-width="1" opacity="0.3"></line>
       <text x=${gx} y=${plotBottom + 13} font-size="11" text-anchor="end"
-        transform="rotate(-45 ${gx} ${plotBottom + 13})" fill=${TXT2}>${tickFmt(val)} ${unit}</text>`);
+        transform="rotate(-45 ${gx} ${plotBottom + 13})" fill=${TXT2$1}>${tickFmt(val)} ${unit}</text>`);
   }
   const rowEls = rows.map((r2, i2) => {
     const y3 = TOP + i2 * ROW_H;
-    const label = w`<text x=${LBL - 6} y=${y3 + MID} font-size="12"
-      text-anchor="end" fill=${TXT2}>${rowLabel(r2)}</text>`;
+    const label2 = w`<text x=${LBL - 6} y=${y3 + MID} font-size="12"
+      text-anchor="end" fill=${TXT2$1}>${rowLabel(r2)}</text>`;
     let content;
     if (r2.kind === "zones") {
       content = model.zones.map((z2, idx) => {
@@ -1183,7 +1327,7 @@ function renderDistanceChart(hass, m2, unit, maxLabels = ["Max Move", "Max Still
       content = segs;
     } else {
       const xe = x2(r2.value);
-      const text = r2.gate !== void 0 ? `G${r2.gate}` : fmt(r2.value);
+      const text = `G${r2.gate}`;
       content = w`
         <rect x=${LBL} y=${y3} width=${Math.max(1, xe - LBL)} height=${BAR_H}
           rx="4" fill=${r2.color} opacity="0.6"></rect>
@@ -1193,23 +1337,23 @@ function renderDistanceChart(hass, m2, unit, maxLabels = ["Max Move", "Max Still
     return w`<g>
       <title>${rowTip(r2)}</title>
       <rect x="0" y=${y3} width=${WIDTH$1} height=${BAR_H} fill="transparent"></rect>
-      ${label}${content}
+      ${label2}${content}
     </g>`;
   });
   return b`
     <svg viewBox="0 0 ${WIDTH$1} ${height}" width="100%" role="img"
-      aria-label="LD2410 distances">
+      aria-label="${label} distances">
       ${axis} ${rowEls}
     </svg>
   `;
 }
-var __defProp$1 = Object.defineProperty;
-var __decorateClass$1 = (decorators, target, key, kind) => {
+var __defProp$2 = Object.defineProperty;
+var __decorateClass$2 = (decorators, target, key, kind) => {
   var result = void 0;
   for (var i2 = decorators.length - 1, decorator; i2 >= 0; i2--)
     if (decorator = decorators[i2])
       result = decorator(target, key, result) || result;
-  if (result) __defProp$1(target, key, result);
+  if (result) __defProp$2(target, key, result);
   return result;
 };
 const _ApolloLd2410DistanceCard = class _ApolloLd2410DistanceCard extends i {
@@ -1222,7 +1366,8 @@ const _ApolloLd2410DistanceCard = class _ApolloLd2410DistanceCard extends i {
   static getStubConfig() {
     return { type: "custom:apollo-radar-distance-card" };
   }
-  /** Skip the hass ticks (most of them) that touch none of our entities. */
+  /** Skip the hass ticks (most of them) that touch none of the entities the
+   *  chart draws. */
   shouldUpdate(changed) {
     if (!changed.has("hass") || changed.has("_config")) return true;
     const oldHass = changed.get("hass");
@@ -1230,29 +1375,46 @@ const _ApolloLd2410DistanceCard = class _ApolloLd2410DistanceCard extends i {
     if (oldHass.entities !== this.hass.entities || oldHass.devices !== this.hass.devices || oldHass.config !== this.hass.config) {
       return true;
     }
-    this._resolved = resolveRadar(this._resolved, this.hass, this._config);
-    return resolvedStatesChanged(oldHass, this.hass, this._resolved.ids);
+    const cached = this._resolved;
+    this._resolved = resolveRadar(cached, this.hass, this._config);
+    this._watched = watchResolved(this._watched, this._resolved, DISTANCE_CHART_SLOTS);
+    return drawnStatesChanged(
+      oldHass,
+      this.hass,
+      cached,
+      this._resolved,
+      this._watched.ids
+    );
   }
   render() {
     if (!this.hass || !this._config) return A;
     this._resolved = resolveRadar(this._resolved, this.hass, this._config);
-    const { map: m2, profile, ids } = this._resolved;
-    if (!anyResolved(this.hass, ids)) return this._renderNotFound();
+    const { map: m2, profile, radarIds } = this._resolved;
+    if (!anyResolved(this.hass, radarIds)) return this._renderNotFound();
     const unit = isValidUom(this._config.distance_unit) ? this._config.distance_unit : defaultDistanceUnit(this.hass);
-    const chart = renderDistanceChart(this.hass, m2, unit, profile == null ? void 0 : profile.maxBarLabels);
+    const label = (profile == null ? void 0 : profile.label) ?? "LD2410";
+    const chart = renderDistanceChart(
+      this.hass,
+      m2,
+      unit,
+      profile == null ? void 0 : profile.maxBarLabels,
+      label,
+      profile == null ? void 0 : profile.maxBarTips
+    );
     if (chart === A) return A;
     return b`
-      <ha-card .header=${this._config.title ?? "LD2410 Distances"}>
+      <ha-card .header=${this._config.title ?? `${label} Distances`}>
         <div class="wrap">${chart}</div>
       </ha-card>
     `;
   }
   _renderNotFound() {
-    var _a2;
+    var _a2, _b, _c;
+    const label = ((_b = (_a2 = this._resolved) == null ? void 0 : _a2.profile) == null ? void 0 : _b.label) ?? "LD2410";
     return b`
-      <ha-card .header=${((_a2 = this._config) == null ? void 0 : _a2.title) ?? "LD2410 Distances"}>
+      <ha-card .header=${((_c = this._config) == null ? void 0 : _c.title) ?? `${label} Distances`}>
         <div class="not-found">
-          Apollo mmWave: device not found — check the card's device
+          Apollo mmWave: device not found. Check the card's device
           configuration.
         </div>
       </ha-card>
@@ -1270,33 +1432,180 @@ _ApolloLd2410DistanceCard.styles = i$3`
     }
   `;
 let ApolloLd2410DistanceCard = _ApolloLd2410DistanceCard;
-__decorateClass$1([
+__decorateClass$2([
   n2({ attribute: false })
 ], ApolloLd2410DistanceCard.prototype, "hass");
-__decorateClass$1([
+__decorateClass$2([
   r()
 ], ApolloLd2410DistanceCard.prototype, "_config");
 registerElement("apollo-radar-distance-card", ApolloLd2410DistanceCard);
-const customCards$1 = window.customCards = window.customCards || [];
-if (!customCards$1.some((c2) => c2.type === "apollo-radar-distance-card")) {
-  customCards$1.push({
-    type: "apollo-radar-distance-card",
-    name: "Apollo Radar Distance Chart",
-    description: "Distance / zone chart for Apollo MSR (LD2410) & R-PRO (LD2412).",
-    documentationURL: "https://github.com/ApolloAutomation/apollo-mmwave-main"
+registerCustomCard(
+  "apollo-radar-distance-card",
+  "Apollo Radar Distance Chart",
+  "Distance / zone chart for Apollo MSR (LD2410) & R PRO (LD2412)."
+);
+const DOMAIN = "apollo_mmwave";
+const CALIBRATION_SUBSCRIBE = `${DOMAIN}/calibration/subscribe`;
+const CONFIG_ENTRIES_SUBSCRIBE = "config_entries/subscribe";
+const SERVICE_CALIBRATE_GATES = "calibrate_gates";
+const SERVICE_CANCEL_CALIBRATION = "cancel_calibration";
+const SERVICE_RESTORE_GATE_THRESHOLDS = "restore_gate_thresholds";
+const CALIBRATION_RETRY_DELAYS_MS = [1e3, 2e3, 5e3, 1e4, 2e4];
+const ERR_NOT_LOADED = "not_loaded";
+const ERR_NOT_FOUND = "not_found";
+const NOT_LOADED_MESSAGE = "Apollo mmWave is not loaded, so calibration is unavailable.";
+const NO_DEVICE_MESSAGE = "Home Assistant has no device with this id. The radar was probably removed and re-added; reload the dashboard, or set device_id in the card YAML.";
+const REJECTED_MESSAGE = "Home Assistant rejected the request.";
+const VALIDATION_PREFIX = /^Validation error:\s*/;
+async function subscribeCalibration(hass, deviceId, callback) {
+  return hass.connection.subscribeMessage(callback, {
+    type: CALIBRATION_SUBSCRIBE,
+    device_id: deviceId
   });
+}
+async function subscribeEntryLoads(hass, callback) {
+  try {
+    return await hass.connection.subscribeMessage(
+      (changes) => {
+        const list = Array.isArray(changes) ? changes : [changes];
+        if (list.some(
+          (change) => {
+            var _a2, _b;
+            return ((change == null ? void 0 : change.type) === "updated" || (change == null ? void 0 : change.type) === "added") && ((_a2 = change == null ? void 0 : change.entry) == null ? void 0 : _a2.domain) === DOMAIN && ((_b = change == null ? void 0 : change.entry) == null ? void 0 : _b.state) === "loaded";
+          }
+        )) {
+          callback();
+        }
+      },
+      { type: CONFIG_ENTRIES_SUBSCRIBE }
+    );
+  } catch {
+    return null;
+  }
+}
+function callService(hass, domain, service, data, notifyOnError = false) {
+  return hass.callService(domain, service, data, void 0, notifyOnError);
+}
+function definedOnly(opts) {
+  const out = {};
+  for (const [key, value] of Object.entries(opts)) {
+    if (value !== void 0) out[key] = value;
+  }
+  return out;
+}
+function startCalibration(hass, deviceId, opts = {}) {
+  return callService(hass, DOMAIN, SERVICE_CALIBRATE_GATES, {
+    device_id: deviceId,
+    ...definedOnly(opts)
+  });
+}
+function cancelCalibration(hass, deviceId) {
+  return callService(hass, DOMAIN, SERVICE_CANCEL_CALIBRATION, {
+    device_id: deviceId
+  });
+}
+function restoreThresholds(hass, deviceId, snapshotId) {
+  return callService(hass, DOMAIN, SERVICE_RESTORE_GATE_THRESHOLDS, {
+    device_id: deviceId,
+    ...snapshotId ? { snapshot_id: snapshotId } : {}
+  });
+}
+function turnEngineeringMode(hass, switchId, on) {
+  return callService(hass, "switch", "turn_off", {
+    entity_id: switchId
+  });
+}
+function errorPayload(error) {
+  if (error && typeof error === "object" && error.code === void 0) {
+    const inner = error.error;
+    if (inner && typeof inner === "object") return inner;
+  }
+  return error;
+}
+function sentence(text) {
+  const trimmed = text.trim();
+  return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+}
+function localized(err, localize) {
+  const domain = err == null ? void 0 : err.translation_domain;
+  const key = err == null ? void 0 : err.translation_key;
+  if (!localize || !domain || !key) return null;
+  let text;
+  try {
+    text = localize(
+      `component.${domain}.exceptions.${key}.message`,
+      err.translation_placeholders ?? void 0
+    );
+  } catch {
+    return null;
+  }
+  if (!text || text.startsWith("Translation error")) return null;
+  return sentence(text);
+}
+function describeError(error, opts = {}) {
+  var _a2;
+  const err = errorPayload(error);
+  const code = err == null ? void 0 : err.code;
+  if (code === ERR_NOT_FOUND) {
+    if (opts.source !== "service") return NO_DEVICE_MESSAGE;
+    const domain = (_a2 = err == null ? void 0 : err.translation_placeholders) == null ? void 0 : _a2.domain;
+    if (domain === void 0 || domain === DOMAIN) return NOT_LOADED_MESSAGE;
+  }
+  if (code === ERR_NOT_LOADED) return NOT_LOADED_MESSAGE;
+  const translated = localized(err, opts.localize);
+  if (translated) return translated;
+  const raw = typeof err === "string" ? err : err == null ? void 0 : err.message;
+  if (raw) {
+    const message = String(raw).replace(VALIDATION_PREFIX, "");
+    if (message.trim()) return sentence(message);
+  }
+  return REJECTED_MESSAGE;
+}
+async function exceptionLocalizer(hass, error) {
+  var _a2;
+  const domain = (_a2 = errorPayload(error)) == null ? void 0 : _a2.translation_domain;
+  if (domain && typeof hass.loadBackendTranslation === "function") {
+    try {
+      const loaded = await hass.loadBackendTranslation("exceptions", domain);
+      if (typeof loaded === "function") return loaded;
+    } catch {
+    }
+  }
+  return typeof hass.localize === "function" ? hass.localize.bind(hass) : void 0;
+}
+async function describeServiceError(hass, error) {
+  const localize = await exceptionLocalizer(hass, error);
+  return describeError(error, { source: "service", localize });
 }
 const MOVE_COLOR = "#4b0082";
 const MOVE_THR_COLOR = "#9467bd";
 const STILL_COLOR = "#274e13";
 const STILL_THR_COLOR = "#8cb640";
+const TXT2 = "var(--secondary-text-color, #9aa0a6)";
+const chartLegendStyles = i$3`
+  .chart-legend {
+    font-size: 0.8em;
+    color: var(--secondary-text-color);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 14px;
+    margin-top: 6px;
+  }
+`;
+const GATE_ENERGY_CHART_SLOTS = [
+  "engineering_mode",
+  "move_threshold",
+  "still_threshold",
+  "move_energy",
+  "still_energy"
+];
 function gateEnergyModel(hass, m2) {
-  var _a2;
+  var _a2, _b;
   let present = false;
   const seen = (id) => {
     if (id && id in hass.states) present = true;
   };
-  const count = m2.move_threshold.length;
+  const count = gateRegisterCount(m2);
   const gates = Array.from({ length: count }, (_2, n3) => {
     seen(m2.move_energy[n3]);
     seen(m2.still_energy[n3]);
@@ -1312,6 +1621,7 @@ function gateEnergyModel(hass, m2) {
   });
   return {
     engineeringMode: !!m2.engineering_mode && ((_a2 = hass.states[m2.engineering_mode]) == null ? void 0 : _a2.state) === "on",
+    unavailable: !!m2.engineering_mode && ((_b = hass.states[m2.engineering_mode]) == null ? void 0 : _b.state) === "unavailable",
     present,
     gates
   };
@@ -1323,11 +1633,13 @@ const PAD_B = 24;
 const PAD_T = 10;
 const PLOT_H = HEIGHT - PAD_B - PAD_T;
 const MAX_ENERGY = 100;
+const BUTTON_PLOT_FRACTION = 0.8;
 function yFor(energy) {
   const clamped = Math.max(0, Math.min(MAX_ENERGY, energy));
   return PAD_T + PLOT_H * (1 - clamped / MAX_ENERGY);
 }
-function renderGateEnergyChart(hass, m2) {
+function renderGateEnergyChart(hass, m2, label = "LD2410") {
+  var _a2;
   const model = gateEnergyModel(hass, m2);
   if (!model.present) return A;
   const slot = (WIDTH - PAD_L) / model.gates.length;
@@ -1338,13 +1650,19 @@ function renderGateEnergyChart(hass, m2) {
     const moveX = cx - barW - 2;
     const stillX = cx + 2;
     const els = [];
+    const moveAbove = model.engineeringMode && g2.moveThr !== void 0 && g2.move > g2.moveThr;
+    const stillAbove = model.engineeringMode && g2.stillThr !== void 0 && g2.still > g2.stillThr;
     els.push(w`
       <rect x=${moveX} y=${yFor(g2.move)} width=${barW} height=${baseY - yFor(g2.move)}
-        fill=${MOVE_COLOR}></rect>
+        fill=${MOVE_COLOR}
+        stroke="${moveAbove ? MOVE_THR_COLOR : A}"
+        stroke-width="${moveAbove ? "2" : A}"></rect>
       <rect x=${stillX} y=${yFor(g2.still)} width=${barW} height=${baseY - yFor(g2.still)}
-        fill=${STILL_COLOR}></rect>
+        fill=${STILL_COLOR}
+        stroke="${stillAbove ? STILL_THR_COLOR : A}"
+        stroke-width="${stillAbove ? "2" : A}"></rect>
       <text x=${cx} y=${HEIGHT - 7} font-size="13" text-anchor="middle"
-        fill="var(--secondary-text-color)">G${g2.index}</text>`);
+        fill=${TXT2}>G${g2.index}</text>`);
     if (model.engineeringMode && g2.moveThr !== void 0) {
       const ty = yFor(g2.moveThr);
       const tx = moveX + barW / 2;
@@ -1364,19 +1682,41 @@ function renderGateEnergyChart(hass, m2) {
       <line x1=${PAD_L} y1=${yFor(v2)} x2=${WIDTH} y2=${yFor(v2)}
         stroke="var(--divider-color, #888)" stroke-width="1" opacity="0.3"></line>
       <text x=${PAD_L - 4} y=${yFor(v2) + 3} font-size="11" text-anchor="end"
-        fill="var(--secondary-text-color)">${v2}</text>`
+        fill=${TXT2}>${v2}</text>`
   );
+  const [overlayLine1, overlayLine2] = model.unavailable ? ["Radar unavailable", "Waiting for the device to reconnect"] : ["Turn on Radar Engineering Mode", "to see gate energy values"];
   const overlay = model.engineeringMode ? A : w`
         <rect x=${PAD_L} y=${PAD_T} width=${WIDTH - PAD_L} height=${PLOT_H}
           fill="var(--card-background-color, #000)" opacity="0.78"></rect>
         <text x=${(WIDTH + PAD_L) / 2} y=${PAD_T + PLOT_H / 2} font-size="20"
           font-weight="600" text-anchor="middle" fill="var(--primary-text-color, #e6e6e6)">
-          <tspan x=${(WIDTH + PAD_L) / 2} dy="-4">Turn on Radar Engineering Mode</tspan>
-          <tspan x=${(WIDTH + PAD_L) / 2} dy="28">to see gate energy values</tspan>
+          <tspan x=${(WIDTH + PAD_L) / 2} dy="-4">${overlayLine1}</tspan>
+          <tspan x=${(WIDTH + PAD_L) / 2} dy="28">${overlayLine2}</tspan>
         </text>`;
-  return b`
+  const switchId = m2.engineering_mode;
+  const switchState = switchId ? (_a2 = hass.states[switchId]) == null ? void 0 : _a2.state : void 0;
+  const canTurnOn = !model.engineeringMode && !!switchId && !!hass.callService && switchState !== void 0 && switchState !== "unavailable";
+  const buttonTop = (PAD_T + PLOT_H * BUTTON_PLOT_FRACTION) / HEIGHT * 100;
+  const buttonLeft = (PAD_L + (WIDTH - PAD_L) / 2) / WIDTH * 100;
+  const turnOn = () => callService(
+    hass,
+    "switch",
+    "turn_on",
+    { entity_id: switchId },
+    true
+  ).catch(() => void 0);
+  const overlayButton = canTurnOn ? b`<button
+        type="button"
+        class="overlay"
+        tabindex="0"
+        style="position:absolute;left:${buttonLeft}%;top:${buttonTop}%;transform:translate(-50%,-50%)"
+        @click=${turnOn}
+      >
+        Turn on Radar Engineering Mode
+      </button>` : A;
+  const plot = b`
     <svg viewBox="0 0 ${WIDTH} ${HEIGHT}" width="100%" role="img"
-      aria-label="LD2410 gate energy">
+      aria-label="${label} gate energy">
       <title>
         Per-gate signal energy (bars) vs your thresholds (triangles). A gate
         detects a target when its energy rises above the threshold. Turn on
@@ -1384,21 +1724,27 @@ function renderGateEnergyChart(hass, m2) {
       </title>
       ${gridlines} ${bars} ${overlay}
     </svg>
+  `;
+  return b`
+    <div class="chart-plot" style="position:relative">
+      ${plot} ${overlayButton}
+    </div>
     <div class="chart-legend">
       <span><span style="color:${MOVE_COLOR}">■</span> Move energy</span>
       <span><span style="color:${STILL_COLOR}">■</span> Still energy</span>
       <span><span style="color:${MOVE_THR_COLOR}">▶</span> Move threshold</span>
       <span><span style="color:${STILL_THR_COLOR}">◀</span> Still threshold</span>
+      <span>outlined bar = above threshold (detecting)</span>
     </div>
   `;
 }
-var __defProp = Object.defineProperty;
-var __decorateClass = (decorators, target, key, kind) => {
+var __defProp$1 = Object.defineProperty;
+var __decorateClass$1 = (decorators, target, key, kind) => {
   var result = void 0;
   for (var i2 = decorators.length - 1, decorator; i2 >= 0; i2--)
     if (decorator = decorators[i2])
       result = decorator(target, key, result) || result;
-  if (result) __defProp(target, key, result);
+  if (result) __defProp$1(target, key, result);
   return result;
 };
 const _ApolloLd2410GateEnergyCard = class _ApolloLd2410GateEnergyCard extends i {
@@ -1411,7 +1757,8 @@ const _ApolloLd2410GateEnergyCard = class _ApolloLd2410GateEnergyCard extends i 
   static getStubConfig() {
     return { type: "custom:apollo-radar-gate-energy-card" };
   }
-  /** Skip the hass ticks (most of them) that touch none of our entities. */
+  /** Skip the hass ticks (most of them) that touch none of the entities the
+   *  chart draws. */
   shouldUpdate(changed) {
     if (!changed.has("hass") || changed.has("_config")) return true;
     const oldHass = changed.get("hass");
@@ -1419,95 +1766,1484 @@ const _ApolloLd2410GateEnergyCard = class _ApolloLd2410GateEnergyCard extends i 
     if (oldHass.entities !== this.hass.entities || oldHass.devices !== this.hass.devices) {
       return true;
     }
-    this._resolved = resolveRadar(this._resolved, this.hass, this._config);
-    return resolvedStatesChanged(oldHass, this.hass, this._resolved.ids);
+    const cached = this._resolved;
+    this._resolved = resolveRadar(cached, this.hass, this._config);
+    this._watched = watchResolved(this._watched, this._resolved, GATE_ENERGY_CHART_SLOTS);
+    return drawnStatesChanged(
+      oldHass,
+      this.hass,
+      cached,
+      this._resolved,
+      this._watched.ids
+    );
   }
   render() {
     if (!this.hass || !this._config) return A;
     this._resolved = resolveRadar(this._resolved, this.hass, this._config);
-    const { map: m2, ids } = this._resolved;
-    if (!anyResolved(this.hass, ids)) return this._renderNotFound();
-    const chart = renderGateEnergyChart(this.hass, m2);
+    const { map: m2, profile, radarIds } = this._resolved;
+    if (!anyResolved(this.hass, radarIds)) return this._renderNotFound();
+    const label = (profile == null ? void 0 : profile.label) ?? "LD2410";
+    const chart = renderGateEnergyChart(this.hass, m2, label);
     if (chart === A) return A;
     return b`
-      <ha-card .header=${this._config.title ?? "LD2410 Gate Energy"}>
+      <ha-card .header=${this._config.title ?? `${label} Gate Energy`}>
         <div class="wrap">${chart}</div>
       </ha-card>
     `;
   }
   _renderNotFound() {
-    var _a2;
+    var _a2, _b, _c;
+    const label = ((_b = (_a2 = this._resolved) == null ? void 0 : _a2.profile) == null ? void 0 : _b.label) ?? "LD2410";
     return b`
-      <ha-card .header=${((_a2 = this._config) == null ? void 0 : _a2.title) ?? "LD2410 Gate Energy"}>
+      <ha-card .header=${((_c = this._config) == null ? void 0 : _c.title) ?? `${label} Gate Energy`}>
         <div class="not-found">
-          Apollo mmWave: device not found — check the card's device
+          Apollo mmWave: device not found. Check the card's device
           configuration.
         </div>
       </ha-card>
     `;
   }
 };
-_ApolloLd2410GateEnergyCard.styles = i$3`
-    .wrap {
-      padding: 4px 12px 12px;
-    }
-    .not-found {
-      padding: 12px 16px 16px;
-      color: var(--error-color, #db4437);
-      font-size: 0.9em;
-    }
-    .chart-legend {
-      font-size: 0.8em;
-      color: var(--secondary-text-color);
-      display: flex;
-      flex-wrap: wrap;
-      gap: 4px 14px;
-      margin-top: 6px;
-    }
-  `;
+_ApolloLd2410GateEnergyCard.styles = [
+  chartLegendStyles,
+  i$3`
+      .wrap {
+        padding: 4px 12px 12px;
+      }
+      .not-found {
+        padding: 12px 16px 16px;
+        color: var(--error-color, #db4437);
+        font-size: 0.9em;
+      }
+      /* The chart's engineering-mode button; its position is inline so the
+         chart template is self-contained. */
+      button.overlay {
+        font: inherit;
+        font-size: 0.9em;
+        font-weight: 500;
+        cursor: pointer;
+        border: none;
+        border-radius: 4px;
+        padding: 8px 14px;
+        background: var(--primary-color);
+        color: var(--text-primary-color, #fff);
+        white-space: nowrap;
+      }
+    `
+];
 let ApolloLd2410GateEnergyCard = _ApolloLd2410GateEnergyCard;
-__decorateClass([
+__decorateClass$1([
   n2({ attribute: false })
 ], ApolloLd2410GateEnergyCard.prototype, "hass");
-__decorateClass([
+__decorateClass$1([
   r()
 ], ApolloLd2410GateEnergyCard.prototype, "_config");
 registerElement("apollo-radar-gate-energy-card", ApolloLd2410GateEnergyCard);
+registerCustomCard(
+  "apollo-radar-gate-energy-card",
+  "Apollo Radar Gate Energy Chart",
+  "Per-gate move/still energy chart for Apollo MSR (LD2410) & R PRO (LD2412)."
+);
+const DEFAULT_SETTLE_S = 15;
+const DEFAULT_DURATION_S = 60;
+const TOLERANCE = 0.5;
+const KEEP_ON_LD2410 = "Leave Radar Engineering Mode on until this finishes.";
+const KEEP_ON_LD2412 = "Leave Radar Engineering Mode on and do not press Start Dynamic Background Correction until this finishes.";
+const WALK_AROUND_LINE = "Now walk around, then sit still for a minute: the Radar Target row in Target / Occupancy should stay on the whole time you are in the room and turn off a few seconds after you leave (Radar Timeout).";
+const NOTHING_TO_RESTORE = "Nothing to restore yet";
+const TERMINAL = /* @__PURE__ */ new Set(["done", "cancelled", "failed"]);
+function isTerminal(status) {
+  return status !== void 0 && TERMINAL.has(status);
+}
+function parseDate(iso) {
+  if (!iso) return null;
+  const d2 = new Date(iso);
+  return Number.isNaN(d2.getTime()) ? null : d2;
+}
+function sameDay(a2, b2) {
+  return a2.toDateString() === b2.toDateString();
+}
+const TIME_OPTS = { hour: "2-digit", minute: "2-digit" };
+const DAY_OPTS = { day: "numeric", month: "short" };
+function formatTime(iso, now = /* @__PURE__ */ new Date()) {
+  const d2 = parseDate(iso);
+  if (!d2) return iso;
+  const opts = sameDay(d2, now) ? TIME_OPTS : { ...DAY_OPTS, ...TIME_OPTS };
+  return new Intl.DateTimeFormat(void 0, opts).format(d2);
+}
+function formatDayTime(iso) {
+  const d2 = parseDate(iso);
+  if (!d2) return iso;
+  return new Intl.DateTimeFormat(void 0, { ...DAY_OPTS, ...TIME_OPTS }).format(d2);
+}
+function durationText(seconds) {
+  if (seconds >= 60 && seconds % 60 === 0) {
+    const minutes = seconds / 60;
+    return `${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
+  }
+  return `${seconds} ${seconds === 1 ? "second" : "seconds"}`;
+}
+function idleSentence(settleS, durationS) {
+  const listen = `listens for ${durationText(durationS)}, then sets every gate's move and still threshold just above the background it heard.`;
+  const middle = settleS > 0 ? `It counts down ${durationText(settleS)} so you can leave, ${listen}` : `It ${listen}`;
+  return `Teach the radar what your empty room looks like. ${middle} Your current thresholds are saved first, so you can undo.`;
+}
+function plural(n3, word) {
+  return `${n3} ${n3 === 1 ? word : `${word}s`}`;
+}
+function sortedGateKeys(peaks) {
+  return Object.keys(peaks).sort((a2, b2) => Number(a2) - Number(b2));
+}
+function livePeaksLine(job) {
+  var _a2;
+  const lines = [];
+  for (const channel of ["move", "still"]) {
+    const peaks = ((_a2 = job.peaks) == null ? void 0 : _a2[channel]) ?? {};
+    const keys = sortedGateKeys(peaks);
+    if (keys.length === 0) continue;
+    const parts = keys.map((k2) => `G${k2} ${peaks[k2]}`).join(" · ");
+    lines.push(`Highest so far, ${channel}: ${parts}`);
+  }
+  return lines;
+}
+function keepOnLine(profile) {
+  return profile === "ld2412" ? KEEP_ON_LD2412 : KEEP_ON_LD2410;
+}
+const READING_THRESHOLDS = "Reading the radar's current thresholds...";
+const VERIFYING = "Checking that the radar accepted the new values...";
+const RESTORING = "Restoring saved thresholds...";
+const ENGINEERING_ON = "Turning on Radar Engineering Mode...";
+const FINISHING = "Finishing...";
+function phaseHeadline(job) {
+  if (job.kind === "restore") {
+    switch (job.status) {
+      case "applying":
+        return job.sub_phase === "refresh" ? { phase: READING_THRESHOLDS, detail: "" } : { phase: RESTORING, detail: `${job.writes_done} of ${job.writes_total}` };
+      case "verifying":
+        return { phase: VERIFYING, detail: "" };
+      case "preparing":
+        return { phase: RESTORING, detail: "" };
+      default:
+        return { phase: FINISHING, detail: "" };
+    }
+  }
+  switch (job.status) {
+    case "preparing":
+      if (job.sub_phase === "settle") return { phase: "Leave the room now.", detail: "" };
+      if (job.sub_phase === "warmup") {
+        return { phase: "Waiting for gate energy from the radar...", detail: "" };
+      }
+      return { phase: ENGINEERING_ON, detail: "" };
+    case "sampling":
+      return {
+        phase: "Listening to the empty room...",
+        detail: `${job.remaining_s ?? job.duration_s} s left`
+      };
+    case "applying":
+      if (job.sub_phase === "refresh") return { phase: READING_THRESHOLDS, detail: "" };
+      return {
+        phase: `Writing ${job.writes_total} thresholds to the radar...`,
+        detail: `${job.writes_done} of ${job.writes_total}`
+      };
+    case "verifying":
+      return { phase: VERIFYING, detail: "" };
+    default:
+      return { phase: FINISHING, detail: "" };
+  }
+}
+function phaseLabel(job, profile) {
+  const keepOn = keepOnLine(profile);
+  const { phase, detail } = phaseHeadline(job);
+  const headline = detail ? `${phase} ${detail}` : phase;
+  if (job.kind === "restore") return [headline];
+  switch (job.status) {
+    case "preparing":
+      if (job.sub_phase === "engineering") return [headline];
+      if (job.sub_phase === "settle") {
+        const remaining = job.remaining_s ?? job.settle_s;
+        return [headline, `Listening starts in ${remaining} s.`, keepOn];
+      }
+      return [headline, keepOn];
+    case "sampling":
+      return [
+        headline,
+        `Keep the room empty. ${plural(job.samples, "sample")} so far.`,
+        ...livePeaksLine(job),
+        keepOn
+      ];
+    case "applying":
+      if (job.sub_phase === "refresh") return [headline];
+      return [headline, "Values already written stay until you undo."];
+    default:
+      return [headline];
+  }
+}
+function clamp01(v2) {
+  if (!Number.isFinite(v2)) return 0;
+  return Math.max(0, Math.min(1, v2));
+}
+function progress(job) {
+  if (job.status === "preparing" && job.sub_phase === "settle" && job.settle_s > 0) {
+    return {
+      fraction: clamp01(job.elapsed_s / job.settle_s),
+      label: `${job.remaining_s ?? job.settle_s} s`
+    };
+  }
+  if (job.status === "sampling" && job.duration_s > 0) {
+    return {
+      fraction: clamp01(job.elapsed_s / job.duration_s),
+      label: `${job.remaining_s ?? job.duration_s} s left`
+    };
+  }
+  if (job.status === "applying" && job.sub_phase !== "refresh" && job.writes_total > 0) {
+    return {
+      fraction: clamp01(job.writes_done / job.writes_total),
+      label: `${job.writes_done} of ${job.writes_total}`
+    };
+  }
+  return { fraction: null, label: "" };
+}
+function canStop(job) {
+  if (!job || job.kind !== "calibrate" || job.cancel_requested) return false;
+  return job.status === "preparing" || job.status === "sampling" || job.status === "applying";
+}
+function canStart(payload, online, backgroundOn = ((_b) => (_b = payload == null ? void 0 : payload.entities) == null ? void 0 : _b.background_status_on)() ?? false) {
+  if (!online || !(payload == null ? void 0 : payload.entities)) return false;
+  if (payload.job) return false;
+  if (!payload.entities.engineering_mode) return false;
+  return !backgroundOn;
+}
+function num(v2) {
+  if (v2 === null || v2 === void 0) return "";
+  return String(Math.round(v2 * 10) / 10);
+}
+function peakText(ch) {
+  if (ch.peak === null || ch.peak === void 0) return "";
+  return ch.flags.includes("spike") ? `${num(ch.peak)} (spike seen)` : num(ch.peak);
+}
+function thresholdText(ch, preview) {
+  if (ch.skipped === "not selected") {
+    return ch.old === null ? "(not selected)" : `${num(ch.old)} (not selected)`;
+  }
+  if (ch.skipped) return `skipped: ${ch.skipped}`;
+  if (ch.new === null || ch.new === void 0) return "no data";
+  if (ch.written && ch.confirmed === false && ch.actual === null) {
+    return "not confirmed (radar offline)";
+  }
+  const off = ch.flags.includes("off");
+  const changed = ch.old === null || Math.abs(ch.new - ch.old) > TOLERANCE;
+  if (!changed) return off ? `${num(ch.new)} (off)` : `${num(ch.old)} (unchanged)`;
+  const arrow = `${num(ch.old)} → ${num(ch.new)}`;
+  if (preview) {
+    return off ? `${arrow} (off, would set)` : `${arrow} (would set)`;
+  }
+  if (ch.written && ch.confirmed === false) {
+    return off ? `${arrow} (off, not confirmed)` : `${arrow} (not confirmed)`;
+  }
+  return off ? `${arrow} (off)` : arrow;
+}
+function cell(ch, preview) {
+  return { peak: peakText(ch), text: thresholdText(ch, preview), flags: [...ch.flags] };
+}
+function rowUnused(gate) {
+  const sampled = [gate.move, gate.still].filter((ch) => ch.skipped !== "not selected");
+  return sampled.length > 0 && sampled.every((ch) => ch.flags.includes("unused"));
+}
+function resultRows(result) {
+  const preview = result.outcome === "preview";
+  return (result.gates ?? []).map((g2) => ({
+    gate: g2.gate,
+    label: `G${g2.gate}`,
+    move: cell(g2.move, preview),
+    still: cell(g2.still, preview),
+    unused: rowUnused(g2)
+  }));
+}
+function gateList(gates) {
+  return gates.map((g2) => `G${g2}`).join(", ");
+}
+function unusedFootnote(result) {
+  const gates = result.gates ?? [];
+  const lines = [];
+  if (result.profile === "ld2412") {
+    const flagged = gates.filter(
+      (g2) => g2.move.flags.includes("unused") || g2.still.flags.includes("unused")
+    );
+    const min = result.min_gate ?? null;
+    const max = result.max_gate ?? null;
+    const below = flagged.filter((g2) => min !== null && g2.gate < min).map((g2) => g2.gate);
+    const beyond = flagged.filter((g2) => max !== null && g2.gate > max).map((g2) => g2.gate);
+    if (below.length) lines.push(`${gateList(below)}: not used (below Min Gate ${min})`);
+    if (beyond.length) lines.push(`${gateList(beyond)}: not used (beyond Max Gate ${max})`);
+    return lines;
+  }
+  const move = gates.filter((g2) => g2.move.flags.includes("unused")).map((g2) => g2.gate);
+  const still = gates.filter((g2) => g2.still.flags.includes("unused")).map((g2) => g2.gate);
+  if (move.length) {
+    lines.push(`${gateList(move)}: not used (beyond Max Move Gate ${result.max_move_gate ?? "?"})`);
+  }
+  if (still.length) {
+    lines.push(`${gateList(still)}: not used (beyond Max Still Gate ${result.max_still_gate ?? "?"})`);
+  }
+  return lines;
+}
+function channelLabel(result, entityId) {
+  for (const g2 of result.gates ?? []) {
+    if (g2.move.entity_id === entityId) return `G${g2.gate} move`;
+    if (g2.still.entity_id === entityId) return `G${g2.gate} still`;
+  }
+  return entityId;
+}
+function unverifiedLine(result) {
+  const entries = result.unverified ?? [];
+  if (entries.length === 0) return null;
+  const parts = entries.map((e2) => {
+    const label = channelLabel(result, e2.entity_id);
+    if (e2.actual === null || e2.actual === void 0) {
+      return `${label} could not be read (radar offline)`;
+    }
+    return `${label} still reports ${num(e2.actual)} (asked for ${num(e2.asked)})`;
+  });
+  return `${plural(entries.length, "value")} could not be confirmed: ${parts.join(", ")}. Check the Move / Still Thresholds cards.`;
+}
+function warningLines(result) {
+  const lines = [];
+  const warnings = result.warnings ?? [];
+  for (const code of warnings) {
+    if (code === "presence") {
+      const pct = Math.round((result.presence_fraction ?? 0) * 100);
+      lines.push(
+        `The radar reported someone present for ${pct}% of the listen. If someone was in the room, even sitting still, press Undo and run it again.`
+      );
+    } else if (code === "radar_unavailable") {
+      lines.push(
+        "The radar was unavailable for part of the listen; gates with too few readings were left as they were."
+      );
+    } else if (code === "unverified") {
+      const line = unverifiedLine(result);
+      if (line) lines.push(line);
+    } else if (code === "gate_off") {
+      for (const entry of result.gates_off ?? []) {
+        lines.push(
+          `G${entry.gate} ${entry.channel} is now off (its background peaked at ${num(entry.peak)}). If a fan or curtain moves there all day this is fine; if not, press Undo and run again with the room really empty.`
+        );
+      }
+    }
+  }
+  if (!warnings.includes("unverified") && result.kind === "restore") {
+    const line = unverifiedLine(result);
+    if (line) lines.push(line);
+  }
+  return lines;
+}
+function undoLabel(snapshots, now = /* @__PURE__ */ new Date()) {
+  const newest = snapshots[0];
+  if (!newest) return NOTHING_TO_RESTORE;
+  return `Undo (restore ${formatTime(newest.taken_at, now)} values)`;
+}
+function changedOfTotal(result, verb = "changed") {
+  const changed = result.changed ?? 0;
+  const total = changed + (result.unchanged ?? 0);
+  return `${changed} of ${total} thresholds ${verb}`;
+}
+function cancelledLine(result) {
+  const writes = result.writes_done ?? 0;
+  if (writes === 0) return "Stopped. Nothing was changed.";
+  return `Stopped after ${writes} of ${result.writes_total ?? writes} values were written. Undo restores the saved values.`;
+}
+function summaryLine(result, now = /* @__PURE__ */ new Date()) {
+  if (result.status === "failed" || result.outcome === "failed") return failureLine(result);
+  if (result.outcome === "cancelled") return cancelledLine(result);
+  const when = formatTime(result.finished_at, now);
+  if (result.kind === "restore") {
+    const restored = result.restored ?? 0;
+    const unchanged = result.unchanged ?? 0;
+    return `Restored ${plural(restored, "value")} at ${when}, ${unchanged} unchanged.`;
+  }
+  const samples = plural(result.samples ?? 0, "sample");
+  if (result.outcome === "preview") {
+    return `Previewed at ${when} from ${samples}. ${changedOfTotal(result, "would change")}.`;
+  }
+  return `Calibrated at ${when} from ${samples}. ${changedOfTotal(result)}.`;
+}
+function footerLine(result) {
+  const when = formatDayTime(result.finished_at);
+  const job = result.kind === "restore" ? "restore" : "calibration";
+  switch (result.outcome) {
+    case "applied":
+    case "partial":
+      return `Last calibrated ${when}, ${changedOfTotal(result)}.`;
+    case "restored":
+      return `Last restored ${when}.`;
+    case "preview":
+      return `Last previewed ${when}.`;
+    case "cancelled":
+      return `Last ${job} ${when} was stopped.`;
+    default:
+      return `Last ${job} ${when} failed.`;
+  }
+}
+function resultHeading(result) {
+  if (result.outcome === "partial") {
+    const n3 = (result.unverified ?? []).length;
+    return `Thresholds updated, ${n3} could not be confirmed`;
+  }
+  return "Thresholds updated";
+}
+const SAYS_NOTHING_CHANGED = /nothing was changed/i;
+function failureLine(result) {
+  var _a2;
+  const message = ((_a2 = result.error) == null ? void 0 : _a2.message) ?? "Unknown error.";
+  const prefix = result.kind === "restore" ? "Restore failed: " : "Calibration failed: ";
+  const writes = result.writes_done ?? 0;
+  if (writes === 0 && !SAYS_NOTHING_CHANGED.test(message)) {
+    return `${prefix}${message} Nothing was changed.`;
+  }
+  return `${prefix}${message}`;
+}
+function offersUndo(result) {
+  return (result.writes_done ?? 0) > 0 && !!result.snapshot_id;
+}
+function restoreSource(result, snapshots) {
+  const named = result.restored_from;
+  if ((named == null ? void 0 : named.id) || (named == null ? void 0 : named.taken_at)) return named;
+  if (result.snapshot_id) {
+    const index = snapshots.findIndex((s2) => s2.id === result.snapshot_id);
+    const older = index >= 0 ? snapshots[index + 1] : void 0;
+    return older ? { id: older.id, taken_at: older.taken_at } : null;
+  }
+  const newest = snapshots[0];
+  return newest ? { id: newest.id, taken_at: newest.taken_at } : null;
+}
+function restoredLine(result, snapshots, now = /* @__PURE__ */ new Date()) {
+  var _a2;
+  const takenAt = (_a2 = restoreSource(result, snapshots)) == null ? void 0 : _a2.taken_at;
+  if (!takenAt) return "Restored the saved thresholds.";
+  return `Restored the thresholds from ${formatTime(takenAt, now)}.`;
+}
+function missingLine(result) {
+  const missing = result.missing ?? [];
+  return missing.length ? `Not found any more: ${missing.join(", ")}.` : null;
+}
+function restoreSummaryLines(result) {
+  const lines = [summaryLine(result)];
+  const missing = missingLine(result);
+  if (missing) lines.push(missing);
+  return lines;
+}
+function isFactoryThresholds(hass, map, profile, snapshots = []) {
+  if (profile !== "ld2410" || snapshots.length > 0) return false;
+  const table = LD2410_FACTORY_THRESHOLDS;
+  const matches = (ids, expected) => {
+    var _a2;
+    if (expected.length === 0) return false;
+    for (let i2 = 0; i2 < expected.length; i2++) {
+      const id = ids[i2];
+      if (!id) return false;
+      const state = (_a2 = hass.states[id]) == null ? void 0 : _a2.state;
+      if (state === void 0) return false;
+      const value = parseFloat(state);
+      if (!Number.isFinite(value) || value !== expected[i2]) return false;
+    }
+    return true;
+  };
+  return matches(map.move_threshold, table.move) && matches(map.still_threshold, table.still);
+}
+const INITIAL_LOCAL_STATE = {
+  observedFinish: null,
+  lastJobId: null,
+  lastJobTerminal: false
+};
+function nextLocalState(prev, payload) {
+  var _a2;
+  const job = payload.job;
+  if (job) {
+    const terminal = isTerminal(job.status);
+    return {
+      observedFinish: terminal ? job.job_id : prev.observedFinish,
+      lastJobId: job.job_id,
+      lastJobTerminal: terminal
+    };
+  }
+  let observed = prev.observedFinish;
+  if (prev.lastJobId !== null && !prev.lastJobTerminal && ((_a2 = payload.last_result) == null ? void 0 : _a2.job_id) === prev.lastJobId) {
+    observed = prev.lastJobId;
+  }
+  return { observedFinish: observed, lastJobId: null, lastJobTerminal: false };
+}
+function showsResultView(local, payload) {
+  var _a2;
+  if (local.observedFinish === null) return false;
+  if (payload.job && !isTerminal(payload.job.status)) return false;
+  return ((_a2 = payload.last_result) == null ? void 0 : _a2.job_id) === local.observedFinish;
+}
+var __defProp = Object.defineProperty;
+var __decorateClass = (decorators, target, key, kind) => {
+  var result = void 0;
+  for (var i2 = decorators.length - 1, decorator; i2 >= 0; i2--)
+    if (decorator = decorators[i2])
+      result = decorator(target, key, result) || result;
+  if (result) __defProp(target, key, result);
+  return result;
+};
+const CALIBRATE_CARD_TAG = "apollo-radar-calibrate-card";
+const DEFAULT_TITLE = "Auto-calibrate";
+const PRIMARY_LABEL = "Calibrate with empty room";
+const NO_DEVICE_HINT = "Add device_id to this card's configuration to enable auto-calibration.";
+const OFFLINE_LINE = "Radar is offline. Calibration needs the radar online and its gate entities enabled.";
+const STILL_LOADING = "Apollo mmWave is still loading...";
+const NOT_LOADED = "Apollo mmWave is not loaded, so calibration is unavailable.";
+const PREVIEW_HELPER = "Computes new thresholds without changing any of them. Radar Engineering Mode is still turned on for the listen.";
+const FACTORY_HINT = "These look like factory thresholds. Calibrating sets them for your room.";
+function safeUnsubscribe(unsubscribe) {
+  try {
+    const result = unsubscribe();
+    if (result && typeof result.catch === "function") {
+      result.catch(() => void 0);
+    }
+  } catch {
+  }
+}
+const _ApolloRadarCalibrateCard = class _ApolloRadarCalibrateCard extends i {
+  constructor() {
+    super(...arguments);
+    this._local = INITIAL_LOCAL_STATE;
+    this._loadState = "loading";
+    this._loadError = "";
+    this._showLastResult = false;
+    this._unsubscribe = null;
+    this._serial = 0;
+    this._pending = false;
+    this._retryTimer = null;
+    this._retryIndex = 0;
+    this._onReady = () => this._reopen();
+    this._onDisconnected = () => this._cancelRetry();
+    this._entryFeed = null;
+    this._entryFeedSerial = 0;
+    this._lastJobApply = null;
+  }
+  setConfig(config) {
+    this._config = config;
+  }
+  getCardSize() {
+    return 6;
+  }
+  static getStubConfig() {
+    return { type: `custom:${CALIBRATE_CARD_TAG}` };
+  }
+  // ---------------------------------------------------------------------------
+  // Lifecycle
+  // ---------------------------------------------------------------------------
+  connectedCallback() {
+    super.connectedCallback();
+    this._attachConnectionListeners();
+    this._open();
+  }
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    this._detachConnectionListeners();
+    this._closeEntryFeed();
+    this._close();
+  }
+  /** Skip the hass ticks (most of them) that touch none of our entities. */
+  shouldUpdate(changed) {
+    if (changed.size !== 1 || !changed.has("hass")) return true;
+    const oldHass = changed.get("hass");
+    if (!oldHass || !this.hass || !this._config) return true;
+    if (oldHass.entities !== this.hass.entities || oldHass.devices !== this.hass.devices || oldHass.connection !== this.hass.connection) {
+      return true;
+    }
+    this._resolved = resolveRadar(this._resolved, this.hass, this._config);
+    return resolvedStatesChanged(oldHass, this.hass, this._watchedIds());
+  }
+  willUpdate(changed) {
+    if (!this.hass || !this._config) return;
+    if (!changed.has("hass") && !changed.has("_config")) return;
+    this._resolved = resolveRadar(this._resolved, this.hass, this._config);
+    const deviceId = resolvedDeviceId(this.hass, this._config, this._resolved.map);
+    this._attachConnectionListeners();
+    if (deviceId !== this._deviceId) {
+      this._deviceId = deviceId;
+      this._payload = void 0;
+      this._local = INITIAL_LOCAL_STATE;
+      this._failure = void 0;
+      this._stopError = void 0;
+      this._turnOffError = void 0;
+      this._lastJobApply = null;
+      this._showLastResult = false;
+      this._retryIndex = 0;
+      this._loadState = "loading";
+      this._close();
+    }
+    this._open();
+  }
+  /** The entity ids whose state changes re-render the card. */
+  _watchedIds() {
+    var _a2, _b;
+    const m2 = (_a2 = this._resolved) == null ? void 0 : _a2.map;
+    if (!m2) return [];
+    const entities = (_b = this._payload) == null ? void 0 : _b.entities;
+    return [
+      m2.engineering_mode,
+      ...m2.move_threshold,
+      ...m2.still_threshold,
+      m2.radar_target,
+      m2.background_correction_status,
+      entities == null ? void 0 : entities.engineering_mode,
+      entities == null ? void 0 : entities.background_status
+    ].filter((id) => !!id);
+  }
+  _apiHass() {
+    var _a2;
+    const h2 = this.hass;
+    if (!(h2 == null ? void 0 : h2.callService) || !((_a2 = h2.connection) == null ? void 0 : _a2.subscribeMessage)) return void 0;
+    return h2;
+  }
+  // ---------------------------------------------------------------------------
+  // Subscription
+  // ---------------------------------------------------------------------------
+  _open() {
+    this._openEntryFeed();
+    if (!this.isConnected || this._unsubscribe || this._pending || this._retryTimer) return;
+    const hass = this._apiHass();
+    const deviceId = this._deviceId;
+    if (!hass || !deviceId) return;
+    const serial = ++this._serial;
+    this._pending = true;
+    subscribeCalibration(hass, deviceId, (payload) => {
+      if (serial !== this._serial) return;
+      this._applyPayload(payload);
+    }).then(
+      (unsubscribe) => {
+        if (serial !== this._serial) {
+          safeUnsubscribe(unsubscribe);
+          return;
+        }
+        this._pending = false;
+        this._unsubscribe = unsubscribe;
+        this._retryIndex = 0;
+        if (this._loadState !== "idle") this._loadState = this._payload ? "idle" : "loading";
+      },
+      (error) => {
+        if (serial !== this._serial) return;
+        this._pending = false;
+        this._failOpen(error);
+      }
+    );
+  }
+  _failOpen(error) {
+    const code = error == null ? void 0 : error.code;
+    if (code === ERR_NOT_LOADED && this._retryIndex < CALIBRATION_RETRY_DELAYS_MS.length) {
+      const delay = CALIBRATION_RETRY_DELAYS_MS[this._retryIndex];
+      this._retryIndex += 1;
+      this._loadState = "retrying";
+      this._retryTimer = setTimeout(() => {
+        this._retryTimer = null;
+        this._open();
+      }, delay);
+      return;
+    }
+    this._loadState = code === ERR_NOT_LOADED ? "not_loaded" : "error";
+    this._loadError = describeError(error);
+  }
+  _close() {
+    this._serial += 1;
+    this._pending = false;
+    this._cancelRetry();
+    const unsubscribe = this._unsubscribe;
+    this._unsubscribe = null;
+    if (unsubscribe) safeUnsubscribe(unsubscribe);
+  }
+  _cancelRetry() {
+    if (this._retryTimer === null) return;
+    clearTimeout(this._retryTimer);
+    this._retryTimer = null;
+  }
+  /**
+   * Re-run the subscribe on the connection's `ready`. The websocket library
+   * re-sends subscriptions on reconnect, but when that re-subscribe is
+   * rejected (HA restarted and apollo_mmwave is not loaded yet, the normal
+   * order after the one restart that matters) it is dropped silently, the
+   * original promise having long been resolved.
+   */
+  _reopen() {
+    this._retryIndex = 0;
+    this._close();
+    this._open();
+  }
+  /**
+   * Watch the config entry feed so an integration reload reopens the
+   * subscription. Unloading the entry closes it server side without telling
+   * the client, and neither `ready` nor `disconnected` fires on a reload, so
+   * without this an open card would sit on its last payload until a page
+   * reload. SPEC NOTE: the spec names only the `ready` handling; this is the
+   * zone card's established `subscribeEntryLoads` pattern for the same
+   * failure, copied into `calibration/api.ts` rather than imported.
+   */
+  _openEntryFeed() {
+    const hass = this._apiHass();
+    const conn = hass == null ? void 0 : hass.connection;
+    if (!this.isConnected || !hass || !conn || !this._deviceId) return;
+    if (this._entryFeedConnection === conn) return;
+    this._closeEntryFeed();
+    this._entryFeedConnection = conn;
+    const serial = ++this._entryFeedSerial;
+    void subscribeEntryLoads(hass, () => {
+      if (serial === this._entryFeedSerial) this._reopen();
+    }).then((unsubscribe) => {
+      if (serial !== this._entryFeedSerial) {
+        if (unsubscribe) safeUnsubscribe(unsubscribe);
+        return;
+      }
+      this._entryFeed = unsubscribe;
+    });
+  }
+  _closeEntryFeed() {
+    this._entryFeedSerial += 1;
+    this._entryFeedConnection = void 0;
+    const unsubscribe = this._entryFeed;
+    this._entryFeed = null;
+    if (unsubscribe) safeUnsubscribe(unsubscribe);
+  }
+  _retryNow() {
+    this._retryIndex = 0;
+    this._loadState = "loading";
+    this._close();
+    this._open();
+  }
+  _attachConnectionListeners() {
+    var _a2;
+    const conn = (_a2 = this.hass) == null ? void 0 : _a2.connection;
+    if (!this.isConnected || !conn || conn === this._listenedConnection) return;
+    this._detachConnectionListeners();
+    if (!conn.addEventListener) return;
+    conn.addEventListener("ready", this._onReady);
+    conn.addEventListener("disconnected", this._onDisconnected);
+    this._listenedConnection = conn;
+  }
+  _detachConnectionListeners() {
+    const conn = this._listenedConnection;
+    this._listenedConnection = void 0;
+    if (!(conn == null ? void 0 : conn.removeEventListener)) return;
+    conn.removeEventListener("ready", this._onReady);
+    conn.removeEventListener("disconnected", this._onDisconnected);
+  }
+  _applyPayload(payload) {
+    var _a2, _b;
+    const previousJobId = (_b = (_a2 = this._payload) == null ? void 0 : _a2.job) == null ? void 0 : _b.job_id;
+    this._local = nextLocalState(this._local, payload);
+    this._payload = payload;
+    this._loadState = "idle";
+    const job = payload.job;
+    if (job) this._lastJobApply = { jobId: job.job_id, apply: job.apply };
+    if (job && !isTerminal(job.status)) {
+      this._failure = void 0;
+    }
+    if (!job || isTerminal(job.status) || job.job_id !== previousJobId) {
+      this._stopError = void 0;
+    }
+  }
+  // ---------------------------------------------------------------------------
+  // Actions
+  // ---------------------------------------------------------------------------
+  _start(apply) {
+    var _a2;
+    const hass = this._apiHass();
+    const deviceId = this._deviceId;
+    if (!hass || !deviceId) return;
+    this._failure = void 0;
+    this._showLastResult = false;
+    this._local = { ...this._local, observedFinish: null };
+    const opts = { ...((_a2 = this._config) == null ? void 0 : _a2.calibration) ?? {} };
+    if (!apply) opts.apply = false;
+    startCalibration(hass, deviceId, opts).catch(
+      (error) => this._showServiceFailure("Calibration failed: ", error, () => this._start(apply))
+    );
+  }
+  /** Render a rejected start or restore as the failed view, in the words of
+   *  the backend's translated exception message. */
+  async _showServiceFailure(prefix, error, retry) {
+    const deviceId = this._deviceId;
+    const message = await describeServiceError(this.hass ?? {}, error);
+    if (deviceId !== this._deviceId) return;
+    this._failure = { prefix, message, retry };
+  }
+  _stop() {
+    const hass = this._apiHass();
+    const deviceId = this._deviceId;
+    if (!hass || !deviceId) return;
+    this._stopError = void 0;
+    cancelCalibration(hass, deviceId).catch(async (error) => {
+      const message = await describeServiceError(this.hass ?? {}, error);
+      if (deviceId !== this._deviceId) return;
+      this._stopError = `Could not stop the calibration: ${message}`;
+    });
+  }
+  /** Restore the newest snapshot (what every Undo label names), or the one a
+   *  failed restore was writing back when "Try again" repeats it. */
+  _undo(snapshotId) {
+    const hass = this._apiHass();
+    const deviceId = this._deviceId;
+    if (!hass || !deviceId) return;
+    this._failure = void 0;
+    this._showLastResult = false;
+    restoreThresholds(hass, deviceId, snapshotId).catch(
+      (error) => this._showServiceFailure("Restore failed: ", error, () => this._undo(snapshotId))
+    );
+  }
+  _turnOff() {
+    const hass = this._apiHass();
+    const switchId = this._engineeringSwitchId();
+    if (!hass || !switchId) return;
+    const deviceId = this._deviceId;
+    this._turnOffError = void 0;
+    turnEngineeringMode(hass, switchId).catch(async (error) => {
+      const message = await describeServiceError(this.hass ?? {}, error);
+      if (deviceId !== this._deviceId) return;
+      this._turnOffError = `Could not turn Radar Engineering Mode off: ${message}`;
+    });
+  }
+  /** "Close": back to Idle from a result or a failure. */
+  _closeResult() {
+    this._failure = void 0;
+    this._local = { ...this._local, observedFinish: null };
+  }
+  // ---------------------------------------------------------------------------
+  // Derived facts
+  // ---------------------------------------------------------------------------
+  _profileKey() {
+    var _a2, _b, _c, _d;
+    return ((_b = (_a2 = this._resolved) == null ? void 0 : _a2.profile) == null ? void 0 : _b.key) ?? ((_d = (_c = this._payload) == null ? void 0 : _c.entities) == null ? void 0 : _d.profile);
+  }
+  _engineeringSwitchId() {
+    var _a2, _b, _c;
+    return ((_a2 = this._resolved) == null ? void 0 : _a2.map.engineering_mode) ?? ((_c = (_b = this._payload) == null ? void 0 : _b.entities) == null ? void 0 : _c.engineering_mode) ?? void 0;
+  }
+  /** Live switch state first; the payload's copy when HA has no state. */
+  _engineeringOn() {
+    var _a2, _b, _c;
+    const id = this._engineeringSwitchId();
+    const live = id && this.hass ? (_a2 = this.hass.states[id]) == null ? void 0 : _a2.state : void 0;
+    if (live !== void 0) return live === "on";
+    return !!((_c = (_b = this._payload) == null ? void 0 : _b.entities) == null ? void 0 : _c.engineering_mode_on);
+  }
+  /** Live status first, as for the switch: the payload's copy is only as
+   *  fresh as the last job push. */
+  _backgroundOn() {
+    var _a2, _b, _c, _d, _e, _f;
+    const id = ((_b = (_a2 = this._payload) == null ? void 0 : _a2.entities) == null ? void 0 : _b.background_status) ?? ((_c = this._resolved) == null ? void 0 : _c.map.background_correction_status);
+    const live = id && this.hass ? (_d = this.hass.states[id]) == null ? void 0 : _d.state : void 0;
+    if (live !== void 0) return live === "on";
+    return !!((_f = (_e = this._payload) == null ? void 0 : _e.entities) == null ? void 0 : _f.background_status_on);
+  }
+  _online() {
+    var _a2;
+    if (!this.hass || !this._resolved) return false;
+    if (!anyResolved(this.hass, this._resolved.ids)) return false;
+    const id = this._engineeringSwitchId();
+    const state2 = id ? (_a2 = this.hass.states[id]) == null ? void 0 : _a2.state : void 0;
+    return state2 !== void 0 && state2 !== "unavailable";
+  }
+  // ---------------------------------------------------------------------------
+  // Render
+  //
+  // Every helper returns a template whose bindings sit inside an element, never
+  // at the template root: happy-dom (the test DOM) mis-clones root-level
+  // child-part markers, and browsers do not care either way.
+  // ---------------------------------------------------------------------------
+  render() {
+    if (!this.hass || !this._config) return A;
+    this._resolved = resolveRadar(this._resolved, this.hass, this._config);
+    return b`
+      <ha-card .header=${this._config.title ?? DEFAULT_TITLE}>
+        <div class="wrap">${this._renderSubtitle()} ${this._renderBody()}</div>
+      </ha-card>
+    `;
+  }
+  _renderSubtitle() {
+    var _a2, _b, _c;
+    const deviceId = this._deviceId;
+    if (!deviceId || !this.hass) return A;
+    const label = ((_b = (_a2 = this._resolved) == null ? void 0 : _a2.profile) == null ? void 0 : _b.label) ?? ((_c = this._profileKey()) == null ? void 0 : _c.toUpperCase());
+    const device = this.hass.devices[deviceId];
+    const name = (device == null ? void 0 : device.name_by_user) || (device == null ? void 0 : device.name);
+    if (!label && !name) return A;
+    return b`<div class="subtitle">${[label, name].filter(Boolean).join(" · ")}</div>`;
+  }
+  _renderBody() {
+    var _a2;
+    if (!this._deviceId) return b`<p class="hint">${NO_DEVICE_HINT}</p>`;
+    if (this._loadState === "retrying") {
+      return b`<div class="status" aria-live="polite"><p>${STILL_LOADING}</p></div>`;
+    }
+    if (this._loadState === "not_loaded" || this._loadState === "error") {
+      const text = this._loadState === "not_loaded" ? NOT_LOADED : this._loadError;
+      return b`
+        <div class="section">
+          <div class="status" aria-live="polite"><p class="error">${text}</p></div>
+          <div class="buttons">
+            <button type="button" class="secondary" @click=${this._retryNow}>Retry</button>
+          </div>
+        </div>
+      `;
+    }
+    const payload = this._payload;
+    if (!payload) return b`<div class="status" aria-live="polite"><p class="hint">Loading...</p></div>`;
+    const job = payload.job;
+    if (job && !isTerminal(job.status)) return this._renderRunning(job);
+    if (this._failure) return this._renderFailure(this._failure, payload);
+    if (job && ((_a2 = payload.last_result) == null ? void 0 : _a2.job_id) !== job.job_id) {
+      return this._renderFinishing();
+    }
+    if (showsResultView(this._local, payload) && payload.last_result) {
+      return this._renderResult(payload.last_result, payload);
+    }
+    return this._renderIdle(payload);
+  }
+  // --- running --------------------------------------------------------------
+  _renderRunning(job) {
+    const lines = phaseLabel(job, this._profileKey());
+    const { phase, detail } = phaseHeadline(job);
+    const stoppable = job.kind === "calibrate" && (job.status === "preparing" || job.status === "sampling" || job.status === "applying");
+    return b`
+      <div class="section">
+        <div class="status">
+          <p class="headline"><span class="phase" aria-live="polite">${phase}</span>${detail ? ` ${detail}` : ""}</p>
+          ${lines.slice(1).map((line) => b`<p>${line}</p>`)}
+        </div>
+        ${this._renderBar(job)}
+        ${stoppable ? b`
+              <div class="buttons">
+                <button
+                  type="button"
+                  class="secondary"
+                  ?disabled=${!canStop(job)}
+                  @click=${this._stop}
+                >
+                  ${job.cancel_requested ? "Stopping..." : "Stop"}
+                </button>
+              </div>
+            ` : A}
+        ${this._stopError ? b`<p class="error" role="alert">${this._stopError}</p>` : A}
+      </div>
+    `;
+  }
+  _renderBar(job) {
+    const { fraction, label } = progress(job);
+    const percent = fraction === null ? 100 : Math.round(fraction * 100);
+    return b`
+      <div
+        class="bar ${fraction === null ? "indeterminate" : ""}"
+        role="progressbar"
+        aria-valuemin="0"
+        aria-valuemax="100"
+        aria-valuenow=${fraction === null ? A : percent}
+        aria-label=${label || A}
+      >
+        <div class="fill" style="width:${percent}%"></div>
+      </div>
+    `;
+  }
+  _renderFinishing() {
+    return b`
+      <div class="section">
+        <div class="status" aria-live="polite"><p class="headline">Finishing...</p></div>
+        <div class="bar indeterminate" role="progressbar" aria-valuemin="0" aria-valuemax="100">
+          <div class="fill" style="width:100%"></div>
+        </div>
+      </div>
+    `;
+  }
+  // --- failure from a rejected service call ---------------------------------
+  // SPEC NOTE: the spec lists only "Try again" for the failed state. A
+  // refusal such as not_allowed fails the same way every time, so every
+  // failure and result view also has a "Close" back to Idle (footer, Undo and
+  // "Show last result"), and the interrupted banner renders above them all.
+  _closeButton() {
+    return b`<button type="button" class="text" @click=${this._closeResult}>Close</button>`;
+  }
+  _renderFailure(failure, payload) {
+    return b`
+      <div class="section">
+        ${this._renderBanner(payload)}
+        <div class="status" aria-live="polite">
+          <p class="error">${failure.prefix}${failure.message}</p>
+        </div>
+        <div class="buttons">
+          <button type="button" class="primary" @click=${failure.retry}>Try again</button>
+          ${this._closeButton()}
+        </div>
+      </div>
+    `;
+  }
+  // --- finished job ---------------------------------------------------------
+  _renderResult(result, payload) {
+    const snapshots = payload.snapshots ?? [];
+    const banner = this._renderBanner(payload);
+    const undo = snapshots.length ? b`<button type="button" class="secondary" @click=${() => this._undo()}>
+          ${undoLabel(snapshots)}
+        </button>` : A;
+    const again = (label) => b`<button type="button" class="primary" @click=${() => this._start(true)}>${label}</button>`;
+    if (result.status === "failed" || result.outcome === "failed") {
+      return b`
+        <div class="section">
+          ${banner}
+          <div class="status" aria-live="polite"><p class="error">${failureLine(result)}</p></div>
+          <div class="buttons">
+            ${offersUndo(result) ? undo : A} ${this._renderTryAgain(result, snapshots)}
+            ${this._closeButton()}
+          </div>
+        </div>
+      `;
+    }
+    if (result.outcome === "cancelled") {
+      const writes = result.writes_done ?? 0;
+      return b`
+        <div class="section">
+          ${banner}
+          <div class="status" aria-live="polite"><p>${cancelledLine(result)}</p></div>
+          <div class="buttons">
+            ${writes > 0 ? undo : A} ${again(PRIMARY_LABEL)} ${this._closeButton()}
+          </div>
+        </div>
+      `;
+    }
+    if (result.kind === "restore") {
+      const missing = missingLine(result);
+      return b`
+        <div class="section">
+          ${banner}
+          <div class="status" aria-live="polite">
+            <p class="headline">${restoredLine(result, snapshots)}</p>
+            ${missing ? b`<p>${missing}</p>` : A}
+            ${warningLines(result).map((line) => b`<p class="warning">${line}</p>`)}
+          </div>
+          ${this._renderIdleBody(payload)}
+          <div class="buttons">${undo} ${again(PRIMARY_LABEL)}</div>
+        </div>
+      `;
+    }
+    if (result.outcome === "preview") {
+      return b`
+        <div class="section">
+          ${banner}
+          <div class="status" aria-live="polite">
+            <p class="headline">Preview: no threshold was changed.</p>
+            <p>These are the thresholds calibration would set:</p>
+          </div>
+          ${this._renderTable(result)}
+          ${warningLines(result).map((line) => b`<p class="warning">${line}</p>`)}
+          <div class="buttons">${again("Calibrate and apply")} ${this._closeButton()}</div>
+        </div>
+      `;
+    }
+    return b`
+      <div class="section">
+        ${banner}
+        <div class="status" aria-live="polite">
+          <p class="headline">${resultHeading(result)}</p>
+          <p>${summaryLine(result)}</p>
+        </div>
+        ${this._renderTable(result)}
+        ${warningLines(result).map((line) => b`<p class="warning">${line}</p>`)}
+        <p>${WALK_AROUND_LINE}</p>
+        <div class="buttons">${undo} ${again("Calibrate again")} ${this._closeButton()}</div>
+      </div>
+    `;
+  }
+  /**
+   * "Try again" repeats the job that failed. A calibration restarts with the
+   * same `apply` (a failed preview previews again). A restore writes back the
+   * snapshot it was restoring, by id: once its redo snapshot is saved that is
+   * the newest, and restoring the newest would put back the very values the
+   * user was undoing. When the source cannot be told the button is left out
+   * (Close and Undo remain).
+   */
+  _renderTryAgain(result, snapshots) {
+    let retry;
+    if (result.kind === "restore") {
+      const source = restoreSource(result, snapshots);
+      if (!(source == null ? void 0 : source.id)) return A;
+      const id = source.id;
+      retry = () => this._undo(id);
+    } else {
+      const seen = this._lastJobApply;
+      const apply = seen && seen.jobId === result.job_id ? seen.apply : true;
+      retry = () => this._start(apply);
+    }
+    return b`<button type="button" class="primary" @click=${retry}>Try again</button>`;
+  }
+  _renderTable(result) {
+    const rows = resultRows(result);
+    const footnotes = unusedFootnote(result);
+    const cellClass = (flags) => flags.includes("unused") ? "unused" : "";
+    const renderRow = (row2) => b`
+      <tr class=${row2.unused ? "unused" : ""}>
+        <th scope="row">${row2.label}</th>
+        <td class=${cellClass(row2.move.flags)}>${row2.move.peak}</td>
+        <td class=${cellClass(row2.move.flags)}>${row2.move.text}</td>
+        <td class=${cellClass(row2.still.flags)}>${row2.still.peak}</td>
+        <td class=${cellClass(row2.still.flags)}>${row2.still.text}</td>
+      </tr>
+    `;
+    return b`
+      <div class="result">
+        <div class="table-wrap">
+          <table>
+          <thead>
+            <tr>
+              <th scope="col">Gate</th>
+              <th scope="col">Move peak</th>
+              <th scope="col">Move threshold</th>
+              <th scope="col">Still peak</th>
+              <th scope="col">Still threshold</th>
+            </tr>
+          </thead>
+            <tbody>
+              ${rows.map(renderRow)}
+            </tbody>
+          </table>
+        </div>
+        ${footnotes.map((line) => b`<p class="footnote">${line}</p>`)}
+      </div>
+    `;
+  }
+  // --- idle -----------------------------------------------------------------
+  _renderIdle(payload) {
+    const online = this._online();
+    const snapshots = payload.snapshots ?? [];
+    return b`
+      <div class="section">
+        ${this._renderBanner(payload)}
+        ${online ? this._renderIdleBody(payload) : b`<div class="status" aria-live="polite"><p>${OFFLINE_LINE}</p></div>`}
+        ${this._renderIdleButtons(payload, online)}
+        ${this._renderFooter(payload, snapshots)}
+      </div>
+    `;
+  }
+  _renderIdleBody(payload) {
+    var _a2, _b, _c, _d;
+    const settle = ((_b = (_a2 = this._config) == null ? void 0 : _a2.calibration) == null ? void 0 : _b.settle_s) ?? DEFAULT_SETTLE_S;
+    const duration = ((_d = (_c = this._config) == null ? void 0 : _c.calibration) == null ? void 0 : _d.duration_s) ?? DEFAULT_DURATION_S;
+    const ld2412 = this._profileKey() === "ld2412";
+    const engineeringBullet = this._engineeringOn() ? "Radar Engineering Mode is already on and will stay on." : "Home Assistant turns Radar Engineering Mode on for the listen and back off afterward.";
+    const factory = this.hass && this._resolved ? isFactoryThresholds(this.hass, this._resolved.map, this._profileKey(), payload.snapshots ?? []) : false;
+    return b`
+      <div class="idle-body">
+        <p>${idleSentence(settle, duration)}</p>
+        <ul>
+        <li>Nobody in the radar's view: people, pets, robot vacuums.</li>
+        <li>
+          Fans, curtains and plants that normally move are part of the background. Leave them
+          as they usually are.
+        </li>
+        <li>${engineeringBullet}</li>
+        ${ld2412 ? b`<li>
+              LD2412: run Start Dynamic Background Correction (Controls card) first with the
+              room empty and wait for its status to turn off. Calibrate afterward.
+            </li>` : A}
+        ${ld2412 && this._backgroundOn() ? b`<li>
+              Background correction is running on the LD2412. Wait for its status to turn off.
+            </li>` : A}
+        </ul>
+        ${factory ? b`<p class="hint">${FACTORY_HINT}</p>` : A}
+      </div>
+    `;
+  }
+  _renderIdleButtons(payload, online) {
+    const enabled = canStart(payload, online, this._backgroundOn()) && !!this._apiHass();
+    return b`
+      <div class="actions">
+        <div class="buttons">
+          <button type="button" class="primary" ?disabled=${!enabled} @click=${() => this._start(true)}>
+            ${PRIMARY_LABEL}
+          </button>
+          <button type="button" class="text" ?disabled=${!enabled} @click=${() => this._start(false)}>
+            Preview only
+          </button>
+        </div>
+        <p class="helper">${PREVIEW_HELPER}</p>
+      </div>
+    `;
+  }
+  _renderFooter(payload, snapshots) {
+    const last = payload.last_result;
+    if (!snapshots.length && !last) return A;
+    return b`
+      <div class="footer">
+        ${snapshots.length ? b`
+              <div class="last">
+                ${last ? b`<p>${footerLine(last)}</p>` : A}
+                <div class="buttons">
+                  <button type="button" class="secondary" @click=${() => this._undo()}>
+                    ${undoLabel(snapshots)}
+                  </button>
+                </div>
+              </div>
+            ` : A}
+        ${last ? b`
+              <div class="stored-toggle">
+                <div class="buttons">
+                  <button
+                    type="button"
+                    class="text"
+                    aria-expanded=${this._showLastResult ? "true" : "false"}
+                    @click=${() => this._showLastResult = !this._showLastResult}
+                  >
+                    ${this._showLastResult ? "Hide last result" : "Show last result"}
+                  </button>
+                </div>
+                ${this._showLastResult ? this._renderStoredResult(last) : A}
+              </div>
+            ` : A}
+      </div>
+    `;
+  }
+  _renderStoredResult(result) {
+    if (result.status === "failed" || result.outcome === "failed") {
+      return b`<div class="stored"><p class="error">${failureLine(result)}</p></div>`;
+    }
+    const warnings = warningLines(result).map((line) => b`<p class="warning">${line}</p>`);
+    if (result.kind === "restore") {
+      return b`<div class="stored">
+        ${restoreSummaryLines(result).map((line) => b`<p>${line}</p>`)} ${warnings}
+      </div>`;
+    }
+    const hasTable = (result.gates ?? []).length > 0;
+    return b`<div class="stored">
+      <p>${summaryLine(result)}</p>
+      ${hasTable ? this._renderTable(result) : A} ${warnings}
+    </div>`;
+  }
+  /**
+   * The interrupted banner. `phase` and `left_on` are independent facts: the
+   * engineering line shows while the switch reads on for either, the
+   * thresholds line while the marker's phase is `applying`.
+   */
+  _renderBanner(payload) {
+    const marker = payload.interrupted;
+    if (!marker) return A;
+    const switchOn = this._engineeringOn();
+    const engineeringLine = switchOn && (marker.phase === "engineering" || marker.left_on);
+    const thresholdsLine = marker.phase === "applying";
+    if (!engineeringLine && !thresholdsLine) return A;
+    const first = marker.left_on ? "The last calibration could not turn Radar Engineering Mode back off (the radar was offline)." : marker.kind === "restore" ? "A restore was interrupted by a restart." : "A calibration was interrupted by a restart.";
+    const snapshots = payload.snapshots ?? [];
+    const saved = snapshots.find((s2) => s2.id === marker.snapshot_id) ?? snapshots[0];
+    const savedAt = saved ? formatTime(saved.taken_at) : "the start";
+    return b`
+      <div class="banner" role="status">
+        <p>${first}</p>
+        ${engineeringLine ? b`<p>
+              Radar Engineering Mode may still be on.
+              <button type="button" class="secondary" @click=${this._turnOff}>Turn it off</button>
+            </p>` : A}
+        ${engineeringLine && this._turnOffError ? b`<p class="error" role="alert">${this._turnOffError}</p>` : A}
+        ${thresholdsLine ? b`<p>
+              Some thresholds may have been written. Undo restores the values saved at
+              ${savedAt}.
+              <button type="button" class="secondary" ?disabled=${!saved} @click=${() => this._undo()}>
+                Undo
+              </button>
+            </p>` : A}
+      </div>
+    `;
+  }
+};
+_ApolloRadarCalibrateCard.styles = i$3`
+    :host {
+      display: block;
+    }
+    .wrap {
+      padding: 0 16px 16px;
+    }
+    .subtitle {
+      color: var(--secondary-text-color);
+      font-size: 0.9em;
+      margin: -8px 0 12px;
+    }
+    p {
+      margin: 0 0 8px;
+    }
+    ul {
+      margin: 0 0 12px;
+      padding-left: 20px;
+    }
+    li {
+      margin: 4px 0;
+    }
+    .headline {
+      font-weight: 500;
+      font-size: 1.05em;
+    }
+    .hint,
+    .helper,
+    .footnote {
+      color: var(--secondary-text-color);
+      font-size: 0.9em;
+    }
+    .warning {
+      color: var(--warning-color, #ff9800);
+    }
+    .error {
+      color: var(--error-color, #db4437);
+    }
+    .buttons {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      margin: 12px 0 8px;
+    }
+    button {
+      font: inherit;
+      cursor: pointer;
+      border-radius: 4px;
+      padding: 8px 16px;
+      border: 1px solid var(--primary-color);
+      background: none;
+      color: var(--primary-color);
+    }
+    button.primary {
+      background: var(--primary-color);
+      color: var(--text-primary-color, #fff);
+      font-weight: 500;
+    }
+    button.text {
+      border-color: transparent;
+      padding: 8px 8px;
+    }
+    button:disabled {
+      opacity: 0.5;
+      cursor: default;
+    }
+    .banner p button,
+    .footer .buttons {
+      margin-top: 4px;
+    }
+    .banner {
+      border: 1px solid var(--warning-color, #ff9800);
+      border-radius: 8px;
+      padding: 8px 12px;
+      margin-bottom: 12px;
+    }
+    .banner p button {
+      margin-left: 8px;
+      padding: 4px 10px;
+    }
+    .footer {
+      border-top: 1px solid var(--divider-color, #e0e0e0);
+      margin-top: 12px;
+      padding-top: 8px;
+      font-size: 0.95em;
+    }
+    .bar {
+      height: 6px;
+      background: var(--divider-color, #e0e0e0);
+      border-radius: 3px;
+      overflow: hidden;
+      margin: 4px 0 12px;
+    }
+    .bar .fill {
+      height: 100%;
+      background: var(--primary-color);
+      transition: width 0.5s linear;
+    }
+    .bar.indeterminate .fill {
+      width: 40% !important;
+      animation: slide 1.4s infinite ease-in-out;
+    }
+    @keyframes slide {
+      0% {
+        transform: translateX(-100%);
+      }
+      100% {
+        transform: translateX(250%);
+      }
+    }
+    .table-wrap {
+      overflow-x: auto;
+      margin: 8px 0;
+    }
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      font-size: 0.9em;
+    }
+    th,
+    td {
+      text-align: left;
+      padding: 4px 6px;
+      border-bottom: 1px solid var(--divider-color, #e0e0e0);
+      white-space: nowrap;
+    }
+    th {
+      color: var(--secondary-text-color);
+      font-weight: 500;
+    }
+    tr.unused th,
+    td.unused {
+      opacity: 0.55;
+    }
+  `;
+let ApolloRadarCalibrateCard = _ApolloRadarCalibrateCard;
+__decorateClass([
+  n2({ attribute: false })
+], ApolloRadarCalibrateCard.prototype, "hass");
+__decorateClass([
+  r()
+], ApolloRadarCalibrateCard.prototype, "_config");
+__decorateClass([
+  r()
+], ApolloRadarCalibrateCard.prototype, "_payload");
+__decorateClass([
+  r()
+], ApolloRadarCalibrateCard.prototype, "_local");
+__decorateClass([
+  r()
+], ApolloRadarCalibrateCard.prototype, "_loadState");
+__decorateClass([
+  r()
+], ApolloRadarCalibrateCard.prototype, "_loadError");
+__decorateClass([
+  r()
+], ApolloRadarCalibrateCard.prototype, "_failure");
+__decorateClass([
+  r()
+], ApolloRadarCalibrateCard.prototype, "_stopError");
+__decorateClass([
+  r()
+], ApolloRadarCalibrateCard.prototype, "_turnOffError");
+__decorateClass([
+  r()
+], ApolloRadarCalibrateCard.prototype, "_showLastResult");
+registerElement(CALIBRATE_CARD_TAG, ApolloRadarCalibrateCard);
 const customCards = window.customCards = window.customCards || [];
-if (!customCards.some((c2) => c2.type === "apollo-radar-gate-energy-card")) {
+if (!customCards.some((c2) => c2.type === CALIBRATE_CARD_TAG)) {
   customCards.push({
-    type: "apollo-radar-gate-energy-card",
-    name: "Apollo Radar Gate Energy Chart",
-    description: "Per-gate move/still energy chart for Apollo MSR (LD2410) & R-PRO (LD2412).",
+    type: CALIBRATE_CARD_TAG,
+    name: "Apollo Radar Auto-Calibrate",
+    description: "One-button empty-room calibration of every gate threshold on an Apollo MSR (LD2410) or R PRO (LD2412), with undo.",
     documentationURL: "https://github.com/ApolloAutomation/apollo-mmwave-main"
   });
-}
-function ld2450TargetPairs(base) {
-  return [1, 2, 3].map((n3) => ({
-    x: `sensor.${base}_ld2450_target_${n3}_x`,
-    y: `sensor.${base}_ld2450_target_${n3}_y`
-  }));
 }
 const TARGET_X = /(?:_ld2450)?_target_(\d+)_x(?:_\d+)?$/;
 const TARGET_Y = /(?:_ld2450)?_target_(\d+)_y(?:_\d+)?$/;
 function ld2450EntityIds(hass, deviceId) {
   const ids = [];
-  for (const [id, e2] of Object.entries(hass.entities)) {
-    if (e2.device_id !== deviceId || !id.startsWith("sensor.")) continue;
+  for (const [id] of entitiesForDevice(hass.entities, deviceId)) {
+    if (!id.startsWith("sensor.")) continue;
     const oid = id.slice(id.indexOf(".") + 1);
     if (TARGET_X.test(oid) || TARGET_Y.test(oid)) ids.push(id);
   }
   return ids;
 }
 function hasLd2450Device(hass, deviceId) {
-  for (const [id, e2] of Object.entries(hass.entities)) {
-    if (e2.device_id !== deviceId || !id.startsWith("sensor.")) continue;
+  for (const [id] of entitiesForDevice(hass.entities, deviceId)) {
+    if (!id.startsWith("sensor.")) continue;
     if (TARGET_X.test(id.slice(id.indexOf(".") + 1))) return true;
   }
   return false;
-}
-function hasLd2450(hass, base) {
-  return ld2450TargetPairs(base).some((p2) => p2.x in hass.states) || [1, 2, 3].some((n3) => `sensor.${base}_target_${n3}_x` in hass.states);
 }
 function zoneMapCard(deviceId, title) {
   return {
@@ -1523,6 +3259,10 @@ function row(entity, name) {
 function controlRows(m2) {
   return [
     ...row(m2.engineering_mode, "Radar Engineering Mode"),
+    // LD2412 only: the chip's own background correction. Both slots are
+    // undefined on an LD2410, so these rows simply do not appear there.
+    ...row(m2.background_correction, "Start Dynamic Background Correction"),
+    ...row(m2.background_correction_status, "Background Correction Running"),
     ...row(m2.bluetooth, "Bluetooth"),
     ...row(m2.restart_radar, "Restart Radar"),
     ...row(m2.factory_reset_radar, "Factory Reset Radar"),
@@ -1573,21 +3313,20 @@ function presentRows(hass, rows) {
   return rows.filter((r2) => exists(hass, r2.entity));
 }
 function historyEntities(m2) {
-  const rows = [];
-  const push = (entity, name) => {
-    if (entity) rows.push({ entity, name });
-  };
-  push(m2.radar_target, "Detected");
-  push(m2.zone_1_occupancy, "Zone 1");
-  push(m2.zone_2_occupancy, "Zone 2");
-  push(m2.zone_3_occupancy, "Zone 3");
-  return rows;
+  return [
+    ...row(m2.radar_target, "Detected"),
+    ...row(m2.zone_1_occupancy, "Zone 1"),
+    ...row(m2.zone_2_occupancy, "Zone 2"),
+    ...row(m2.zone_3_occupancy, "Zone 3")
+  ];
 }
-function isLive(hass, entityId) {
-  if (!entityId) return false;
-  const state = hass.states[entityId];
+function isLiveState(state) {
   return state !== void 0 && state.state !== "unavailable";
 }
+function isLive(hass, entityId) {
+  return !!entityId && isLiveState(hass.states[entityId]);
+}
+const OWN_PLATFORM = "apollo_mmwave";
 function hasLiveRadarEvidence(hass, deviceId, registryMatched) {
   const m2 = entityMapFromDevice(hass, deviceId);
   const radarIds = [];
@@ -1610,8 +3349,8 @@ function hasLiveRadarEvidence(hass, deviceId, registryMatched) {
   radarIds.push(...ld2450EntityIds(hass, deviceId));
   if (radarIds.some((id) => isLive(hass, id))) return true;
   if (radarIds.some((id) => id !== void 0)) return false;
-  return registryMatched && Object.entries(hass.entities).some(
-    ([id, e2]) => e2.device_id === deviceId && isLive(hass, id)
+  return registryMatched && entitiesForDevice(hass.entities, deviceId).some(
+    ([id, e2]) => e2.platform !== OWN_PLATFORM && isLive(hass, id)
   );
 }
 function deviceFromId(hass, deviceId, forced = false) {
@@ -1623,7 +3362,7 @@ function deviceFromId(hass, deviceId, forced = false) {
   const online = hasLiveRadarEvidence(hass, deviceId, !!reg);
   if (!forced && !reg && !online) return void 0;
   const profile = detectProfileFromEntities(hass, deviceId) ?? (reg == null ? void 0 : reg.profile);
-  const ld2450 = hasLd2450Device(hass, deviceId) || (base ? hasLd2450(hass, base) : false) || ((reg == null ? void 0 : reg.ld2450) ?? false);
+  const ld2450 = hasLd2450Device(hass, deviceId) || ((reg == null ? void 0 : reg.ld2450) ?? false);
   if (!forced && !profile && !ld2450) return void 0;
   return {
     deviceId,
@@ -1676,7 +3415,7 @@ function helpCardBody(dev) {
   if (!dev.profile && !dev.ld2450) {
     return {
       type: "markdown",
-      content: `**${dev.name}** — no radar data available right now.
+      content: `**${dev.name}**: no radar data available right now.
 
 The device looks offline (or exposes no recognizable radar entities). Its cards will appear here once it reports in.`
     };
@@ -1684,28 +3423,42 @@ The device looks offline (or exposes no recognizable radar entities). Its cards 
   if (!dev.profile) {
     return {
       type: "markdown",
-      content: `**${dev.name}** — Apollo mmWave (LD2450 tracking radar).
+      content: `**${dev.name}**, Apollo mmWave (LD2450 tracking radar).
 
 Draw occupancy zones over the live target positions below.`
     };
   }
+  const p2 = dev.profile;
   return {
     type: "markdown",
-    content: `**${dev.name}** — Apollo ${dev.profile.label} radar.
+    content: `**${dev.name}**, Apollo ${p2.label} radar.
 
-New to tuning? [How to configure this sensor →](${dev.profile.wikiUrl})`
+**Start here**
+1. Press **Calibrate with empty room** on the Auto-calibrate card and leave the room.
+2. Set how far it should look: **${p2.rangeLabels[0]} / ${p2.rangeLabels[1]}** on the Detection Range card (each gate is 0.75 m unless you changed ${p2.gateSizeLabel}).
+3. Set how long presence stays on after you stop moving: **Radar Timeout**, same card.
+4. Walk the room and watch the Gate Energy chart. Raise a gate's threshold if it triggers with nobody there, lower it if it misses you.
+
+[Full tuning guide →](${p2.wikiUrl})`
   };
 }
 function noteCard(text) {
   return { type: "markdown", content: text };
 }
-function cardMap(hass, dev, distanceUnit) {
+function cardMap(hass, dev, distanceUnit, calibration) {
   const cards = { help: helpCard(dev) };
   if (dev.profile) {
     const profile = dev.profile;
+    cards.calibrate = {
+      type: "custom:apollo-radar-calibrate-card",
+      device_id: dev.deviceId,
+      device_base_name: dev.base,
+      title: "Auto-calibrate",
+      ...calibration ? { calibration } : {}
+    };
     const m2 = entityMapFromDevice(hass, dev.deviceId) ?? profile.entityMap(dev.base);
     const label = profile.label;
-    const historyRows = historyEntities(m2).filter((r2) => r2.entity in hass.states);
+    const historyRows = presentRows(hass, historyEntities(m2));
     const range = entitiesCard(
       `${label} Detection Range`,
       presentRows(hass, rangeRows(m2, profile.rangeLabels, profile.gateSizeLabel))
@@ -1761,10 +3514,11 @@ function cardMap(hass, dev, distanceUnit) {
   }
   return cards;
 }
-function buildDeviceCards(hass, dev, distanceUnit) {
-  const c2 = cardMap(hass, dev, distanceUnit);
+function buildDeviceCards(hass, dev, distanceUnit, calibration) {
+  const c2 = cardMap(hass, dev, distanceUnit, calibration);
   return [
     c2.help,
+    c2.calibrate,
     c2.controls,
     c2.range,
     c2.rangeNote,
@@ -1780,11 +3534,11 @@ function buildDeviceCards(hass, dev, distanceUnit) {
     c2.zoneMap
   ].filter(Boolean);
 }
-function buildDeviceSections(hass, dev, distanceUnit) {
-  const c2 = cardMap(hass, dev, distanceUnit);
+function buildDeviceSections(hass, dev, distanceUnit, calibration) {
+  const c2 = cardMap(hass, dev, distanceUnit, calibration);
   const columns = [];
   if (dev.profile) {
-    const col1 = [c2.help, c2.controls, c2.zone];
+    const col1 = [c2.calibrate, c2.help, c2.controls, c2.zone];
     const col2 = [
       c2.distance,
       c2.range,
@@ -1798,17 +3552,20 @@ function buildDeviceSections(hass, dev, distanceUnit) {
       [c2.history, c2.stillThr]
     );
   }
+  if (!dev.profile && (!dev.online || !c2.zoneMap)) {
+    columns.push([c2.help]);
+  }
   if (c2.zoneMap) {
     columns.push([c2.zoneHeader, c2.zoneMap]);
   }
   return columns.map((col) => col.filter(Boolean)).filter((col) => col.length > 0).map((cards) => ({ type: "grid", cards }));
 }
-function deviceView(hass, dev, distanceUnit, path = dev.base) {
+function deviceView(hass, dev, distanceUnit, path = dev.base, calibration) {
   return {
     title: dev.name,
     path,
     type: "sections",
-    sections: buildDeviceSections(hass, dev, distanceUnit)
+    sections: buildDeviceSections(hass, dev, distanceUnit, calibration)
   };
 }
 function generateViews(hass, config) {
@@ -1817,52 +3574,64 @@ function generateViews(hass, config) {
     let path = d2.base;
     if (used.has(path)) path = `${d2.base}_${d2.deviceId}`;
     used.add(path);
-    return deviceView(hass, d2, config.distance_unit, path);
+    return deviceView(hass, d2, config.distance_unit, path, config.calibration);
   });
 }
 function generateSections(hass, config) {
   return strategyDevices(hass, config).flatMap(
-    (d2) => buildDeviceSections(hass, d2, config.distance_unit)
+    (d2) => buildDeviceSections(hass, d2, config.distance_unit, config.calibration)
   );
 }
 function generateCards(hass, config) {
   return strategyDevices(hass, config).flatMap(
-    (d2) => buildDeviceCards(hass, d2, config.distance_unit)
+    (d2) => buildDeviceCards(hass, d2, config.distance_unit, config.calibration)
   );
 }
 function radarDeviceKey(hass, config) {
   return strategyDevices(hass, config).map(
     (d2) => {
       var _a2;
-      return `${d2.deviceId}:${((_a2 = d2.profile) == null ? void 0 : _a2.key) ?? ""}:${d2.ld2450 ? 1 : 0}:${d2.online ? 1 : 0}`;
+      return JSON.stringify([d2.deviceId, ((_a2 = d2.profile) == null ? void 0 : _a2.key) ?? "", d2.ld2450, d2.online, d2.name, d2.base]);
     }
   ).sort().join(",");
+}
+function isLegacyOptions(config) {
+  const options = config.options;
+  return Object.keys(config).length === 2 && typeof options === "object" && options !== null;
 }
 function shouldRegenerate(config, oldHass, newHass) {
   if (oldHass.devices === newHass.devices && oldHass.entities === newHass.entities) {
     if (!availabilityChanged(oldHass, newHass)) return false;
   }
-  const cfg = config ?? {};
+  const cfg = isLegacyOptions(config) ? { ...config, ...config.options } : config;
   return radarDeviceKey(oldHass, cfg) !== radarDeviceKey(newHass, cfg);
-}
-function isUnavailable(state) {
-  return state === void 0 || state.state === "unavailable";
 }
 function availabilityChanged(oldHass, newHass) {
   for (const id in newHass.states) {
     const next = newHass.states[id];
     const prev = oldHass.states[id];
     if (prev === next) continue;
-    if (isUnavailable(prev) !== isUnavailable(next)) return true;
+    if (isLiveState(prev) !== isLiveState(next)) return true;
   }
   return false;
 }
 const EMPTY_VIEW = {
+  // TODO(REVIEW_REPORT.md X32): differs from the "Apollo mmWave" sidebar name; to unify, set that
+  // here, in STALE_SELECTION_VIEW and the dashboard title, with a test (picker name can stay).
   title: "Apollo Radar Tuning",
   cards: [
     {
       type: "markdown",
-      content: "No Apollo mmWave devices found. Make sure your MSR-1/MSR-2 (LD2410), R-PRO-1 (LD2412 + LD2450), or MTR-1 (LD2450) is added to Home Assistant."
+      content: "No Apollo mmWave devices found. Make sure your MSR-1/MSR-2 (LD2410), R PRO-1 (LD2412 + LD2450), or MTR-1 (LD2450) is added to Home Assistant."
+    }
+  ]
+};
+const STALE_SELECTION_VIEW = {
+  title: "Apollo Radar Tuning",
+  cards: [
+    {
+      type: "markdown",
+      content: "The dashboard's device selection points at devices that no longer exist in Home Assistant. Open Settings > Devices & Services > Apollo mmWave > Configure and clear or update Dashboard devices (leave it empty to show every Apollo mmWave device automatically)."
     }
   ]
 };
@@ -1875,10 +3644,12 @@ _ApolloLd2410ViewStrategy.shouldRegenerate = shouldRegenerate;
 let ApolloLd2410ViewStrategy = _ApolloLd2410ViewStrategy;
 const _ApolloLd2410DashboardStrategy = class _ApolloLd2410DashboardStrategy extends HTMLElement {
   static async generate(config, hass) {
+    var _a2;
     const views = generateViews(hass, config);
+    const empty = ((_a2 = config.devices) == null ? void 0 : _a2.length) || config.device_id ? STALE_SELECTION_VIEW : EMPTY_VIEW;
     return {
       title: "Apollo Radar Tuning",
-      views: views.length ? views : [EMPTY_VIEW]
+      views: views.length ? views : [empty]
     };
   }
 };
@@ -1908,11 +3679,11 @@ if (!window.customStrategies.some(
     type: "apollo-radar-tuning",
     strategyType: "dashboard",
     name: "Apollo Radar Tuning",
-    description: "Auto-built tuning dashboard for Apollo radar devices (MSR / LD2410, R-PRO / LD2412).",
+    description: "Auto-built tuning dashboard for Apollo radar devices (MSR / LD2410, R PRO / LD2412 + LD2450, MTR-1 / LD2450).",
     documentationURL: "https://github.com/ApolloAutomation/apollo-mmwave-main"
   });
 }
-const CARD_VERSION = "2.1.3";
+const CARD_VERSION = "2.2.0";
 console.info(
   `%c APOLLO-MMWAVE %c v${CARD_VERSION} `,
   "color:#fff;background:#03a9f4;font-weight:700;",

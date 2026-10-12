@@ -26,7 +26,7 @@ from .const import (
     SIGNAL_ZONES_UPDATED,
 )
 from .ld2450 import effective_target_pairs
-from .zone_entities import ZoneEntityMixin
+from .zone_entities import ZoneEntityMixin, async_setup_zone_platform
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -45,7 +45,6 @@ async def async_setup_entry(
 ) -> None:
     """Create geometry sensors for stored zones, and for zones added later."""
     from . import get_store  # noqa: PLC0415 - avoid a module import cycle
-    from .zone_entities import async_setup_zone_platform  # noqa: PLC0415
 
     store = get_store(hass)
     async_setup_zone_platform(
@@ -95,7 +94,7 @@ class ZoneCoordsSensor(ZoneEntityMixin, SensorEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return shape/data plus the device-wide entities and rotation."""
-        device = self._store.device(self._device_id)
+        device = self._store.devices.get(self._device_id) or {}
         zone_def = self._store.zone(self._device_id, self._zone_id) or {}
         attrs: dict[str, Any] = {
             ATTR_SHAPE: zone_def.get(ATTR_SHAPE),

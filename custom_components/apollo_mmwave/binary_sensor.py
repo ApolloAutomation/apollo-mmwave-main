@@ -43,9 +43,10 @@ from .const import (
     STORE_INPUT_UNITS,
 )
 from .ld2450 import effective_target_pairs
-from .zone_entities import ZoneEntityMixin
+from .zone_entities import ZoneEntityMixin, async_setup_zone_platform
 
 if TYPE_CHECKING:
+    import asyncio
     from collections.abc import Callable, Iterator
 
     from homeassistant.config_entries import ConfigEntry
@@ -56,12 +57,18 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
+# TODO(REVIEW_REPORT.md X59): this is never used.  # noqa: FIX002, TD003
+# The crossing guard in _point_in_polygon already excludes y1 == y2, so its
+# `or` fallback never runs. Removing both is output-neutral.
 _LINE_INTERSECTION_EPSILON = 1e-12
 
 type ShapeData = Any
 type ShapeTester = Callable[[float, float, ShapeData], bool]
 
 
+# TODO(REVIEW_REPORT.md X13): a copy of the one in  # noqa: FIX002, TD003
+# __init__.py, now without its finite and size guard. Share one helper from
+# an import-safe module; keep the tester's shape checks (migrated data is raw).
 def _coerce_float(value: Any) -> float | None:
     if value is None:
         return None
@@ -74,8 +81,20 @@ def _coerce_float(value: Any) -> float | None:
 def _build_point_rotator(
     rotation_raw: Any,
 ) -> Callable[[float, float], tuple[float, float]]:
+    """
+    Return a function that rotates a target point by the device's rotation_deg.
+
+    Positive degrees swing the device's facing direction toward its right (+X):
+    90 maps (x, y) to (y, -x), so a target straight ahead at (0, d) lands at
+    (d, 0). Must match `_drawTrackedTargets` / `drawDeviceCone` in
+    frontend-src/src/zone-map/card.ts.
+    """
     rotation_val = _coerce_float(rotation_raw)
-    if rotation_val is None:
+    # A stored inf would make math.cos raise inside async_added_to_hass, leaving
+    # an entity with no state that is never retried, and nan would silently stop
+    # the zone from ever detecting. Both read as "no rotation", like any other
+    # value that is not a number.
+    if rotation_val is None or not math.isfinite(rotation_val):
         cos_theta = 1.0
         sin_theta = 0.0
     else:
@@ -122,6 +141,11 @@ def _point_in_ellipse(x_val: float, y_val: float, ellipse: ShapeData) -> bool:
     return (dx * dx) / (rx * rx) + (dy * dy) / (ry * ry) <= 1.0
 
 
+# Even-odd ray cast toward +x. A point exactly on a non-horizontal edge counts
+# as a crossing and toggles, while one on a horizontal edge never does, so
+# whether a boundary point reads inside depends on which edge it sits on. The
+# rect and ellipse tests are inclusive on every boundary. Only a reading that
+# lands exactly on an edge is affected; interior points are unambiguous.
 def _point_in_polygon(x_val: float, y_val: float, polygon: ShapeData) -> bool:
     if not isinstance(polygon, dict):
         return False
@@ -163,7 +187,6 @@ async def async_setup_entry(
 ) -> None:
     """Create presence sensors for stored zones, and for zones added later."""
     from . import get_store  # noqa: PLC0415 - avoid a module import cycle
-    from .zone_entities import async_setup_zone_platform  # noqa: PLC0415
 
     store = get_store(hass)
     async_setup_zone_platform(
@@ -194,6 +217,7 @@ class ZonePresenceBinarySensor(ZoneEntityMixin, BinarySensorEntity):
         self._zone_id = zone_id
         self._attr_is_on = False
         self._unsub_state_listener: Callable[[], None] | None = None
+        self._pending_eval: asyncio.Handle | None = None
 
         self._attr_name = f"Zone {zone_id} presence"
         self._attr_unique_id = f"{device_id}_zone_{zone_id}_presence"
@@ -233,6 +257,9 @@ class ZonePresenceBinarySensor(ZoneEntityMixin, BinarySensorEntity):
 
     async def async_will_remove_from_hass(self) -> None:
         """Stop tracking coordinate entities."""
+        if self._pending_eval is not None:
+            self._pending_eval.cancel()
+            self._pending_eval = None
         if self._unsub_state_listener:
             self._unsub_state_listener()
             self._unsub_state_listener = None
@@ -241,18 +268,26 @@ class ZonePresenceBinarySensor(ZoneEntityMixin, BinarySensorEntity):
     def _tracked_pairs(self) -> list[dict[str, str]]:
         return effective_target_pairs(self.hass, self._store, self._device_id)
 
+    # TODO(REVIEW_REPORT.md X07): a renamed pair goes dead.  # noqa: FIX002, TD003
+    # A configured pair keeps the id it had before a rename, so this watches an
+    # entity that no longer reports. See _registry_updated in ld2450.py.
     def _track_coordinate_entities(self) -> None:
         if self._unsub_state_listener:
             self._unsub_state_listener()
             self._unsub_state_listener = None
 
-        entity_ids = [
-            entity_id
-            for pair in self._tracked_pairs()
-            if isinstance(pair, dict)
-            for entity_id in (pair.get("x"), pair.get("y"))
-            if isinstance(entity_id, str)
-        ]
+        # Pairs can share an entity (one X with two Ys, or X and Y the same
+        # entity). Home Assistant registers the listener once per listed id, so
+        # a repeat would dispatch every state change of that entity twice.
+        entity_ids = list(
+            dict.fromkeys(
+                entity_id
+                for pair in self._tracked_pairs()
+                if isinstance(pair, dict)
+                for entity_id in (pair.get("x"), pair.get("y"))
+                if isinstance(entity_id, str)
+            )
+        )
         if entity_ids:
             self._unsub_state_listener = async_track_state_change_event(
                 self.hass, entity_ids, self._handle_coordinate_update
@@ -260,9 +295,28 @@ class ZonePresenceBinarySensor(ZoneEntityMixin, BinarySensorEntity):
 
     @callback
     def _handle_coordinate_update(self, _event: Event[EventStateChangedData]) -> None:
+        # A target's X and Y are two entities written one after the other, so
+        # evaluating inside each write tests a point no target occupied (the new
+        # X with the old Y) and can pulse presence on and off. Scheduling one
+        # evaluation with call_soon lets both writes land first. This is
+        # best-effort coalescing: it removes the pulse when X and Y arrive in one
+        # event-loop turn, which is how the ESPHome API normally delivers a
+        # batched pair, but not when they arrive in separate turns. It adds no
+        # timed window.
+        if self._pending_eval is None:
+            self._pending_eval = self.hass.loop.call_soon(self._flush_evaluation)
+
+    @callback
+    def _flush_evaluation(self) -> None:
+        self._pending_eval = None
         self._evaluate_and_write()
 
     def _evaluate_and_write(self, *, write: bool = True) -> None:
+        # TODO(REVIEW_REPORT.md X09): offline radar reads off.  # noqa: FIX002, TD003
+        # With every tracked coordinate unavailable this writes off, unlike HA's
+        # group and trend sensors. Suggested: unavailable when the pair list is
+        # non-empty and every tracked id that has a state is unavailable (all ids
+        # missing, or an empty list, stays off), with a test and a changelog note.
         self._attr_is_on = self._evaluate_presence()
         if write:
             self.async_write_ha_state()
@@ -277,8 +331,8 @@ class ZonePresenceBinarySensor(ZoneEntityMixin, BinarySensorEntity):
             return False
         data = zone_def.get(ATTR_DATA)
 
-        rotation = self._store.device(self._device_id).get(ATTR_ROTATION_DEG)
-        rotate = _build_point_rotator(rotation)
+        device = self._store.devices.get(self._device_id) or {}
+        rotate = _build_point_rotator(device.get(ATTR_ROTATION_DEG))
 
         return any(
             shape_tester(x_val, y_val, data)

@@ -23,10 +23,14 @@ from homeassistant.components import websocket_api
 from homeassistant.core import callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
+from .calibration import calibration_payload
 from .const import (
     ATTR_ROTATION_DEG,
+    DATA_CALIBRATION_JOBS,
+    DATA_CALIBRATION_STORE,
     DATA_STORE,
     DOMAIN,
+    SIGNAL_CALIBRATION_UPDATED,
     SIGNAL_ZONES_UPDATED,
     STORE_ENTITIES,
     STORE_INPUT_UNITS,
@@ -41,6 +45,8 @@ if TYPE_CHECKING:
 
 TYPE_GET = f"{DOMAIN}/zones/get"
 TYPE_SUBSCRIBE = f"{DOMAIN}/zones/subscribe"
+TYPE_CALIBRATION_GET = f"{DOMAIN}/calibration/get"
+TYPE_CALIBRATION_SUBSCRIBE = f"{DOMAIN}/calibration/subscribe"
 
 # Detected pairs the user has not chosen, offered so the card can say "using the
 # radar's own targets" instead of demanding a manual pick.
@@ -60,6 +66,8 @@ def async_register(hass: HomeAssistant) -> CALLBACK_TYPE:
     # (a reload) replaces the handlers rather than stacking them.
     websocket_api.async_register_command(hass, ws_get_zones)
     websocket_api.async_register_command(hass, ws_subscribe_zones)
+    websocket_api.async_register_command(hass, ws_get_calibration)
+    websocket_api.async_register_command(hass, ws_subscribe_calibration)
     hass.data.setdefault(DOMAIN, {}).setdefault(DATA_SUBSCRIPTIONS, set())
 
     @callback
@@ -97,9 +105,16 @@ def _payload(hass: HomeAssistant, device_id: str) -> dict[str, Any]:
         # it off, and re-enable it the moment they saved anything else.
         STORE_ENTITIES: entry.get(STORE_ENTITIES),
         ATTR_ROTATION_DEG: entry.get(ATTR_ROTATION_DEG),
+        # TODO(REVIEW_REPORT.md X27): a frozen v1 name that  # noqa: FIX002, TD003
+        # goes stale after a rename. Send the registry name_by_user or name,
+        # falling back to the label, and fix 'display only' in store and const.
         STORE_LABEL: entry.get(STORE_LABEL),
         # What the presence sensor scales target readings by; null means mm.
         STORE_INPUT_UNITS: entry.get(STORE_INPUT_UNITS),
+        # TODO(REVIEW_REPORT.md X53): resolved per subscriber.  # noqa: FIX002, TD003
+        # Every subscriber re-resolves on every signal (about 66 us each). Low
+        # priority now that zone edits send one signal; reusing DATA_PAIR_CACHE
+        # would change what zone-less devices are pushed.
         # Raw detection, not `effective_target_pairs`: this field is what the
         # radar offers, which stays meaningful next to whatever the user picked.
         KEY_SUGGESTED_ENTITIES: resolve_target_pairs(hass, device_id),
@@ -132,6 +147,17 @@ def _answerable(
     return True
 
 
+# Neither zone command is admin-only, and that is deliberate. The auto-created
+# dashboard is written with `require_admin` False, so non-admin users open the
+# card, and the card draws nothing without these two commands. Nor do they
+# open much up: every user can already read the zone geometry, rotation and
+# tracked pairs from the zone sensors' state attributes. `update_zone` is
+# likewise a plain service, not an admin one. Adding `require_admin` here would
+# quietly break the dashboard for every non-admin user.
+# TODO(REVIEW_REPORT.md X52): device_id "" is not_found.  # noqa: FIX002, TD003
+# Both zone schemas accept an empty device_id, which _answerable answers
+# not_found. Keep as is; optionally pin it in tests (missing gives
+# invalid_format, "" gives not_found with no store entry or forwarder).
 @websocket_api.websocket_command(
     {vol.Required("type"): TYPE_GET, vol.Required("device_id"): str}
 )
@@ -163,9 +189,8 @@ def ws_subscribe_zones(
     def _forward(changed_device_id: str) -> None:
         if changed_device_id != device_id:
             return
-        # The unload pops the store before the entry's teardown callbacks close
-        # this subscription, and a registry update in that gap would otherwise
-        # build a payload from a store that is no longer there.
+        # A safety net: the entry's teardown closes this subscription before it
+        # pops the store, and a payload built without the store would raise.
         if DATA_STORE not in hass.data.get(DOMAIN, {}):
             return
         connection.send_event(msg["id"], _payload(hass, device_id))
@@ -189,3 +214,91 @@ def ws_subscribe_zones(
     active.add(_teardown)
     connection.subscriptions[msg["id"]] = _teardown
     connection.send_result(msg["id"])
+
+
+def _calibration_loaded(hass: HomeAssistant) -> bool:
+    # The zone `_answerable` tests only DATA_STORE, which the zone teardown pops
+    # while the calibration teardown may still be waiting on a job; a
+    # half-set-up entry can have the reverse. The calibration commands need
+    # both of their own keys.
+    data = hass.data.get(DOMAIN, {})
+    return DATA_CALIBRATION_STORE in data and DATA_CALIBRATION_JOBS in data
+
+
+def _calibration_answerable(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> bool:
+    """Report whether a calibration request can be served, sending the error if not."""
+    from . import _device_is_registered  # noqa: PLC0415 - avoid a module import cycle
+
+    if not _calibration_loaded(hass):
+        connection.send_error(msg["id"], ERR_NOT_LOADED, "Apollo mmWave is not loaded.")
+        return False
+    device_id = msg["device_id"]
+    if not _device_is_registered(hass, device_id):
+        connection.send_error(
+            msg["id"],
+            websocket_api.ERR_NOT_FOUND,
+            f"No Home Assistant device with id {device_id}",
+        )
+        return False
+    return True
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): TYPE_CALIBRATION_GET, vol.Required("device_id"): str}
+)
+@callback
+def ws_get_calibration(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Return one radar's calibration state (job, snapshots, last result)."""
+    if not _calibration_answerable(hass, connection, msg):
+        return
+    connection.send_result(msg["id"], calibration_payload(hass, msg["device_id"]))
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): TYPE_CALIBRATION_SUBSCRIBE, vol.Required("device_id"): str}
+)
+@callback
+def ws_subscribe_calibration(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Push a radar's calibration state now and on every job change."""
+    if not _calibration_answerable(hass, connection, msg):
+        return
+    device_id = msg["device_id"]
+    active = _subscriptions(hass)
+    closed = False
+
+    @callback
+    def _forward(changed_device_id: str) -> None:
+        if changed_device_id != device_id:
+            return
+        # A job finishing during the unload window would otherwise build a
+        # payload from a store that is no longer there.
+        if not _calibration_loaded(hass):
+            return
+        connection.send_event(msg["id"], calibration_payload(hass, device_id))
+
+    unsub_dispatcher = async_dispatcher_connect(
+        hass, SIGNAL_CALIBRATION_UPDATED, _forward
+    )
+
+    @callback
+    def _teardown() -> None:
+        # Same three-way race as `ws_subscribe_zones`: a no-op the second time.
+        nonlocal closed
+        if closed:
+            return
+        closed = True
+        active.discard(_teardown)
+        unsub_dispatcher()
+
+    active.add(_teardown)
+    connection.subscriptions[msg["id"]] = _teardown
+    connection.send_result(msg["id"])
+    # The current state follows at once, so a tab opened mid-run shows the
+    # running job with no get/subscribe race.
+    connection.send_event(msg["id"], calibration_payload(hass, device_id))

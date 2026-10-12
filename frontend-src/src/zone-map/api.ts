@@ -20,8 +20,9 @@ export interface TargetPair {
 }
 
 export interface ZoneDef {
-  shape: string;
-  data: Record<string, any> | null;
+  /** Both absent on a legacy zone whose data was lost: `{}` means no geometry. */
+  shape?: string;
+  data?: Record<string, any> | null;
   name?: string;
 }
 
@@ -52,8 +53,10 @@ export type Unsubscribe = () => void | Promise<void>;
  *
  * Bounded, because after this much the entry is not mid-reload, it is broken or
  * disabled, and a card must not hammer the websocket forever. The config entry
- * feed covers a reload for admins; this covers everyone else, whose only other
- * option is a manual page reload.
+ * feed reopens the card once the entry reports loaded; this covers a card that
+ * mounts while the integration is still loading but misses that event, for
+ * example because the entry finished loading before the feed was open, or
+ * because Home Assistant refused the feed.
  */
 export const RETRY_DELAYS_MS = [1000, 2000, 5000, 10000, 20000];
 
@@ -93,6 +96,9 @@ export async function subscribeZones(
   deviceId: string,
   callback: (config: ZoneConfig) => void
 ): Promise<Unsubscribe> {
+  // TODO(REVIEW_REPORT.md X48): a library re-subscribe after a reconnect can be
+  // refused silently. Consider resubscribe: false plus a "ready" listener that
+  // calls requestOpen (removed on dispose), with a fake-connection test.
   return hass.connection.subscribeMessage<ZoneConfig>(callback, {
     type: ZONES_SUBSCRIBE,
     device_id: deviceId,
@@ -102,8 +108,9 @@ export async function subscribeZones(
 /**
  * Call back whenever an Apollo mmWave config entry finishes loading.
  *
- * Resolves to null when the feed is refused. It is an admin-only command, so a
- * non-admin viewing a dashboard loses reload recovery, not the card.
+ * Resolves to null when the feed is refused. Home Assistant does not limit it
+ * to admins in any supported version, but a refusal must cost reload recovery,
+ * not the card.
  */
 export async function subscribeEntryLoads(
   hass: ZoneApiHass,
@@ -137,7 +144,19 @@ export async function subscribeEntryLoads(
 }
 
 export const ERR_NOT_LOADED = "not_loaded";
+/**
+ * Home Assistant's own answer for a command type with no handler. The zone
+ * commands are registered when the config entry sets up, so on a fresh boot,
+ * with the websocket already up and this integration still loading, this is
+ * how "not loaded" arrives.
+ */
+export const ERR_UNKNOWN_COMMAND = "unknown_command";
 export const ERR_NOT_FOUND = "not_found";
+
+/** True for either way the backend reports that it has not loaded yet. */
+function isNotLoaded(code: unknown): boolean {
+  return code === ERR_NOT_LOADED || code === ERR_UNKNOWN_COMMAND;
+}
 
 function describeError(error: any, deviceId: string, willRetry: boolean): string {
   const code = error?.code;
@@ -147,7 +166,7 @@ function describeError(error: any, deviceId: string, willRetry: boolean): string
       " removed and re-added; pick it again in this card's settings."
     );
   }
-  if (code === ERR_NOT_LOADED) {
+  if (isNotLoaded(code)) {
     // Only promise recovery while a retry is still coming. Saying the zones
     // return on their own and then never trying again is the same kind of lie
     // as a save toast for a save that did not happen.
@@ -231,10 +250,12 @@ export async function connectZones(
       handlers.onConfig(config);
     } catch (error) {
       if (disposed) return;
-      // Only "not loaded" is worth waiting out. A device that is not in the
-      // registry will not appear because a card asked again.
+      // Only "not loaded" is worth waiting out, including the unknown command
+      // Home Assistant answers before the integration has registered its
+      // commands. A device that is not in the registry will not appear because
+      // a card asked again.
       const willRetry =
-        (error as any)?.code === ERR_NOT_LOADED && retryIndex < RETRY_DELAYS_MS.length;
+        isNotLoaded((error as any)?.code) && retryIndex < RETRY_DELAYS_MS.length;
       handlers.onError(describeError(error, deviceId, willRetry));
       if (willRetry) scheduleRetry();
     }

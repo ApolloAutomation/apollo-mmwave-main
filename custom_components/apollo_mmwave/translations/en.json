@@ -2,7 +2,7 @@
     "config": {
         "step": {
             "user": {
-                "description": "Set up Apollo mmWave. The integration serves its own cards and dashboard strategy — no separate downloads.",
+                "description": "Set up Apollo mmWave. The integration serves its own cards and dashboard strategy (no separate downloads).",
                 "data": {
                     "auto_create_view": "Add an 'Apollo mmWave' dashboard to the sidebar"
                 },
@@ -26,21 +26,44 @@
                 },
                 "data_description": {
                     "auto_create_view": "Registers an 'Apollo mmWave' dashboard in your sidebar with a tab per device. Takes effect immediately. Turn this off if you prefer to lay out the cards yourself; the cards and strategy are still available to add manually.",
-                    "dashboard_devices": "Leave empty to show every Apollo mmWave device automatically; offline ones get a tab with an offline note. Select devices to show exactly those and hide the rest."
+                    "dashboard_devices": "Leave empty to show every Apollo mmWave device automatically; offline ones get a tab with an offline note. Select devices to show exactly those and hide the rest. This applies only while the Apollo mmWave dashboard is still generated automatically; once you take control of it, add or remove devices in the dashboard itself."
                 }
             }
         }
     },
-    "entity": {
-        "sensor": {
-            "apollo_mmwave": {
-                "name": "Sensor"
-            }
+    "exceptions": {
+        "unknown_device": {
+            "message": "No Home Assistant device has id {device_id}."
         },
-        "binary_sensor": {
-            "apollo_mmwave": {
-                "name": "Binary sensor"
-            }
+        "multiple_devices": {
+            "message": "Calibration works on one radar at a time; {count} devices were targeted."
+        },
+        "calibration_running": {
+            "message": "A calibration or restore is already running for this radar."
+        },
+        "no_gate_entities": {
+            "message": "This device has no gate threshold or energy entities. Auto-calibration needs an MSR-1, MSR-2 or R PRO-1 with its radar entities enabled."
+        },
+        "engineering_mode_missing": {
+            "message": "This radar has no engineering mode switch, so its gate energies cannot be read."
+        },
+        "device_offline": {
+            "message": "The radar is unavailable right now. Check that it is online, then try again."
+        },
+        "background_correction_running": {
+            "message": "The LD2412 is still running its background correction. Wait for its status to turn off, then try again."
+        },
+        "thresholds_not_numeric": {
+            "message": "Some threshold entities have no value yet ({entity_ids}). Press the radar's query params button or wait a moment, then try again."
+        },
+        "margin_zero": {
+            "message": "Set at least one headroom. With both margin and margin_pct at 0 the thresholds would equal the highest reading Home Assistant saw, which is only about a tenth of the radar's own frames, so the radar would trigger constantly."
+        },
+        "not_allowed": {
+            "message": "Your Home Assistant user is not allowed to control this radar's entities."
+        },
+        "no_snapshot": {
+            "message": "There are no saved thresholds to restore for this radar."
         }
     }
 }

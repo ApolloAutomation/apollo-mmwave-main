@@ -1,4 +1,5 @@
 import type { EntityMap, HomeAssistant } from "./types";
+import { entitiesForDevice } from "./entity-index";
 
 /** Describes one radar chip family and how its entities are named. */
 export interface RadarProfile {
@@ -7,6 +8,9 @@ export interface RadarProfile {
   label: string;
   /** Labels for the two range bars on the distance chart. */
   maxBarLabels: [string, string];
+  /** Hover tooltips for those two bars. Absent, each bar gets
+   *  rangeLimitTip, which fits two upper bounds but not a lower one. */
+  maxBarTips?: [string, string];
   /** Labels for the max/min range rows on the Detection Range card. */
   rangeLabels: [string, string];
   /** Label for the gate-size / distance-resolution select control. */
@@ -42,6 +46,36 @@ function emptyZones(): Pick<
   };
 }
 
+/** Sentence shared by both chips' gate tips: points at the calibrate card. */
+const CALIBRATE_TIP =
+  "Or press **Calibrate with empty room** on the Auto-calibrate card to set them from your empty room.";
+
+/** Distance-chart tooltip for a range bar that caps the farthest gate used. */
+export function rangeLimitTip(label: string): string {
+  return `${label}: the configured detection-range limit, shown as a gate number.`;
+}
+
+/** Gate Config note, the same for both chips. */
+const GATE_TIP =
+  "💡 Each gate's **move / still threshold** is how strong a signal must be to count as presence at that distance. Lower = more sensitive (more false triggers), higher = less. Turn on **Radar Engineering Mode** and watch the Gate Energy chart while you move around to pick values. " +
+  CALIBRATE_TIP;
+
+/** Sentence shared by both chips' range tips: explains the timeout slider. */
+const RADAR_TIMEOUT_TIP =
+  "**Radar Timeout** is how long presence stays on after the last detection; raise it if lights flick off while you sit still.";
+
+/**
+ * HLK-LD2410 factory thresholds per gate (g0..g8), from the manual. Used only
+ * to show the "these look like factory thresholds" hint on the calibrate
+ * card; a wrong value hides or shows one line.
+ * TODO(REVIEW_REPORT.md X60): these match the commonly published HLK defaults but
+ * were not confirmed on a factory-reset MSR-2 during the audit; check on hardware.
+ */
+export const LD2410_FACTORY_THRESHOLDS: { move: number[]; still: number[] } = {
+  move: [50, 50, 40, 30, 20, 15, 15, 15, 15],
+  still: [0, 0, 40, 40, 30, 30, 20, 20, 20],
+};
+
 /** MSR-1 / MSR-2 — LD2410, 9 gates (g0..g8), `radar_`/bare-`g` naming, with
  *  configurable distance zones. */
 export const LD2410_PROFILE: RadarProfile = {
@@ -51,15 +85,19 @@ export const LD2410_PROFILE: RadarProfile = {
   rangeLabels: ["Max Move Gate", "Max Still Gate"],
   gateSizeLabel: "Gate Size",
   rangeTip:
-    "💡 **Gate Size** sets how far each gate reaches (e.g. 0.75 m). **Max Move / Still Gate** cap the farthest gate used to detect moving vs. still targets — lower them to ignore distant motion.",
-  gateTip:
-    "💡 Each gate's **move / still threshold** is how strong a signal must be to count as presence at that distance. Lower = more sensitive (more false triggers), higher = less. Turn on **Radar Engineering Mode** and watch the Gate Energy chart while you move around to pick values.",
+    "💡 **Gate Size** sets how far each gate reaches (e.g. 0.75 m). **Max Move / Still Gate** cap the farthest gate used to detect moving vs. still targets; lower them to ignore distant motion. " +
+    RADAR_TIMEOUT_TIP,
+  gateTip: GATE_TIP,
+  // TODO(REVIEW_REPORT.md X61): once its wiki docs PR is live (it 404s until then), point both
+  // profiles at products/general/calibrating-and-updating/radar-tuning/apollo-mmwave-dashboard/.
   wikiUrl: "https://wiki.apolloautomation.com/products/msr2/setup/zones-ha/",
   entityMap(base: string): EntityMap {
     const gates = [0, 1, 2, 3, 4, 5, 6, 7, 8];
     const g = (suffix: (n: number) => string) => gates.map((n) => suffix(n));
     return {
       engineering_mode: `switch.${base}_radar_engineering_mode`,
+      // TODO(REVIEW_REPORT.md X24): bluetooth and gate_size use MSR-2 spellings only, so a
+      // base-name MSR-1 config hides both; use MSR-1 ids when present or document device_id.
       bluetooth: `switch.${base}_ld2410_bluetooth`,
       restart_radar: `button.${base}_restart_radar`,
       factory_reset_radar: `button.${base}_factory_reset_radar`,
@@ -89,18 +127,25 @@ export const LD2410_PROFILE: RadarProfile = {
   },
 };
 
-/** R-PRO-1 — LD2412, 14 gates (g00..g13), `ld2412_` naming, no distance zones
- *  (those come from the LD2450, which this dashboard does not cover). */
+/** R-PRO-1: LD2412, 14 gates (g00..g13), `ld2412_` naming, no distance zones.
+ *  The R-PRO-1's LD2450 has no gate-tuning profile; its X/Y zones are handled
+ *  by the Zone Map card (ld2450.ts, strategy-core.ts), not by this profile. */
 export const LD2412_PROFILE: RadarProfile = {
   key: "ld2412",
   label: "LD2412",
   maxBarLabels: ["Max Gate", "Min Gate"],
+  // The second bar is a near bound: the chip ignores the gates below it.
+  maxBarTips: [
+    rangeLimitTip("Max Gate"),
+    "Min Gate: gates below this one are ignored for detection.",
+  ],
   rangeLabels: ["Max Gate", "Min Gate"],
   gateSizeLabel: "Distance Resolution",
   rangeTip:
-    "💡 **Distance Resolution** sets gate spacing — smaller (0.5 m) gives finer tuning over a shorter range, larger (0.75 m) reaches farther. **Min / Max Gate** limit which gates are used for detection.",
-  gateTip:
-    "💡 Each gate's **move / still threshold** is how strong a signal must be to count as presence at that distance. Lower = more sensitive (more false triggers), higher = less. Turn on **Radar Engineering Mode** and watch the Gate Energy chart while you move around to pick values.",
+    "💡 **Distance Resolution** sets gate spacing: smaller (0.5 m) gives finer tuning over a shorter range, larger (0.75 m) reaches farther. **Min / Max Gate** limit which gates are used for detection. " +
+    RADAR_TIMEOUT_TIP,
+  gateTip: GATE_TIP,
+  // TODO(REVIEW_REPORT.md X61): switch with LD2410_PROFILE.wikiUrl once the new guide is live.
   wikiUrl:
     "https://wiki.apolloautomation.com/products/rpro1/setup/zones-ha/#ld2412-configuration",
   entityMap(base: string): EntityMap {
@@ -130,11 +175,16 @@ export const LD2412_PROFILE: RadarProfile = {
       radar_target: `binary_sensor.${base}_ld2412_presence`,
       moving_target: `binary_sensor.${base}_ld2412_moving_target`,
       still_target: `binary_sensor.${base}_ld2412_still_target`,
+      background_correction: `button.${base}_ld2412_start_dynamic_background_correction`,
+      background_correction_status: `binary_sensor.${base}_ld2412_dynamic_background_correction_status`,
+      query_params: `button.${base}_ld2412_query_params`,
     };
   },
 };
 
-// LD2412 is checked first (more specific naming) so it wins on an R-PRO-1.
+// detectProfile probes each profile's exact engineering-mode switch id, and the
+// two ids never coincide, so the order only matters if one device exposed both
+// switches (none does). LD2412 is listed first for that hypothetical case.
 export const PROFILES: RadarProfile[] = [LD2412_PROFILE, LD2410_PROFILE];
 
 /** What the device registry tells us about an Apollo device's radar hardware. */
@@ -187,8 +237,7 @@ export function apolloModelInfo(device?: {
 export function isEsphomeDevice(hass: HomeAssistant, deviceId: string): boolean {
   let sawEntity = false;
   let sawPlatform = false;
-  for (const e of Object.values(hass.entities)) {
-    if (e.device_id !== deviceId) continue;
+  for (const [, e] of entitiesForDevice(hass.entities, deviceId)) {
     sawEntity = true;
     if (e.platform === undefined) continue;
     sawPlatform = true;

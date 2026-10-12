@@ -1,7 +1,9 @@
 # pytest-homeassistant-custom-component pins its matching homeassistant
-# version (0.13.355 == HA 2026.8.1). Keep in lockstep with requirements.txt.
-pytest-homeassistant-custom-component==0.13.355
+# version (0.13.371 == HA 2026.10.0). Keep in lockstep with requirements.txt.
+pytest-homeassistant-custom-component==0.13.371
 
 # The integration's manifest depends on `frontend`, whose setup imports
-# hass_frontend. Pinned to HA 2026.8.1's package_constraints.txt.
-home-assistant-frontend==20260930.2
+# hass_frontend. HA 2026.10.0 itself pins 20260930.2, but the test harness
+# skips HA's pip requirement checks (skip_pip), so a newer point release is
+# harmless. Keep the YYYYMMDD prefix aligned with the HA release under test.
+home-assistant-frontend==20260930.3

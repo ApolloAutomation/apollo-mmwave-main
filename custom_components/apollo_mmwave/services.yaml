@@ -1,6 +1,6 @@
 update_zone:
   name: Update Zone
-  description: "Create, update, clear, or delete a zone. Geometry is in millimetres (Y-down). To clear a zone send data: null, or set shape: none. Set delete: true to remove the zone and its entities. Rotation and tracked entities are device-wide and can be updated without zone_id."
+  description: "Create, update, clear, or delete a zone. Geometry is in millimeters (Y-down). To clear a zone set shape: none (data may be omitted or null); data without a shape is ignored. Set delete: true to remove the zone and its entities. Rotation and tracked entities are device-wide and can be updated without zone_id."
   fields:
     device_id:
       name: Radar Device
@@ -24,6 +24,8 @@ update_zone:
       selector:
         number:
           min: 1
+          # TODO(REVIEW_REPORT.md X19): neither the schema nor Add Zone caps ids
+          # at 32. Drop the max (mode: box) or enforce one MAX_ZONE_ID everywhere.
           max: 32
     shape:
       name: Shape
@@ -38,13 +40,13 @@ update_zone:
             - polygon
     data:
       name: Shape Data
-      description: "Shape data object or null. For rect: {x_min,x_max,y_min,y_max}. For ellipse: {cx,cy,rx,ry}. For polygon: {points:[{x,y},...]}. Use null to clear."
+      description: "Shape data object, or null. Only read when shape is also given. For rect: {x_min,x_max,y_min,y_max}. For ellipse: {cx,cy,rx,ry}. For polygon: {points:[{x,y},...]}. To clear a zone use shape: none."
       required: false
       selector:
         object: {}
     name:
       name: Zone Name
-      description: Optional friendly name for the zone. When provided, entity friendly names will be updated.
+      description: "Optional friendly name for the zone. Naming a zone that already exists also renames its entities: naming zone 1 'Couch' makes them 'Zone 1 - Couch' and 'Zone 1 presence - Couch'. Once a zone is named, the radar name is no longer part of those entity friendly names. An entity you renamed yourself in its settings keeps your name. An empty name sets them back to 'Zone 1' and 'Zone 1 presence', still without the radar name."
       required: false
       selector:
         text: {}
@@ -56,7 +58,7 @@ update_zone:
         boolean: {}
     input_units:
       name: Target Sensor Units
-      description: "Unit the radar's X/Y target sensors report in. Zone geometry is always millimetres; presence detection scales readings by this before testing them. Device-wide. Apollo firmware reports millimetres, so leave this unset unless you are on DIY hardware."
+      description: "Unit the radar's X/Y target sensors report in. Zone geometry is always millimeters; presence detection scales readings by this before testing them. Device-wide. Apollo firmware reports millimeters, so leave this unset unless you are on DIY hardware."
       required: false
       selector:
         select:
@@ -69,7 +71,7 @@ update_zone:
             - yd
     rotation_deg:
       name: Rotation Angle (deg)
-      description: Optional device rotation angle (-180..180). Device-wide; if provided without zone fields, only the angle is updated for the device.
+      description: "Optional device rotation angle (-180..180). Positive degrees swing the device's facing direction toward its right (+X): 90 maps (x, y) to (y, -x), so a target straight ahead at (0, d) lands at (d, 0). Device-wide; if provided without zone fields, only the angle is updated for the device."
       required: false
       selector:
         number:
@@ -89,5 +91,117 @@ update_zone:
       name: Clear Tracked Entities
       description: If true, empties the tracked entity pair list for this device. The device then tracks nothing instead of falling back to its own LD2450 targets. Takes precedence over entities, which is ignored in the same call.
       required: false
+      selector:
+        boolean: {}
+
+calibrate_gates:
+  name: Calibrate gate thresholds (empty room)
+  description: "Listens to the radar's per-gate energy while the room is empty, then sets every gate's move and still threshold a margin above what it heard. The current thresholds are saved first; use restore_gate_thresholds to undo. Radar Engineering Mode is turned on for the listen and back off afterward if it was off."
+  fields:
+    device_id:
+      name: Radar Device
+      description: The MSR-1, MSR-2 or R PRO-1 to calibrate (one device per call).
+      required: true
+      selector:
+        device:
+          filter:
+            - integration: esphome
+    duration_s:
+      name: Listen for (seconds)
+      description: How long to sample the empty room. Longer catches slow periodic noise such as HVAC.
+      required: false
+      default: 60
+      selector:
+        number:
+          min: 15
+          max: 600
+          unit_of_measurement: s
+    settle_s:
+      name: Leave-the-room delay (seconds)
+      description: Countdown before listening starts, so you can leave. Radar Engineering Mode is turned on at the start of the countdown. Use 0 from automations.
+      required: false
+      default: 15
+      selector:
+        number:
+          min: 0
+          max: 120
+          unit_of_measurement: s
+    margin:
+      name: Headroom (points)
+      description: Added above the highest energy seen. Home Assistant only sees about one in ten of the radar's readings, so the headroom covers the ones it missed. Raise it if the radar still triggers with nobody there; lower it if it misses people. Headroom (points) and Headroom (percent) cannot both be 0.
+      required: false
+      default: 10
+      selector:
+        number:
+          min: 0
+          max: 50
+    margin_pct:
+      name: Headroom (percent)
+      description: Relative headroom; the larger of the two headrooms is used per gate.
+      required: false
+      default: 25
+      selector:
+        number:
+          min: 0
+          max: 100
+          unit_of_measurement: "%"
+    kind:
+      name: Thresholds to set
+      required: false
+      default: both
+      selector:
+        select:
+          options:
+            - both
+            - move
+            - still
+    apply:
+      name: Apply
+      description: Turn off to preview. The new thresholds are computed and reported without changing any of them; Radar Engineering Mode is still turned on for the listen.
+      required: false
+      default: true
+      selector:
+        boolean: {}
+    wait:
+      name: Wait for the result
+      description: Block until the calibration finishes and return the full result (use with response_variable).
+      required: false
+      default: false
+      selector:
+        boolean: {}
+
+cancel_calibration:
+  name: Cancel calibration
+  description: Stops a running calibration. Nothing is written if it had not started writing; values already written stay until you restore.
+  fields:
+    device_id:
+      name: Radar Device
+      required: true
+      selector:
+        device:
+          filter:
+            - integration: esphome
+
+restore_gate_thresholds:
+  name: Restore gate thresholds
+  description: Writes the thresholds saved before the last calibration (or a chosen snapshot) back to the radar. The current values are saved first, so a restore can itself be undone.
+  fields:
+    device_id:
+      name: Radar Device
+      required: true
+      selector:
+        device:
+          filter:
+            - integration: esphome
+    snapshot_id:
+      name: Snapshot
+      description: Id of a saved snapshot; omit for the newest.
+      required: false
+      selector:
+        text: {}
+    wait:
+      name: Wait for the result
+      required: false
+      default: false
       selector:
         boolean: {}

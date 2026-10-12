@@ -1,20 +1,15 @@
 import type { EntityMap } from "../types";
+import { row, type Row } from "./entity-rows";
 
-export interface HistoryRow {
-  entity: string;
-  name: string;
-}
+export type HistoryRow = Row;
 
 /** Occupancy history rows with short, readable names (the device prefix would
  *  otherwise repeat and truncate to the same thing on every row). */
 export function historyEntities(m: EntityMap): HistoryRow[] {
-  const rows: HistoryRow[] = [];
-  const push = (entity: string | undefined, name: string) => {
-    if (entity) rows.push({ entity, name });
-  };
-  push(m.radar_target, "Detected");
-  push(m.zone_1_occupancy, "Zone 1");
-  push(m.zone_2_occupancy, "Zone 2");
-  push(m.zone_3_occupancy, "Zone 3");
-  return rows;
+  return [
+    ...row(m.radar_target, "Detected"),
+    ...row(m.zone_1_occupancy, "Zone 1"),
+    ...row(m.zone_2_occupancy, "Zone 2"),
+    ...row(m.zone_3_occupancy, "Zone 3"),
+  ];
 }

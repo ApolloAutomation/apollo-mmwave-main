@@ -6,10 +6,16 @@ set -e
 
 cd "$(dirname "$0")/.."
 
+# Ruff comes from the venv scripts/bootstrap installs requirements.txt into.
+if [ ! -x .venv/bin/ruff ]; then
+  echo ".venv/bin/ruff not found: run scripts/bootstrap first" >&2
+  exit 1
+fi
+
 echo "==> Checking code format..."
-uv run ruff format . --check
+.venv/bin/ruff format . --check
 
 echo "==> Checking code with Ruff..."
-uv run ruff check .
+.venv/bin/ruff check .
 
 echo "==> Linting check completed!"

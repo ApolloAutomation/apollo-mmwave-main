@@ -1,4 +1,5 @@
 import type { EntityMap, HomeAssistant, Ld2410CardConfig } from "./types";
+import { entitiesForDevice } from "./entity-index";
 import {
   LD2410_PROFILE,
   LD2412_PROFILE,
@@ -11,10 +12,15 @@ import {
  *  Stripping one of these from an entity's object_id yields the base name. */
 const KNOWN_SUFFIXES: RegExp[] = [
   // LD2412 — every entity is `{base}_ld2412_...`, so one pattern covers all.
-  /_ld2412_.+$/,
+  // The lookahead anchors on the LAST chip token so a base that itself holds
+  // it (device "Office LD2412" -> `office_ld2412_ld2412_engineering_mode`)
+  // keeps its full name. It must tolerate the two tokens sharing an
+  // underscore, which a `(?:(?!_ld2412_).)+` tail does not.
+  /_ld2412_(?!.*ld2412_).+$/,
   // LD2450 tracking radar — every entity is `{base}_ld2450_...`. Needed so
   // zone-only devices (e.g. MTR-1, no gate radar) still resolve to a base name.
-  /_ld2450_.+$/,
+  // Anchored on the last chip token for the same reason as LD2412 above.
+  /_ld2450_(?!.*ld2450_).+$/,
   // MTR-1 firmware names its target sensors "Target-1 X" with no chip prefix.
   /_target_\d+_[xy](?:_\d+)?$/,
   // LD2410 (MSR) — varied prefixes.
@@ -55,9 +61,9 @@ export function baseNameFromDevice(
   hass: HomeAssistant,
   deviceId: string
 ): string | undefined {
-  const objectIds = Object.entries(hass.entities)
-    .filter(([, e]) => e.device_id === deviceId)
-    .map(([id]) => id.slice(id.indexOf(".") + 1));
+  const objectIds = entitiesForDevice(hass.entities, deviceId).map(([id]) =>
+    id.slice(id.indexOf(".") + 1)
+  );
 
   const counts = new Map<string, number>();
   for (const oid of objectIds) {
@@ -83,6 +89,13 @@ export function baseNameFromDevice(
 
 type GateSlot = "move_threshold" | "still_threshold" | "move_energy" | "still_energy";
 type ScalarSlot = Exclude<keyof EntityMap, GateSlot>;
+
+const GATE_SLOTS: readonly GateSlot[] = [
+  "move_threshold",
+  "still_threshold",
+  "move_energy",
+  "still_energy",
+];
 
 export type ClassifiedSlot =
   | { slot: ScalarSlot }
@@ -144,10 +157,22 @@ const SCALAR_PATTERNS: ScalarPattern[] = [
   S("radar_target", "binary_sensor", "_ld2412_presence"),
   S("moving_target", "binary_sensor", "_ld2412_moving_target"),
   S("still_target", "binary_sensor", "_ld2412_still_target"),
+  // The chip's own background correction (a firmware button and a status
+  // flag) and the query-params button the calibration job presses. The
+  // backend's gates.py carries the same suffixes; change both together.
+  S("background_correction", "button", "_ld2412_start_dynamic_background_correction"),
+  S(
+    "background_correction_status",
+    "binary_sensor",
+    "_ld2412_dynamic_background_correction_status"
+  ),
+  S("query_params", "button", "_ld2412_query_params"),
 ];
 
 // Gate slots share their suffix with the slot name (`_g3_move_threshold`,
 // `_ld2412_g05_still_energy`) — one pattern per slot covers both chips.
+// TODO(REVIEW_REPORT.md X23): the gate index is unbounded, so a stray _g42_ entity yields a
+// 43-slot array and rescales both charts; unreachable with Apollo firmware; a bound is a tuning call.
 const GATE_PATTERNS: { slot: GateSlot; domain: string; re: RegExp }[] = (
   [
     ["move_threshold", "number"],
@@ -198,8 +223,7 @@ export function detectProfileFromEntities(
   deviceId: string
 ): RadarProfile | undefined {
   let sawLd2410 = false;
-  for (const [id, e] of Object.entries(hass.entities)) {
-    if (e.device_id !== deviceId) continue;
+  for (const [id] of entitiesForDevice(hass.entities, deviceId)) {
     const oid = id.slice(id.indexOf(".") + 1);
     if (/_ld2412_/.test(oid)) return LD2412_PROFILE;
     if (!sawLd2410) sawLd2410 = LD2410_MARKERS.some((re) => re.test(oid));
@@ -217,8 +241,7 @@ export function entityMapFromDevice(
 ): EntityMap | undefined {
   const map = emptyMap();
   let matched = false;
-  for (const [id, e] of Object.entries(hass.entities)) {
-    if (e.device_id !== deviceId) continue;
+  for (const [id] of entitiesForDevice(hass.entities, deviceId)) {
     const dot = id.indexOf(".");
     const c = classifyObjectId(id.slice(0, dot), id.slice(dot + 1));
     if (!c) continue;
@@ -280,24 +303,62 @@ function emptyMap(): EntityMap {
   };
 }
 
+/** What `resolveEntitiesDetailed` resolved, and from where. */
+export interface EntityResolution {
+  map: EntityMap;
+  /** The base name the map was built from when resolution fell back to
+   *  base-name construction. That path picks the chip with `resolveProfile`,
+   *  whose last resort `detectProfile(hass, fallbackBase)` reads
+   *  `hass.states`, so a caller caching the map must recheck that detection
+   *  on state ticks. Undefined when the map came from the device's
+   *  registered entities. */
+  fallbackBase?: string;
+}
+
 export function resolveEntities(
   hass: HomeAssistant,
   config: Ld2410CardConfig
 ): EntityMap {
+  return resolveEntitiesDetailed(hass, config).map;
+}
+
+/** `resolveEntities`, plus the base name when the base-name fallback ran. */
+export function resolveEntitiesDetailed(
+  hass: HomeAssistant,
+  config: Ld2410CardConfig
+): EntityResolution {
   // Preferred: the device's actual entities (rename/dedup-proof).
   let resolved: EntityMap | undefined;
+  let fallbackBase: string | undefined;
   if (config.device_id) resolved = entityMapFromDevice(hass, config.device_id);
   // Fallback: construct ids from the base name (device_base_name configs,
   // or a device whose entities haven't registered yet).
   if (!resolved) {
-    const base = resolveBase(hass, config);
-    const profile = base ? detectProfile(hass, base) ?? LD2410_PROFILE : undefined;
-    resolved = base && profile ? profile.entityMap(base) : emptyMap();
+    fallbackBase = resolveBase(hass, config);
+    // The same chip decision as resolveProfile (entities, then the registry
+    // model, then base-name probing), so the map matches the profile the card
+    // labels it with. Only a zone-only registry model (MTR-1) leaves that
+    // undefined, and it keeps the LD2410 default it always had.
+    const profile = fallbackBase
+      ? resolveProfile(hass, config) ?? LD2410_PROFILE
+      : undefined;
+    resolved = fallbackBase && profile ? profile.entityMap(fallbackBase) : emptyMap();
   }
-  if (config.entities) {
-    return { ...resolved, ...config.entities } as EntityMap;
+  const map = config.entities ? withOverrides(resolved, config.entities) : resolved;
+  return fallbackBase ? { map, fallbackBase } : { map };
+}
+
+/** Apply the card's `entities:` overrides to the resolved map. YAML can hand a
+ *  gate slot null (`move_threshold:`) or a single id string, and the charts and
+ *  rows index gate slots as arrays, so a gate slot keeps its resolved array
+ *  unless the override is an array. Scalar overrides apply as given: a null
+ *  scalar is a deliberate "unset" that hides that row. */
+function withOverrides(resolved: EntityMap, overrides: Partial<EntityMap>): EntityMap {
+  const map = { ...resolved, ...overrides } as EntityMap;
+  for (const slot of GATE_SLOTS) {
+    if (!Array.isArray(map[slot])) map[slot] = resolved[slot];
   }
-  return resolved;
+  return map;
 }
 
 export function exists(hass: HomeAssistant, id?: string): boolean {

@@ -1,10 +1,5 @@
 import { describe, it, expect } from "vitest";
-import {
-  hasLd2450,
-  hasLd2450Device,
-  ld2450EntityIds,
-  ld2450TargetPairs,
-} from "../src/ld2450";
+import { hasLd2450Device, ld2450EntityIds } from "../src/ld2450";
 import type { HomeAssistant, HassEntity } from "../src/types";
 
 function hassWith(entityIds: string[], deviceId = "dev1"): HomeAssistant {
@@ -36,14 +31,26 @@ describe("hasLd2450Device", () => {
   });
 });
 
-describe("ld2450TargetPairs (base-name fallback)", () => {
-  it("constructs the three target pairs from a base", () => {
-    const pairs = ld2450TargetPairs("office");
-    expect(pairs).toHaveLength(3);
-    expect(pairs[0]).toEqual({
-      x: "sensor.office_ld2450_target_1_x",
-      y: "sensor.office_ld2450_target_1_y",
-    });
+describe("HA dedup tail and domain guard", () => {
+  // HA appends `_2` when an entity id collides. Both firmware spellings must
+  // still count, the same as `resolve_target_pairs` in ld2450.py.
+  const deduped = ["sensor.office_ld2450_target_1_x_2", "sensor.office_target_1_y_2"];
+
+  it("hasLd2450Device accepts an X sensor with a `_2` tail in both spellings", () => {
+    expect(hasLd2450Device(hassWith(["sensor.office_ld2450_target_1_x_2"]), "dev1")).toBe(
+      true
+    );
+    expect(hasLd2450Device(hassWith(["sensor.office_target_1_x_2"]), "dev1")).toBe(true);
+  });
+
+  it("ld2450EntityIds lists target sensors with a `_2` tail in both spellings", () => {
+    expect(ld2450EntityIds(hassWith(deduped), "dev1").sort()).toEqual([...deduped].sort());
+  });
+
+  it("rejects a non-sensor entity whose object id matches a target", () => {
+    const ids = ["binary_sensor.office_target_1_x", "number.office_ld2450_target_1_y"];
+    expect(hasLd2450Device(hassWith(ids), "dev1")).toBe(false);
+    expect(ld2450EntityIds(hassWith(ids), "dev1")).toEqual([]);
   });
 });
 
@@ -61,11 +68,6 @@ describe("MTR-1 firmware naming (no chip prefix)", () => {
 
   it("ld2450EntityIds lists both MTR-1 target sensors", () => {
     expect(ld2450EntityIds(hassWith(mtr), "dev1").sort()).toEqual([...mtr].sort());
-  });
-
-  it("hasLd2450 (base-name fallback) accepts the MTR-1 spelling", () => {
-    expect(hasLd2450(hassWith(mtr), "apollo_mtr_1_cbbdb4")).toBe(true);
-    expect(hasLd2450(hassWith(mtr), "apollo_other")).toBe(false);
   });
 
   it("does not mistake an unrelated `_target` entity for a coordinate", () => {

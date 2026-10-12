@@ -2,14 +2,19 @@ import { html, svg, nothing, type TemplateResult } from "lit";
 import type { EntityMap, HomeAssistant } from "../types";
 import { convert, type Uom } from "./unit-convert";
 import { numState, uomOf } from "./entity-read";
-import { parseGateSizeMeters, scaleX } from "./geometry";
+import { gateRegisterCount, parseGateSizeMeters, scaleX } from "./geometry";
+import { LD2410_PROFILE, rangeLimitTip } from "../profiles";
 
 // Gate numbering (HLK-LD2410 manual): the farthest-gate setting N means
-// "detect within N x 0.75 m", so gate N is the band ENDING at N x 0.75 m —
+// "detect within N x 0.75 m", so gate N is the band ENDING at N x 0.75 m:
 // gate 1 covers 0-0.75 m and gate 0 is the zero-distance bin at the sensor
 // itself (it has a sensitivity register but no spatial width). That's why
 // this chart draws thresholds-1 bands labeled G1..G8 while the gate-energy
 // chart shows one G0..G8 slider per sensitivity register. Not an off-by-one.
+// The LD2412 follows the same convention (ESPHome ld2412 component): 14
+// threshold registers g00..g13 and a max_distance_gate clamped to 2..13, so
+// its chart draws 13 bands ending at 13 x gate size, which is exactly the
+// reachable range (9.75 m at 0.75 m gates).
 const DEFAULT_GATE_SIZE_M = 0.75;
 const GATE_COUNT = 8;
 
@@ -61,8 +66,30 @@ function distInUnit(
 ): number | undefined {
   const v = numState(hass, id);
   if (v === undefined) return undefined;
+  // TODO(REVIEW_REPORT.md X02): a unit-less or km/mi/nmi value is read as the chart unit;
+  // if hardening, use "cm" (device-native) as the fallback here and add tests for it.
   return convert(v, uomOf(hass, id, unit), unit);
 }
+
+/** The EntityMap slots whose states distanceModel and renderDistanceChart
+ *  read, so the distance card re-renders only when one of them changes. The
+ *  gate arrays are read only for their length (the gate count), which comes
+ *  from the map rather than from states, so they are not listed. */
+export const DISTANCE_CHART_SLOTS: readonly (keyof EntityMap)[] = [
+  "gate_size",
+  "detection_distance",
+  "moving_distance",
+  "still_distance",
+  "zone_1_start",
+  "end_zone_1",
+  "end_zone_2",
+  "end_zone_3",
+  "zone_1_occupancy",
+  "zone_2_occupancy",
+  "zone_3_occupancy",
+  "max_move_distance",
+  "max_still_distance",
+];
 
 export function distanceModel(
   hass: HomeAssistant,
@@ -73,14 +100,16 @@ export function distanceModel(
     parseGateSizeMeters(m.gate_size ? hass.states[m.gate_size]?.state : undefined) ??
     DEFAULT_GATE_SIZE_M;
   const gateSizeChart = convert(gateSizeM, "m", unit);
-  const gateCount =
-    m.move_threshold.length > 1 ? m.move_threshold.length - 1 : GATE_COUNT;
+  const registers = gateRegisterCount(m);
+  const gateCount = registers > 1 ? registers - 1 : GATE_COUNT;
   const maxRange = gateSizeChart * gateCount;
 
   const bars: DistanceBar[] = [];
   const pushBar = (id: string | undefined, label: string, color: string) => {
     // Keep the row whenever the entity exists; show 0 when there's no target
     // (the distance sensors read non-numeric / unavailable with no target).
+    // TODO(REVIEW_REPORT.md X21): an offline device also lands here and shows "0.0" bars on
+    // the 0.75 m default axis; consider an unavailable flag and "n/a" rows; reword the note above.
     if (!id || !(id in hass.states)) return;
     bars.push({ label, value: distInUnit(hass, id, unit) ?? 0, color });
   };
@@ -101,6 +130,8 @@ export function distanceModel(
     const start = bounds[i];
     const end = bounds[i + 1];
     if (start === undefined || end === undefined) continue;
+    // TODO(REVIEW_REPORT.md X21): inverted bounds (end < start) draw a 1 px rect and a stray
+    // circle; consider an invalid flag here and an outlined marker in the renderer.
     const occId = occ[i];
     zones.push({
       label: `Zone ${i + 1}`,
@@ -137,14 +168,20 @@ const INNER = WIDTH - LBL - RPAD;
 const TOP = 6;
 const ROW_H = 30;
 const BAR_H = ROW_H - 8;
-const AXIS_H = 36;
+// Axis band below the plot (an SVG layout size, not a radar setting). Each
+// tick label is end-anchored at plotBottom + 13 and rotated -45 deg about that
+// anchor, so its first glyph lands 0.707 x (text width + descent) below the
+// anchor. The widest reachable label, "6000 mm" (LD2410) or "9750 mm" (LD2412)
+// at 11 px, is about 47 px wide: 13 + 0.707 x (47 + 2) = 48, plus a little
+// margin. A smaller band lets the svg viewBox clip the leading digits.
+const AXIS_H = 52;
 const MID = BAR_H / 2 + 4; // text baseline offset to vertically center in a bar
 
 type Row =
   | { kind: "zones" }
   | { kind: "bar"; bar: DistanceBar }
   | { kind: "gates" }
-  | { kind: "max"; label: string; value: number; gate?: number; color: string };
+  | { kind: "max"; label: string; value: number; gate: number; tip?: string; color: string };
 
 function rowLabel(r: Row): string {
   if (r.kind === "zones") return "Zones";
@@ -158,9 +195,8 @@ function rowTip(r: Row): string {
   if (r.kind === "zones")
     return "Detection zones. The circle shows whether a target is currently in each zone (filled = present).";
   if (r.kind === "gates")
-    return "The radar splits its range into gates — each colored segment is one distance bin (G1, G2, ...).";
-  if (r.kind === "max")
-    return `${r.label}: the configured detection-range limit, shown as a gate number.`;
+    return "The radar splits its range into gates. Each colored segment is one distance bin (G1, G2, ...).";
+  if (r.kind === "max") return r.tip ?? rangeLimitTip(r.label);
   if (r.bar.label === "Detection")
     return "Current distance to the detected target.";
   if (r.bar.label === "Moving")
@@ -180,7 +216,9 @@ export function renderDistanceChart(
   hass: HomeAssistant,
   m: EntityMap,
   unit: Uom,
-  maxLabels: [string, string] = ["Max Move", "Max Still"]
+  maxLabels: [string, string] = LD2410_PROFILE.maxBarLabels,
+  label = "LD2410",
+  maxTips?: [string, string]
 ): TemplateResult | typeof nothing {
   // Only bail when there's no device at all. A configured radar always has a
   // gate setup, so the chart renders (Gates row + axis) even if the optional
@@ -195,10 +233,28 @@ export function renderDistanceChart(
   if (model.zones.length) rows.push({ kind: "zones" });
   for (const bar of model.bars) rows.push({ kind: "bar", bar });
   rows.push({ kind: "gates" });
-  if (model.maxMove !== undefined)
-    rows.push({ kind: "max", label: maxLabels[0], value: model.maxMove, gate: model.maxMoveGate, color: MOVE_COLOR });
-  if (model.maxStill !== undefined)
-    rows.push({ kind: "max", label: maxLabels[1], value: model.maxStill, gate: model.maxStillGate, color: STILL_COLOR });
+  // TODO(REVIEW_REPORT.md X21): max and zone rows drop out when unavailable, shrinking the SVG
+  // 60-90 px; consider keeping them with a dash placeholder (then the max row's gate is optional).
+  // distanceModel sets each max distance exactly when its gate is set; testing
+  // both lets TypeScript see the gate is defined.
+  if (model.maxMove !== undefined && model.maxMoveGate !== undefined)
+    rows.push({
+      kind: "max",
+      label: maxLabels[0],
+      value: model.maxMove,
+      gate: model.maxMoveGate,
+      tip: maxTips?.[0],
+      color: MOVE_COLOR,
+    });
+  if (model.maxStill !== undefined && model.maxStillGate !== undefined)
+    rows.push({
+      kind: "max",
+      label: maxLabels[1],
+      value: model.maxStill,
+      gate: model.maxStillGate,
+      tip: maxTips?.[1],
+      color: STILL_COLOR,
+    });
 
   const plotBottom = TOP + rows.length * ROW_H;
   const height = plotBottom + AXIS_H;
@@ -206,6 +262,8 @@ export function renderDistanceChart(
   // Gate-boundary gridlines + rotated distance axis labels. Whole numbers for
   // coarse units (in/cm/mm), up to 2 decimals otherwise — `toFixed(0)` in
   // meters rendered 0.75 m gates as duplicate ticks ("1, 2, 2, 3, 4, 5, 5…").
+  // TODO(REVIEW_REPORT.md X21): ticks round each multiple (in: 30/59/89, ft: 12.3 vs 14.76) and
+  // the branch keys on gate size, not unit; use fixed decimals per unit or fix the note above.
   const tickFmt = (v: number) =>
     model.gateSizeChart >= 10 ? v.toFixed(0) : String(Number(v.toFixed(2)));
   const axis: TemplateResult[] = [];
@@ -264,7 +322,7 @@ export function renderDistanceChart(
     } else {
       // max bar — gate count centered, like the reference
       const xe = x(r.value);
-      const text = r.gate !== undefined ? `G${r.gate}` : fmt(r.value);
+      const text = `G${r.gate}`;
       content = svg`
         <rect x=${LBL} y=${y} width=${Math.max(1, xe - LBL)} height=${BAR_H}
           rx="4" fill=${r.color} opacity="0.6"></rect>
@@ -282,7 +340,7 @@ export function renderDistanceChart(
 
   return html`
     <svg viewBox="0 0 ${WIDTH} ${height}" width="100%" role="img"
-      aria-label="LD2410 distances">
+      aria-label="${label} distances">
       ${axis} ${rowEls}
     </svg>
   `;

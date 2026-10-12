@@ -16,5 +16,23 @@ updates:
     schedule:
       interval: "daily"
     ignore:
-      # Dependabot should not update Home Assistant as that should match the homeassistant key in hacs.json
+      # The Home Assistant pin in requirements.txt is moved by hand, together
+      # with the pins in requirements-test.txt. hacs.json carries the separate,
+      # lower HACS minimum and does not follow this pin.
       - dependency-name: "homeassistant"
+      # pytest-homeassistant-custom-component pins an exact homeassistant, and
+      # home-assistant-frontend tracks that release, so both are bumped by hand
+      # in lockstep with homeassistant (see requirements-test.txt). Bumping
+      # either one alone moves the test venv to a different HA than
+      # requirements.txt. Trade-off: this also suppresses Dependabot
+      # security-update PRs for these two packages; alerts still appear.
+      - dependency-name: "pytest-homeassistant-custom-component"
+      - dependency-name: "home-assistant-frontend"
+
+  # The frontend toolchain and lit. A bump that changes the built output fails
+  # the bundle-sync check in test.yml until custom_components/apollo_mmwave/www
+  # is rebuilt and committed on the PR, which is intended.
+  - package-ecosystem: "npm"
+    directory: "/frontend-src"
+    schedule:
+      interval: "daily"

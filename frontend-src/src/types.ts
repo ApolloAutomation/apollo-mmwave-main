@@ -1,3 +1,5 @@
+import type { Uom } from "./charts/unit-convert";
+
 export interface HassEntity {
   entity_id: string;
   state: string;
@@ -22,28 +24,43 @@ export interface HomeAssistant {
   >;
   /** Server config; `unit_system.length` is "km" (metric) or "mi" (US). */
   config?: { unit_system?: { length?: string } };
+  /** HA's service call. The fifth argument (`notifyOnError`) must be false
+   *  when a card renders the rejection itself, or the error toasts twice.
+   *  Optional so existing fixtures built from `{states, entities, devices}`
+   *  still type-check. */
+  callService?(
+    domain: string,
+    service: string,
+    data?: Record<string, any>,
+    target?: unknown,
+    notifyOnError?: boolean
+  ): Promise<any>;
+  callWS?<T>(msg: Record<string, any>): Promise<T>;
+  connection?: HassConnection;
+  /** HA's translator; "" for an unknown key. Used to render a rejected
+   *  service call's translated exception message. */
+  localize?(key: string, values?: Record<string, any>): string;
+  /** Loads a translation category for an integration and resolves to the
+   *  updated `localize`. */
+  loadBackendTranslation?(
+    category: string,
+    integration?: string | string[]
+  ): Promise<(key: string, values?: Record<string, any>) => string>;
 }
 
-export type PanelKey =
-  | "controls"
-  | "zone_config"
-  | "gate_config"
-  | "occupancy"
-  | "distance_chart"
-  | "gate_energy_chart"
-  | "occupancy_history";
+/** The slice of home-assistant-js-websocket's Connection the cards use. */
+export interface HassConnection {
+  subscribeMessage<T>(
+    callback: (message: T) => void,
+    subscription: Record<string, any>
+  ): Promise<() => void | Promise<void>>;
+  addEventListener?(event: string, callback: () => void): void;
+  removeEventListener?(event: string, callback: () => void): void;
+}
 
-export const ALL_PANEL_KEYS: PanelKey[] = [
-  "controls",
-  "zone_config",
-  "gate_config",
-  "occupancy",
-  "distance_chart",
-  "gate_energy_chart",
-  "occupancy_history",
-];
-
-/** Resolved entity ids. Arrays are indexed by gate 0..8. Any field may be
+/** Resolved entity ids. Gate arrays are indexed by gate number (0..8 on an
+ *  LD2410, 0..13 on an LD2412) and may be sparse when built from the
+ *  registry, which skips gates the device does not expose. Any field may be
  *  an id that does not exist in hass.states; callers must existence-check. */
 export interface EntityMap {
   // controls
@@ -52,6 +69,11 @@ export interface EntityMap {
   restart_radar?: string;
   factory_reset_radar?: string;
   esp_reboot?: string;
+  // LD2412 only: the chip's own background correction and its status, plus
+  // the button that re-reads every threshold from the chip.
+  background_correction?: string;
+  background_correction_status?: string;
+  query_params?: string;
   // zone config
   radar_timeout?: string;
   zone_1_start?: string;
@@ -59,6 +81,9 @@ export interface EntityMap {
   end_zone_2?: string;
   end_zone_3?: string;
   // gate config + charts
+  // LD2410: max move / max still gate. LD2412: max_move_distance holds the
+  // max distance gate and max_still_distance the MIN distance gate. Label
+  // these via RadarProfile.rangeLabels / maxBarLabels, never by slot name.
   max_move_distance?: string;
   max_still_distance?: string;
   gate_size?: string;
@@ -84,7 +109,23 @@ export interface Ld2410CardConfig {
   device_id?: string;
   device_base_name?: string;
   entities?: Partial<EntityMap>;
-  panels?: Partial<Record<PanelKey, boolean>>;
   title?: string;
-  distance_unit?: "mm" | "cm" | "m" | "in" | "ft" | "yd";
+  distance_unit?: Uom;
+}
+
+/** Options the calibrate card forwards to `apollo_mmwave.calibrate_gates`.
+ *  Absent keys are not sent, so the backend defaults apply. */
+export interface CalibrationOptions {
+  duration_s?: number;
+  settle_s?: number;
+  margin?: number;
+  margin_pct?: number;
+}
+
+export interface CalibrateCardConfig {
+  type: string;
+  device_id?: string;
+  device_base_name?: string;
+  title?: string;
+  calibration?: CalibrationOptions;
 }

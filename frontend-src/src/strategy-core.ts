@@ -1,12 +1,12 @@
-import type { HomeAssistant } from "./types";
+import type { CalibrationOptions, HassEntity, HomeAssistant } from "./types";
 import {
   baseNameFromDevice,
   detectProfileFromEntities,
   entityMapFromDevice,
 } from "./entities";
-import { ld2450EntityIds } from "./ld2450";
+import { entitiesForDevice } from "./entity-index";
+import { hasLd2450Device, ld2450EntityIds, zoneMapCard } from "./ld2450";
 import { apolloModelInfo, isEsphomeDevice, type RadarProfile } from "./profiles";
-import { hasLd2450, hasLd2450Device, zoneMapCard } from "./ld2450";
 import {
   controlRows,
   zoneConfigRows,
@@ -35,19 +35,34 @@ export interface RadarDevice {
 }
 
 export interface StrategyConfig {
+  /** A single device to show. Takes precedence over `devices`: when both are
+   *  set, only this device is rendered and `devices` is ignored. */
   device_id?: string;
   /** Explicit selection: show exactly these devices, online or not. Set by
    *  the integration's "Dashboard devices" option (or by hand in YAML).
    *  Empty/absent means every detected Apollo radar, online or not. */
   devices?: string[];
   distance_unit?: string;
+  /** Seeds the calibrate card's `calibration:` block on every gate-radar tab
+   *  (duration, countdown and headroom sent to `calibrate_gates`). */
+  calibration?: CalibrationOptions;
+}
+
+/** Whether a state object is a real reading. Only "unavailable" (or no state
+ *  at all) means offline; "unknown" counts as live. `shouldRegenerate` uses
+ *  the same test for its availability fast path, so the two cannot drift
+ *  apart and miss an `online` flip in the device key. */
+export function isLiveState(state: HassEntity | undefined): boolean {
+  return state !== undefined && state.state !== "unavailable";
 }
 
 function isLive(hass: HomeAssistant, entityId: string | undefined): boolean {
-  if (!entityId) return false;
-  const state = hass.states[entityId];
-  return state !== undefined && state.state !== "unavailable";
+  return !!entityId && isLiveState(hass.states[entityId]);
 }
+
+/** The platform this integration's own entities carry. Kept local rather than
+ *  imported from `zone-map/api.ts` so that module stays out of this bundle. */
+const OWN_PLATFORM = "apollo_mmwave";
 
 /**
  * Whether a device shows LIVE radar evidence.
@@ -69,6 +84,8 @@ function hasLiveRadarEvidence(
   const m = entityMapFromDevice(hass, deviceId);
   const radarIds: (string | undefined)[] = [];
   if (m) {
+    // TODO(REVIEW_REPORT.md X37): omits bluetooth and gate_size, so a no-model device live only
+    // on those is dropped; if changed, derive from entityIds(m) minus chip-agnostic buttons.
     radarIds.push(
       m.engineering_mode,
       m.radar_timeout,
@@ -90,10 +107,13 @@ function hasLiveRadarEvidence(
 
   // No recognizable radar entities: only a registry match keeps the device
   // (renamed-beyond-recognition case), and only while something is alive.
+  // This integration's own zone sensors sit on the radar's device but never go
+  // unavailable, so they say nothing about the radar and do not count. Only
+  // that platform is skipped: older frontends send no platform at all.
   return (
     registryMatched &&
-    Object.entries(hass.entities).some(
-      ([id, e]) => e.device_id === deviceId && isLive(hass, id)
+    entitiesForDevice(hass.entities, deviceId).some(
+      ([id, e]) => e.platform !== OWN_PLATFORM && isLive(hass, id)
     )
   );
 }
@@ -126,10 +146,10 @@ function deviceFromId(
   // (DIY/reflashed hardware); the registry decides when probing is blind
   // (e.g. every chip-specific entity disabled or renamed beyond recognition).
   const profile = detectProfileFromEntities(hass, deviceId) ?? reg?.profile;
-  const ld2450 =
-    hasLd2450Device(hass, deviceId) ||
-    (base ? hasLd2450(hass, base) : false) ||
-    (reg?.ld2450 ?? false);
+  // LD2450 evidence is device-scoped only. Probing ids built from the base in
+  // the global states would let a same-named radar's target sensors flag a
+  // gate-only device, and this device's own sensors are in `hass.entities`.
+  const ld2450 = hasLd2450Device(hass, deviceId) || (reg?.ld2450 ?? false);
   // Include the device if it has either a tunable gate radar or an LD2450 —
   // a forced device stays even if neither is detectable (offline + unknown
   // model): its tab explains the situation instead of silently vanishing.
@@ -167,6 +187,8 @@ export function strategyDevices(
     const d = deviceFromId(hass, config.device_id, true);
     return d ? [d] : [];
   }
+  // TODO(REVIEW_REPORT.md X34): a hand-written `devices: "id"` string throws in .map; consider
+  // normalizing (an array as is, a string to [string], else []) with a test.
   if (config.devices?.length) {
     return config.devices
       .map((id) => deviceFromId(hass, id, true))
@@ -206,7 +228,7 @@ function helpCardBody(dev: RadarDevice): Record<string, any> {
     return {
       type: "markdown",
       content:
-        `**${dev.name}** — no radar data available right now.\n\n` +
+        `**${dev.name}**: no radar data available right now.\n\n` +
         `The device looks offline (or exposes no recognizable radar ` +
         `entities). Its cards will appear here once it reports in.`,
     };
@@ -215,15 +237,23 @@ function helpCardBody(dev: RadarDevice): Record<string, any> {
     return {
       type: "markdown",
       content:
-        `**${dev.name}** — Apollo mmWave (LD2450 tracking radar).\n\n` +
+        `**${dev.name}**, Apollo mmWave (LD2450 tracking radar).\n\n` +
         `Draw occupancy zones over the live target positions below.`,
     };
   }
+  const p = dev.profile;
   return {
     type: "markdown",
     content:
-      `**${dev.name}** — Apollo ${dev.profile.label} radar.\n\n` +
-      `New to tuning? [How to configure this sensor →](${dev.profile.wikiUrl})`,
+      `**${dev.name}**, Apollo ${p.label} radar.\n\n` +
+      `**Start here**\n` +
+      `1. Press **Calibrate with empty room** on the Auto-calibrate card and leave the room.\n` +
+      `2. Set how far it should look: **${p.rangeLabels[0]} / ${p.rangeLabels[1]}** on the` +
+      ` Detection Range card (each gate is 0.75 m unless you changed ${p.gateSizeLabel}).\n` +
+      `3. Set how long presence stays on after you stop moving: **Radar Timeout**, same card.\n` +
+      `4. Walk the room and watch the Gate Energy chart. Raise a gate's threshold if it` +
+      ` triggers with nobody there, lower it if it misses you.\n\n` +
+      `[Full tuning guide →](${p.wikiUrl})`,
   };
 }
 
@@ -233,6 +263,8 @@ function noteCard(text: string): Record<string, any> {
 
 interface DeviceCards {
   help: Record<string, any>;
+  /** The auto-calibrate card, first on every gate-radar tab. */
+  calibrate?: Record<string, any>;
   controls?: Record<string, any>;
   range?: Record<string, any>;
   rangeNote?: Record<string, any>;
@@ -252,7 +284,8 @@ interface DeviceCards {
 function cardMap(
   hass: HomeAssistant,
   dev: RadarDevice,
-  distanceUnit?: string
+  distanceUnit?: string,
+  calibration?: CalibrationOptions
 ): DeviceCards {
   const cards: DeviceCards = { help: helpCard(dev) };
 
@@ -260,11 +293,20 @@ function cardMap(
   // tunable gate radar.
   if (dev.profile) {
     const profile = dev.profile;
+    // Online or not: the card renders its own offline state, and a tab that
+    // always starts with the same card is easier to learn.
+    cards.calibrate = {
+      type: "custom:apollo-radar-calibrate-card",
+      device_id: dev.deviceId,
+      device_base_name: dev.base,
+      title: "Auto-calibrate",
+      ...(calibration ? { calibration } : {}),
+    };
     // Prefer the device's actual entity ids (rename/dedup-proof); constructed
     // ids are only right when nothing was renamed.
     const m = entityMapFromDevice(hass, dev.deviceId) ?? profile.entityMap(dev.base);
     const label = profile.label;
-    const historyRows = historyEntities(m).filter((r) => r.entity in hass.states);
+    const historyRows = presentRows(hass, historyEntities(m));
     const range = entitiesCard(
       `${label} Detection Range`,
       presentRows(hass, rangeRows(m, profile.rangeLabels, profile.gateSizeLabel))
@@ -287,6 +329,8 @@ function cardMap(
       `${label} Zone Config`,
       presentRows(hass, zoneConfigRows(m))
     );
+    // TODO(REVIEW_REPORT.md X35): emitted even for offline or unresolvable devices (deliberate,
+    // per OFFLINE_NOTE); at most drop device_base_name when dev.base === dev.deviceId.
     // device_id is the durable reference; device_base_name is kept so configs
     // still resolve on older card bundles (and as the in-card fallback).
     cards.distance = {
@@ -337,11 +381,13 @@ function cardMap(
 export function buildDeviceCards(
   hass: HomeAssistant,
   dev: RadarDevice,
-  distanceUnit?: string
+  distanceUnit?: string,
+  calibration?: CalibrationOptions
 ): Record<string, any>[] {
-  const c = cardMap(hass, dev, distanceUnit);
+  const c = cardMap(hass, dev, distanceUnit, calibration);
   return [
     c.help,
+    c.calibrate,
     c.controls,
     c.range,
     c.rangeNote,
@@ -363,16 +409,17 @@ export function buildDeviceCards(
 export function buildDeviceSections(
   hass: HomeAssistant,
   dev: RadarDevice,
-  distanceUnit?: string
+  distanceUnit?: string,
+  calibration?: CalibrationOptions
 ): Record<string, any>[] {
-  const c = cardMap(hass, dev, distanceUnit);
+  const c = cardMap(hass, dev, distanceUnit, calibration);
   const columns: (Record<string, any> | undefined)[][] = [];
 
-  // Gate-radar tuning columns: controls | distance+config | gate-energy+move |
-  // history+still. LD2412 has no Zone Config, so column 1 is short — put
-  // occupancy there instead of column 2 to balance it.
+  // Gate-radar tuning columns: calibrate+help+controls | distance+config |
+  // gate-energy+move | history+still. LD2412 has no Zone Config, so column 1
+  // is short; put occupancy there instead of column 2 to balance it.
   if (dev.profile) {
-    const col1 = [c.help, c.controls, c.zone];
+    const col1 = [c.calibrate, c.help, c.controls, c.zone];
     const col2: (Record<string, any> | undefined)[] = [
       c.distance,
       c.range,
@@ -385,6 +432,14 @@ export function buildDeviceSections(
       [c.gateEnergy, c.moveThr, c.gateNote],
       [c.history, c.stillThr]
     );
+  }
+
+  // A zone-only or undetectable device has no tuning column to carry the help
+  // card, so it gets its own section only when it has something to say (the
+  // offline note, or that nothing is detectable). A live MTR-1 stays just the
+  // zone map.
+  if (!dev.profile && (!dev.online || !c.zoneMap)) {
+    columns.push([c.help]);
   }
 
   // LD2450 zone map gets its own column. On a shared tab (R-PRO-1) a thin
@@ -405,13 +460,16 @@ export function deviceView(
   hass: HomeAssistant,
   dev: RadarDevice,
   distanceUnit?: string,
-  path: string = dev.base
+  path: string = dev.base,
+  calibration?: CalibrationOptions
 ): Record<string, any> {
+  // TODO(REVIEW_REPORT.md X36): no max_columns, so an R-PRO-1's five sections wrap the Zone
+  // Map to a second row (HA default is 4); choose max_columns 5, a column_span, or accept it.
   return {
     title: dev.name,
     path,
     type: "sections",
-    sections: buildDeviceSections(hass, dev, distanceUnit),
+    sections: buildDeviceSections(hass, dev, distanceUnit, calibration),
   };
 }
 
@@ -429,10 +487,12 @@ export function generateViews(
 ): Record<string, any>[] {
   const used = new Set<string>();
   return strategyDevices(hass, config).map((d) => {
+    // TODO(REVIEW_REPORT.md X33): the bare path goes to whichever same-base device hass.devices
+    // lists first; if adopted, sort colliders by deviceId (or suffix all) with an order test.
     let path = d.base;
     if (used.has(path)) path = `${d.base}_${d.deviceId}`;
     used.add(path);
-    return deviceView(hass, d, config.distance_unit, path);
+    return deviceView(hass, d, config.distance_unit, path, config.calibration);
   });
 }
 
@@ -441,8 +501,10 @@ export function generateSections(
   hass: HomeAssistant,
   config: StrategyConfig
 ): Record<string, any>[] {
+  // TODO(REVIEW_REPORT.md X38): several devices run together in one grid with no separator;
+  // document the view strategy as single-device, or head each device when more than one.
   return strategyDevices(hass, config).flatMap((d) =>
-    buildDeviceSections(hass, d, config.distance_unit)
+    buildDeviceSections(hass, d, config.distance_unit, config.calibration)
   );
 }
 
@@ -453,6 +515,6 @@ export function generateCards(
   config: StrategyConfig
 ): Record<string, any>[] {
   return strategyDevices(hass, config).flatMap((d) =>
-    buildDeviceCards(hass, d, config.distance_unit)
+    buildDeviceCards(hass, d, config.distance_unit, config.calibration)
   );
 }

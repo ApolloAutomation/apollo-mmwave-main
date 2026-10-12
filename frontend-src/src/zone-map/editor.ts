@@ -106,8 +106,13 @@ interface TextFieldElement extends HTMLElement {
 /**
  * The first device on the system with LD2450 target sensors, if any.
  *
- * Detection is `hasLd2450Device` and nothing else. A second implementation of
- * "is this a tracking radar" can only ever disagree with the one that counts.
+ * This auto-fill only picks a device whose LD2450 target sensors are already
+ * registered (`hasLd2450Device`). The device picker below is deliberately
+ * broader: it also offers an Apollo ESPHome device whose registry model has an
+ * LD2450 but whose target sensors are not in yet. So when that is the only
+ * radar on the system, the picker lists it while this returns undefined and
+ * the card opens on the device_id error until the user picks it. The stub never
+ * guesses an unproven device, and on a mixed system it prefers the proven one.
  */
 export function firstLd2450DeviceId(hass: HomeAssistant | undefined): string | undefined {
   if (!hass) return undefined;
@@ -203,6 +208,9 @@ export class ZoneMapCardEditor extends HTMLElement {
       (hasLd2450Device(this._hass, device.id) ||
         (isEsphomeDevice(this._hass, device.id) &&
           (apolloModelInfo(this._hass.devices?.[device.id])?.ld2450 ?? false)));
+    // TODO(REVIEW_REPORT.md X49): unlike the two selectors, this value-changed
+    // is not stopped. Add stopPropagation (with a test) if symmetry is wanted,
+    // and reword the selector comment to call those stops defensive.
     picker.addEventListener("value-changed", (event: Event) => {
       const value = (event as CustomEvent).detail?.value;
       this._commit("device_id", typeof value === "string" ? value : "");

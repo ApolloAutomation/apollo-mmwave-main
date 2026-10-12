@@ -1,5 +1,7 @@
+/// <reference types="vite/client" />
 import { describe, it, expect } from "vitest";
-import { apolloModelInfo } from "../src/profiles";
+import configFlowSource from "../../custom_components/apollo_mmwave/config_flow.py?raw";
+import { apolloModelInfo, isEsphomeDevice } from "../src/profiles";
 import { detectRadarDevices } from "../src/strategy-core";
 import type { HomeAssistant, HassEntity } from "../src/types";
 
@@ -59,6 +61,82 @@ describe("apolloModelInfo", () => {
     ).toBeUndefined();
     expect(apolloModelInfo({ manufacturer: "ApolloAutomation" })).toBeUndefined();
     expect(apolloModelInfo(undefined)).toBeUndefined();
+  });
+});
+
+// The config flow's device picker lists MMWAVE_MODELS by exact string, and
+// apolloModelInfo matches APOLLO_MODELS by prefix. Read the Python tuple so a
+// model added there fails here until the frontend recognizes it too.
+describe("MMWAVE_MODELS parity with apolloModelInfo", () => {
+  const tuple = /^MMWAVE_MODELS\b[^=\n]*=\s*\(([^)]*)\)/m.exec(configFlowSource);
+  const models = [...(tuple?.[1] ?? "").matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+
+  // [profile key, ld2450] each model family should resolve to.
+  const expected = (model: string): [string | undefined, boolean] | undefined => {
+    const m = model.toLowerCase();
+    if (m.startsWith("msr-")) return ["ld2410", false];
+    if (m.startsWith("r-pro-1")) return ["ld2412", true];
+    if (m.startsWith("mtr-1")) return [undefined, true];
+    return undefined;
+  };
+
+  it("reads the model tuple from config_flow.py", () => {
+    expect(models).toContain("MSR-2");
+    expect(models).toContain("MTR-1");
+    expect(models).toContain("R-PRO-1-W");
+  });
+
+  it("resolves every config-flow model to its expected profile and LD2450", () => {
+    for (const model of models) {
+      const info = apolloModelInfo({ manufacturer: "ApolloAutomation", model });
+      expect(expected(model), `no expected hardware for ${model}`).toBeDefined();
+      expect(info && [info.profile?.key, info.ld2450], model).toEqual(expected(model));
+    }
+  });
+});
+
+describe("isEsphomeDevice", () => {
+  const hassOf = (entities: HomeAssistant["entities"]): HomeAssistant => ({
+    states: {},
+    entities,
+    devices: { dev1: { name: "Office Radar" }, dev2: { name: "Other" } },
+  });
+
+  it("is false for a device with no entities", () => {
+    const hass = hassOf({ "sensor.other_temp": { device_id: "dev2", platform: "esphome" } });
+    expect(isEsphomeDevice(hass, "dev1")).toBe(false);
+  });
+
+  it("is true when any of the device's entities is an esphome entity", () => {
+    const hass = hassOf({
+      "sensor.office_rssi": { device_id: "dev1", platform: "unifi" },
+      "switch.office_radar_engineering_mode": { device_id: "dev1", platform: "esphome" },
+    });
+    expect(isEsphomeDevice(hass, "dev1")).toBe(true);
+  });
+
+  it("gives entities without a platform field the benefit of the doubt", () => {
+    const hass = hassOf({
+      "switch.office_radar_engineering_mode": { device_id: "dev1" },
+      "sensor.office_radar_detection_distance": { device_id: "dev1" },
+    });
+    expect(isEsphomeDevice(hass, "dev1")).toBe(true);
+  });
+
+  it("is false when every entity carries a non-esphome platform", () => {
+    const hass = hassOf({
+      "sensor.office_rssi": { device_id: "dev1", platform: "unifi" },
+      "device_tracker.office": { device_id: "dev1", platform: "unifi" },
+    });
+    expect(isEsphomeDevice(hass, "dev1")).toBe(false);
+  });
+
+  it("is false for platform-less entities mixed with a non-esphome one", () => {
+    const hass = hassOf({
+      "switch.office_radar_engineering_mode": { device_id: "dev1" },
+      "sensor.office_rssi": { device_id: "dev1", platform: "unifi" },
+    });
+    expect(isEsphomeDevice(hass, "dev1")).toBe(false);
   });
 });
 
