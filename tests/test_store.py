@@ -308,6 +308,45 @@ async def test_explicit_empty_entities_survive_a_round_trip(
     assert reloaded.devices[device.id]["entities"] == []
 
 
+async def test_input_units_survive_a_round_trip(hass, hass_storage) -> None:
+    """The unit the presence sensor scales by has to come back after a restart."""
+    store = ZoneStore(hass)
+    store.devices["dev"] = {"zones": {}, "input_units": "cm"}
+    await store.async_save()
+    on_disk = hass_storage[ZONE_STORAGE_KEY]["data"]["devices"]["dev"]
+    assert on_disk["input_units"] == "cm"
+
+    reloaded = ZoneStore(hass)
+    assert await reloaded.async_load() is True
+
+    assert reloaded.devices["dev"]["input_units"] == "cm"
+
+
+async def test_unknown_input_units_on_disk_are_dropped(hass, hass_storage) -> None:
+    """Only a unit the service accepts is restored; anything else reads as mm."""
+    hass_storage[ZONE_STORAGE_KEY] = {
+        "version": 2,
+        "data": {
+            "devices": {
+                "number": {"zones": {}, "input_units": 5},
+                "furlong": {"zones": {}, "input_units": "furlong"},
+                "feet": {"zones": {}, "input_units": "ft"},
+                "none": {"zones": {}},
+            },
+            "orphans": {"Ghost Room": {"zones": {}, "input_units": "in"}},
+        },
+    }
+
+    store = ZoneStore(hass)
+    assert await store.async_load() is True
+
+    assert "input_units" not in store.devices["number"]
+    assert "input_units" not in store.devices["furlong"]
+    assert "input_units" not in store.devices["none"]
+    assert store.devices["feet"]["input_units"] == "ft"
+    assert store.orphans["Ghost Room"]["input_units"] == "in"
+
+
 async def test_a_new_device_entry_has_no_entities_key(hass) -> None:
     """A device nobody has configured must read as unconfigured, not cleared."""
     store = ZoneStore(hass)

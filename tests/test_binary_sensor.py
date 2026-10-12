@@ -13,6 +13,7 @@ from custom_components.apollo_mmwave.const import (
     SERVICE_UPDATE_ZONE,
     SIGNAL_ZONES_UPDATED,
     STORE_ENTITIES,
+    STORE_INPUT_UNITS,
     STORE_ZONES,
 )
 
@@ -255,5 +256,40 @@ async def test_presence_scales_readings_by_the_devices_input_units(
     )
     await hass.async_block_till_done()
     _set_target(hass, TARGET_1, 0, 250)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "on"
+
+
+async def test_input_units_survive_a_reload(
+    hass, hass_ws_client, entity_registry, setup_entry_with_zone
+) -> None:
+    """A reload (every HA restart, every HACS update) must keep the unit."""
+    device_id, entry = setup_entry_with_zone
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_UPDATE_ZONE,
+        {"device_id": device_id, "input_units": "cm"},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert get_store(hass).devices[device_id][STORE_INPUT_UNITS] == "cm"
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id(
+        {"type": "apollo_mmwave/zones/get", "device_id": device_id}
+    )
+    assert (await client.receive_json())["result"]["input_units"] == "cm"
+
+    # The zone spans y 0..2000 mm: 250 cm is outside, 150 cm is inside. Read
+    # as millimetres both would be inside.
+    presence_id = _presence_id(entity_registry, device_id)
+    _set_target(hass, TARGET_1, 0, 250)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "off"
+
+    _set_target(hass, TARGET_1, 0, 150)
     await hass.async_block_till_done()
     assert hass.states.get(presence_id).state == "on"

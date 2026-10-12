@@ -17,6 +17,7 @@ in-memory shape is::
             "entities": [{"x": "<entity_id>", "y": "<entity_id>"}, ...],  # optional
             "rotation_deg": 0,          # optional
             "label": "Apollo R_PRO-1 abc123",   # optional, display only
+            "input_units": "mm",  # optional; absent means millimetres
         },
     }
 
@@ -49,8 +50,10 @@ from homeassistant.util import slugify
 from .const import (
     ATTR_ROTATION_DEG,
     DOMAIN,
+    INPUT_UNIT_FACTORS,
     STORE_DEVICES,
     STORE_ENTITIES,
+    STORE_INPUT_UNITS,
     STORE_LABEL,
     STORE_ORPHANS,
     STORE_ZONES,
@@ -210,6 +213,11 @@ def _parse_entry(raw: Any) -> dict[str, Any] | None:
     label = raw.get(STORE_LABEL)
     if isinstance(label, str):
         entry[STORE_LABEL] = label
+    # Absent stays absent (millimetres). A value the service could never have
+    # written is dropped rather than carried, so it reads as millimetres too.
+    units = raw.get(STORE_INPUT_UNITS)
+    if isinstance(units, str) and units in INPUT_UNIT_FACTORS:
+        entry[STORE_INPUT_UNITS] = units
     return entry
 
 
