@@ -695,6 +695,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         schema=UPDATE_ZONE_SERVICE_SCHEMA,
     )
 
+    def _teardown() -> Coroutine[Any, Any, None]:
+        # A hook rather than code in `async_unload_entry`: Home Assistant runs
+        # the hooks when a later setup step raises too, and never calls
+        # `async_unload_entry` for an entry that failed to set up. The returned
+        # flush is awaited before the unload finishes.
+        hass.services.async_remove(DOMAIN, SERVICE_UPDATE_ZONE)
+        hass.data.get(DOMAIN, {}).pop(DATA_STORE, None)
+        return store.async_save()
+
+    entry.async_on_unload(_teardown)
+
     # How the card reads its configuration. Registering the commands is
     # idempotent and they are never unregistered (Home Assistant has no API for
     # it), so the teardown only closes the subscriptions this entry owns.
@@ -727,7 +738,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """
-    Unload the entry: platforms and service; flush the store.
+    Unload the entry's platforms.
+
+    The service, the store and the rest go in the `entry.async_on_unload` hooks
+    `async_setup_entry` registered, which Home Assistant runs only when this
+    returns True.
 
     The dashboard deliberately survives an unload. It is a real storage
     dashboard now, so removing it here would delete whatever the user renamed,
@@ -735,13 +750,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     integration reloaded (which HACS does on every update). The "auto-create
     dashboard" option owns its lifetime instead.
     """
-    unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    if unloaded:
-        hass.services.async_remove(DOMAIN, SERVICE_UPDATE_ZONE)
-        store = hass.data.get(DOMAIN, {}).pop(DATA_STORE, None)
-        if store is not None:
-            await store.async_save()
-    return unloaded
+    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
@@ -752,5 +761,9 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     from .store import ZoneStore  # noqa: PLC0415
 
     await async_remove_dashboard(hass)
-    await ZoneStore(hass).async_remove()
+    # The live store when an unload failed and left it in place: removing it
+    # cancels its pending delayed save, which a fresh instance cannot reach and
+    # which would write the file back after the delete.
+    store = hass.data.get(DOMAIN, {}).get(DATA_STORE) or ZoneStore(hass)
+    await store.async_remove()
     await CalibrationStore(hass).async_remove()

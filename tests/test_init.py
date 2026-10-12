@@ -2,14 +2,26 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+from unittest.mock import patch
+
 import pytest
 import voluptuous as vol
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.json import json_bytes
+from homeassistant.helpers.storage import Store
+from homeassistant.util import dt as dt_util
+from pytest_homeassistant_custom_component.common import async_fire_time_changed
 
-from custom_components.apollo_mmwave import UPDATE_ZONE_SERVICE_SCHEMA, get_store
+from custom_components.apollo_mmwave import (
+    UPDATE_ZONE_SERVICE_SCHEMA,
+    async_remove_entry,
+    get_store,
+)
 from custom_components.apollo_mmwave.const import (
     ATTR_ROTATION_DEG,
+    DATA_STORE,
     DOMAIN,
     EVENT_ZONE_UPDATED,
     SERVICE_CALIBRATE_GATES,
@@ -33,6 +45,12 @@ TRACKED = [
 # JavaScript's Number.MAX_SAFE_INTEGER: the largest coordinate or zone id the
 # service stores, since anything past 64 bits cannot be serialized by HA.
 MAX_SAFE_INT = 2**53 - 1
+
+ZONE_STORAGE_KEY = f"{DOMAIN}.zones"
+
+# The real Store.async_remove, taken at import, before the hass_storage fixture
+# swaps in a mock that only drops the key and leaves a pending write scheduled.
+REAL_STORE_REMOVE = Store.async_remove
 
 
 async def _update_zone(hass, data: dict) -> None:
@@ -388,13 +406,65 @@ async def test_update_zone_requires_a_target(hass, init_integration) -> None:
         )
 
 
-async def test_unload_removes_service(hass, init_integration) -> None:
-    """Unloading the entry removes the update_zone service."""
+async def test_unload_removes_service(
+    hass, init_integration, device_id, hass_storage, caplog
+) -> None:
+    """Unloading removes the service once, drops the store and flushes it."""
     assert hass.services.has_service(DOMAIN, SERVICE_UPDATE_ZONE)
+    # Only a delayed save is pending, so the stored value proves the unload
+    # flushed the store.
+    await _update_zone(hass, {"device_id": device_id, ATTR_ROTATION_DEG: 45})
 
     assert await hass.config_entries.async_unload(init_integration.entry_id)
     await hass.async_block_till_done()
     assert not hass.services.has_service(DOMAIN, SERVICE_UPDATE_ZONE)
+    assert DATA_STORE not in hass.data.get(DOMAIN, {})
+    stored = hass_storage[ZONE_STORAGE_KEY]["data"]
+    assert stored[STORE_DEVICES][device_id][ATTR_ROTATION_DEG] == 45
+    assert "Unable to remove unknown service" not in caplog.text
+
+
+async def test_failed_platform_setup_removes_service_and_store(
+    hass, config_entry, esphome_device
+) -> None:
+    """A setup that fails after registering the service leaves neither behind."""
+    _ = esphome_device
+    config_entry.add_to_hass(hass)
+    with patch(
+        "homeassistant.config_entries.ConfigEntries.async_forward_entry_setups",
+        side_effect=RuntimeError("platform setup failed"),
+    ):
+        assert not await hass.config_entries.async_setup(config_entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert config_entry.state is ConfigEntryState.SETUP_ERROR
+    assert not hass.services.has_service(DOMAIN, SERVICE_UPDATE_ZONE)
+    assert DATA_STORE not in hass.data.get(DOMAIN, {})
+
+
+async def test_remove_after_failed_unload_does_not_rewrite_the_store(
+    hass, init_integration, device_id, hass_storage
+) -> None:
+    """Removing the entry cancels the live store's pending write."""
+    # Schedules the store's delayed save.
+    await _update_zone(hass, {"device_id": device_id, ATTR_ROTATION_DEG: 15})
+
+    async def _remove(store: Store) -> None:
+        await REAL_STORE_REMOVE(store)
+        hass_storage.pop(store.key, None)
+
+    with (
+        patch.object(Store, "async_remove", _remove),
+        patch("homeassistant.helpers.storage.os.unlink"),
+    ):
+        # Called directly, as Home Assistant does after an unload that failed:
+        # the live store and its pending write are still in place.
+        await async_remove_entry(hass, init_integration)
+    assert ZONE_STORAGE_KEY not in hass_storage
+
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=5))
+    await hass.async_block_till_done()
+    assert ZONE_STORAGE_KEY not in hass_storage
 
 
 async def test_calibration_services_registered_and_removed_on_unload(

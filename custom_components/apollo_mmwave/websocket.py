@@ -171,9 +171,8 @@ def ws_subscribe_zones(
     def _forward(changed_device_id: str) -> None:
         if changed_device_id != device_id:
             return
-        # The unload pops the store before the entry's teardown callbacks close
-        # this subscription, and a registry update in that gap would otherwise
-        # build a payload from a store that is no longer there.
+        # A safety net: the entry's teardown closes this subscription before it
+        # pops the store, and a payload built without the store would raise.
         if DATA_STORE not in hass.data.get(DOMAIN, {}):
             return
         connection.send_event(msg["id"], _payload(hass, device_id))
@@ -200,9 +199,10 @@ def ws_subscribe_zones(
 
 
 def _calibration_loaded(hass: HomeAssistant) -> bool:
-    # The zone `_answerable` tests only DATA_STORE, which `async_unload_entry`
-    # pops before the on_unload hooks run; a half-set-up entry can have the
-    # reverse. The calibration commands need both of their own keys.
+    # The zone `_answerable` tests only DATA_STORE, which the zone teardown pops
+    # while the calibration teardown may still be waiting on a job; a
+    # half-set-up entry can have the reverse. The calibration commands need
+    # both of their own keys.
     data = hass.data.get(DOMAIN, {})
     return DATA_CALIBRATION_STORE in data and DATA_CALIBRATION_JOBS in data
 
