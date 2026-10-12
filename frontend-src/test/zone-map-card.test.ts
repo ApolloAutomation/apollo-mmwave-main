@@ -1935,10 +1935,24 @@ function recordingContext() {
 }
 
 /**
+ * A hass push that moved the radar's detected target (the suggested pair in
+ * ZONE_PAYLOAD) 100 mm along x, which is the kind of push that repaints.
+ */
+function pushTargetMove(card: any, hass: any) {
+  const x = Number(hass.states["sensor.a_x"]?.state ?? 0) + 100;
+  hass.states = {
+    ...hass.states,
+    "sensor.a_x": { state: String(x) },
+    "sensor.a_y": { state: "2000" },
+  };
+  card.hass = hass;
+}
+
+/**
  * The rect and ellipse rubber band across repaints.
  *
- * `set hass` repaints on every state change in the instance, and a zone
- * payload repaints too. The dashed rect or ellipse preview used to be painted
+ * `set hass` repaints whenever a tracked target moves, and a zone payload
+ * repaints too. The dashed rect or ellipse preview used to be painted
  * only by the pointer-move handler, right after its own repaint, so any other
  * repaint wiped it until the next move and a still finger saw it blink out.
  * The preview is now rebuilt from the stored cursor point on every repaint,
@@ -1998,7 +2012,7 @@ describe("zone map card rect and ellipse preview across repaints", () => {
     dragTo300x250(card);
     calls.length = 0;
 
-    card.hass = hass;
+    pushTargetMove(card, hass);
 
     expect(card.isDrawing).toBe(true);
     expect(calls.some(([name]) => name === "clearRect")).toBe(true);
@@ -2011,9 +2025,10 @@ describe("zone map card rect and ellipse preview across repaints", () => {
     dragTo300x250(card);
     calls.length = 0;
 
-    card.hass = hass;
+    pushTargetMove(card, hass);
 
     expect(card.isDrawing).toBe(true);
+    expect(calls.some(([name]) => name === "clearRect")).toBe(true);
     expect(dashes(calls)).toBe(1);
     expect(ellipsePreviews(calls)).toEqual([[200, 175, 100, 75, 0, 0, Math.PI * 2]]);
   });
@@ -2029,9 +2044,10 @@ describe("zone map card rect and ellipse preview across repaints", () => {
     card.canvas.dispatchEvent(touch("touchmove", 300, 250));
     calls.length = 0;
 
-    card.hass = hass;
+    pushTargetMove(card, hass);
 
     expect(card.isDrawing).toBe(true);
+    expect(calls.some(([name]) => name === "clearRect")).toBe(true);
     expect(rectPreviews(calls)).toEqual([[100, 100, 200, 150]]);
   });
 
@@ -2071,12 +2087,117 @@ describe("zone map card rect and ellipse preview across repaints", () => {
     expect(card._cursorPoint).toBeNull();
 
     calls.length = 0;
-    card.hass = hass;
+    pushTargetMove(card, hass);
 
     expect(calls.some(([name]) => name === "clearRect")).toBe(true);
     expect(dashes(calls)).toBe(0);
     // Only the saved zone's own solid outline, with no preview beside it.
     expect((previews as typeof rectPreviews)(calls)).toHaveLength(1);
+  });
+});
+
+/**
+ * Which hass pushes repaint the map.
+ *
+ * Home Assistant assigns a new hass on every state change in the instance,
+ * and `set hass` used to repaint the whole canvas (grid, cone, every zone) for
+ * each one. The tracked targets are the only part of the picture read from
+ * hass, so only a push that changes one of their state strings repaints.
+ */
+describe("zone map card repaints on hass pushes", () => {
+  function clears(calls: Array<[string, any[]]>): number {
+    return calls.filter(([name]) => name === "clearRect").length;
+  }
+
+  /** Target circles drawn by drawCurrentPosition (radius 10). */
+  function targets(calls: Array<[string, any[]]>): any[][] {
+    return calls.filter(([name, args]) => name === "arc" && args[2] === 10).map(([, a]) => a);
+  }
+
+  /** Mounted on the payload's detected pair, with the target at (500, 2000). */
+  async function trackingCard() {
+    const hass = fakeHass();
+    const card = await mountCard(hass);
+    expect(card.trackedEntities).toEqual([{ x: "sensor.a_x", y: "sensor.a_y" }]);
+    const { ctx, calls } = recordingContext();
+    card.ctx = ctx;
+    hass.states = {
+      "sensor.a_x": { state: "500" },
+      "sensor.a_y": { state: "2000" },
+      "sensor.kitchen_light": { state: "off" },
+    };
+    card.hass = hass;
+    expect(clears(calls)).toBe(1);
+    expect(targets(calls)).toHaveLength(1);
+    calls.length = 0;
+    return { card, hass, calls };
+  }
+
+  it("paints on the first hass assignment", async () => {
+    const hass = fakeHass();
+    const card: any = new ZoneMapCard();
+    card.setConfig({ device_id: "dev123" } as any);
+    expect(card.canvas).toBeTruthy();
+    const { ctx, calls } = recordingContext();
+    card.ctx = ctx;
+
+    card.hass = hass;
+
+    expect(clears(calls)).toBe(1);
+    await vi.waitFor(() => expect(card._zoneConfigPayload).toBeTruthy());
+  });
+
+  it("does not repaint for a new hass whose tracked states are unchanged", async () => {
+    const { card, hass, calls } = await trackingCard();
+
+    // A new object with equal state strings, as HA hands over on every push.
+    card.hass = { ...hass, states: { ...hass.states, "sensor.a_x": { state: "500" } } };
+
+    expect(clears(calls)).toBe(0);
+    expect(calls).toEqual([]);
+  });
+
+  it("does not repaint when only an untracked entity changes", async () => {
+    const { card, hass, calls } = await trackingCard();
+
+    card.hass = {
+      ...hass,
+      states: { ...hass.states, "sensor.kitchen_light": { state: "on" } },
+    };
+
+    expect(clears(calls)).toBe(0);
+  });
+
+  it("repaints when a tracked x state changes", async () => {
+    const { card, hass, calls } = await trackingCard();
+    const before = card.valueToPixels(500, "x");
+
+    card.hass = { ...hass, states: { ...hass.states, "sensor.a_x": { state: "750" } } };
+
+    expect(clears(calls)).toBe(1);
+    const painted = targets(calls);
+    expect(painted).toHaveLength(1);
+    expect(painted[0][0]).not.toBeCloseTo(before);
+  });
+
+  it("repaints when a tracked y state changes", async () => {
+    const { card, hass, calls } = await trackingCard();
+
+    card.hass = { ...hass, states: { ...hass.states, "sensor.a_y": { state: "2500" } } };
+
+    expect(clears(calls)).toBe(1);
+  });
+
+  it("repaints to clear a target whose sensor went unavailable", async () => {
+    const { card, hass, calls } = await trackingCard();
+
+    card.hass = {
+      ...hass,
+      states: { ...hass.states, "sensor.a_x": { state: "unavailable" } },
+    };
+
+    expect(clears(calls)).toBe(1);
+    expect(targets(calls)).toEqual([]);
   });
 });
 

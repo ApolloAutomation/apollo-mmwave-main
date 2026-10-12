@@ -201,6 +201,9 @@ export class ZoneMapCard extends HTMLElement {
     // finger is tracked (mouse input, or between gestures).
     this._activeTouchId = null;
     this.trackedEntities = [];
+    // What `set hass` last painted the tracked targets from (see
+    // _trackedStatesKey). null until it first paints, so that one always does.
+    this._paintedTrackedKey = null;
     this.showZones = false;
     this.showConfig = false;
     this._polyPoints = [];
@@ -455,14 +458,40 @@ export class ZoneMapCard extends HTMLElement {
         }
       }
     }
+    // Home Assistant assigns a new hass on every state change in the whole
+    // instance, and the tracked targets are the only part of the picture drawn
+    // from it. Everything else (zones, rotation, mode, lock, theme, config)
+    // repaints itself when it changes, so a push that moved no tracked target
+    // leaves the canvas as it is.
     if (this.canvas) {
-      this.drawGrid();
+      const trackedKey = this._trackedStatesKey();
+      if (trackedKey !== this._paintedTrackedKey) {
+        this._paintedTrackedKey = trackedKey;
+        this.drawGrid();
+      }
     }
     if (firstTime && this._hass) {
       // The store, not the entity registry, is where zones live now, so this
       // does not wait for a canvas or for any entity to exist.
       this._connectZones();
     }
+  }
+
+  /**
+   * Everything _drawTrackedTargets reads from hass: each pair's entity ids and
+   * the state strings of both. Two hass objects with the same key paint the
+   * same targets.
+   */
+  _trackedStatesKey() {
+    const states = this._hass?.states;
+    return JSON.stringify(
+      this.trackedEntities.map((pair) => [
+        pair.x,
+        states?.[pair.x]?.state,
+        pair.y,
+        states?.[pair.y]?.state,
+      ]),
+    );
   }
 
   connectedCallback() {
