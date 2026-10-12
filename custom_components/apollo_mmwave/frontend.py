@@ -272,8 +272,9 @@ def _dashboards_collection(hass: HomeAssistant) -> Any | None:
     """
     Return Lovelace's storage dashboards collection, or None if unreachable.
 
-    Home Assistant 2025.9 keeps the collection in a local variable inside
-    lovelace's own ``async_setup``; ``hass.data[LOVELACE_DATA]`` carries only
+    Home Assistant 2026.10.0, and 2026.8.1 (the HACS floor), keep the
+    collection in a local variable inside lovelace's own ``async_setup``;
+    ``hass.data[LOVELACE_DATA]`` carries only
     mode/dashboards/resources/yaml_dashboards. The one live reference is the
     websocket CRUD object bound to the ``lovelace/dashboards/*`` commands, so
     borrow it from the command registry. Constructing our own
@@ -284,7 +285,8 @@ def _dashboards_collection(hass: HomeAssistant) -> Any | None:
     lovelace_data = hass.data.get(LOVELACE_DATA)
     if lovelace_data is None:
         return None
-    # Preferred path if a future release ever puts it on the dataclass.
+    # Forward-compat only: no release defines this attribute as of 2026.10.0.
+    # It is the preferred path if a future release puts it on the dataclass.
     collection = getattr(lovelace_data, "dashboards_collection", None)
     if collection is not None:
         return collection
@@ -381,14 +383,13 @@ def _desired_config(
 
 async def async_register_dashboard(
     hass: HomeAssistant, devices: list[str] | None = None
-) -> bool:
+) -> None:
     """
     Create the "Apollo mmWave" dashboard as a normal storage dashboard.
 
     Creates the collection item if the "auto-create dashboard" option is on and
     it is missing, then keeps the strategy config current (the explicit device
-    selection can change). Never touches a dashboard that is not ours. Returns
-    False only if Lovelace's internals could not be reached at all.
+    selection can change). Never touches a dashboard that is not ours.
     """
     collection: Any = None
     # The row this call created, if any; it is rolled back if anything after
@@ -404,7 +405,7 @@ async def async_register_dashboard(
                 DASHBOARD_TITLE,
                 DASHBOARD_STRATEGY_TYPE,
             )
-            return False
+            return
 
         # Ownership is read from the stored strategy config (_is_ours). The
         # call that creates the row is exempt only because the row has no
@@ -419,7 +420,7 @@ async def async_register_dashboard(
                     "Apollo mmWave: another dashboard already owns '%s'; skipping.",
                     DASHBOARD_URL_PATH,
                 )
-                return True
+                return
             item = await collection.async_create_item(
                 {
                     CONF_URL_PATH: DASHBOARD_URL_PATH,
@@ -446,12 +447,12 @@ async def async_register_dashboard(
                 " leaving its config alone.",
                 DASHBOARD_TITLE,
             )
-            return True
+            return
 
         desired = _desired_config(devices, stored)
         if stored == desired:
             _LOGGER.debug("Apollo mmWave: dashboard already registered.")
-            return True
+            return
         dashboard = hass.data[LOVELACE_DATA].dashboards[DASHBOARD_URL_PATH]
         # async_save fires the lovelace_updated event, so open tabs pick up a
         # changed device selection without a reload.
@@ -465,9 +466,6 @@ async def async_register_dashboard(
         )
         if created is not None:
             await _async_roll_back_created_row(collection, created)
-        return True
-    else:
-        return True
 
 
 async def _async_roll_back_created_row(collection: Any, item: dict[str, Any]) -> None:
