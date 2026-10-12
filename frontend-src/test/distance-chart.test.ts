@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { render, type TemplateResult } from "lit";
+import { nothing, render, type TemplateResult } from "lit";
 import { distanceModel, renderDistanceChart } from "../src/charts/distance-chart";
 import { entityMapFromBaseName, entityMapFromDevice } from "../src/entities";
 import { LD2410_PROFILE, LD2412_PROFILE } from "../src/profiles";
@@ -20,6 +20,26 @@ function ent(state: string, uom?: string): HassEntity {
 
 function hass(states: Record<string, HassEntity>): HomeAssistant {
   return { states, entities: {}, devices: {} };
+}
+
+/** G1..Gn, the labels of n distance bands. */
+function gateLabels(n: number): string[] {
+  return Array.from({ length: n }, (_, i) => `G${i + 1}`);
+}
+
+/** The labels of the Gates row's bands, left to right. Each band is an hsl()
+ *  colored rect followed by its label, and no other row uses hsl(). */
+function bandLabels(markup: string): string[] {
+  return [...markup.matchAll(/fill=hsl\([^)]*\)><\/rect>\s*<text[^>]*>([^<]*)<\/text>/g)].map(
+    (b) => b[1]
+  );
+}
+
+/** The rotated axis tick labels, left to right, as [value, unit] pairs. */
+function ticks(markup: string): [string, string][] {
+  return [...markup.matchAll(/transform="rotate\(-45 [^"]*"[^>]*>([^ <]+) ([a-z]+)<\/text>/g)].map(
+    (t) => [t[1], t[2]]
+  );
 }
 
 describe("distanceModel", () => {
@@ -112,6 +132,8 @@ describe("distanceModel", () => {
     expect(model.maxRange).toBeCloseTo(6, 6);
     expect(model.maxMove).toBeCloseTo(6, 6);
     expect(model.maxMove!).toBeLessThanOrEqual(model.maxRange + 1e-9);
+    // The chart draws all 8 bands, not 7 with the G8 bar clamped to the edge.
+    expect(bandLabels(flat(renderDistanceChart(h, map, "m")))).toEqual(gateLabels(8));
   });
 
   it("keeps 8 bands when a middle threshold is unregistered", () => {
@@ -122,6 +144,76 @@ describe("distanceModel", () => {
     const model = distanceModel(h, map, "m");
     expect(model.gateCount).toBe(8);
     expect(model.maxRange).toBeCloseTo(6, 6);
+  });
+});
+
+describe("renderDistanceChart bands and ticks", () => {
+  const ld2412 = LD2412_PROFILE.entityMap(base);
+
+  function gates075(map: EntityMap): HomeAssistant {
+    return hass({ [map.gate_size!]: ent("0.75m") });
+  }
+
+  it("renders nothing for a map with no gate entities", () => {
+    const empty: EntityMap = {
+      ...m,
+      move_threshold: [],
+      still_threshold: [],
+      move_energy: [],
+      still_energy: [],
+    };
+    const h = hass({ [m.gate_size!]: ent("0.75m"), [m.detection_distance!]: ent("1", "m") });
+    expect(renderDistanceChart(h, empty, "m")).toBe(nothing);
+  });
+
+  it("renders meter ticks every 0.75 m from 0 to 6, with no repeats", () => {
+    const t = ticks(flat(renderDistanceChart(gates075(m), m, "m")));
+    // toFixed(0) once rendered these as "0, 1, 2, 2, 3, 4, 5, 5, 6".
+    expect(t.map(([v]) => v)).toEqual(["0", "0.75", "1.5", "2.25", "3", "3.75", "4.5", "5.25", "6"]);
+    expect(t.every(([, u]) => u === "m")).toBe(true);
+  });
+
+  it("renders inch ticks as distinct whole numbers", () => {
+    const t = ticks(flat(renderDistanceChart(gates075(m), m, "in")));
+    const values = t.map(([v]) => v);
+    expect(values).toHaveLength(9);
+    for (const v of values) expect(v).toMatch(/^\d+$/);
+    expect(new Set(values).size).toBe(values.length);
+    expect(t.every(([, u]) => u === "in")).toBe(true);
+  });
+
+  it("renders centimeter ticks from 0 to 600 in steps of 75", () => {
+    const t = ticks(flat(renderDistanceChart(gates075(m), m, "cm")));
+    expect(t.map(([v]) => v)).toEqual(Array.from({ length: 9 }, (_, i) => String(75 * i)));
+  });
+
+  it("labels the LD2410's 8 bands G1..G8, with no G0 or G9", () => {
+    const markup = flat(renderDistanceChart(gates075(m), m, "m"));
+    expect(bandLabels(markup)).toEqual(gateLabels(8));
+    for (const g of gateLabels(8)) expect(markup).toContain(`>${g}<`);
+    expect(markup).not.toContain(">G0<");
+    expect(markup).not.toContain(">G9<");
+    expect(ticks(markup)).toHaveLength(9);
+  });
+
+  it("labels the LD2412's 13 bands G1..G13, with 14 ticks and Max/Min Gate rows", () => {
+    const h = hass({
+      [ld2412.gate_size!]: ent("0.75m"),
+      [ld2412.max_move_distance!]: ent("12"),
+      [ld2412.max_still_distance!]: ent("1"),
+    });
+    const markup = flat(
+      renderDistanceChart(h, ld2412, "m", LD2412_PROFILE.maxBarLabels, "LD2412")
+    );
+    expect(bandLabels(markup)).toEqual(gateLabels(13));
+    for (const g of gateLabels(13)) expect(markup).toContain(`>${g}<`);
+    expect(markup).not.toContain(">G0<");
+    expect(markup).not.toContain(">G14<");
+    expect(ticks(markup)).toHaveLength(14);
+    expect(markup).toContain(">Max Gate</text>");
+    expect(markup).toContain(">Min Gate</text>");
+    expect(markup).not.toContain("Max Move");
+    expect(markup).not.toContain("Max Still");
   });
 });
 

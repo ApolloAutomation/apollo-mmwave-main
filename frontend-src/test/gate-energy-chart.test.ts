@@ -2,7 +2,8 @@ import { describe, it, expect, vi } from "vitest";
 import { render } from "lit";
 import { gateEnergyModel, renderGateEnergyChart } from "../src/charts/gate-energy-chart";
 import { entityMapFromBaseName, entityMapFromDevice } from "../src/entities";
-import type { HomeAssistant, HassEntity } from "../src/types";
+import { LD2412_PROFILE } from "../src/profiles";
+import type { EntityMap, HomeAssistant, HassEntity } from "../src/types";
 import { flat } from "./template-markup";
 
 const base = "apollo_msr_2_m4c4dd";
@@ -247,5 +248,60 @@ describe("renderGateEnergyChart threshold outline", () => {
     });
     expect(barMarkup(h)).toHaveLength(18);
     expect(barMarkup(h).some((r) => r.includes('stroke-width="2"'))).toBe(false);
+  });
+});
+
+describe("renderGateEnergyChart gates, triangles and clamping", () => {
+  /** Every gate of `map` at energy 30 under threshold 50, with the
+   *  engineering-mode switch reading `mode`. */
+  function allGates(map: EntityMap, mode: string): HomeAssistant {
+    const states: Record<string, HassEntity> = { [map.engineering_mode!]: ent(mode) };
+    for (const id of [...map.move_energy, ...map.still_energy]) states[id] = ent("30");
+    for (const id of [...map.move_threshold, ...map.still_threshold]) states[id] = ent("50");
+    return hass(states);
+  }
+
+  /** The threshold triangles (the chart's only <path> elements). */
+  function triangles(markup: string): string[] {
+    return markup.match(/<path d="M [^"]*"/g) ?? [];
+  }
+
+  it("draws 14 gate slots, G0..G13, for an LD2412", () => {
+    const r = LD2412_PROFILE.entityMap("apollo_r_pro_1_w_abc123");
+    const markup = flat(renderGateEnergyChart(allGates(r, "on"), r, "LD2412"));
+    for (let g = 0; g <= 13; g++) expect(markup).toContain(`>G${g}</text>`);
+    expect(markup).not.toContain(">G14</text>");
+    expect(markup.match(/<rect[^>]*fill=#(?:4b0082|274e13)[^>]*>/g)).toHaveLength(28);
+    expect(triangles(markup)).toHaveLength(28);
+  });
+
+  it("draws threshold triangles only while engineering mode is on", () => {
+    expect(triangles(flat(renderGateEnergyChart(allGates(m, "on"), m)))).toHaveLength(18);
+    expect(triangles(flat(renderGateEnergyChart(allGates(m, "off"), m)))).toEqual([]);
+  });
+
+  it("shows the overlay text only while engineering mode is off", () => {
+    // The <title> also mentions turning on Radar Engineering Mode, so assert
+    // on the overlay's second line, which only the overlay has.
+    const OVERLAY = "to see gate energy values";
+    expect(flat(renderGateEnergyChart(allGates(m, "off"), m))).toContain(OVERLAY);
+    expect(flat(renderGateEnergyChart(allGates(m, "on"), m))).not.toContain(OVERLAY);
+  });
+
+  it("clamps energies to the 0..100 plot", () => {
+    const at = (move: string, still: string) =>
+      flat(
+        renderGateEnergyChart(
+          hass({
+            [m.engineering_mode!]: ent("on"),
+            [m.move_energy[0]]: ent(move),
+            [m.still_energy[0]]: ent(still),
+          }),
+          m
+        )
+      );
+    // 150 draws as a full bar and -20 as an empty one, never past the axes.
+    expect(at("150", "-20")).toBe(at("100", "0"));
+    expect(at("150", "-20")).not.toMatch(/height=-/);
   });
 });

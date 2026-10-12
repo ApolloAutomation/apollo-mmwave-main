@@ -3,7 +3,8 @@
  * "device not found" guard: a card pointed at a device with no gate radar
  * must say so instead of rendering nothing. They also pin the default title,
  * which names the chip the card resolved to, and the render gate: each card
- * re-renders only for the entities its own chart draws.
+ * re-renders only for the entities its own chart draws. The element tags,
+ * stub configs and the distance card's unit fallback are pinned as well.
  */
 
 import { afterEach, describe, it, expect, vi } from "vitest";
@@ -208,6 +209,46 @@ describe("card picker and chart styles", () => {
     const markup = flat((card as unknown as { render(): unknown }).render());
     expect(markup).toContain("<title>Min Gate: gates below this one are ignored for detection.</title>");
   });
+});
+
+describe("card registration and stub configs", () => {
+  it.each([
+    ["apollo-radar-distance-card", ApolloLd2410DistanceCard],
+    ["apollo-radar-gate-energy-card", ApolloLd2410GateEnergyCard],
+  ] as const)("defines <%s> with a stub config of its own type", (tag, ctor) => {
+    expect(customElements.get(tag)).toBe(ctor);
+    expect(ctor.getStubConfig()).toEqual({ type: `custom:${tag}` });
+  });
+});
+
+describe("distance card distance_unit", () => {
+  /** The unit of each axis tick the MSR-2 distance card draws, with HA's
+   *  unit system length set to `length`. */
+  async function tickUnits(config: Record<string, unknown>, length: string): Promise<string[]> {
+    const card = new ApolloLd2410DistanceCard();
+    document.body.appendChild(card);
+    card.setConfig({ type: "custom:x", device_id: "msr", ...config });
+    card.hass = { ...hass(), config: { unit_system: { length } } };
+    await card.updateComplete;
+    const markup = flat((card as unknown as { render(): unknown }).render());
+    return [...markup.matchAll(/transform="rotate\(-45 [^"]*"[^>]*>[^ <]+ ([a-z]+)<\/text>/g)].map(
+      (t) => t[1]
+    );
+  }
+
+  it("draws the configured unit when it is valid", async () => {
+    expect(await tickUnits({ distance_unit: "cm" }, "mi")).toEqual(Array(9).fill("cm"));
+  });
+
+  it.each([
+    ["km", "m"],
+    ["mi", "in"],
+  ])(
+    "falls back to HA's default for an invalid unit (unit system length %s draws %s)",
+    async (length, unit) => {
+      expect(await tickUnits({ distance_unit: "furlong" }, length)).toEqual(Array(9).fill(unit));
+    }
+  );
 });
 
 // ---------------------------------------------------------------------------
