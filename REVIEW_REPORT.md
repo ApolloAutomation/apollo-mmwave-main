@@ -5,9 +5,9 @@ The audit mapped the code into ARCHITECTURE.md, found 336 unique issues and veri
 It also built the scope you added during the run: empty-room auto-calibration for LD2410 and LD2412 radars and first-run dashboard improvements (bumped to version 2.2.0, not yet released), plus two Apollo Wiki guides.
 All 7 high-severity findings are fixed. pytest went from 107 to 490 tests, vitest from 208 tests in 20 files to 737 in 27, and npm audit from 10 advisories (3 critical) to 0. The shipped bundles stayed byte-identical through the toolchain upgrade.
 As of ca4d56e the branch had 129 commits on top of the baseline. Two more fixes (cdd64a5, 711f65b) and the docs commit that adds this file come on top of that.
-Merge status: pending final CI
+Merge status: all merge conditions met (full build, every baseline test kept or deliberately replaced, all new tests, CI green, no conflicts). Merged into `main` with a merge commit through PR #7; the post-merge verification is recorded as the final comment on the PR.
 PR: [ApolloAutomation/apollo-mmwave-main#7](https://github.com/ApolloAutomation/apollo-mmwave-main/pull/7) (draft, into `main`).
-Wiki: branch `docs/apollo-mmwave-dashboard` in ApolloAutomation/docs (commits f1d3fab2 and 0b782fbf). It is local only until pushed, and will then be a PR into `dev`: https://github.com/ApolloAutomation/docs/tree/docs/apollo-mmwave-dashboard
+Wiki: [ApolloAutomation/docs#1150](https://github.com/ApolloAutomation/docs/pull/1150), branch `docs/apollo-mmwave-dashboard` (commits f1d3fab2 and 0b782fbf) into `dev`, open for the wiki maintainers to merge. Publish it after this PR is merged.
 
 ## Repo health before and after
 
@@ -436,9 +436,9 @@ A finder marked these as touching a tuning parameter, or the work list names a t
 2. **Confirm the LD2410 factory-threshold table on a factory-reset MSR-2 (X60),** and reword "from the manual" if the manual still does not list the values.
 3. **(Done) X10.** Fixed in 711f65b before the merge.
 4. **Ship release notes for every user-visible change.** Most important is the `zone_id: 0` refusal and its workaround (edit `.storage/apollo_mmwave.zones` with HA stopped). Also cover B02's dropped events for no-op calls, `input_units` now surviving restarts, a malformed store file being replaced on setup, and the calibration feature. The docs pass is adding a "What changed in 2.2.0" section to the README for this.
-5. **Finish the merge.** Watch CI on the final commit, mark PR #7 ready, merge into `main`, and run the post-merge check.
+5. **(Done) Merge.** PR #7 merged into `main` with a merge commit after CI passed; see its final comment for the post-merge check. Note that HACS installs from the default branch while the repository has no releases, so the merge makes 2.2.0 available to HACS users. Consider tagging a release once items 1 and 2 are done.
 6. **Wiki.**
-   - Push `docs/apollo-mmwave-dashboard` and open the PR into `dev`.
+   - Review and merge [ApolloAutomation/docs#1150](https://github.com/ApolloAutomation/docs/pull/1150) into `dev`, then publish.
    - Add screenshots; the guides have none yet.
    - Check the HA UI details the fixer could not confirm in a live install: the Take control dialog, no tab bar on a single-radar install, the Finish button, "+ N entities not shown", and the power icon.
    - Decide whether the Homey copy should show the MTR-1 tip.
@@ -489,6 +489,6 @@ The baseline was run on origin/main at 49e8225 (Python 3.14.8, pytest-homeassist
 
 After the final verification, b9b88b9, e76b424 and ca4d56e kept vitest at 737 tests in 27 files and pytest at 488. Every baseline test still passes except seven that were deliberately renamed, replaced or removed along with the code they covered. pytest: `test_input_units_round_trip_through_the_store` became `test_service_stores_input_units` (B03, 3bde3f4). vitest: 'lists all seven panel keys' (Q12, 6934f7e) and 'constructs the three target pairs from a base' and 'hasLd2450 (base-name fallback) accepts the MTR-1 spelling' (F04, 07c6a9d) were deleted with the dead code they tested. 'returns one tick per gate, ending at the full width' went with gateTicks (Q14, 4208409). The register re-assert test was replaced by T15's polyfill-model cases (83afaaf). The zone-churn regeneration test was replaced by one on real R PRO-1 and MTR-1 zone entities (F05, 3a19762). CI failed the vitest job on 73c6da5 and on e76b424 (the date-dependent tests). On ca4d56e, all five CI jobs passed: Ruff, pytest (HA 2026.10.0), vitest + bundle sync, Hassfest and HACS.
 
-CI on the final commit: pending
+CI on 1b66618, the last code and docs commit before this status update: all six checks passed (Ruff, pytest on HA 2026.10.0, vitest + bundle sync, Hassfest, HACS validation, CodeRabbit). The status-only commit that follows changes this file alone and was merged after its own CI passed.
 
-Post-merge verification on main: pending
+Post-merge verification on main: recorded as the final comment on PR #7.
