@@ -447,6 +447,143 @@ async def test_delete_without_zone_id_changes_nothing(
     assert "without a zone_id" in caplog.text
 
 
+RECT = {"x_min": -1000, "x_max": 1000, "y_min": 0, "y_max": 2000}
+
+
+async def test_zone_id_alone_mints_no_store_entry(
+    hass, init_integration, device_id, caplog
+) -> None:
+    """A zone_id with nothing to do to the zone is refused like a bare device_id."""
+    _ = init_integration
+    events = []
+    hass.bus.async_listen(EVENT_ZONE_UPDATED, events.append)
+
+    await _update_zone(hass, {"device_id": device_id, "zone_id": 1})
+
+    assert device_id not in get_store(hass).devices
+    assert events == []
+    assert "carried nothing to change" in caplog.text
+
+
+async def test_zone_id_with_data_but_no_shape_mints_nothing(
+    hass, init_integration, device_id, caplog
+) -> None:
+    """Data without a shape is ignored, so the call must not count as a change."""
+    _ = init_integration
+    events = []
+    hass.bus.async_listen(EVENT_ZONE_UPDATED, events.append)
+
+    await _update_zone(hass, {"device_id": device_id, "zone_id": 1, "data": RECT})
+
+    assert device_id not in get_store(hass).devices
+    assert events == []
+    assert "without a shape" in caplog.text
+    assert "carried nothing to change" in caplog.text
+
+
+async def test_rename_unknown_zone_warns(
+    hass, init_integration, device_id, caplog
+) -> None:
+    """Renaming a zone that was never stored is reported and changes nothing."""
+    _ = init_integration
+    events = []
+    hass.bus.async_listen(EVENT_ZONE_UPDATED, events.append)
+
+    await _update_zone(hass, {"device_id": device_id, "zone_id": 7, "name": "Couch"})
+
+    assert device_id not in get_store(hass).devices
+    assert events == []
+    assert "does not exist" in caplog.text
+
+
+async def test_rename_unknown_zone_with_rotation_still_applies_rotation(
+    hass, init_integration, device_id, caplog
+) -> None:
+    """A missing-zone rename must not drop the device-wide part of the call."""
+    _ = init_integration
+    events = []
+    hass.bus.async_listen(EVENT_ZONE_UPDATED, events.append)
+
+    await _update_zone(
+        hass,
+        {
+            "device_id": device_id,
+            "zone_id": 7,
+            "name": "Couch",
+            ATTR_ROTATION_DEG: 90,
+        },
+    )
+
+    device = get_store(hass).devices[device_id]
+    assert device[ATTR_ROTATION_DEG] == 90
+    assert 7 not in device[STORE_ZONES]
+    assert len(events) == 1
+    assert "does not exist" in caplog.text
+
+
+async def test_geometry_without_zone_id_warns(
+    hass, init_integration, device_id, caplog
+) -> None:
+    """Geometry with no zone_id is named as ignored, with or without other fields."""
+    _ = init_integration
+    await _update_zone(
+        hass,
+        {
+            "device_id": device_id,
+            "shape": "rect",
+            "data": RECT,
+            ATTR_ROTATION_DEG: 10,
+        },
+    )
+
+    device = get_store(hass).devices[device_id]
+    assert device[ATTR_ROTATION_DEG] == 10
+    assert device[STORE_ZONES] == {}
+    assert "geometry without a zone_id" in caplog.text
+
+
+async def test_geometry_without_zone_id_alone_is_refused(
+    hass, init_integration, device_id, caplog
+) -> None:
+    """Geometry with no zone_id and nothing else writes no store entry."""
+    _ = init_integration
+    await _update_zone(hass, {"device_id": device_id, "shape": "rect", "data": RECT})
+
+    assert device_id not in get_store(hass).devices
+    assert "geometry without a zone_id" in caplog.text
+    assert "carried nothing to change" in caplog.text
+
+
+async def test_shape_none_clears_zone_geometry(
+    hass, init_integration, device_id
+) -> None:
+    """`shape: none` is the documented way to clear a zone, and it works."""
+    _ = init_integration
+    await _create_rect_zone(hass, device_id)
+
+    await _update_zone(hass, {"device_id": device_id, "zone_id": 1, "shape": "none"})
+
+    zone = get_store(hass).devices[device_id][STORE_ZONES][1]
+    assert zone == {"shape": "none", "data": None}
+
+
+async def test_data_null_without_shape_keeps_geometry(
+    hass, init_integration, device_id, caplog
+) -> None:
+    """`data: null` without a shape is not a clear, and is refused as a no-op."""
+    _ = init_integration
+    await _create_rect_zone(hass, device_id)
+    events = []
+    hass.bus.async_listen(EVENT_ZONE_UPDATED, events.append)
+
+    await _update_zone(hass, {"device_id": device_id, "zone_id": 1, "data": None})
+
+    zone = get_store(hass).devices[device_id][STORE_ZONES][1]
+    assert zone == {"shape": "rect", "data": RECT}
+    assert events == []
+    assert "carried nothing to change" in caplog.text
+
+
 async def test_zone_rename_updates_generated_names_only(
     hass, init_integration, device_id
 ) -> None:

@@ -433,8 +433,33 @@ def _apply_entity_pairs(device: dict[str, Any], call: ServiceCall) -> None:
         device[STORE_ENTITIES] = entities
 
 
+def _zone_part_changes_something(
+    call: ServiceCall, store: ZoneStore, device_id: str, zone_id: int | None
+) -> bool:
+    """Report whether the zone fields of a call act on a zone."""
+    if zone_id is None:
+        return False
+    if call.data.get("delete") or call.data.get("shape") is not None:
+        return True
+    # A zone_id alone, or with data but no shape, writes nothing to the zone.
+    if call.data.get("name") is None:
+        return False
+    # A rename without geometry only lands on a stored zone. `store.device()`
+    # and `store.zone()` are both setdefaults, so the lookup must not use them.
+    zones = (store.devices.get(device_id) or {}).get(STORE_ZONES) or {}
+    if isinstance(zones.get(zone_id), dict):
+        return True
+    _LOGGER.warning(
+        "Apollo mmWave: update_zone for device '%s' named zone %s, which does"
+        " not exist; the name was not applied.",
+        device_id,
+        zone_id,
+    )
+    return False
+
+
 def _call_changes_something(
-    call: ServiceCall, device_id: str, rotation: int | None
+    call: ServiceCall, store: ZoneStore, device_id: str, rotation: int | None
 ) -> bool:
     """Refuse the schema-legal calls that would change nothing, and say why."""
     zone_id = call.data.get("zone_id")
@@ -451,12 +476,23 @@ def _call_changes_something(
             " without a shape, so the data was ignored.",
             device_id,
         )
+    if zone_id is None and (
+        call.data.get("shape") is not None or call.data.get("data") is not None
+    ):
+        _LOGGER.warning(
+            "Apollo mmWave: update_zone for device '%s' carried zone geometry"
+            " without a zone_id, so the geometry was ignored.",
+            device_id,
+        )
+    # Evaluated first so a rename of a missing zone is reported even when the
+    # call's device-wide fields count on their own and still go through.
+    zone_counts = _zone_part_changes_something(call, store, device_id, zone_id)
     if (
         rotation is not None
         or call.data.get("input_units") is not None
         or call.data.get("clear_entities")
         or _normalize_entities(call.data.get("entities")) is not None
-        or zone_id is not None
+        or zone_counts
     ):
         return True
     # `store.device()` is a setdefault: reading it for this call would mint a
@@ -485,7 +521,7 @@ def _build_update_zone_handler(
         zone_name = _coerce_zone_name(call.data.get("name"))
         delete_zone = bool(call.data.get("delete"))
 
-        if not _call_changes_something(call, device_id, rotation):
+        if not _call_changes_something(call, store, device_id, rotation):
             return
 
         device = store.device(device_id)
