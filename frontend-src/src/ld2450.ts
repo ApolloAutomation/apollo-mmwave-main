@@ -7,23 +7,12 @@ import type { HomeAssistant } from "./types";
  * Apollo Zone Map card draws occupancy zones over, it is not tuned with
  * per-gate thresholds, so it has no tuning profile.
  *
- * Entity naming is derived from R-PRO-1 firmware
- * (`Integrations/ESPHome/Core.yaml`): the three targets expose
- * `sensor.<base>_ld2450_target_<n>_x` / `_y`.
+ * Entity naming comes from the Apollo ESPHome firmware, which exposes three
+ * targets. The R-PRO-1 names them "LD2450 Target-1 X" and so on, giving
+ * `sensor.<base>_ld2450_target_<n>_x` / `_y`; the MTR-1 names them
+ * "Target-1 X", giving `sensor.<base>_target_<n>_x` / `_y`. Either spelling
+ * may carry HA's `_2` dedup tail.
  */
-
-export interface Ld2450TargetPair {
-  x: string;
-  y: string;
-}
-
-/** The three LD2450 target X/Y coordinate-sensor pairs for a device base. */
-export function ld2450TargetPairs(base: string): Ld2450TargetPair[] {
-  return [1, 2, 3].map((n) => ({
-    x: `sensor.${base}_ld2450_target_${n}_x`,
-    y: `sensor.${base}_ld2450_target_${n}_y`,
-  }));
-}
 
 // Suffix-matched against actual entity ids so renamed prefixes and HA's `_2`
 // dedup suffix don't break detection. The target number sits before the dedup
@@ -53,16 +42,6 @@ export function hasLd2450Device(hass: HomeAssistant, deviceId: string): boolean 
     if (TARGET_X.test(id.slice(id.indexOf(".") + 1))) return true;
   }
   return false;
-}
-
-/** Base-name fallback: true when constructed target ids exist in states,
- *  in either the R-PRO-1 (`_ld2450_target_1_x`) or MTR-1 (`_target_1_x`)
- *  spelling. */
-export function hasLd2450(hass: HomeAssistant, base: string): boolean {
-  return (
-    ld2450TargetPairs(base).some((p) => p.x in hass.states) ||
-    [1, 2, 3].some((n) => `sensor.${base}_target_${n}_x` in hass.states)
-  );
 }
 
 /**

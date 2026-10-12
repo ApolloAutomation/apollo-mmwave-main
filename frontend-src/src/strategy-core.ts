@@ -6,7 +6,7 @@ import {
 } from "./entities";
 import { ld2450EntityIds } from "./ld2450";
 import { apolloModelInfo, isEsphomeDevice, type RadarProfile } from "./profiles";
-import { hasLd2450, hasLd2450Device, zoneMapCard } from "./ld2450";
+import { hasLd2450Device, zoneMapCard } from "./ld2450";
 import {
   controlRows,
   zoneConfigRows,
@@ -129,10 +129,10 @@ function deviceFromId(
   // (DIY/reflashed hardware); the registry decides when probing is blind
   // (e.g. every chip-specific entity disabled or renamed beyond recognition).
   const profile = detectProfileFromEntities(hass, deviceId) ?? reg?.profile;
-  const ld2450 =
-    hasLd2450Device(hass, deviceId) ||
-    (base ? hasLd2450(hass, base) : false) ||
-    (reg?.ld2450 ?? false);
+  // LD2450 evidence is device-scoped only. Probing ids built from the base in
+  // the global states would let a same-named radar's target sensors flag a
+  // gate-only device, and this device's own sensors are in `hass.entities`.
+  const ld2450 = hasLd2450Device(hass, deviceId) || (reg?.ld2450 ?? false);
   // Include the device if it has either a tunable gate radar or an LD2450 —
   // a forced device stays even if neither is detectable (offline + unknown
   // model): its tab explains the situation instead of silently vanishing.

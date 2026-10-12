@@ -312,3 +312,89 @@ describe("LD2450 zone mapping", () => {
     expect(types).toContain("custom:apollo-radar-zone-map-card");
   });
 });
+
+describe("LD2450 detection across same-named radars", () => {
+  // Two radars renamed to the same HA name with "rename entity ids" ticked
+  // share the base `office`; the second one's ids carry HA's `_2` tail. The
+  // LD2450 flag must come from a device's own entities (or its registry
+  // model), never from another device's target sensors that share its base.
+  const msrIds = [
+    "switch.office_radar_engineering_mode_2",
+    "number.office_g3_move_threshold_2",
+  ];
+  const trackers = [
+    {
+      label: "R-PRO-1",
+      model: "R-PRO-1-W",
+      ids: [
+        "switch.office_ld2412_engineering_mode",
+        "sensor.office_ld2450_target_1_x",
+        "sensor.office_ld2450_target_1_y",
+      ],
+    },
+    {
+      label: "MTR-1",
+      model: "MTR-1",
+      ids: ["sensor.office_target_1_x", "sensor.office_target_1_y"],
+    },
+  ];
+
+  function sameNameHass(
+    trackerIds: string[],
+    trackerModel: string,
+    withModels: boolean
+  ): HomeAssistant {
+    const states: Record<string, HassEntity> = {};
+    const entities: HomeAssistant["entities"] = {};
+    const own = (ids: string[], deviceId: string): void => {
+      for (const id of ids) {
+        const state = id.startsWith("sensor.") ? "1200" : "off";
+        states[id] = { entity_id: id, state, attributes: {} };
+        entities[id] = { device_id: deviceId, platform: "esphome" };
+      }
+    };
+    own(msrIds, "msr");
+    own(trackerIds, "tracker");
+    const reg = (model: string) =>
+      withModels ? { manufacturer: "ApolloAutomation", model } : {};
+    return {
+      states,
+      entities,
+      devices: {
+        msr: { name: "Office", ...reg("MSR-2") },
+        tracker: { name: "Office", ...reg(trackerModel) },
+      },
+    };
+  }
+
+  const isZoneMap = (c: any) => c.type === "custom:apollo-radar-zone-map-card";
+  const isZoneHeader = (c: any) =>
+    c.type === "heading" && c.heading === "Zone Map";
+
+  for (const tracker of trackers) {
+    for (const withModels of [true, false]) {
+      const variant = withModels ? "registry models" : "no registry models, DIY";
+      const name =
+        `keeps an MSR-2 sharing a base with an ${tracker.label} ` +
+        `off the zone map (${variant})`;
+      it(name, () => {
+        const hass = sameNameHass(tracker.ids, tracker.model, withModels);
+        const devices = detectRadarDevices(hass);
+        const msr = devices.find((d) => d.deviceId === "msr")!;
+        const other = devices.find((d) => d.deviceId === "tracker")!;
+        expect(msr.base).toBe("office");
+        expect(other.base).toBe("office");
+
+        expect(msr.profile?.key).toBe("ld2410");
+        expect(msr.ld2450).toBe(false);
+        const msrCards = buildDeviceCards(hass, msr);
+        expect(msrCards.some(isZoneHeader)).toBe(false);
+        expect(msrCards.some(isZoneMap)).toBe(false);
+
+        expect(other.ld2450).toBe(true);
+        const zone = buildDeviceCards(hass, other).find(isZoneMap);
+        expect(zone?.device_id).toBe("tracker");
+      });
+    }
+  }
+});
