@@ -24,6 +24,8 @@ from custom_components.apollo_mmwave.const import (
     DATA_STORE,
     DOMAIN,
     EVENT_ZONE_UPDATED,
+    POLYGON_MAX_POINTS,
+    POLYGON_MIN_POINTS,
     SERVICE_CALIBRATE_GATES,
     SERVICE_CANCEL_CALIBRATION,
     SERVICE_RESTORE_GATE_THRESHOLDS,
@@ -33,6 +35,14 @@ from custom_components.apollo_mmwave.const import (
     STORE_LABEL,
     STORE_ORPHANS,
     STORE_ZONES,
+    WARN_ELLIPSE_INVALID,
+    WARN_ELLIPSE_NON_POSITIVE,
+    WARN_POLY_INSUFFICIENT,
+    WARN_POLY_MALFORMED,
+    WARN_POLY_TRUNCATING,
+    WARN_RECT_INVALID,
+    WARN_RECT_NON_NUM,
+    WARN_ZONE_NO_GEOMETRY,
 )
 
 TRACKED = [
@@ -799,6 +809,180 @@ async def test_polygon_point_with_infinite_coordinate_is_dropped(
     [
         (
             "rect",
+            {"x_min": "left", "x_max": 1000, "y_min": 0, "y_max": 2000},
+            WARN_RECT_NON_NUM,
+            (),
+        ),
+        (
+            "rect",
+            {"x_min": 1000, "x_max": -1000, "y_min": 0, "y_max": 2000},
+            WARN_RECT_INVALID,
+            (),
+        ),
+        (
+            "ellipse",
+            {"cx": 0, "cy": 1000, "rx": 0, "ry": 500},
+            WARN_ELLIPSE_NON_POSITIVE,
+            (),
+        ),
+        (
+            "ellipse",
+            {"cx": 0, "cy": 1000, "rx": "wide", "ry": 500},
+            WARN_ELLIPSE_INVALID,
+            (),
+        ),
+        (
+            "polygon",
+            {"points": [{"x": 0, "y": 0}, {"x": 1000, "y": 0}]},
+            WARN_POLY_INSUFFICIENT,
+            (POLYGON_MIN_POINTS,),
+        ),
+        # The natural YAML spelling: four points, but none of them is an
+        # {x, y} object, so the log must not claim too few were sent.
+        (
+            "polygon",
+            {"points": [[0, 0], [1000, 0], [1000, 1000], [0, 1000]]},
+            WARN_POLY_MALFORMED,
+            (4, 0, POLYGON_MIN_POINTS),
+        ),
+    ],
+    ids=[
+        "rect_non_numeric",
+        "rect_invalid",
+        "ellipse_non_positive",
+        "ellipse_invalid",
+        "polygon_insufficient",
+        "polygon_list_points",
+    ],
+)
+@pytest.mark.usefixtures("init_integration")
+async def test_rejected_geometry_warning_names_the_device_and_cause(
+    hass, device_id, caplog, case
+) -> None:
+    """Each geometry rejection names the radar's device id and the real cause."""
+    shape, data, template, extra_args = case
+    await _update_zone(
+        hass, {"device_id": device_id, "zone_id": 1, "shape": shape, "data": data}
+    )
+
+    zone = get_store(hass).device(device_id)[STORE_ZONES][1]
+    assert zone == {"shape": shape, "data": None}
+    expected = template % (1, device_id, *extra_args)
+    assert expected in caplog.messages
+    assert f"zone 1 on device '{device_id}'" in expected
+    assert "in location" not in caplog.text
+
+
+async def test_polygon_insufficient_warning_text_is_unchanged(
+    hass, init_integration, device_id, caplog
+) -> None:
+    """The limit is now a template argument; the emitted text stays the same."""
+    _ = init_integration
+    await _update_zone(
+        hass,
+        {
+            "device_id": device_id,
+            "zone_id": 1,
+            "shape": "polygon",
+            "data": {"points": [{"x": 0, "y": 0}]},
+        },
+    )
+
+    assert (
+        f"Polygon zone 1 on device '{device_id}' has insufficient points (<3);"
+        " clearing zone."
+    ) in caplog.messages
+
+
+async def test_polygon_truncation_warning_names_the_device(
+    hass, init_integration, device_id, caplog
+) -> None:
+    """Too many points are truncated, and the warning says by how much."""
+    _ = init_integration
+    total = POLYGON_MAX_POINTS + 1
+    points = [{"x": i, "y": i * i} for i in range(total)]
+    await _update_zone(
+        hass,
+        {
+            "device_id": device_id,
+            "zone_id": 1,
+            "shape": "polygon",
+            "data": {"points": points},
+        },
+    )
+
+    zone = get_store(hass).device(device_id)[STORE_ZONES][1]
+    assert zone["data"]["points"] == points[:POLYGON_MAX_POINTS]
+    expected = WARN_POLY_TRUNCATING % (1, device_id, total, POLYGON_MAX_POINTS)
+    assert expected in caplog.messages
+
+
+async def test_unknown_shape_is_rejected_by_schema(
+    hass, init_integration, device_id
+) -> None:
+    """The schema is the only guard against an unknown shape, and it holds."""
+    _ = init_integration
+    call = {"device_id": device_id, "zone_id": 1, "shape": "triangle", "data": RECT}
+    with pytest.raises(vol.Invalid):
+        UPDATE_ZONE_SERVICE_SCHEMA(call)
+    with pytest.raises(vol.Invalid):
+        await hass.services.async_call(DOMAIN, SERVICE_UPDATE_ZONE, call, blocking=True)
+    await hass.async_block_till_done()
+
+    assert device_id not in get_store(hass).devices
+
+
+@pytest.mark.parametrize(
+    "case",
+    [(1, {}), (1, {"data": None}), (2, {}), (2, {"data": None})],
+    ids=[
+        "existing_zone_data_omitted",
+        "existing_zone_data_null",
+        "new_zone_data_omitted",
+        "new_zone_data_null",
+    ],
+)
+@pytest.mark.usefixtures("init_integration")
+async def test_drawable_shape_without_data_warns(hass, device_id, caplog, case) -> None:
+    """A drawable shape with no data is stored without geometry, and says so."""
+    zone_id, extra = case
+    await _create_rect_zone(hass, device_id)
+    caplog.clear()
+
+    await _update_zone(
+        hass, {"device_id": device_id, "zone_id": zone_id, "shape": "rect", **extra}
+    )
+
+    zone = get_store(hass).device(device_id)[STORE_ZONES][zone_id]
+    assert zone == {"shape": "rect", "data": None}
+    assert WARN_ZONE_NO_GEOMETRY % (zone_id, device_id, "rect") in caplog.messages
+
+
+@pytest.mark.parametrize(
+    "extra", [{}, {"data": None}], ids=["data_omitted", "data_null"]
+)
+async def test_shape_none_without_data_does_not_warn(
+    hass, init_integration, device_id, caplog, extra
+) -> None:
+    """`shape: none` is the documented clear, so it logs nothing."""
+    _ = init_integration
+    await _create_rect_zone(hass, device_id)
+    caplog.clear()
+
+    await _update_zone(
+        hass, {"device_id": device_id, "zone_id": 1, "shape": "none", **extra}
+    )
+
+    zone = get_store(hass).device(device_id)[STORE_ZONES][1]
+    assert zone == {"shape": "none", "data": None}
+    assert "no geometry" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        (
+            "rect",
             {"x_min": 0, "x_max": 1e20, "y_min": 0, "y_max": 10},
             "non-numeric bounds",
         ),
@@ -823,7 +1007,7 @@ async def test_polygon_point_with_infinite_coordinate_is_dropped(
         (
             "polygon",
             {"points": [{"x": 0, "y": 0}, {"x": 1e30, "y": 0}, {"x": 0, "y": 10}]},
-            "insufficient points",
+            "has 3 points but only 2 are valid",
         ),
     ],
     ids=[

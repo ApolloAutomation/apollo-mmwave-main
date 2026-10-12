@@ -108,20 +108,27 @@ JS_BUNDLES = (
 
 # Log / warning templates
 WARN_POLY_INSUFFICIENT = (
-    "Polygon zone %s in location '%s' has insufficient points (<3); clearing zone."
+    "Polygon zone %s on device '%s' has insufficient points (<%d); clearing zone."
 )
-WARN_POLY_TRUNCATING = (
-    "Polygon zone %s in location '%s' has %d points; truncating to %d."
+# Enough points were sent, but too few parsed: the usual cause is `[x, y]`
+# lists where `{x, y}` objects are expected.
+WARN_POLY_MALFORMED = (
+    "Polygon zone %s on device '%s' has %d points but only %d are valid {x, y}"
+    " numbers (need %d); clearing zone."
 )
+WARN_POLY_TRUNCATING = "Polygon zone %s on device '%s' has %d points; truncating to %d."
 WARN_RECT_INVALID = (
-    "Rectangle zone %s in location '%s' has invalid bounds; clearing zone."
+    "Rectangle zone %s on device '%s' has invalid bounds; clearing zone."
 )
 WARN_RECT_NON_NUM = (
-    "Rectangle zone %s in location '%s' has non-numeric bounds; clearing zone."
+    "Rectangle zone %s on device '%s' has non-numeric bounds; clearing zone."
 )
 WARN_ELLIPSE_NON_POSITIVE = (
-    "Ellipse zone %s in location '%s' has non-positive radii; clearing zone."
+    "Ellipse zone %s on device '%s' has non-positive radii; clearing zone."
 )
 WARN_ELLIPSE_INVALID = (
-    "Ellipse zone %s in location '%s' has invalid radii; clearing zone."
+    "Ellipse zone %s on device '%s' has invalid radii; clearing zone."
+)
+WARN_ZONE_NO_GEOMETRY = (
+    "Zone %s on device '%s' was stored with shape %s and no geometry."
 )

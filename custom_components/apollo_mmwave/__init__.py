@@ -60,9 +60,11 @@ from .const import (
     WARN_ELLIPSE_INVALID,
     WARN_ELLIPSE_NON_POSITIVE,
     WARN_POLY_INSUFFICIENT,
+    WARN_POLY_MALFORMED,
     WARN_POLY_TRUNCATING,
     WARN_RECT_INVALID,
     WARN_RECT_NON_NUM,
+    WARN_ZONE_NO_GEOMETRY,
 )
 
 # NOTE: `.frontend` is imported lazily inside the setup path (not here) so that
@@ -157,20 +159,20 @@ def _normalize_entities(entities: Any) -> list[dict[str, str]] | None:
 
 
 def _normalize_zone_payload(
-    shape: str, data: Any, zone_id: int, location: str
+    shape: str, data: Any, zone_id: int, device_id: str
 ) -> dict[str, Any] | None:
     if shape == SHAPE_NONE or data is None:
         return None
     if shape == SHAPE_RECT:
-        return _normalize_rect(data, zone_id, location)
+        return _normalize_rect(data, zone_id, device_id)
     if shape == SHAPE_ELLIPSE:
-        return _normalize_ellipse(data, zone_id, location)
+        return _normalize_ellipse(data, zone_id, device_id)
     if shape == SHAPE_POLYGON:
-        return _normalize_polygon(data, zone_id, location)
+        return _normalize_polygon(data, zone_id, device_id)
     return None
 
 
-def _normalize_rect(data: Any, zone_id: int, location: str) -> dict[str, Any] | None:
+def _normalize_rect(data: Any, zone_id: int, device_id: str) -> dict[str, Any] | None:
     if not isinstance(data, dict):
         return None
     x_min = _coerce_float(data.get(ATTR_X_MIN))
@@ -178,14 +180,14 @@ def _normalize_rect(data: Any, zone_id: int, location: str) -> dict[str, Any] | 
     y_min = _coerce_float(data.get(ATTR_Y_MIN))
     y_max = _coerce_float(data.get(ATTR_Y_MAX))
     if x_min is None or x_max is None or y_min is None or y_max is None:
-        _LOGGER.warning(WARN_RECT_NON_NUM, zone_id, location)
+        _LOGGER.warning(WARN_RECT_NON_NUM, zone_id, device_id)
         return None
     x_min_i = round(x_min)
     x_max_i = round(x_max)
     y_min_i = round(y_min)
     y_max_i = round(y_max)
     if not (x_min_i < x_max_i and y_min_i < y_max_i):
-        _LOGGER.warning(WARN_RECT_INVALID, zone_id, location)
+        _LOGGER.warning(WARN_RECT_INVALID, zone_id, device_id)
         return None
     return {
         **data,
@@ -196,7 +198,9 @@ def _normalize_rect(data: Any, zone_id: int, location: str) -> dict[str, Any] | 
     }
 
 
-def _normalize_ellipse(data: Any, zone_id: int, location: str) -> dict[str, Any] | None:
+def _normalize_ellipse(
+    data: Any, zone_id: int, device_id: str
+) -> dict[str, Any] | None:
     if not isinstance(data, dict):
         return None
     cx = _coerce_float(data.get(ATTR_CX))
@@ -204,10 +208,10 @@ def _normalize_ellipse(data: Any, zone_id: int, location: str) -> dict[str, Any]
     rx = _coerce_float(data.get(ATTR_RX))
     ry = _coerce_float(data.get(ATTR_RY))
     if cx is None or cy is None or rx is None or ry is None:
-        _LOGGER.warning(WARN_ELLIPSE_INVALID, zone_id, location)
+        _LOGGER.warning(WARN_ELLIPSE_INVALID, zone_id, device_id)
         return None
     if rx <= 0 or ry <= 0:
-        _LOGGER.warning(WARN_ELLIPSE_NON_POSITIVE, zone_id, location)
+        _LOGGER.warning(WARN_ELLIPSE_NON_POSITIVE, zone_id, device_id)
         return None
     return {
         ATTR_CX: round(cx),
@@ -217,18 +221,20 @@ def _normalize_ellipse(data: Any, zone_id: int, location: str) -> dict[str, Any]
     }
 
 
-def _normalize_polygon(data: Any, zone_id: int, location: str) -> dict[str, Any] | None:
+def _normalize_polygon(
+    data: Any, zone_id: int, device_id: str
+) -> dict[str, Any] | None:
     if not isinstance(data, dict):
         return None
     points = data.get(ATTR_POINTS)
     if not isinstance(points, list) or len(points) < POLYGON_MIN_POINTS:
-        _LOGGER.warning(WARN_POLY_INSUFFICIENT, zone_id, location)
+        _LOGGER.warning(WARN_POLY_INSUFFICIENT, zone_id, device_id, POLYGON_MIN_POINTS)
         return None
     total_points = len(points)
     trimmed = list(points[:POLYGON_MAX_POINTS])
     if total_points > POLYGON_MAX_POINTS:
         _LOGGER.warning(
-            WARN_POLY_TRUNCATING, zone_id, location, total_points, POLYGON_MAX_POINTS
+            WARN_POLY_TRUNCATING, zone_id, device_id, total_points, POLYGON_MAX_POINTS
         )
     normalized_points = []
     for point in trimmed:
@@ -240,7 +246,14 @@ def _normalize_polygon(data: Any, zone_id: int, location: str) -> dict[str, Any]
             continue
         normalized_points.append({"x": round(x_float), "y": round(y_float)})
     if len(normalized_points) < POLYGON_MIN_POINTS:
-        _LOGGER.warning(WARN_POLY_INSUFFICIENT, zone_id, location)
+        _LOGGER.warning(
+            WARN_POLY_MALFORMED,
+            zone_id,
+            device_id,
+            len(trimmed),
+            len(normalized_points),
+            POLYGON_MIN_POINTS,
+        )
         return None
     return {**data, ATTR_POINTS: normalized_points}
 
@@ -545,13 +558,12 @@ def _build_update_zone_handler(
             _notify_zones_updated(hass, device_id)
             return
 
-        if shape not in SUPPORTED_SHAPES:
-            _LOGGER.debug(
-                "Apollo mmWave: unsupported shape '%s' for device '%s'",
-                shape,
-                device_id,
-            )
-            return
+        # `shape` is one of SUPPORTED_SHAPES here: the schema rejects any other.
+        # A drawable shape with no `data` (omitted or null) is still stored, with
+        # no geometry, so say so as every rejected geometry does. `none` is the
+        # documented way to clear a zone and stays quiet.
+        if shape != SHAPE_NONE and data is None:
+            _LOGGER.warning(WARN_ZONE_NO_GEOMETRY, zone_id, device_id, shape)
 
         zone_entry = {
             ATTR_SHAPE: shape,
