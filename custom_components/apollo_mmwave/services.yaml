@@ -98,7 +98,7 @@ calibrate_gates:
   fields:
     device_id:
       name: Radar Device
-      description: The MSR-1, MSR-2 or R-PRO-1 to calibrate (one device per call).
+      description: The MSR-1, MSR-2 or R PRO-1 to calibrate (one device per call).
       required: true
       selector:
         device:
