@@ -6,12 +6,25 @@ set -e
 
 cd "$(dirname "$0")/.."
 
+# Ruff comes from the venv scripts/bootstrap installs requirements.txt into.
+if [ ! -x .venv/bin/ruff ]; then
+  echo ".venv/bin/ruff not found: run scripts/bootstrap first" >&2
+  exit 1
+fi
+
 echo "==> Running linting tools..."
 
+# Fix, then format, then check. The formatter has to see the fixed code, or a
+# fix that changes a line's length is left unformatted for lint-check to
+# reject. --fix-only exits 0 when violations remain, so an overlong line the
+# formatter is about to wrap does not stop the script before formatting.
+echo "==> Applying Ruff fixes..."
+.venv/bin/ruff check . --fix-only
+
 echo "==> Running Ruff format..."
-uv run ruff format .
+.venv/bin/ruff format .
 
 echo "==> Running Ruff check..."
-uv run ruff check . --fix
+.venv/bin/ruff check .
 
 echo "==> Linting completed!"

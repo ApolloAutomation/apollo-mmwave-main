@@ -44,7 +44,7 @@ def test_devcontainer_image_satisfies_requires_python() -> None:
 def test_devcontainer_interpreter_is_bootstrap_venv() -> None:
     """VS Code uses the venv scripts/bootstrap installs into."""
     bootstrap = (REPO_ROOT / "scripts" / "bootstrap").read_text(encoding="utf-8")
-    assert "python -m venv .venv" in bootstrap
+    assert '"$PYTHON" -m venv .venv' in bootstrap
 
     settings = _devcontainer()["customizations"]["vscode"]["settings"]
     assert (

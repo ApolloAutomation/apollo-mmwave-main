@@ -26,8 +26,11 @@ jobs:
         with:
           version: "0.9.3"
 
-      - name: Install requirements
-        run: scripts/bootstrap
+      # Only ruff is needed here; the pytest job exercises the Home Assistant pin.
+      - name: Install ruff
+        run: |
+          uv venv
+          uv pip install "$(grep -E '^ruff==' requirements.txt)"
 
       - name: Lint check
         run: scripts/lint-check
