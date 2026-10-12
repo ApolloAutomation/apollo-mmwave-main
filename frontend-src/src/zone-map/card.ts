@@ -2054,6 +2054,12 @@ export class ZoneMapCard extends HTMLElement {
         this.zoneConfig = (this.zoneConfig || []).filter((zz) => String(zz.id) !== String(z.id));
         this.zones = (this.zones || []).filter((zz) => String(zz.id) !== String(z.id));
         if (String(this.selectedZone) === String(z.id)) this.selectedZone = null;
+        // Undo writes every snapshot entry back, and the backend stores any
+        // zone id it is given, so an entry for this zone would re-create it and
+        // its entities (or overwrite a zone added later under the freed id).
+        // Delete itself is not undoable; the other entries still are.
+        const removedId = Number(z.id);
+        this._setUndoSnapshot((this._undoSnapshot || []).filter((s) => s.zoneId !== removedId));
         this.renderZoneButtons();
         this._renderZoneManager();
         this.drawGrid();

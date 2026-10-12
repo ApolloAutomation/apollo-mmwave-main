@@ -936,6 +936,79 @@ describe("zone map card zone names across payloads", () => {
   });
 });
 
+describe("zone map card undo after a zone manager Delete", () => {
+  // Undo writes every snapshot entry back with update_zone, and the backend
+  // stores any zone id it is given and re-creates that zone's entities. A
+  // snapshot entry that outlived a Delete brought the deleted zone back, or
+  // overwrote a zone added later under the freed id, under an "Undid" toast.
+  const TWO_ZONES = {
+    ...ZONE_PAYLOAD,
+    zones: {
+      ...ZONE_PAYLOAD.zones,
+      "2": {
+        shape: "rect",
+        data: { x_min: 0, x_max: 500, y_min: 0, y_max: 500 },
+        name: "Window",
+      },
+    },
+  };
+
+  /** Press the Delete button in a zone manager row. */
+  function deleteZone(card: any, zoneId: number) {
+    const rows = Array.from(card.shadowRoot.querySelectorAll("#zoneManager .entity-row"));
+    const row: any = rows.find(
+      (r: any) => r.querySelector("label")?.textContent === `Zone ${zoneId}`
+    );
+    expect(row).toBeTruthy();
+    const del: any = Array.from(row.querySelectorAll("button")).find(
+      (b: any) => b.textContent === "Delete"
+    );
+    del.click();
+  }
+
+  function zoneSaves(hass: any): any[] {
+    return hass.callService.mock.calls
+      .filter((call: any[]) => call[1] === "update_zone")
+      .map((call: any[]) => call[2]);
+  }
+
+  it("drops the deleted zone's snapshot, so Undo cannot re-create it", async () => {
+    const hass = fakeHass(TWO_ZONES);
+    const card = await mountCard(hass);
+    card._setUndoSnapshot(card._snapshotZones([2]));
+    expect(card.shadowRoot.getElementById("btnUndo").disabled).toBe(false);
+    hass.callService.mockClear();
+
+    deleteZone(card, 2);
+
+    expect(zoneSaves(hass)).toEqual([
+      { device_id: "dev123", zone_id: 2, delete: true, input_units: "mm" },
+    ]);
+    expect(card._undoSnapshot).toBeNull();
+    expect(card.shadowRoot.getElementById("btnUndo").disabled).toBe(true);
+
+    hass.callService.mockClear();
+    card.shadowRoot.getElementById("btnUndo").click();
+    expect(hass.callService).not.toHaveBeenCalled();
+    expect(card.zones.map((z: any) => z.id)).toEqual([1]);
+  });
+
+  it("still undoes the other zones a snapshot holds", async () => {
+    const hass = fakeHass(TWO_ZONES);
+    const card = await mountCard(hass);
+    card._setUndoSnapshot(card._snapshotZones([1, 2]));
+
+    deleteZone(card, 2);
+
+    expect(card._undoSnapshot.map((s: any) => s.zoneId)).toEqual([1]);
+    expect(card.shadowRoot.getElementById("btnUndo").disabled).toBe(false);
+
+    hass.callService.mockClear();
+    card.shadowRoot.getElementById("btnUndo").click();
+    expect(zoneSaves(hass).map((p: any) => p.zone_id)).toEqual([1]);
+  });
+});
+
 describe("zone map card rotation source", () => {
   // The presence sensors rotate targets by the store's rotation_deg, and by 0
   // when it was never set. A card that kept the YAML cone.angle_deg for such a
