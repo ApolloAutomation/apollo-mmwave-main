@@ -66,8 +66,7 @@ Items found in review and left open for a decision are marked in the code with
 `TODO(REVIEW_REPORT.md <id>)` comments, where `<id>` is the item's entry in
 `REVIEW_REPORT.md`. Ruff flags every TODO, so a Python marker ends its first
 line with `# noqa: FIX002, TD003`; remove both when the item is fixed. To list
-the open items (the zone-map bundle repeats its source comments, so it is left
-out):
+the open items (`www/` is build output, so it is left out):
 
 ```bash
 git grep -n "TODO(REVIEW_REPORT.md" -- ':!custom_components/apollo_mmwave/www'
@@ -108,10 +107,11 @@ CI rebuilds the bundles and fails if anything under
 every frontend change. Build with Node 22 to match the committed output. Terser
 strips most comments from the bundles, so a comment-only change usually leaves
 them as they are, but comments inside template strings (CSS in the card
-styles) do ship; run the build and let the check decide. `npm run watch` needs a POSIX shell
-(macOS, Linux, the devcontainer or WSL). On Windows npm runs scripts with
-`cmd.exe`, even from Git Bash, so run `npm run watch:tuning` and
-`npm run watch:zone-map` in two terminals.
+styles) do ship; run the build and let the check decide.
+
+`npm run watch` needs a POSIX shell (macOS, Linux, the devcontainer or WSL). On
+Windows npm runs scripts with `cmd.exe`, even from Git Bash, so run
+`npm run watch:tuning` and `npm run watch:zone-map` in two terminals.
 
 ### Python backend
 
