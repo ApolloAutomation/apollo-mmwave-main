@@ -639,6 +639,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     entry.async_on_unload(async_register_websocket(hass))
 
+    # The gate calibration services and their store. The teardown is an
+    # `async def`: it asks running jobs to stop and waits for their bounded
+    # finally before the services and the store go away.
+    from .calibration import async_setup_calibration  # noqa: PLC0415
+
+    entry.async_on_unload(await async_setup_calibration(hass, entry))
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     # `frontend`, `http`, and `lovelace` are manifest dependencies, so they are
@@ -675,10 +682,12 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Delete the dashboard and the zone store when the integration is removed."""
+    """Delete the dashboard and both stores when the integration is removed."""
     _ = entry
+    from .calibration_store import CalibrationStore  # noqa: PLC0415
     from .frontend import async_remove_dashboard  # noqa: PLC0415
     from .store import ZoneStore  # noqa: PLC0415
 
     await async_remove_dashboard(hass)
     await ZoneStore(hass).async_remove()
+    await CalibrationStore(hass).async_remove()

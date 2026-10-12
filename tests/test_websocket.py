@@ -1,17 +1,22 @@
-"""Websocket API the zone card reads its configuration through."""
+"""Websocket API the zone and calibrate cards read their state through."""
 
 from __future__ import annotations
 
-from homeassistant.helpers.dispatcher import DATA_DISPATCHER
+import pytest
+from homeassistant.helpers.dispatcher import DATA_DISPATCHER, async_dispatcher_send
 
 from custom_components.apollo_mmwave import get_store
 from custom_components.apollo_mmwave.const import (
+    DATA_CALIBRATION_JOBS,
+    DATA_CALIBRATION_STORE,
+    DATA_STORE,
     DOMAIN,
+    SIGNAL_CALIBRATION_UPDATED,
     SIGNAL_ZONES_UPDATED,
     STORE_ZONES,
 )
 
-from .conftest import RADAR_TARGET_COUNT
+from .conftest import RADAR_TARGET_COUNT, RadarIds, finish_job, radar_ids
 
 GET = "apollo_mmwave/zones/get"
 SUBSCRIBE = "apollo_mmwave/zones/subscribe"
@@ -267,3 +272,244 @@ async def test_zone_commands_survive_a_reload(
     message = await client.receive_json()
     assert message["event"]["zones"]["1"]["shape"] == "rect"
     assert get_store(hass).device(device_id)[STORE_ZONES][1]["shape"] == "rect"
+
+
+# ---------------------------------------------------------------------------
+# Calibration commands
+# ---------------------------------------------------------------------------
+
+CALIBRATION_GET = "apollo_mmwave/calibration/get"
+CALIBRATION_SUBSCRIBE = "apollo_mmwave/calibration/subscribe"
+
+
+def _calibration_forwarder_count(hass) -> int:
+    """Count the dispatcher targets live calibration subscriptions own."""
+    targets = hass.data.get(DATA_DISPATCHER, {}).get(SIGNAL_CALIBRATION_UPDATED, {})
+    return sum(
+        1
+        for target in targets
+        if getattr(target, "__module__", "").endswith("apollo_mmwave.websocket")
+    )
+
+
+async def _subscribe(client, device_id: str) -> tuple[int, dict]:
+    """Subscribe and return the subscription id and the immediate first event."""
+    await client.send_json_auto_id(
+        {"type": CALIBRATION_SUBSCRIBE, "device_id": device_id}
+    )
+    message = await client.receive_json()
+    assert message["success"] is True
+    assert message["result"] is None
+    first = await client.receive_json()
+    assert first["type"] == "event"
+    return message["id"], first["event"]
+
+
+async def _drain(client) -> list[dict]:
+    """Return every event queued so far; a pong proves nothing is left."""
+    await client.send_json_auto_id({"type": "ping"})
+    events: list[dict] = []
+    while True:
+        message = await client.receive_json()
+        if message["type"] == "pong":
+            return events
+        events.append(message["event"])
+
+
+@pytest.fixture
+def msr(ld2410_device) -> RadarIds:
+    """Return the LD2410 radar's ids."""
+    return radar_ids(ld2410_device)
+
+
+async def test_calibration_subscribe_sends_current_state_immediately(
+    hass, hass_ws_client, init_integration, msr
+) -> None:
+    """The subscription answers null, then pushes the idle state at once."""
+    _ = init_integration
+    client = await hass_ws_client(hass)
+
+    _, payload = await _subscribe(client, msr.device_id)
+
+    assert payload["job"] is None
+    assert payload["snapshots"] == []
+    assert payload["last_result"] is None
+    assert payload["interrupted"] is None
+    assert payload["entities"]["profile"] == "ld2410"
+    assert payload["entities"]["gate_count"] == 9
+    assert payload["entities"]["engineering_mode"] == msr.engineering
+    assert payload["entities"]["engineering_mode_on"] is False
+    assert payload["entities"]["max_move_gate"] == 6
+    assert payload["entities"]["min_gate"] is None
+
+
+async def test_calibration_subscribe_pushes_running_job_progress(
+    hass_ws_client, calibration_rig, msr
+) -> None:
+    """A subscribed card follows the countdown and the first sample tick by tick."""
+    rig = calibration_rig
+    client = await hass_ws_client(rig.hass)
+    await _subscribe(client, msr.device_id)
+    rig.feed.set_all(10, 10, msr)
+    task = rig.start(msr, settle_s=2, duration_s=15)
+
+    await rig.advance(1)
+    job = (await _drain(client))[-1]["job"]
+    assert (job["status"], job["sub_phase"], job["remaining_s"]) == (
+        "preparing",
+        "settle",
+        1,
+    )
+    assert job["engineering_mode_turned_on"] is True
+
+    await rig.advance(1)
+    job = (await _drain(client))[-1]["job"]
+    assert (job["status"], job["sub_phase"], job["samples"]) == ("sampling", None, 1)
+    assert job["remaining_s"] == 14
+    assert job["peaks"] == {
+        "move": {str(gate): 10 for gate in range(9)},
+        "still": {str(gate): 10 for gate in range(9)},
+    }
+
+    await rig.advance(14)
+    result = await finish_job(task)
+    final = (await _drain(client))[-1]
+    assert final["job"] is None
+    assert final["last_result"]["job_id"] == result["job_id"]
+    assert final["snapshots"][0]["id"] == result["snapshot_id"]
+
+
+async def test_calibration_subscribe_ignores_other_devices(
+    hass_ws_client, calibration_rig, msr, device_id
+) -> None:
+    """A card only hears about the radar it is showing."""
+    rig = calibration_rig
+    client = await hass_ws_client(rig.hass)
+    _, payload = await _subscribe(client, device_id)
+    assert payload["entities"] is None
+
+    result = await rig.run(msr, move=60, still=60)
+
+    assert result["outcome"] == "applied"
+    assert await _drain(client) == []
+
+
+async def test_calibration_get_returns_last_result_after_a_run(
+    hass_ws_client, calibration_rig, msr
+) -> None:
+    """A one-shot read carries the stored result and the snapshot it took."""
+    rig = calibration_rig
+    result = await rig.run(msr, move=60, still=60)
+    client = await hass_ws_client(rig.hass)
+
+    await client.send_json_auto_id(
+        {"type": CALIBRATION_GET, "device_id": msr.device_id}
+    )
+
+    payload = (await client.receive_json())["result"]
+    assert payload["job"] is None
+    assert payload["last_result"] == result
+    assert payload["snapshots"] == [
+        {
+            "id": result["snapshot_id"],
+            "taken_at": payload["snapshots"][0]["taken_at"],
+            "reason": "calibrate",
+            "count": 18,
+        }
+    ]
+    assert payload["interrupted"] is None
+
+
+async def test_calibration_get_not_found_for_unknown_device(
+    hass, hass_ws_client, init_integration
+) -> None:
+    """A device id Home Assistant does not know is refused."""
+    _ = init_integration
+    client = await hass_ws_client(hass)
+
+    await client.send_json_auto_id(
+        {"type": CALIBRATION_GET, "device_id": "no-such-device"}
+    )
+
+    message = await client.receive_json()
+    assert message["success"] is False
+    assert message["error"]["code"] == "not_found"
+
+
+async def test_calibration_get_not_loaded_after_unload(
+    hass, hass_ws_client, init_integration, msr
+) -> None:
+    """The commands outlive the entry and say so."""
+    assert await hass.config_entries.async_unload(init_integration.entry_id)
+    await hass.async_block_till_done()
+    client = await hass_ws_client(hass)
+
+    await client.send_json_auto_id(
+        {"type": CALIBRATION_GET, "device_id": msr.device_id}
+    )
+
+    message = await client.receive_json()
+    assert message["success"] is False
+    assert message["error"]["code"] == "not_loaded"
+
+
+async def test_calibration_get_not_loaded_when_only_zone_store_is_present(
+    hass, hass_ws_client, init_integration, msr
+) -> None:
+    """The zone store alone is not enough: both calibration keys are required."""
+    _ = init_integration
+    data = hass.data[DOMAIN]
+    saved = {
+        key: data.pop(key) for key in (DATA_CALIBRATION_STORE, DATA_CALIBRATION_JOBS)
+    }
+    assert DATA_STORE in data
+    client = await hass_ws_client(hass)
+
+    await client.send_json_auto_id(
+        {"type": CALIBRATION_GET, "device_id": msr.device_id}
+    )
+
+    message = await client.receive_json()
+    assert message["success"] is False
+    assert message["error"]["code"] == "not_loaded"
+    data.update(saved)
+
+
+async def test_calibration_subscriptions_closed_on_unload(
+    hass, hass_ws_client, init_integration, msr
+) -> None:
+    """Unloading the entry drops the subscription; a late unsubscribe is harmless."""
+    client = await hass_ws_client(hass)
+    subscription, _ = await _subscribe(client, msr.device_id)
+    assert _calibration_forwarder_count(hass) == 1
+
+    assert await hass.config_entries.async_unload(init_integration.entry_id)
+    await hass.async_block_till_done()
+    assert _calibration_forwarder_count(hass) == 0
+
+    await client.send_json_auto_id(
+        {"type": "unsubscribe_events", "subscription": subscription}
+    )
+    assert (await client.receive_json())["success"] is True
+
+
+async def test_calibration_forward_drops_push_after_keys_are_gone(
+    hass, hass_ws_client, init_integration, msr
+) -> None:
+    """A signal arriving in the unload window builds no payload from a gone store."""
+    _ = init_integration
+    client = await hass_ws_client(hass)
+    await _subscribe(client, msr.device_id)
+    data = hass.data[DOMAIN]
+    saved = {
+        key: data.pop(key) for key in (DATA_CALIBRATION_STORE, DATA_CALIBRATION_JOBS)
+    }
+
+    async_dispatcher_send(hass, SIGNAL_CALIBRATION_UPDATED, msr.device_id)
+    await hass.async_block_till_done()
+
+    assert await _drain(client) == []
+    data.update(saved)
+    async_dispatcher_send(hass, SIGNAL_CALIBRATION_UPDATED, msr.device_id)
+    await hass.async_block_till_done()
+    assert len(await _drain(client)) == 1

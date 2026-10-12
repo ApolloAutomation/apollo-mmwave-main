@@ -5,17 +5,27 @@ DOMAIN = "apollo_mmwave"
 
 # Services
 SERVICE_UPDATE_ZONE = "update_zone"
+SERVICE_CALIBRATE_GATES = "calibrate_gates"
+SERVICE_CANCEL_CALIBRATION = "cancel_calibration"
+SERVICE_RESTORE_GATE_THRESHOLDS = "restore_gate_thresholds"
 
 # Event names (public bus event, part of the integration's API surface)
 EVENT_ZONE_UPDATED = f"{DOMAIN}_zone_updated"
+EVENT_CALIBRATION_STARTED = f"{DOMAIN}_calibration_started"
+EVENT_CALIBRATION_FINISHED = f"{DOMAIN}_calibration_finished"
 
 # Internal dispatcher signal fired with the device id on any zone change.
 SIGNAL_ZONES_UPDATED = f"{DOMAIN}_zones_updated"
+# Internal dispatcher signal fired with the device id on every calibration
+# job status change and once per sampling tick.
+SIGNAL_CALIBRATION_UPDATED = f"{DOMAIN}_calibration_updated"
 
 # hass.data keys
 DATA_STORE = "store"
 DATA_ASSETS_REGISTERED = "assets_registered"
 DATA_PAIR_CACHE = "ld2450_pair_cache"
+DATA_CALIBRATION_STORE = "calibration_store"
+DATA_CALIBRATION_JOBS = "calibration_jobs"
 
 # Store keys (v2). Zones are keyed by Home Assistant device id, which survives
 # renames. `label` is display only and never used to build an identifier.

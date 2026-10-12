@@ -11,6 +11,9 @@ from custom_components.apollo_mmwave.const import (
     ATTR_ROTATION_DEG,
     DOMAIN,
     EVENT_ZONE_UPDATED,
+    SERVICE_CALIBRATE_GATES,
+    SERVICE_CANCEL_CALIBRATION,
+    SERVICE_RESTORE_GATE_THRESHOLDS,
     SERVICE_UPDATE_ZONE,
     STORE_DEVICES,
     STORE_ENTITIES,
@@ -382,6 +385,25 @@ async def test_unload_removes_service(hass, init_integration) -> None:
     assert await hass.config_entries.async_unload(init_integration.entry_id)
     await hass.async_block_till_done()
     assert not hass.services.has_service(DOMAIN, SERVICE_UPDATE_ZONE)
+
+
+async def test_calibration_services_registered_and_removed_on_unload(
+    hass, init_integration
+) -> None:
+    """The three calibration services come and go with the entry."""
+    services = (
+        SERVICE_CALIBRATE_GATES,
+        SERVICE_CANCEL_CALIBRATION,
+        SERVICE_RESTORE_GATE_THRESHOLDS,
+    )
+    for service in services:
+        assert hass.services.has_service(DOMAIN, service)
+        assert hass.services.supports_response(DOMAIN, service) == "optional"
+
+    assert await hass.config_entries.async_unload(init_integration.entry_id)
+    await hass.async_block_till_done()
+    for service in services:
+        assert not hass.services.has_service(DOMAIN, service)
 
 
 async def test_call_with_nothing_to_change_mints_no_store_entry(

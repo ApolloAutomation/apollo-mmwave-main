@@ -91,3 +91,115 @@ update_zone:
       required: false
       selector:
         boolean: {}
+
+calibrate_gates:
+  name: Calibrate gate thresholds (empty room)
+  description: "Listens to the radar's per-gate energy while the room is empty, then sets every gate's move and still threshold just above what it heard. The current thresholds are saved first; use restore_gate_thresholds to undo. Radar Engineering Mode is turned on for the listen and back off afterwards if it was off."
+  fields:
+    device_id:
+      name: Radar Device
+      description: The MSR-1, MSR-2 or R-PRO-1 to calibrate (one device per call).
+      required: true
+      selector:
+        device:
+          filter:
+            - integration: esphome
+    duration_s:
+      name: Listen for (seconds)
+      description: How long to sample the empty room. Longer catches slow periodic noise such as HVAC.
+      required: false
+      default: 60
+      selector:
+        number:
+          min: 15
+          max: 600
+          unit_of_measurement: s
+    settle_s:
+      name: Leave-the-room delay (seconds)
+      description: Countdown before listening starts, so you can leave. Radar Engineering Mode is turned on at the start of the countdown. Use 0 from automations.
+      required: false
+      default: 15
+      selector:
+        number:
+          min: 0
+          max: 120
+          unit_of_measurement: s
+    margin:
+      name: Headroom (points)
+      description: Added above the highest energy seen. Home Assistant only sees about one in ten of the radar's readings, so the headroom covers the ones it missed. Raise it if the radar still triggers with nobody there; lower it if it misses people. Headroom (points) and Headroom (percent) cannot both be 0.
+      required: false
+      default: 10
+      selector:
+        number:
+          min: 0
+          max: 50
+    margin_pct:
+      name: Headroom (percent)
+      description: Relative headroom; the larger of the two headrooms is used per gate.
+      required: false
+      default: 25
+      selector:
+        number:
+          min: 0
+          max: 100
+          unit_of_measurement: "%"
+    kind:
+      name: Thresholds to set
+      required: false
+      default: both
+      selector:
+        select:
+          options:
+            - both
+            - move
+            - still
+    apply:
+      name: Apply
+      description: Turn off to preview. The new thresholds are computed and reported without changing any of them; Radar Engineering Mode is still turned on for the listen.
+      required: false
+      default: true
+      selector:
+        boolean: {}
+    wait:
+      name: Wait for the result
+      description: Block until the calibration finishes and return the full result (use with response_variable).
+      required: false
+      default: false
+      selector:
+        boolean: {}
+
+cancel_calibration:
+  name: Cancel calibration
+  description: Stops a running calibration. Nothing is written if it had not started writing; values already written stay until you restore.
+  fields:
+    device_id:
+      name: Radar Device
+      required: true
+      selector:
+        device:
+          filter:
+            - integration: esphome
+
+restore_gate_thresholds:
+  name: Restore gate thresholds
+  description: Writes the thresholds saved before the last calibration (or a chosen snapshot) back to the radar. The current values are saved first, so a restore can itself be undone.
+  fields:
+    device_id:
+      name: Radar Device
+      required: true
+      selector:
+        device:
+          filter:
+            - integration: esphome
+    snapshot_id:
+      name: Snapshot
+      description: Id of a saved snapshot; omit for the newest.
+      required: false
+      selector:
+        text: {}
+    wait:
+      name: Wait for the result
+      required: false
+      default: false
+      selector:
+        boolean: {}
