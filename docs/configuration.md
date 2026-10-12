@@ -1,0 +1,444 @@
+# Apollo mmWave configuration
+
+This page has the details behind the [README](../README.md). Start there to
+install the integration and run your first calibration.
+
+## Contents
+
+- [Lovelace resources](#lovelace-resources)
+- [Choosing which devices appear](#choosing-which-devices-appear)
+- [Auto-calibration](#auto-calibration)
+  - [The calibration services](#the-calibration-services)
+- [Drawing zones](#drawing-zones)
+  - [Zones in automations](#zones-in-automations)
+- [Use your own dashboards instead](#use-your-own-dashboards-instead)
+  - [Strategy options](#strategy-options)
+  - [Card options](#card-options)
+- [Troubleshooting](#troubleshooting)
+
+## Lovelace resources
+
+The integration registers its JS as a Lovelace resource, so the cards work in
+already-open tabs, with no browser reload needed. It keeps exactly one resource
+row per bundle: each time Home Assistant starts, it points its row at the
+current version as a JavaScript module and fixes or removes duplicate and
+mistyped rows under `/apollo_mmwave/`. A row you delete by hand comes back at
+the next restart; an integration reload does not recreate it.
+
+**Resources managed in YAML.** If your Lovelace resources are set in YAML
+(`lovelace: resource_mode: yaml`), the integration cannot add them. It logs a
+warning that ends with the two URLs to add, and until you add them the cards
+may only load after a hard refresh (Ctrl/Cmd+Shift+R). Copy the URLs from the
+warning exactly and add each one once, as a module:
+
+```yaml
+lovelace:
+  resource_mode: yaml
+  resources:
+    - url: /apollo_mmwave/apollo-radar-tuning.js?v=2.2.1
+      type: module
+    - url: /apollo_mmwave/apollo-radar-zone-map-card.js?v=2.2.1
+      type: module
+```
+
+The `?v=` is the integration version. After every upgrade, replace each row's
+URL with the new one from the warning instead of adding a second row. An
+out-of-date row makes the browser run the bundle twice, once from that row and
+once from the URL the integration adds itself; a duplicate "Apollo Zone Map"
+entry in the card picker is the sign.
+
+## Choosing which devices appear
+
+The dashboard is **strategy-backed**: it re-detects your devices on every load,
+so adding or removing a sensor adds or removes a tab, with nothing to maintain.
+
+By default the dashboard shows every Apollo mmWave device Home Assistant
+knows about, online or not. An unplugged radar keeps its tab with an
+"offline" note so it is not silently missing; a leftover registry entry from
+reflashed hardware shows the same way until you delete the old device in
+Settings → Devices & Services. A device without an Apollo model in the
+registry (DIY builds) is only picked up while one of its radar entities is
+live. To control the list yourself, open the integration's options (Settings
+→ Devices & Services → Apollo mmWave → Configure) and pick **Dashboard
+devices**: the dashboard then shows exactly those devices and hides the rest.
+Leave the selection empty to go back to automatic detection. Changes apply
+immediately.
+
+The selection applies only while the Apollo mmWave dashboard is still generated
+automatically. Once you take control of it, the integration no longer writes to
+it, so add or remove devices in the dashboard itself.
+
+A selected device that Home Assistant reports nothing for (for example one
+whose ESPHome entities are disabled) keeps a tab saying no radar data is
+available, rather than an empty one. If every selected device is gone from Home
+Assistant (replaced hardware with a new MAC, a radar re-added after Home
+Assistant's 30-day deleted-device window, or a mistyped id), the dashboard
+says the selection points at devices that no longer exist: clear or update
+**Dashboard devices**. Reflashing or re-adding the same hardware (same MAC)
+keeps its device id, so it does not cause this.
+
+The same knob exists for hand-written strategies as a `devices` list:
+
+```yaml
+strategy:
+  type: custom:apollo-radar-tuning
+  devices:
+    - your_device_id   # exactly these, online or not
+```
+
+A strategy can also take a single `device_id`, which takes precedence: when
+both are set, only `device_id` is shown and `devices` is ignored. The
+integration's own Apollo mmWave dashboard keeps any strategy option you type
+into its raw configuration editor (it rewrites only `type` and `devices`), so a
+`device_id` added there overrides the **Dashboard devices** option. See
+[Strategy options](#strategy-options) for the full list.
+
+## Auto-calibration
+
+Every gate-radar tab (MSR-1, MSR-2, R PRO-1) starts with an **Auto-calibrate**
+card. Press **Calibrate with empty room** and leave: Home Assistant turns Radar
+Engineering Mode on, counts down 15 seconds so you can get out, listens to every
+gate's move and still energy for a minute, then sets each threshold a margin
+above the background it heard. Your current thresholds are saved first, so the
+card always offers **Undo (restore your previous values)**, and that saved copy
+survives a Home Assistant restart. Undo saves the calibrated values before it
+writes, so the button then becomes **Redo (put the calibrated values back)**.
+Under the button, the card shows when those values were saved.
+
+Rules for a good run:
+
+- Nobody in the radar's view: people, pets, robot vacuums. A person sitting
+  still inflates the still thresholds and the card warns when the radar
+  reported presence for much of the listen.
+- Fans, curtains and plants that normally move are part of the background.
+  Leave them as they usually are.
+- Leave Radar Engineering Mode on until the card says it is done. The job stops
+  without changing anything if the mode is turned off during the listen, and on
+  the R PRO-1 if Start Dynamic Background Correction is pressed.
+- **R PRO-1 (LD2412):** run **Start Dynamic Background Correction** on the
+  Controls card first, with the room empty, and wait for **Background
+  Correction Running** to turn off. That is the chip's own feature, written
+  into the radar itself, so Undo on this card cannot reverse it. Calibrate
+  afterward, and calibrate again after any later background correction.
+
+**Preview only** computes the new thresholds and shows them without changing
+anything (Radar Engineering Mode is still turned on for the listen). The result
+table shows each gate's peak and threshold, dims gates beyond your max gate,
+marks a gate that ended up at 100 as **off**, and lists any value the radar did
+not echo back. A gate you turned off yourself (threshold at 100) is calibrated
+like the others, which turns it back on: the card names those gates before the
+run, marks them **was off** in the table, and says how to set one back to 100
+on its Thresholds card (Undo puts back all your previous values, not only that
+gate). The job runs in the backend, so closing the browser does not stop it;
+reopen the dashboard and the card picks the running job up again. If
+Home Assistant restarts during a run the card shows an interrupted banner with
+**Turn it off** for Radar Engineering Mode and **Undo** for any thresholds that
+may have been written.
+
+The card is part of the generated dashboard, and can be placed on your own:
+
+```yaml
+type: custom:apollo-radar-calibrate-card
+device_id: your_device_id
+title: Auto-calibrate          # optional
+calibration:                   # optional; absent keys use the service defaults
+  duration_s: 120              # listen for two minutes (15..600)
+  settle_s: 0                  # no countdown (0..120)
+  margin: 10                   # headroom in energy points (0..50)
+  margin_pct: 25               # headroom in percent of the peak (0..100)
+```
+
+The same `calibration:` block on a `custom:apollo-radar-tuning` strategy seeds
+every generated card. The card drives the `apollo_mmwave.calibrate_gates`,
+`apollo_mmwave.cancel_calibration` and `apollo_mmwave.restore_gate_thresholds`
+services, which automations can call directly; see the service descriptions in
+Developer Tools.
+
+### The calibration services
+
+| Service | What it does |
+|---|---|
+| `apollo_mmwave.calibrate_gates` | The run described above for one radar (`device_id`). Optional `duration_s` (15 to 600, default 60), `settle_s` (0 to 120, default 15), `margin` (0 to 50 points, default 10), `margin_pct` (0 to 100 percent, default 25; the larger headroom wins per gate, and both cannot be 0), `kind` (`both`, `move` or `still`), `apply` (`false` previews without writing) and `wait` (`true` blocks until the job ends and returns the full result). |
+| `apollo_mmwave.cancel_calibration` | Stops the running job for one radar. Nothing is written if it had not started writing; values already written stay until you restore. |
+| `apollo_mmwave.restore_gate_thresholds` | Writes the thresholds saved before the last calibration back (or a chosen `snapshot_id`). The current values are saved first, so a restore can itself be undone. |
+
+The card offers only the newest saved snapshot as Undo. Restore an older one
+with `apollo_mmwave.restore_gate_thresholds` and its `snapshot_id`.
+
+Every service takes one device per call. An automation that knows the room is
+empty can skip the countdown and read the result back:
+
+```yaml
+automation:
+  - alias: Recalibrate the office radar overnight
+    triggers:
+      - trigger: time
+        at: "03:00:00"
+    conditions:
+      - condition: state
+        entity_id: binary_sensor.apollo_msr_2_abc123_radar_target
+        state: "off"
+        for: "00:30:00"
+    actions:
+      - action: apollo_mmwave.calibrate_gates
+        data:
+          device_id: your_device_id
+          settle_s: 0
+          wait: true
+        response_variable: calibration
+      - if:
+          - condition: template
+            value_template: "{{ calibration.outcome != 'applied' }}"
+        then:
+          - action: persistent_notification.create
+            data:
+              title: Radar calibration
+              message: >
+                Outcome {{ calibration.outcome }}
+                {% if calibration.error %}({{ calibration.error.message }}){% endif %},
+                {{ calibration.changed }} thresholds changed.
+```
+
+Several radars take one call each, so loop over them:
+
+```yaml
+actions:
+  - repeat:
+      for_each:
+        - device_id_of_the_office_radar
+        - device_id_of_the_hall_radar
+      sequence:
+        - action: apollo_mmwave.calibrate_gates
+          data:
+            device_id: "{{ repeat.item }}"
+            settle_s: 0
+            wait: true
+```
+
+**Recorder.** While Radar Engineering Mode is on, the radar updates its 18
+(LD2410) or 28 (LD2412) gate energy sensors about once a second, and every
+update lands in the recorder. The job turns the mode back off when it was the
+one that turned it on, so a calibration adds about two minutes of that. If you
+leave the mode on to watch the Gate Energy chart, exclude the per-gate energy
+sensors. The globs match the gate number exactly (one digit on the LD2410, two
+on the LD2412), so the aggregate move and still energy sensors stay recorded
+even when the device name contains `_g`:
+
+```yaml
+recorder:
+  exclude:
+    entity_globs:
+      - sensor.*_g?_move_energy     # LD2410: g0 to g8
+      - sensor.*_g?_still_energy
+      - sensor.*_g??_move_energy    # LD2412: g00 to g13
+      - sensor.*_g??_still_energy
+```
+
+## Drawing zones
+
+The zone map card on R PRO-1 and MTR-1 tabs draws occupancy zones over the
+LD2450's live targets. A new radar has no zones yet, so open
+**Configure → Zones** on the card and press **Add Zone** first. Then pick a
+zone with its button, choose Rectangle, Ellipse or Polygon from the
+drawing-mode menu (✎), and draw on the grid:
+
+- **Rectangle:** drag out a box. A click, a tap or a perfectly straight drag
+  draws and saves nothing.
+- **Ellipse:** drag out its bounding box. A click, a tap or a perfectly
+  straight drag still saves an ellipse with a 1 mm radius over the zone, so
+  use **Undo last zone change** (↶) if that happens.
+- **Polygon:** click or tap each corner, then press **Finish polygon** (✓) or
+  double-click or double-tap the last corner. A polygon needs at least 3
+  distinct corners and finishes on its own at 32. Backspace or **Undo last
+  point** removes the last corner and Escape discards the polygon; keys typed
+  into a text field go to that field instead.
+- Pressing anywhere else in the card, such as a zone button, **Add Zone** or
+  the rotation slider, cancels a shape in progress (the buttons on the grid
+  itself do not). Moving the mouse off the grid cancels a rectangle or ellipse
+  drag but keeps a polygon's corners.
+- Only the left mouse button draws. On a touch screen the finger that started a
+  shape owns it: a second finger is ignored, and a touch the browser cancels
+  saves nothing. A shape in progress is also dropped, unsaved, if the card is
+  hidden or collapsed before you finish it.
+
+Double-clicking a zone's button clears its shape, and **Clear All Zones**
+clears every zone; **Undo last zone change** (↶) puts them back. Under
+**Configure → Zones**, **Add Zone** adds a zone and each row renames (**Save**)
+or deletes (**Delete**) one. Saving a name for a zone that only the card's YAML
+`zones:` list names creates that zone, so the name sticks, and a name you are
+typing is kept when the card receives an update from elsewhere. **Delete**
+cannot be undone: Undo does not bring a deleted zone back.
+
+### Zones in automations
+
+Each zone has two entities on the radar's device: a sensor that holds its
+shape, and a presence binary sensor (for example
+`binary_sensor.office_radar_zone_1_presence`) that is on while a tracked target
+is inside the zone.
+
+- Presence reads `off`, not `unavailable`, while the radar is offline or still
+  reconnecting after a restart. An automation that waits for a zone to be clear
+  for some minutes should also check that the radar itself is available.
+- Naming a zone that already exists (in the zone manager, or with
+  `update_zone`'s `name`) renames its entities to "Zone 1 - Couch" and "Zone 1
+  presence - Couch". The radar's name is then no longer part of their friendly
+  names, so with several radars give zones distinct names, or rename an entity
+  yourself in its settings (a name you set there is kept by later zone
+  renames). Clearing the name sets them back to "Zone 1" and "Zone 1 presence",
+  still without the radar name. The card's own zone labels are not affected.
+- `apollo_mmwave.update_zone` changes zones from automations and scripts;
+  Developer Tools → Actions lists its fields. It takes the radar's `device_id`
+  and a `zone_id` of 1 or more, with geometry in millimeters. To clear a zone
+  send `shape: none`, and to remove it and its entities send `delete: true`. A
+  call that changes nothing, such as a `zone_id` alone or `data` without a
+  `shape`, is refused with a warning in the log. An accepted call fires
+  `apollo_mmwave_zone_updated` with the radar's `device_id`.
+
+## Use your own dashboards instead
+
+Prefer to lay things out yourself? Turn off the dashboard during setup (or any
+time in the integration's options; it takes effect immediately). The cards and
+strategies stay available:
+
+- **Dashboard strategy**: a whole dashboard with one tab per device, like the
+  integration's own. Create a dashboard, open its raw configuration editor and
+  replace everything with:
+
+  ```yaml
+  strategy:
+    type: custom:apollo-radar-tuning
+  ```
+
+  Give it a URL other than `apollo-mmwave`, which belongs to the integration:
+  while the auto-create option is off, every Home Assistant restart and
+  integration reload deletes a dashboard on that path whose configuration is
+  this strategy. A YAML dashboard on `apollo-mmwave` is left alone, and so is a
+  dashboard row the integration created there earlier while that YAML
+  dashboard holds the path. To get rid of that old one, take the YAML
+  dashboard off the path first and then delete it in Settings → Dashboards;
+  deleting it while the YAML dashboard is there takes the YAML dashboard's
+  panel down with it.
+
+- **View strategy**: add a view (tab) to any dashboard that self-builds the
+  full per-device layout:
+
+  ```yaml
+  strategy:
+    type: custom:apollo-radar-tuning
+    device_id: your_device_id   # optional; omit for all devices
+  ```
+
+  With several devices, every device's sections land in that one view with no
+  separator between them, so set `device_id` for one device per view, or use
+  the dashboard strategy for one tab per device.
+
+- **Section strategy**: drop the mmWave cards into an existing *sections*
+  dashboard as one section (optionally limited to a single device):
+
+  ```yaml
+  strategy:
+    type: custom:apollo-radar-tuning
+    device_id: your_device_id   # optional; omit for all devices
+  ```
+
+  The view and section strategies show nothing, with no message, when
+  `device_id` or `devices` matches no device. Only the dashboard strategy
+  explains an empty result.
+
+  Editing a strategy view in the Home Assistant UI throws away its cards. Use
+  **Take control** on the dashboard instead.
+
+- **Cards**: `custom:apollo-radar-calibrate-card`,
+  `custom:apollo-radar-distance-card`,
+  `custom:apollo-radar-gate-energy-card`, and
+  `custom:apollo-radar-zone-map-card` can be placed individually (they're in
+  the card picker). See [Card options](#card-options).
+
+> **Already using the standalone Zone Mapper card?** Both can be installed side
+> by side. Up to 2.0.0 they fought over the same element name,
+> `zone-mapper-card`, and whichever bundle a browser loaded first won it, so
+> one integration's card could end up writing to the other's backend. Our card
+> is now `apollo-radar-zone-map-card` and answers to nothing else, so a
+> hand-written `custom:zone-mapper-card` card that meant *this* one has to be
+> updated by hand.
+
+### Strategy options
+
+The dashboard, view and section strategies take the same options:
+
+| Option | What it does |
+|---|---|
+| `devices` | A list of device ids: show exactly these, online or not. Empty or absent shows every detected Apollo mmWave device. On the integration's own dashboard the **Dashboard devices** option writes this list. |
+| `device_id` | One device id. It takes precedence: when both are set, only `device_id` is shown and `devices` is ignored. |
+| `distance_unit` | The distance chart's unit: `mm`, `cm`, `m`, `in`, `ft` or `yd`, lowercase and written exactly so. Any other value (`CM`, `feet`) is ignored without a warning. Unset, the chart uses `m`, or `in` when Home Assistant uses US customary units. Only the distance cards read it. |
+| `calibration` | Seeds every Auto-calibrate card's `calibration:` block (see [Auto-calibration](#auto-calibration)). |
+
+### Card options
+
+The **distance** and **gate-energy** cards take:
+
+- `device_id`: the radar's Home Assistant device id. It survives renames, and
+  the generated dashboard always sets it.
+- `device_base_name`: a fallback for when `device_id` is missing or its
+  entities are not registered yet. It is the shared part of the radar's entity
+  ids, for example `apollo_msr_2_abc123` for
+  `switch.apollo_msr_2_abc123_radar_engineering_mode`, and it is kept so older
+  configs still resolve. A base name builds MSR-2 entity ids, so on an MSR-1 it
+  cannot find the Bluetooth switch or the gate size select and the chart falls
+  back to 0.75 m gates; set `device_id` there.
+- `title`: defaults to the chip, "LD2410 Distances" and "LD2410 Gate Energy" on
+  an MSR, "LD2412 Distances" and "LD2412 Gate Energy" on an R PRO-1.
+- `entities`: an optional map that replaces individual resolved entity ids,
+  keyed by the slot names in `EntityMap` (`frontend-src/src/types.ts`), for
+  example `radar_target: binary_sensor.office_presence`. The four gate slots
+  (`move_threshold`, `still_threshold`, `move_energy`, `still_energy`) take a
+  list with one id per gate; any other value for them is ignored.
+- `distance_unit` (distance card only): the same six units as the strategy
+  option.
+
+A distance or gate-energy card that cannot find its device, or whose device has
+no gate radar (an MTR-1, say), shows "Apollo mmWave: device not found. Check
+the card's device configuration." The Gate Energy chart shows "Radar
+unavailable" while the radar is offline, and a button that turns on Radar
+Engineering Mode while the radar is online with the mode off.
+
+The calibrate and zone map cards take a `device_id`; `title` is display only.
+The zone map starts locked once the radar has zones, and the Lock toggle is
+remembered per radar in the browser. Set `start_locked: true` or `false` (also
+in the card editor) to force the starting state instead. The map is drawn on a
+square canvas, so a `grid` whose X span (`x_min` to `x_max`) differs from its Y
+span (`y_min` to `y_max`) is drawn stretched; give both the same span for a
+true-to-scale map. `cone.angle_deg` only sets where a double-click on the
+rotation slider resets to: the cone, the live targets and the presence sensors
+all use the radar's stored rotation, which is 0 until you set it with the
+slider (or with `update_zone`'s `rotation_deg`).
+
+## Troubleshooting
+
+- **A card or the dashboard does not load.** Do a hard refresh
+  (Ctrl/Cmd+Shift+R). With Lovelace resources managed in YAML, add the two
+  module resources from the log warning (see
+  [Lovelace resources](#lovelace-resources)). A resource row you deleted comes
+  back at the next Home Assistant restart, not on an integration reload.
+- **The Gate Energy chart says "Radar unavailable".** The radar is offline; the
+  chart fills in once it reconnects. "Turn on Radar Engineering Mode" means the
+  radar is online and the mode is off.
+- **A distance or gate-energy card says "Apollo mmWave: device not found".**
+  Its `device_id` matches no device with gate-radar entities, for example an
+  MTR-1 or a radar that was removed. Point it at an MSR-1, MSR-2 or R PRO-1.
+- **Calibration says the radar has not reported its threshold values.** A radar
+  that has been running for a long time may not have sent them to Home
+  Assistant yet. Press **Read settings from the radar** on the card. If the
+  card does not offer it, open the radar's device page, press its Query Params
+  button in the Diagnostic section, wait a few seconds and try again.
+- **The zone map card says Apollo mmWave is not loaded.** Right after a restart
+  the card retries on its own. If it still says so, reload the page once the
+  integration has loaded.
+- **Zones are missing after a restart.** If `.storage/apollo_mmwave.zones` was
+  edited by hand or partly restored and has the wrong shape, the integration
+  logs what it could not read and loads the rest (possibly nothing), and the
+  next save writes the file without it. Restore that file from a backup, with
+  Home Assistant stopped, if the zones mattered.
+- **Going back to an older release.** If a future release changes the zone
+  store format, an older release cannot read the newer file: setup fails and
+  the file is left untouched. Restore the backup you took before upgrading.

@@ -1,0 +1,233 @@
+# Changelog
+
+What changed in each release of Apollo mmWave, newest first. Setup and
+everyday use are in [README.md](README.md) and
+[docs/configuration.md](docs/configuration.md).
+
+## What changed in 2.2.1
+
+2.2.1 fixes what testing auto-calibration on real MSR-1, MSR-2 and R PRO-1
+radars turned up. Nothing needs changing by hand unless your Lovelace resources
+are managed in YAML (replace both `?v=` URLs; see
+[Lovelace resources](docs/configuration.md#lovelace-resources)).
+
+- **Gates you turned off.** A threshold at 100 means that gate never triggers.
+  Calibration still sets those gates, and the card now says so: before a run it
+  names them ("G2 still is off (set to 100). Calibrating will turn it back
+  on."), the result table marks them ("100 → 15 (was off)"), and a line under
+  the table says how to turn one off again. Gates the radar is not using
+  (beyond your max gate) are left out, and so are gates the last calibration
+  turned off itself.
+- **Thresholds the radar has not reported yet.** A radar that has been running
+  for a long time can show every threshold as unknown. The card now says how
+  many ("The radar has not reported 18 of its threshold values yet.") instead
+  of listing every entity, and offers **Read settings from the radar**, which
+  asks the radar for them and then tries again. The entity ids go to the Home
+  Assistant log.
+- **Undo and Redo.** The button says what it puts back: **Undo (restore your
+  previous values)** after a calibration and **Redo (put the calibrated values
+  back)** after an Undo. The card also shows when those values were saved.
+- **After a restart.** A run stopped by a Home Assistant restart now reads "Last
+  preview ... was stopped by a Home Assistant restart. Nothing was changed."
+  in the card's footer instead of "failed", and a preview is called a preview.
+- **Wording.** The card says it sets each threshold "a margin above" the
+  background it heard, not "just above" it.
+- **Icon.** Apollo mmWave shows its own icon in Settings → Devices & Services
+  instead of a placeholder.
+- **Distances chart.** With nobody in the room, the Detection, Moving and Still
+  rows now say "no target" instead of showing an old distance from before a
+  restart.
+- **Zone map labels.** On a narrow card the distance labels along the top no
+  longer run into each other, and the center line no longer prints each
+  distance twice ("2m2m").
+
+## What changed in 2.2.0
+
+2.2.0 adds auto-calibration and the fixes from a full review of the code.
+Nothing needs changing by hand unless your automations call
+`apollo_mmwave.update_zone` directly or your Lovelace resources are managed in
+YAML (replace both `?v=` URLs; see
+[Lovelace resources](docs/configuration.md#lovelace-resources)).
+
+**New**
+
+- An **Auto-calibrate** card at the top of every gate-radar tab, backed by
+  three new services (see
+  [Auto-calibration](docs/configuration.md#auto-calibration)).
+- First-run help on each tab: a "Start here" list, a button on the Gate Energy
+  chart that turns on Radar Engineering Mode, outlined bars for gates above
+  their threshold, a hint when an MSR still has factory thresholds, and the
+  R PRO-1's Dynamic Background Correction rows in its Controls card.
+
+**For automations that call `update_zone`**
+
+- `zone_id: 0` is refused now; ids start at 1. A zone 0 made earlier from YAML
+  or Developer Tools (the card never made or edited one) can no longer be
+  changed or deleted through the service. To remove it, stop Home Assistant,
+  take a backup, delete zone `"0"` from `.storage/apollo_mmwave.zones`, then
+  start Home Assistant and delete the zone's two leftover entities in
+  Settings → Devices & Services → Entities.
+- Calls that change nothing (a `zone_id` alone, `data` without a `shape`, a
+  `name` for a zone that does not exist) are refused with a warning in the log
+  and no longer fire `apollo_mmwave_zone_updated`. Clear a zone with
+  `shape: none`; `data: null` on its own never cleared anything.
+- Coordinates that are `inf`, `nan` or larger than 2^53 - 1 clear the shape (or
+  drop that polygon point) with a warning instead of failing the call, and a
+  `rotation_deg` of `inf` or `nan` is ignored.
+- `input_units` now survives restarts and reloads (HACS reloads on every
+  update). If you set it only from an automation or Developer Tools, set it
+  once more.
+- Upgrading from 1.x keeps both names of a radar that was renamed on 1.x, for
+  its zone entities and for `location:`.
+
+**Changes you may notice**
+
+- The Gate Energy chart says "Radar unavailable" while the radar is offline.
+  Distance and Gate Energy cards are titled after the chip ("LD2412 Distances"
+  on an R PRO-1), and one pointed at a device with no gate radar says "device
+  not found" instead of going blank.
+- Renaming a radar updates the open dashboard without a reload. A radar whose
+  name contains `LD2412` or `LD2450` keeps its full name in its tab's URL, so a
+  bookmark to that tab may need updating. An MSR named like an R PRO-1 or MTR-1
+  no longer gets a Zone Map.
+- An offline MTR-1 tab shows the offline note, a selected device that reports
+  nothing says so, and a **Dashboard devices** selection whose devices are all
+  gone explains that (see
+  [Choosing which devices appear](docs/configuration.md#choosing-which-devices-appear)).
+- Zone presence no longer flickers on or off when a target's X and Y arrive
+  together, which is the normal case.
+- Zone map drawing: touch input follows one finger, a click in rectangle mode
+  no longer wipes the zone, a polygon survives the mouse leaving the grid, and
+  Backspace or Escape typed into a text field leave it alone (see
+  [Drawing zones](docs/configuration.md#drawing-zones)). Right after a restart
+  the card retries instead of showing "Unknown command."
+- Zone manager: **Delete** can no longer be undone, a name you are typing
+  survives updates, and names from the card's YAML `zones:` list stick. The
+  map draws the stored rotation, not the YAML `cone.angle_deg`.
+- Duplicate Lovelace resource rows are removed. A dashboard row the integration
+  made earlier on `apollo-mmwave` is no longer deleted while a YAML dashboard
+  holds that path (deleting it took the YAML dashboard's panel with it). A zone
+  store file with the wrong shape no longer stops the integration from loading.
+  It loads what it can, logs what it could not read, and rewrites the file
+  without the unreadable parts, so keep a backup (see
+  [Troubleshooting](docs/configuration.md#troubleshooting)).
+
+Developer tooling changed too; see
+[Development](CONTRIBUTING.md#development).
+
+## Upgrading to 2.0
+
+Most of 2.0 lands on its own the first time it starts. A few things need you to
+change something by hand, so work through this list before you decide the
+upgrade went wrong.
+
+### Change these yourself
+
+**Rename the card in any hand-written config.** The custom element is
+`custom:apollo-radar-zone-map-card` now, and it takes a `device_id` plus an
+optional `title` instead of `location`. A card still set to
+`custom:zone-mapper-card` will show up as a missing card. There is deliberately
+no alias for the old name: it was the same name the standalone Zone Mapper card
+uses, so whichever bundle a browser happened to load first won it, and one
+integration's card could end up writing zones into the other's backend.
+
+**Pass `device_id` to `apollo_mmwave.update_zone`.** Automations written
+against 1.x keep working: `location` is still accepted as a deprecated alias
+and is matched against the display name your zones were stored under. It logs a
+warning once per restart and will be removed in a later release. If a radar was
+renamed on 1.x and its zones ended up under two names, either name works, as
+long as you upgrade from 1.x to 2.2.0 or later.
+
+**Update anything listening for `apollo_mmwave_zone_updated`.** The event now
+carries `{"device_id": ...}` where it used to carry `{"location": ...}`. A
+trigger reading `trigger.event.data.location` will stop matching.
+
+Also check any `update_zone` call that passes `entities`. An empty list means
+"leave the tracked pairs alone" now, where before it erased them, which is what
+wiped people's configuration when a card called the service before it had
+finished loading. To actually empty the list, pass `clear_entities: true`.
+
+### What happens for you
+
+**Zone presence follows the card's units.** A card configured with
+`input_units` other than millimeters (DIY hardware only; Apollo firmware reports
+millimeters) tells the integration which unit the target sensors use on every
+save, and the zone presence sensors scale readings the same way. The
+`apollo_mmwave.update_zone` service takes `input_units` directly as well.
+
+**Target sensors are found automatically.** The card's old "Device and Targets"
+picker is gone. The integration locates the radar's LD2450 X/Y target sensors
+itself, so an R PRO-1 or MTR-1 tracks targets with nothing selected by hand. If
+you are on DIY hardware and need to point it somewhere else, set the pairs
+through `apollo_mmwave.update_zone` with its `entities` list. Pairs set that way
+are stored as entity ids and do not follow a rename: after renaming a tracked
+sensor, call `update_zone` again with the new ids, or the zone's presence reads
+off. Automatically found pairs follow renames on their own.
+
+**Zone entities move onto the radar's device.** They are no longer pinned to a
+generated entity id, so they show up on the radar's device page and you can
+rename them to whatever you like. Upgrading keeps your existing entity ids,
+custom names, and area assignments: only the internal unique id is rewritten.
+For a radar renamed on 1.x, that covers the entities created under either name
+when you upgrade from 1.x to 2.2.0 or later. An install that was already on 2.0
+or 2.1 kept only the first name, so the second name's entities stay next to the
+new ones; delete the stale one, or point your automations at the new one.
+
+**Renaming a radar no longer orphans its zones.** Zones are keyed by device id
+instead of by display name.
+
+**Zones from the older two-piece setup are imported when nothing is stored
+yet.** If you have the standalone `zone_mapper` integration and Apollo mmWave
+has no stored zone data of its own, its zones are read in at setup. That is a
+fresh install, or any upgrade from before 1.2.0, which is the release that
+moved zone data into storage. The import is read-only and nothing belonging to
+that integration is renamed or removed. **Do not uninstall the old integration
+until you have confirmed your zones came across**, because its restore data is
+the only copy and it goes away with its entities. A `zone_mapper` location that
+matches no Home Assistant device is skipped with a warning in the log, and its
+zones have to be redrawn on the card.
+
+Upgrading from 1.2.0 or later, you already have stored zone data, so the import
+is skipped and 2.0 keeps what you have. Your `zone_mapper` zones are untouched,
+so open the Apollo Zone Map card and redraw the ones you want here, then remove
+the old integration once you are happy with them.
+
+**The sidebar dashboard is a real dashboard.** It has a proper name on
+Settings → Dashboards, "take control" works on it, and you can delete it. On
+recent Home Assistant versions the 1.3.x sidebar dashboard did not register at
+all; this is the fix. Note that the "auto-create dashboard" option decides
+whether the dashboard exists, so deleting it brings it back the next time the
+integration loads unless you turn that option off in the integration's options
+first.
+
+**The card follows your Home Assistant theme.** Switching Home Assistant
+between light and dark switches the card with it. `dark_mode` in the card
+config is an override now rather than the only way to get a dark card, so
+remove it if you want the card to track your theme. The card editor has an
+"Appearance" dropdown (follow theme / light / dark) that sets or clears this
+key for you, next to the radar dropdown and the title.
+
+### Known limitations
+
+Editing a strategy view in the Home Assistant UI still throws away its cards.
+That is how Home Assistant treats strategy views and not something this
+integration can change. Use "take control" on the dashboard instead of editing
+the view.
+
+If you renamed a radar before upgrading, the zones you drew under its old
+display name are kept but not shown: the card comes up empty and those zone
+entities read as unavailable. To get them back, rename the radar to the old
+name and reload the integration. That check runs on every setup, so the zones
+move onto the device as soon as the names line up again. If you would rather
+keep the new name, redraw the zones on the card.
+
+If the same zone number exists both on a device and in leftover pre-2.0 data
+that later resolves to that device, the copy already on the device wins and the
+leftover copy is dropped. It is written to the log when it happens, so search
+your log for `apollo_mmwave` if a zone you expected is missing.
+
+A running auto-calibration does not survive a Home Assistant restart; the saved
+thresholds do, and the Auto-calibrate card shows an interrupted banner with
+Turn it off and Undo after the restart. The card offers only the newest saved
+snapshot as Undo; older ones can be restored through the
+`apollo_mmwave.restore_gate_thresholds` service with a `snapshot_id`.
