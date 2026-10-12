@@ -35,9 +35,9 @@ warning exactly and add each one once, as a module:
 lovelace:
   resource_mode: yaml
   resources:
-    - url: /apollo_mmwave/apollo-radar-tuning.js?v=2.2.1
+    - url: /apollo_mmwave/apollo-radar-tuning.js?v=2.2.2
       type: module
-    - url: /apollo_mmwave/apollo-radar-zone-map-card.js?v=2.2.1
+    - url: /apollo_mmwave/apollo-radar-zone-map-card.js?v=2.2.2
       type: module
 ```
 

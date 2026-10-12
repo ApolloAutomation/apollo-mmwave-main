@@ -4,6 +4,25 @@ What changed in each release of Apollo mmWave, newest first. Setup and
 everyday use are in [README.md](README.md) and
 [docs/configuration.md](docs/configuration.md).
 
+## What changed in 2.2.2
+
+Two fixes to the Auto-calibrate card from a second round of hardware testing.
+Nothing needs changing by hand unless your Lovelace resources are managed in
+YAML (replace both `?v=` URLs; see
+[Lovelace resources](docs/configuration.md#lovelace-resources)).
+
+- **Preview table fits the card.** A preview no longer adds "(would set)" to
+  every cell, because the line above the table already says these are the
+  values calibration would set. On a narrow card a note such as "(was off)"
+  now wraps under its value instead of pushing the Still threshold column out
+  of view.
+- **Clearer gate names.** Warnings now name the threshold, so "G2 still is
+  off" no longer reads like "G2 is still off". The card says "The G2 still
+  threshold is off (set to 100). Calibrating will turn it back on." and, for
+  several, "These thresholds are off (set to 100): G0 move, G2 still." A value
+  the radar did not confirm reads "G3 move threshold reads back 35 (asked for
+  27)".
+
 ## What changed in 2.2.1
 
 2.2.1 fixes what testing auto-calibration on real MSR-1, MSR-2 and R PRO-1
