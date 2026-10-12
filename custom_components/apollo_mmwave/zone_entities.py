@@ -12,10 +12,16 @@ attempt dead, and a dead attempt is retried on the next zone signal, with one
 more nudge when the entity that was in the way finishes leaving.
 """
 
+# TODO(REVIEW_REPORT.md X58): re-verify the retry path.  # noqa: FIX002, TD003
+# The race above cannot happen on the pinned HA (registry removal finishes
+# eagerly), and the removal-time nudge runs before HA frees the old state,
+# so a same-zone retry could get a `_2` entity id. Unverified; check first.
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.dispatcher import (
@@ -39,10 +45,17 @@ ZoneKey = tuple[str, int]
 class ZoneEntityTracker:
     """Which zones have an entity that is live, or one still being added."""
 
-    def __init__(self, hass: HomeAssistant, domain: str) -> None:
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        domain: str,
+        *,
+        entry: ConfigEntry | None = None,
+    ) -> None:
         """Track one platform's zone entities."""
         self._hass = hass
         self._domain = domain
+        self._entry = entry
         self._live: set[ZoneKey] = set()
         self._pending: dict[ZoneKey, ZoneEntityMixin] = {}
 
@@ -83,10 +96,27 @@ class ZoneEntityTracker:
             if key not in keys:
                 del self._pending[key]
 
+    def discard(self, key: ZoneKey) -> None:
+        """Drop the attempt for a zone that will not be offered again."""
+        self._pending.pop(key, None)
+
     @property
     def has_aborted(self) -> bool:
         """Report whether any add attempt was refused and awaits a retry."""
         return any(entity.add_aborted for entity in self._pending.values())
+
+    @property
+    def unloading(self) -> bool:
+        """Report whether the config entry is being unloaded."""
+        # Home Assistant resets the platforms before it runs the entry's
+        # on_unload callbacks, so the zone signal is still connected while the
+        # entities leave. Anything added then lands on a platform that has
+        # already been reset and stays live, bound to the old store. Only this
+        # state counts: the first sync runs while setup is still in progress.
+        return (
+            self._entry is not None
+            and self._entry.state is ConfigEntryState.UNLOAD_IN_PROGRESS
+        )
 
 
 class ZoneEntityMixin:
@@ -116,7 +146,9 @@ class ZoneEntityMixin:
         await super().async_will_remove_from_hass()  # type: ignore[misc]
         # This entity may be exactly what stood in the refused one's way (a
         # deleted zone whose id was re-drawn before it had finished leaving).
-        if self._tracker.has_aborted:
+        # Not while the entry unloads: every entity is leaving then, and a retry
+        # would re-add the ones that just left.
+        if self._tracker.has_aborted and not self._tracker.unloading:
             device_id, _zone_id = self._zone_key
             hass: HomeAssistant = self.hass  # type: ignore[attr-defined]
             async_dispatcher_send(hass, SIGNAL_ZONES_UPDATED, device_id)
@@ -134,9 +166,11 @@ def async_setup_zone_platform(
     from . import get_store  # noqa: PLC0415 - avoid a module import cycle
 
     store = get_store(hass)
-    tracker = ZoneEntityTracker(hass, domain)
+    tracker = ZoneEntityTracker(hass, domain, entry=entry)
 
     def _sync_entities() -> None:
+        if tracker.unloading:
+            return
         current = {
             (device_id, zone_id)
             for device_id, device in store.devices.items()
@@ -149,8 +183,16 @@ def async_setup_zone_platform(
         for key in sorted(current):
             if not tracker.needs_entity(key):
                 continue
+            # TODO(REVIEW_REPORT.md X58): built, then dropped.  # noqa: FIX002, TD003
+            # A disabled entity is constructed on every signal (it may re-log the
+            # missing-device warning) before is_disabled skips it; check the unique
+            # id first. An add that raises inside HA instead of aborting stays
+            # pending and is never retried. Both unverified; check before changing.
             entity = factory(*key)
             if tracker.is_disabled(entity.unique_id):
+                # Refused for good (the entity, or its device, is disabled), so
+                # an earlier aborted attempt is not waiting for a retry.
+                tracker.discard(key)
                 continue
             entity._attach_tracker(tracker, key)  # noqa: SLF001 - our own mixin
             tracker.mark_pending(key, entity)

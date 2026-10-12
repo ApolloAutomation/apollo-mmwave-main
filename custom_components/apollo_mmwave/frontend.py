@@ -55,6 +55,7 @@ from homeassistant.components.lovelace.const import (
     CONF_TITLE,
     CONF_URL_PATH,
     LOVELACE_DATA,
+    MODE_STORAGE,
     ConfigNotFound,
 )
 from homeassistant.components.websocket_api.const import (
@@ -85,8 +86,18 @@ def _frontend_path() -> Path:
     return Path(__file__).parent / FRONTEND_DIR
 
 
+def _base_url(item: dict[str, Any]) -> str:
+    """Return a resource row's url with the ``?v=`` cache-buster stripped."""
+    return str(item.get("url", "")).partition("?")[0]
+
+
 async def async_register_frontend_assets(hass: HomeAssistant) -> None:
     """Serve and register the bundled JS so the cards/strategy load globally."""
+    # TODO(REVIEW_REPORT.md X28): a reload skips resources.  # noqa: FIX002, TD003
+    # This guard also skips the resource reconciliation, so a deleted resource
+    # row only comes back at the next restart. Keep static paths and
+    # add_extra_js_url once per run, but run _async_register_lovelace_resources
+    # on every setup, with a reload-recreates-the-row test.
     if hass.data.setdefault(DOMAIN, {}).get(DATA_ASSETS_REGISTERED):
         return
 
@@ -137,6 +148,14 @@ async def _async_register_lovelace_resources(
     dashboard times out waiting for the strategy element and only a hard
     refresh recovers. Every non-success branch logs at warning with the reason.
 
+    Each bundle keeps exactly one row. A second row for the same bundle (an
+    old ``?v=`` copy, or one added by hand without the cache-buster) makes the
+    browser fetch and run the module twice, and an un-versioned copy is served
+    with the long cache header and never busted, so the extras are deleted.
+    The row that stays is repointed at the current version as a ``module``: a
+    row added by hand as a classic ``js`` script throws on the bundle's
+    top-level ``export``.
+
     Entries under our static path that are no longer in ``JS_BUNDLES`` are
     deleted, so renaming a bundle does not leave a 404 behind on upgrade.
     """
@@ -152,37 +171,64 @@ async def _async_register_lovelace_resources(
             )
             return
         if not hasattr(resources, "async_create_item"):
+            # The urls stay last so no punctuation trails them: a "." copied
+            # onto a ?v= gives a url unlike the extra module url, which then
+            # loads the bundle a second time.
             _LOGGER.warning(
                 "Apollo mmWave: Lovelace resources are managed in YAML on this"
                 " system (%s), so they can't be registered automatically. Add"
-                " these module resources to your lovelace resources config,"
-                " or the dashboard/cards won't load without a hard refresh: %s",
+                " the module resources listed at the end of this message to"
+                " your lovelace resources config, or the dashboard/cards won't"
+                " load without a hard refresh. Each ?v= is the current"
+                " integration version: after every upgrade, replace each"
+                " bundle's existing row with its new url instead of adding a"
+                " second row, which would load the bundle twice. Resources: %s",
                 type(resources).__name__,
                 ", ".join(js_urls),
             )
             return
+        # The storage collection loads lazily: async_items() reads [] until it
+        # has loaded, and only HA's own create/update/delete load it first
+        # (through the private _async_ensure_loaded). This does the same by
+        # hand, so it depends on HA internals; recheck it on HA upgrades.
         if not getattr(resources, "loaded", True):
             await resources.async_load()
             resources.loaded = True
 
-        existing: dict[str, dict[str, Any]] = {}
-        for item in resources.async_items():
-            url = str(item.get("url", ""))
-            existing[url.partition("?")[0]] = item
+        # Only rows under our own static path are ever looked at. All of them
+        # are collected, grouped by url with the ?v= cache-buster stripped, so
+        # a second row for one bundle is seen instead of hiding behind the last.
+        prefix = f"{STATIC_URL_BASE}/"
+        ours: list[dict[str, Any]] = [
+            item
+            for item in resources.async_items()
+            if str(item.get("url", "")).startswith(prefix)
+        ]
+        by_base: dict[str, list[dict[str, Any]]] = {}
+        for item in ours:
+            by_base.setdefault(_base_url(item), []).append(item)
 
         created: list[str] = []
         updated: list[str] = []
+        duplicate_ids: set[str] = set()
         for url in js_urls:
-            item = existing.get(url.partition("?")[0])
-            if item is None:
+            rows = by_base.get(url.partition("?")[0], [])
+            if not rows:
                 await resources.async_create_item({"res_type": "module", "url": url})
                 created.append(url)
-            elif item.get("url") != url:
-                # Same bundle, older ?v= cache-buster: point it at this version.
-                await resources.async_update_item(item["id"], {"url": url})
+                continue
+            # Keep one row, preferring one already at this version.
+            item = next((row for row in rows if row.get("url") == url), rows[0])
+            duplicate_ids.update(row["id"] for row in rows if row is not item)
+            if item.get("url") != url or item.get("type") != "module":
+                # Same bundle, older ?v= cache-buster or a classic "js" row:
+                # point it at this version as a module.
+                await resources.async_update_item(
+                    item["id"], {"url": url, "res_type": "module"}
+                )
                 updated.append(url)
 
-        removed = await _async_remove_stale_resources(resources, existing)
+        removed = await _async_remove_stale_resources(resources, ours, duplicate_ids)
 
         if created or updated or removed:
             _LOGGER.info(
@@ -204,7 +250,7 @@ async def _async_register_lovelace_resources(
 
 
 async def _async_remove_stale_resources(
-    resources: Any, existing: dict[str, dict[str, Any]]
+    resources: Any, items: list[dict[str, Any]], duplicate_ids: set[str]
 ) -> list[str]:
     """
     Delete resource entries under our static path that we no longer ship.
@@ -215,17 +261,21 @@ async def _async_remove_stale_resources(
     what we serve, so anything else below ``/apollo_mmwave/`` is ours and dead.
     Nothing outside that prefix is ever touched.
 
-    ``existing`` is keyed by url with the ``?v=`` cache-buster stripped.
+    ``items`` is every row under our static path, duplicates included, and
+    ``duplicate_ids`` names the extra rows for a bundle that already kept one.
     """
     if not hasattr(resources, "async_delete_item"):
         return []
     prefix = f"{STATIC_URL_BASE}/"
-    ours = {f"{prefix}{name}" for name in JS_BUNDLES}
+    shipped = {f"{prefix}{name}" for name in JS_BUNDLES}
     removed: list[str] = []
-    for url, item in existing.items():
-        if url.startswith(prefix) and url not in ours:
+    for item in items:
+        url = _base_url(item)
+        if not url.startswith(prefix):
+            continue
+        if url not in shipped or item["id"] in duplicate_ids:
             await resources.async_delete_item(item["id"])
-            removed.append(url)
+            removed.append(str(item.get("url", "")))
     return removed
 
 
@@ -238,8 +288,9 @@ def _dashboards_collection(hass: HomeAssistant) -> Any | None:
     """
     Return Lovelace's storage dashboards collection, or None if unreachable.
 
-    Home Assistant 2025.9 keeps the collection in a local variable inside
-    lovelace's own ``async_setup``; ``hass.data[LOVELACE_DATA]`` carries only
+    Home Assistant 2026.10.0, and 2026.8.1 (the HACS floor), keep the
+    collection in a local variable inside lovelace's own ``async_setup``;
+    ``hass.data[LOVELACE_DATA]`` carries only
     mode/dashboards/resources/yaml_dashboards. The one live reference is the
     websocket CRUD object bound to the ``lovelace/dashboards/*`` commands, so
     borrow it from the command registry. Constructing our own
@@ -250,7 +301,8 @@ def _dashboards_collection(hass: HomeAssistant) -> Any | None:
     lovelace_data = hass.data.get(LOVELACE_DATA)
     if lovelace_data is None:
         return None
-    # Preferred path if a future release ever puts it on the dataclass.
+    # Forward-compat only: no release defines this attribute as of 2026.10.0.
+    # It is the preferred path if a future release puts it on the dataclass.
     collection = getattr(lovelace_data, "dashboards_collection", None)
     if collection is not None:
         return collection
@@ -272,10 +324,33 @@ def _dashboard_item(collection: Any) -> dict[str, Any] | None:
     )
 
 
-async def _async_stored_config(hass: HomeAssistant) -> dict[str, Any] | None:
-    """Return the dashboard's stored Lovelace config, or None if it has none."""
+async def _async_stored_config(
+    hass: HomeAssistant, item: dict[str, Any]
+) -> dict[str, Any] | None:
+    """
+    Return the row's own stored Lovelace config, or None if it has none.
+
+    Lovelace registers YAML dashboards first and, when a storage row on the
+    same url path loads later, keeps the YAML one and only warns. So the
+    object holding our url path is not necessarily ``item``'s: reading its
+    config would judge the row by someone else's dashboard, and writing or
+    deleting on that verdict hits the YAML dashboard instead (deleting the
+    row makes Lovelace drop whatever holds the path). Unless the holder is
+    the row's own storage dashboard, the row is reported as having no config,
+    which every caller already treats as not ours.
+    """
     config = hass.data[LOVELACE_DATA].dashboards.get(DASHBOARD_URL_PATH)
     if config is None:
+        return None
+    if (
+        getattr(config, "mode", None) != MODE_STORAGE
+        or (config.config or {}).get("id") != item["id"]
+    ):
+        _LOGGER.debug(
+            "Apollo mmWave: another dashboard holds url path %s; leaving the"
+            " row alone.",
+            DASHBOARD_URL_PATH,
+        )
         return None
     try:
         return await config.async_load(force=False)
@@ -324,15 +399,18 @@ def _desired_config(
 
 async def async_register_dashboard(
     hass: HomeAssistant, devices: list[str] | None = None
-) -> bool:
+) -> None:
     """
     Create the "Apollo mmWave" dashboard as a normal storage dashboard.
 
     Creates the collection item if the "auto-create dashboard" option is on and
     it is missing, then keeps the strategy config current (the explicit device
-    selection can change). Never touches a dashboard that is not ours. Returns
-    False only if Lovelace's internals could not be reached at all.
+    selection can change). Never touches a dashboard that is not ours.
     """
+    collection: Any = None
+    # The row this call created, if any; it is rolled back if anything after
+    # its creation fails, so a failed first save does not strand it.
+    created: dict[str, Any] | None = None
     try:
         collection = _dashboards_collection(hass)
         if collection is None:
@@ -343,14 +421,14 @@ async def async_register_dashboard(
                 DASHBOARD_TITLE,
                 DASHBOARD_STRATEGY_TYPE,
             )
-            return False
+            return
 
-        # Ownership is decided by who created the row, not by what is stored on
-        # it. A dashboard someone else made has no config until they save one,
-        # and inferring "unowned" from that empty config would let us write our
-        # strategy over their work and then delete it as if it were ours.
-        created = False
-        if _dashboard_item(collection) is None:
+        # Ownership is read from the stored strategy config (_is_ours). The
+        # call that creates the row is exempt only because the row has no
+        # config yet. A dashboard someone else made has no config either until
+        # they save one, so an empty config never makes a row ours to write.
+        item = _dashboard_item(collection)
+        if item is None:
             if DASHBOARD_URL_PATH in hass.data[LOVELACE_DATA].dashboards:
                 # A YAML dashboard holds the url path. Lovelace refuses a second
                 # panel there, and it isn't ours to replace.
@@ -358,8 +436,8 @@ async def async_register_dashboard(
                     "Apollo mmWave: another dashboard already owns '%s'; skipping.",
                     DASHBOARD_URL_PATH,
                 )
-                return True
-            await collection.async_create_item(
+                return
+            item = await collection.async_create_item(
                 {
                     CONF_URL_PATH: DASHBOARD_URL_PATH,
                     CONF_TITLE: DASHBOARD_TITLE,
@@ -368,7 +446,7 @@ async def async_register_dashboard(
                     CONF_REQUIRE_ADMIN: False,
                 }
             )
-            created = True
+            created = item
             _LOGGER.info(
                 "Apollo mmWave: created the '%s' dashboard. The 'auto-create"
                 " dashboard' option in the integration's settings is what"
@@ -378,19 +456,19 @@ async def async_register_dashboard(
                 DASHBOARD_TITLE,
             )
 
-        stored = await _async_stored_config(hass)
-        if not created and not _is_ours(stored):
+        stored = await _async_stored_config(hass, item)
+        if created is None and not _is_ours(stored):
             _LOGGER.debug(
                 "Apollo mmWave: the '%s' dashboard is not ours to write to;"
                 " leaving its config alone.",
                 DASHBOARD_TITLE,
             )
-            return True
+            return
 
         desired = _desired_config(devices, stored)
         if stored == desired:
             _LOGGER.debug("Apollo mmWave: dashboard already registered.")
-            return True
+            return
         dashboard = hass.data[LOVELACE_DATA].dashboards[DASHBOARD_URL_PATH]
         # async_save fires the lovelace_updated event, so open tabs pick up a
         # changed device selection without a reload.
@@ -402,9 +480,28 @@ async def async_register_dashboard(
             DASHBOARD_STRATEGY_TYPE,
             exc_info=True,
         )
-        return True
-    else:
-        return True
+        if created is not None:
+            await _async_roll_back_created_row(collection, created)
+
+
+async def _async_roll_back_created_row(collection: Any, item: dict[str, Any]) -> None:
+    """
+    Delete a row this setup created but could not give its strategy config.
+
+    Left in place it would have no config, which every later call reads as not
+    ours, so it would stay in the sidebar as an auto-generated dashboard that
+    neither a reload nor turning the option off could repair or remove.
+    Deleting it lets the next setup start over.
+    """
+    try:
+        await collection.async_delete_item(item["id"])
+    except Exception:
+        _LOGGER.warning(
+            "Apollo mmWave: could not remove the half-made '%s' dashboard; you"
+            " can delete it in Settings > Dashboards.",
+            DASHBOARD_TITLE,
+            exc_info=True,
+        )
 
 
 async def async_remove_dashboard(hass: HomeAssistant) -> None:
@@ -418,8 +515,15 @@ async def async_remove_dashboard(hass: HomeAssistant) -> None:
     page. Deleting the collection item is what removes the sidebar panel and
     the stored config; lovelace does both from its own collection listener.
     Only a config that is still our generated strategy is deleted, so a
-    dashboard the user built or took control of here is left standing.
+    dashboard the user built or took control of here is left standing, and so
+    is a row a YAML dashboard on the same url path is shadowing.
     """
+    # TODO(REVIEW_REPORT.md X03): every setup calls this too.  # noqa: FIX002, TD003
+    # With the option off, each restart or reload deletes the dashboard on our
+    # url path whenever its config is our strategy, even one the user built by
+    # hand, which this docstring and the module docstring deny.
+    # Decide: keep it and fix both docstrings (README: use another url path), or
+    # remove only from the options listener and entry removal, with tests.
     try:
         collection = _dashboards_collection(hass)
         if collection is None:
@@ -427,7 +531,7 @@ async def async_remove_dashboard(hass: HomeAssistant) -> None:
         item = _dashboard_item(collection)
         if item is None:
             return
-        if not _is_ours(await _async_stored_config(hass)):
+        if not _is_ours(await _async_stored_config(hass, item)):
             _LOGGER.debug(
                 "Apollo mmWave: the '%s' dashboard is no longer ours; leaving it.",
                 DASHBOARD_TITLE,

@@ -26,7 +26,7 @@ from .const import (
     SIGNAL_ZONES_UPDATED,
 )
 from .ld2450 import effective_target_pairs
-from .zone_entities import ZoneEntityMixin
+from .zone_entities import ZoneEntityMixin, async_setup_zone_platform
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -45,7 +45,6 @@ async def async_setup_entry(
 ) -> None:
     """Create geometry sensors for stored zones, and for zones added later."""
     from . import get_store  # noqa: PLC0415 - avoid a module import cycle
-    from .zone_entities import async_setup_zone_platform  # noqa: PLC0415
 
     store = get_store(hass)
     async_setup_zone_platform(

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 from homeassistant.helpers.dispatcher import DATA_DISPATCHER, async_dispatcher_send
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -14,6 +16,7 @@ from custom_components.apollo_mmwave.const import (
     DOMAIN,
     SIGNAL_CALIBRATION_UPDATED,
     SIGNAL_ZONES_UPDATED,
+    STORE_LABEL,
     STORE_ZONES,
 )
 
@@ -277,6 +280,129 @@ async def test_zone_commands_survive_a_reload(
     message = await client.receive_json()
     assert message["event"]["zones"]["1"]["shape"] == "rect"
     assert get_store(hass).device(device_id)[STORE_ZONES][1]["shape"] == "rect"
+
+
+async def test_one_zone_edit_pushes_exactly_once(
+    hass, hass_ws_client, init_integration, device_id
+) -> None:
+    """Our own zone entities landing in the registry are not a second change."""
+    _ = init_integration
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id({"type": SUBSCRIBE, "device_id": device_id})
+    assert (await client.receive_json())["success"] is True
+
+    # The first zone creates both of its entities on the radar device.
+    await hass.services.async_call(
+        DOMAIN, "update_zone", {"device_id": device_id, **RECT_CALL}, blocking=True
+    )
+    await hass.async_block_till_done()
+    created = await _drain(client)
+    assert len(created) == 1
+    assert created[0]["zones"]["1"]["shape"] == "rect"
+
+    # A rename rewrites both entities' registry names.
+    await hass.services.async_call(
+        DOMAIN,
+        "update_zone",
+        {"device_id": device_id, "zone_id": 1, "name": "Couch"},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+    renamed = await _drain(client)
+    assert len(renamed) == 1
+    assert renamed[0]["zones"]["1"]["name"] == "Couch"
+
+
+async def test_non_admin_users_can_read_and_subscribe(
+    hass, hass_ws_client, hass_read_only_access_token, init_integration, device_id
+) -> None:
+    """The dashboard is not admin-only, so neither are the commands its card needs."""
+    _ = init_integration
+    token = hass.auth.async_validate_access_token(hass_read_only_access_token)
+    assert not token.user.is_admin
+    client = await hass_ws_client(hass, hass_read_only_access_token)
+
+    await client.send_json_auto_id({"type": GET, "device_id": device_id})
+    assert (await client.receive_json())["success"] is True
+
+    await client.send_json_auto_id({"type": SUBSCRIBE, "device_id": device_id})
+    assert (await client.receive_json())["success"] is True
+    assert _forwarder_count(hass) == 1
+
+
+async def test_zones_get_reports_input_units_rotation_and_label(
+    hass, hass_ws_client, init_integration, device_id
+) -> None:
+    """Stored units, rotation and label reach the client, not only their nulls."""
+    _ = init_integration
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id({"type": GET, "device_id": device_id})
+    assert (await client.receive_json())["result"]["input_units"] is None
+
+    await hass.services.async_call(
+        DOMAIN,
+        "update_zone",
+        {"device_id": device_id, "input_units": "ft", "rotation_deg": 45},
+        blocking=True,
+    )
+    get_store(hass).device(device_id)[STORE_LABEL] = "Office"
+
+    await client.send_json_auto_id({"type": GET, "device_id": device_id})
+    result = (await client.receive_json())["result"]
+    assert result["input_units"] == "ft"
+    assert result["rotation_deg"] == 45
+    assert result["label"] == "Office"
+
+
+async def test_zones_subscribe_ignores_a_change_after_the_store_is_gone(
+    hass, hass_ws_client, init_integration, device_id, caplog
+) -> None:
+    """A change landing in the unload window builds no payload from a gone store."""
+    _ = init_integration
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id({"type": SUBSCRIBE, "device_id": device_id})
+    assert (await client.receive_json())["success"] is True
+    assert _forwarder_count(hass) == 1
+
+    # Without the guard the dispatcher swallows the KeyError and logs it, and the
+    # ping below still gets its pong, so only the log can tell the two apart.
+    data = hass.data[DOMAIN]
+    store = data.pop(DATA_STORE)
+    try:
+        async_dispatcher_send(hass, SIGNAL_ZONES_UPDATED, device_id)
+        await hass.async_block_till_done()
+        assert await _drain(client) == []
+    finally:
+        data[DATA_STORE] = store
+
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+async def test_zones_subscription_is_dropped_when_the_client_disconnects(
+    hass, hass_ws_client, init_integration, device_id, caplog
+) -> None:
+    """Closing the tab ends its subscriptions, not just unsubscribing or unloading."""
+    # Home Assistant runs every teardown while iterating the connection's
+    # subscriptions, so a teardown that touched that dict would stop the loop
+    # after the first one and leak the rest. Only the close path shows that,
+    # hence two subscriptions, as two cards on one tab would hold.
+    _ = init_integration
+    client = await hass_ws_client(hass)
+    for _card in range(2):
+        await client.send_json_auto_id({"type": SUBSCRIBE, "device_id": device_id})
+        assert (await client.receive_json())["success"] is True
+    assert _forwarder_count(hass) == 2
+    caplog.clear()
+
+    await client.close()
+    await hass.async_block_till_done()
+    assert _forwarder_count(hass) == 0
+
+    await hass.services.async_call(
+        DOMAIN, "update_zone", {"device_id": device_id, **RECT_CALL}, blocking=True
+    )
+    await hass.async_block_till_done()
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
 
 # ---------------------------------------------------------------------------

@@ -2,8 +2,9 @@
 Config and options flow for Apollo mmWave.
 
 The integration is UI-configurable and has a single setup step that just
-creates the singleton entry. The options flow exposes a single toggle for the
-auto-created dashboard.
+creates the singleton entry. The options flow exposes the toggle for the
+auto-created dashboard and an optional explicit selection of the radars it
+shows (empty means automatic detection).
 """
 
 from __future__ import annotations
@@ -27,7 +28,11 @@ if TYPE_CHECKING:
 
 # The device selector matches `model` exactly, and each firmware image carries
 # its own project name (`MSR-2_BLE`, `MSR-2_Factory`), so every variant has to
-# be listed. The MTR-1 images all report `MTR-1`.
+# be listed. The MTR-1 images all report `MTR-1`. Keep this in step with
+# `APOLLO_MODELS` in frontend-src/src/profiles.ts, which detects the same
+# hardware by lower-cased model prefix (`msr-1`, `r-pro-1`, ...): a variant
+# missing here is auto-detected on the dashboard but cannot be picked in the
+# options flow. tests/test_config_flow.py checks both directions.
 MMWAVE_MODELS = (
     "MSR-1",
     "MSR-1_BLE",
@@ -50,6 +55,10 @@ class ApolloMmwaveConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self, user_input: dict | None = None
     ) -> config_entries.ConfigFlowResult:
         """Ask about the auto-dashboard and create the entry when submitted."""
+        # TODO(REVIEW_REPORT.md X18): not via the manifest.  # noqa: FIX002, TD003
+        # Optionally add "single_config_entry": true to manifest.json; the abort
+        # reason becomes single_instance_allowed (update test_single_instance).
+        # Keep the unique-id guard below for the entry's unique-id stamp.
         if self._async_current_entries():
             return self.async_abort(reason="already_configured")
 
@@ -78,18 +87,14 @@ class ApolloMmwaveConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     @staticmethod
     @callback
     def async_get_options_flow(
-        config_entry: ConfigEntry,
+        config_entry: ConfigEntry,  # noqa: ARG004 - signature fixed by HA
     ) -> ApolloMmwaveOptionsFlow:
-        """Return the options flow for this entry."""
-        return ApolloMmwaveOptionsFlow(config_entry)
+        """Return the options flow; the base class resolves its config_entry."""
+        return ApolloMmwaveOptionsFlow()
 
 
 class ApolloMmwaveOptionsFlow(config_entries.OptionsFlow):
-    """Options flow with a single toggle for the auto-created dashboard."""
-
-    def __init__(self, config_entry: ConfigEntry) -> None:
-        """Store the entry the options apply to."""
-        self._config_entry = config_entry
+    """Options flow for the auto-created dashboard toggle and device selection."""
 
     async def async_step_init(
         self, user_input: dict | None = None
@@ -99,10 +104,10 @@ class ApolloMmwaveOptionsFlow(config_entries.OptionsFlow):
             user_input.setdefault(CONF_DASHBOARD_DEVICES, [])
             return self.async_create_entry(title="", data=user_input)
 
-        current_auto = self._config_entry.options.get(
+        current_auto = self.config_entry.options.get(
             CONF_AUTO_CREATE_VIEW, DEFAULT_AUTO_CREATE_VIEW
         )
-        current_devices = self._config_entry.options.get(CONF_DASHBOARD_DEVICES, [])
+        current_devices = self.config_entry.options.get(CONF_DASHBOARD_DEVICES, [])
         schema = vol.Schema(
             {
                 vol.Required(CONF_AUTO_CREATE_VIEW, default=current_auto): bool,
