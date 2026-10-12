@@ -137,7 +137,13 @@ const INNER = WIDTH - LBL - RPAD;
 const TOP = 6;
 const ROW_H = 30;
 const BAR_H = ROW_H - 8;
-const AXIS_H = 36;
+// Axis band below the plot (an SVG layout size, not a radar setting). Each
+// tick label is end-anchored at plotBottom + 13 and rotated -45 deg about that
+// anchor, so its first glyph lands 0.707 x (text width + descent) below the
+// anchor. The widest reachable label, "6000 mm" (LD2410) or "9750 mm" (LD2412)
+// at 11 px, is about 47 px wide: 13 + 0.707 x (47 + 2) = 48, plus a little
+// margin. A smaller band lets the svg viewBox clip the leading digits.
+const AXIS_H = 52;
 const MID = BAR_H / 2 + 4; // text baseline offset to vertically center in a bar
 
 type Row =

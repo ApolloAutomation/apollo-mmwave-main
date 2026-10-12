@@ -1,7 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { distanceModel } from "../src/charts/distance-chart";
+import { render, type TemplateResult } from "lit";
+import { distanceModel, renderDistanceChart } from "../src/charts/distance-chart";
 import { entityMapFromBaseName, entityMapFromDevice } from "../src/entities";
-import type { HomeAssistant, HassEntity } from "../src/types";
+import { LD2412_PROFILE } from "../src/profiles";
+import type { Uom } from "../src/charts/unit-convert";
+import type { EntityMap, HomeAssistant, HassEntity } from "../src/types";
 
 const base = "apollo_msr_2_m4c4dd";
 const m = entityMapFromBaseName(base);
@@ -119,4 +122,50 @@ describe("distanceModel", () => {
     expect(model.gateCount).toBe(8);
     expect(model.maxRange).toBeCloseTo(6, 6);
   });
+});
+
+describe("renderDistanceChart axis band", () => {
+  // Layout constants from distance-chart.ts: rows start at TOP and each is
+  // ROW_H tall, so everything below TOP + rows x ROW_H is the axis band.
+  const TOP = 6;
+  const ROW_H = 30;
+  // A tick label is end-anchored at plotBottom + 13 and rotated -45 deg, so
+  // the widest label ("6000 mm" / "9750 mm", ~47 px at 11 px Roboto) reaches
+  // about 48 px below the plot. The band must hold it or the svg clips it.
+  const NEEDED = 48;
+
+  function axisBand(map: EntityMap, gateSize: string, unit: Uom): number {
+    const h = hass({ [map.gate_size!]: ent(gateSize) });
+    const container = document.createElement("div");
+    render(renderDistanceChart(h, map, unit) as TemplateResult, container);
+    // happy-dom drops the nested svg parts, but the outer viewBox is real.
+    const viewBox = container.querySelector("svg")!.getAttribute("viewBox")!;
+    const height = Number(viewBox.split(/\s+/)[3]);
+    const model = distanceModel(h, map, unit);
+    const rows =
+      (model.zones.length ? 1 : 0) +
+      model.bars.length +
+      1 + // the Gates row
+      (model.maxMove === undefined ? 0 : 1) +
+      (model.maxStill === undefined ? 0 : 1);
+    return height - (TOP + rows * ROW_H);
+  }
+
+  const maps: Record<string, EntityMap> = {
+    LD2410: m,
+    LD2412: LD2412_PROFILE.entityMap(base),
+  };
+
+  it.each([
+    ["LD2410", "0.75m", "mm"],
+    ["LD2410", "0.2m", "ft"],
+    ["LD2410", "0.2m", "in"],
+    ["LD2412", "0.75m", "mm"],
+    ["LD2412", "0.2m", "in"],
+  ] as [string, string, Uom][])(
+    "fits rotated tick labels (%s, %s gates, %s)",
+    (chip, gateSize, unit) => {
+      expect(axisBand(maps[chip], gateSize, unit)).toBeGreaterThanOrEqual(NEEDED);
+    }
+  );
 });
