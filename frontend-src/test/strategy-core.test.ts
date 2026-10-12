@@ -424,11 +424,16 @@ describe("profile tips", () => {
     }
   });
 
-  it("link the help card to the dashboard's wiki tuning guide, the LD2412 to its section", () => {
-    const guide =
-      "https://wiki.apolloautomation.com/products/general/setup/apollo-mmwave-dashboard/";
-    expect(LD2410_PROFILE.wikiUrl).toBe(guide);
-    expect(LD2412_PROFILE.wikiUrl).toBe(`${guide}#r-pro-1-and-its-ld2412-radar`);
+  it("link the help card to the dashboard's wiki tuning guide, the LD2412 to the R PRO-1 copy's section", () => {
+    // The LD2410 profile serves both the MSR-1 and MSR-2, so it opens the
+    // general guide; the LD2412 only exists on the R PRO-1, so it opens that
+    // sensor's own copy of the guide, which keeps the wiki sidebar on the R PRO-1.
+    expect(LD2410_PROFILE.wikiUrl).toBe(
+      "https://wiki.apolloautomation.com/products/general/setup/apollo-mmwave-dashboard/"
+    );
+    expect(LD2412_PROFILE.wikiUrl).toBe(
+      "https://wiki.apolloautomation.com/products/rpro1/setup/apollo-mmwave-dashboard/#r-pro-1-and-its-ld2412-radar"
+    );
   });
 });
 

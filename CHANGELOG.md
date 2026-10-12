@@ -14,9 +14,9 @@ YAML (replace both `?v=` URLs; see
 - **Tuning guide.** The help card's **Full tuning guide** link now opens the
   new
   [Apollo mmWave dashboard guide](https://wiki.apolloautomation.com/products/general/setup/apollo-mmwave-dashboard/)
-  on the Apollo Automation wiki, at its LD2412 section on an R PRO-1 tab,
-  instead of the older zone pages. The README links the new setup and tuning
-  guides too.
+  on the Apollo Automation wiki instead of the older zone pages. On an R PRO-1
+  tab it opens the R PRO-1's own copy of the guide at its LD2412 section. The
+  README links the new setup and tuning guides too.
 - **R PRO-1.** Every R PRO-1 has the LD2450 for the zone map; the LD2412 that
   radar tuning uses is an optional add-on. The README and
   [Auto-calibration](docs/configuration.md#auto-calibration) now say so. On an
