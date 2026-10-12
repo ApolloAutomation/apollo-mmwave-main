@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+from unittest.mock import patch
+
 import pytest
 import voluptuous as vol
+from homeassistant.config_entries import SOURCE_USER, ConfigEntryState
 from homeassistant.helpers import entity_registry as er
 
 from custom_components.apollo_mmwave import get_store
 from custom_components.apollo_mmwave.const import (
     ATTR_ROTATION_DEG,
+    CONF_AUTO_CREATE_VIEW,
     DOMAIN,
     EVENT_ZONE_UPDATED,
     SERVICE_CALIBRATE_GATES,
@@ -21,6 +26,9 @@ from custom_components.apollo_mmwave.const import (
     STORE_ORPHANS,
     STORE_ZONES,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 TRACKED = [
     {
@@ -145,6 +153,30 @@ async def test_zone_persists_to_storage(
 
     stored = hass_storage[f"{DOMAIN}.zones"]["data"]
     assert stored[STORE_DEVICES][device_id][STORE_ZONES]["1"]["shape"] == "rect"
+
+
+async def test_removing_the_entry_deletes_the_zone_store(
+    hass, init_integration, device_id, hass_storage
+) -> None:
+    """Deleting the integration deletes .storage/apollo_mmwave.zones with it."""
+    await _create_rect_zone(hass, device_id)
+    assert await hass.config_entries.async_unload(init_integration.entry_id)
+    await hass.async_block_till_done()
+    assert f"{DOMAIN}.zones" in hass_storage
+
+    await hass.config_entries.async_remove(init_integration.entry_id)
+    await hass.async_block_till_done()
+    assert f"{DOMAIN}.zones" not in hass_storage
+
+    # Adding the integration again starts from an empty store.
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_USER}
+    )
+    await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_AUTO_CREATE_VIEW: False}
+    )
+    await hass.async_block_till_done()
+    assert get_store(hass).devices == {}
 
 
 async def test_zones_reload_from_storage(
@@ -325,6 +357,50 @@ async def test_targeting_several_devices_writes_nothing(
     assert get_store(hass).devices.get(device_id, {}).get(ATTR_ROTATION_DEG) is None
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param(
+            lambda _: {"device_id": "totally-bogus-device-id", ATTR_ROTATION_DEG: 90},
+            id="unknown-device",
+        ),
+        pytest.param(
+            lambda device: {
+                "device_id": [device, "another-device"],
+                ATTR_ROTATION_DEG: 90,
+            },
+            id="several-devices",
+        ),
+        pytest.param(lambda device: {"device_id": device}, id="nothing-to-change"),
+        pytest.param(
+            lambda device: {"device_id": device, "delete": True, ATTR_ROTATION_DEG: 45},
+            id="delete-without-zone-id",
+        ),
+        pytest.param(
+            lambda _: {
+                "location": "Some Room That Never Existed",
+                ATTR_ROTATION_DEG: 90,
+            },
+            id="unresolvable-location",
+        ),
+    ],
+)
+async def test_refused_calls_fire_no_public_event(
+    hass, init_integration, device_id, payload: Callable[[str], dict[str, Any]]
+) -> None:
+    """Automations listen on the bus, so a call that changed nothing stays silent."""
+    _ = init_integration
+    events = []
+    hass.bus.async_listen(EVENT_ZONE_UPDATED, events.append)
+
+    await hass.services.async_call(
+        DOMAIN, SERVICE_UPDATE_ZONE, payload(device_id), blocking=True
+    )
+    await hass.async_block_till_done()
+
+    assert events == []
+
+
 async def test_location_deprecation_is_warned_about_once(
     hass, init_integration, device_id, caplog
 ) -> None:
@@ -404,6 +480,27 @@ async def test_calibration_services_registered_and_removed_on_unload(
     await hass.async_block_till_done()
     for service in services:
         assert not hass.services.has_service(DOMAIN, service)
+
+
+async def test_failed_platform_unload_keeps_the_service_and_store(
+    hass, init_integration
+) -> None:
+    """A platform that refuses to unload leaves the service and store in place."""
+    store = get_store(hass)
+
+    with patch(
+        "homeassistant.config_entries.ConfigEntries.async_unload_platforms",
+        return_value=False,
+    ):
+        assert not await hass.config_entries.async_unload(init_integration.entry_id)
+        await hass.async_block_till_done()
+
+    assert init_integration.state is ConfigEntryState.FAILED_UNLOAD
+    assert hass.services.has_service(DOMAIN, SERVICE_UPDATE_ZONE)
+    assert get_store(hass) is store
+    # Home Assistant skips the entry's on_unload hooks after a failed unload,
+    # and the calibration services are torn down by one of them.
+    assert hass.services.has_service(DOMAIN, SERVICE_CALIBRATE_GATES)
 
 
 async def test_call_with_nothing_to_change_mints_no_store_entry(
