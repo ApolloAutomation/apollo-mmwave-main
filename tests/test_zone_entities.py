@@ -16,7 +16,7 @@ from homeassistant.helpers.entity_platform import (
 )
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.apollo_mmwave import get_store
+from custom_components.apollo_mmwave import _zone_entity_unique_ids, get_store
 from custom_components.apollo_mmwave.const import (
     DOMAIN,
     SERVICE_UPDATE_ZONE,
@@ -389,3 +389,48 @@ async def test_input_units_round_trip_through_the_store(
     )
     await hass.async_block_till_done()
     assert get_store(hass).devices[device_id][STORE_INPUT_UNITS] == "ft"
+
+
+async def test_platform_unique_ids_match_the_service_lookup(
+    hass, init_integration, device_id, entity_registry
+) -> None:
+    """
+    The platforms spell the unique ids and base names the service looks up.
+
+    The formats are written out in sensor.py, binary_sensor.py and __init__.py.
+    _remove_zone_entities and _update_registry_names find the entities by
+    _zone_entity_unique_ids and skip a miss silently, and a rename prefixes the
+    registry name with a base name that must equal the platform's own name.
+    """
+    _ = init_integration
+    zone_id = 3
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_UPDATE_ZONE,
+        {"device_id": device_id, "zone_id": zone_id, **RECT_ZONE},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_UPDATE_ZONE,
+        {"device_id": device_id, "zone_id": zone_id, "name": "Kitchen"},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+
+    entities = {
+        entity.platform.domain: entity
+        for entity in _live_zone_entities(_zone_platforms(hass))
+    }
+    assert set(entities) == {"sensor", "binary_sensor"}
+    sensor_uid, presence_uid = _zone_entity_unique_ids(device_id, zone_id)
+    assert entities["sensor"].unique_id == sensor_uid
+    assert entities["binary_sensor"].unique_id == presence_uid
+
+    # _update_registry_names wrote "<base> - Kitchen"; the base is the
+    # platform's own name only if both modules spell it the same way.
+    for entity in entities.values():
+        entry = entity_registry.async_get(entity.entity_id)
+        assert entry is not None
+        assert entry.name == f"{entity.name} - Kitchen"
