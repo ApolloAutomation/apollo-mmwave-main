@@ -93,6 +93,12 @@ const DEFAULT_CONE = Object.freeze({
   angleDeg: 0,
 });
 
+// What a card without show_undo or unit_label_size uses. setConfig assigns
+// them when the key is absent, so removing the key from a live card's config
+// reverts it the same way a freshly created card starts.
+const DEFAULT_SHOW_UNDO = true;
+const DEFAULT_UNIT_LABEL_SIZE = 18; // px
+
 const POLYGON_MAX_POINTS = 32;
 
 // How far (CSS px) the second tap of a polygon double-tap may land from the
@@ -226,14 +232,14 @@ export class ZoneMapCard extends HTMLElement {
     this.showModeMenu = false;
     this.isLocked = false;
     this._lastLockWarningTs = 0;
-    this.showUndo = true;
+    this.showUndo = DEFAULT_SHOW_UNDO;
     this._undoSnapshot = null;
     this.inputUnits = 'mm';
     this.gridUnits = 'mm';
     this.inputUnitMultiplier = LENGTH_UNITS.mm;
     this.gridUnitMultiplier = LENGTH_UNITS.mm;
     this.unitDisplay = false;
-    this.unitLabelSize = 18; // px
+    this.unitLabelSize = DEFAULT_UNIT_LABEL_SIZE;
     this._gridCache = null;
     this._coneRingsCache = null;
   }
@@ -313,26 +319,36 @@ export class ZoneMapCard extends HTMLElement {
     // over the whole card.
     this.cardTitle = config.title === undefined ? '' : String(config.title);
 
+    const wasLockConfigured = this._lockConfigured;
     this._lockConfigured = config.start_locked !== undefined;
     if (this._lockConfigured) {
       this.isLocked = !!config.start_locked;
+    } else if (wasLockConfigured) {
+      // start_locked was removed (the editor's "auto" choice deletes it). The
+      // forced value would otherwise stick: _applyAutoLock runs once, and it
+      // already ran under the explicit key. render() below re-applies the last
+      // payload, which re-derives the lock from the auto rule.
+      this._autoLockApplied = false;
     }
-    if (config.show_undo !== undefined) {
-      this.showUndo = !!config.show_undo;
-    }
+    this.showUndo =
+      config.show_undo === undefined ? DEFAULT_SHOW_UNDO : !!config.show_undo;
     
     this.inputUnits = this._normalizeUnit(config.input_units);
     this.gridUnits = this._normalizeUnit(config.grid_units);
     this.inputUnitMultiplier = this._unitMultiplier(this.inputUnits);
     this.gridUnitMultiplier = this._unitMultiplier(this.gridUnits);
     this.unitDisplay = !!config.unit_display;
+    // Starts from the default every time, so a removed (or unusable) key does
+    // not leave a live card at the size the previous config asked for.
+    let unitLabelSize = DEFAULT_UNIT_LABEL_SIZE;
     if (config.unit_label_size !== undefined) {
       const s = Number(config.unit_label_size);
       if (Number.isFinite(s)) {
         // clamp between 8 and 24 px for sanity
-        this.unitLabelSize = Math.max(8, Math.min(24, Math.round(s)));
+        unitLabelSize = Math.max(8, Math.min(24, Math.round(s)));
       }
     }
+    this.unitLabelSize = unitLabelSize;
 
     this.zoneConfig = Array.isArray(config.zones) ? [...config.zones] : [];
     this.trackedEntities = this.buildTrackedEntities(config);
@@ -1165,6 +1181,13 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   _applyGridConfig(grid) {
+    // Start from the defaults on every call: setConfig runs again on a live
+    // element, and a removed grid block (or a sub-key dropped from it) has to
+    // land where a freshly created card would, not at the previous extents.
+    this.xMin = DEFAULT_GRID.xMin;
+    this.xMax = DEFAULT_GRID.xMax;
+    this.yMin = DEFAULT_GRID.yMin;
+    this.yMax = DEFAULT_GRID.yMax;
     if (!grid || typeof grid !== 'object') return;
     const convert = (value) => {
       const mmValue = this._convertToMm(value, this.gridUnits);
@@ -1201,6 +1224,13 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   _applyConeConfig(cone) {
+    // Same as the grid: a removed cone block or sub-key reverts to the default.
+    // The drawn angle is reset with the rest, and render() lays the store's
+    // rotation_deg back over it from the last payload.
+    this.coneYMax = DEFAULT_CONE.yMax;
+    this.coneFovDeg = DEFAULT_CONE.fovDeg;
+    this.coneAngleDefault = DEFAULT_CONE.angleDeg;
+    this.coneAngleDeg = DEFAULT_CONE.angleDeg;
     if (!cone || typeof cone !== 'object') return;
     if (cone.y_max !== undefined) {
       const mmValue = this._convertToMm(cone.y_max, this.gridUnits);

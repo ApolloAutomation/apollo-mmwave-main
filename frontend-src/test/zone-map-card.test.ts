@@ -290,6 +290,104 @@ describe("zone map card theme", () => {
   });
 });
 
+describe("zone map card config keys removed on a live element", () => {
+  // Home Assistant re-calls setConfig on a live element when the config
+  // changes. A key deleted from it has to land where a freshly created card
+  // with the same config would, not keep what the previous config asked for.
+  const TYPE = "custom:apollo-radar-zone-map-card";
+  const EMPTY = { ...ZONE_PAYLOAD, zones: {} };
+
+  afterEach(() => window.localStorage.clear());
+
+  const FULL = {
+    type: TYPE,
+    grid: { x_min: -1000, x_max: 1000, y_min: 0, y_max: 2000 },
+    cone: { y_max: 1500, fov_deg: 90, angle_deg: 30 },
+    show_undo: false,
+    unit_label_size: 24,
+  };
+
+  /** The fields setConfig derives from grid, cone, show_undo and unit_label_size. */
+  function configured(card: any) {
+    return {
+      grid: [card.xMin, card.xMax, card.yMin, card.yMax],
+      cone: [card.coneYMax, card.coneFovDeg, card.coneAngleDefault, card.coneAngleDeg],
+      showUndo: card.showUndo,
+      unitLabelSize: card.unitLabelSize,
+    };
+  }
+
+  it("restores the defaults when grid, cone, show_undo, unit_label_size and start_locked go", async () => {
+    // No zones on this radar, so the auto rule (no remembered toggle) unlocks.
+    const card = await mountCard(fakeHass(EMPTY), { ...FULL, start_locked: true });
+    expect(configured(card)).toEqual({
+      grid: [-1000, 1000, 0, 2000],
+      // The drawn angle is the store's rotation_deg, the YAML one only the reset.
+      cone: [1500, 90, 30, 12],
+      showUndo: false,
+      unitLabelSize: 24,
+    });
+    expect(card.isLocked).toBe(true);
+    expect(card.shadowRoot.getElementById("btnUndo").style.display).toBe("none");
+
+    card.setConfig({ type: TYPE, device_id: "dev123" });
+
+    const fresh = await mountCard(fakeHass(EMPTY), { type: TYPE });
+    expect(configured(card)).toEqual(configured(fresh));
+    expect(configured(card)).toEqual({
+      grid: [fresh.xMin, fresh.xMax, fresh.yMin, fresh.yMax],
+      cone: [fresh.coneYMax, fresh.coneFovDeg, fresh.coneAngleDefault, 12],
+      showUndo: true,
+      unitLabelSize: 18,
+    });
+    expect(card.shadowRoot.getElementById("btnUndo").style.display).not.toBe("none");
+    expect(card.isLocked).toBe(false);
+    expect(card.isLocked).toBe(fresh.isLocked);
+    expect(card.shadowRoot.getElementById("btnLock").title).toBe("Lock drawing");
+  });
+
+  it("re-derives the lock from the radar's zones once start_locked is removed", async () => {
+    const card = await mountCard(fakeHass(), { type: TYPE, start_locked: false });
+    expect(card.isLocked).toBe(false);
+
+    // The editor's "auto" choice deletes the key.
+    card.setConfig({ type: TYPE, device_id: "dev123" });
+
+    expect(card.isLocked).toBe(true);
+    expect(card.shadowRoot.getElementById("btnLock").title).toBe("Unlock drawing");
+  });
+
+  it("puts the sub-keys a partial grid or cone leaves out back at their defaults", async () => {
+    const card = await mountCard(fakeHass(), FULL);
+
+    card.setConfig({
+      type: TYPE,
+      device_id: "dev123",
+      grid: { x_min: -3000 },
+      cone: { fov_deg: 60 },
+    });
+
+    const fresh = await mountCard(fakeHass(), { type: TYPE });
+    expect(card.xMin).toBe(-3000);
+    expect([card.xMax, card.yMin, card.yMax]).toEqual([fresh.xMax, fresh.yMin, fresh.yMax]);
+    expect(card.coneFovDeg).toBe(60);
+    expect([card.coneYMax, card.coneAngleDefault]).toEqual([
+      fresh.coneYMax,
+      fresh.coneAngleDefault,
+    ]);
+    expect(card.coneAngleDeg).toBe(12);
+  });
+
+  it("falls back to the default label size for an unusable unit_label_size", async () => {
+    const card = await mountCard(fakeHass(), FULL);
+    expect(card.unitLabelSize).toBe(24);
+
+    card.setConfig({ ...FULL, device_id: "dev123", unit_label_size: "large" });
+
+    expect(card.unitLabelSize).toBe(18);
+  });
+});
+
 describe("zone map card zone loading", () => {
   it("reads zones from the store, not from entity attributes", async () => {
     const hass = fakeHass();
