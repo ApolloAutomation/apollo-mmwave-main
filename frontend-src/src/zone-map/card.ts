@@ -1674,6 +1674,14 @@ export class ZoneMapCard extends HTMLElement {
     }
     // Another finger lifting is not the end of this gesture.
     if (isTouch && !this._carriesTrackedTouch(e)) return;
+    // The selection can go away mid-gesture (a payload with no zones, or
+    // Delete on the only zone during a held touch). Committing then would
+    // upsert a zone with id 0 that the backend refuses but the map still
+    // draws, so drop the gesture the way finishPolygon does.
+    if (this.selectedZone === null || this.selectedZone === undefined) {
+      this.cancelDrawing();
+      return;
+    }
     if (this.drawMode === DRAW_MODES.POLYGON) {
       const p = this._getPointFromEvent(e);
       if (!p) {

@@ -1719,6 +1719,79 @@ describe("zone map card gestures without a shape", () => {
     expect(hass.callService).not.toHaveBeenCalled();
     expect(toasts).toEqual([]);
   });
+
+  /** Push a payload with no zones, which clears the card's selection. */
+  function pushNoZones(card: any, hass: any) {
+    hass.handlers[ZONES_SUBSCRIBE][0]({ ...ZONE_PAYLOAD, zones: {} });
+    expect(card.selectedZone).toBeNull();
+  }
+
+  function zoneIds(card: any): number[] {
+    return card.zones.map((zone: any) => Number(zone.id));
+  }
+
+  it.each(["rect", "ellipse"])(
+    "saves nothing and draws no zone 0 for a %s drag that ends after its zone was removed",
+    async (mode) => {
+      const { card, hass, toasts } = await drawingCard(mode);
+
+      mouse(card, "mousedown", 100, 100);
+      mouse(card, "mousemove", 300, 300);
+      pushNoZones(card, hass);
+      expect(card.isDrawing).toBe(true);
+      mouse(card, "mouseup", 300, 300);
+      await settle();
+
+      expect(zoneSaves(hass)).toEqual([]);
+      expect(zoneIds(card)).not.toContain(0);
+      expect(card.zones).toEqual([]);
+      expect(card._undoSnapshot).toBeNull();
+      expect(savedToasts(toasts)).toEqual([]);
+      expect(card.isDrawing).toBe(false);
+      expect(card.startPoint).toBeNull();
+      expect(card._cursorPoint).toBeNull();
+      expect(card._activeInput).toBeNull();
+    }
+  );
+
+  it("a held touch drag whose zone was removed saves nothing and draws no zone 0", async () => {
+    const { card, hass, toasts } = await drawingCard("rect");
+
+    touch(card, "touchstart", 100, 100);
+    touch(card, "touchmove", 300, 300);
+    pushNoZones(card, hass);
+    touch(card, "touchend", 300, 300);
+    await settle();
+
+    expect(zoneSaves(hass)).toEqual([]);
+    expect(zoneIds(card)).not.toContain(0);
+    expect(savedToasts(toasts)).toEqual([]);
+    expect(card.isDrawing).toBe(false);
+    expect(card._activeTouchId).toBeNull();
+  });
+
+  it("drops a half-drawn polygon on the next tap once its zone was removed", async () => {
+    const { card, hass, toasts } = await drawingCard("polygon");
+    card._lastPolyTap = 0;
+    mouse(card, "mousedown", 100, 100);
+    mouse(card, "mouseup", 100, 100);
+    card._lastPolyTap = 0;
+    mouse(card, "mousedown", 300, 100);
+    mouse(card, "mouseup", 300, 100);
+    expect(card._polyPoints).toHaveLength(2);
+
+    pushNoZones(card, hass);
+    card._lastPolyTap = 0;
+    mouse(card, "mousedown", 300, 300);
+    mouse(card, "mouseup", 300, 300);
+    await settle();
+
+    expect(card._polyPoints).toEqual([]);
+    expect(card.isDrawing).toBe(false);
+    expect(zoneIds(card)).not.toContain(0);
+    expect(hass.callService).not.toHaveBeenCalled();
+    expect(savedToasts(toasts)).toEqual([]);
+  });
 });
 
 /**
