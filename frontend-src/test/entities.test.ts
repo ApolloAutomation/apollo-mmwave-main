@@ -14,7 +14,7 @@ import {
   resolveProfile,
   exists,
 } from "../src/entities";
-import { LD2412_PROFILE } from "../src/profiles";
+import { LD2412_PROFILE, detectProfile } from "../src/profiles";
 import type { EntityMap, HomeAssistant } from "../src/types";
 import { flat } from "./template-markup";
 
@@ -43,6 +43,24 @@ describe("baseNameFromDevice", () => {
   it("returns undefined for an unknown device", () => {
     const hass = hassWith([`sensor.${base}_radar_detection_distance`]);
     expect(baseNameFromDevice(hass, "nope")).toBeUndefined();
+  });
+
+  // Only a strictly higher count replaces the current best, so on a tie the
+  // base seen first in registry order wins.
+  it("keeps the first-seen base on a tie", () => {
+    const alpha = "switch.alpha_radar_engineering_mode";
+    const beta = "number.beta_radar_timeout";
+    expect(baseNameFromDevice(hassWith([alpha, beta]), "dev1")).toBe("alpha");
+    expect(baseNameFromDevice(hassWith([beta, alpha]), "dev1")).toBe("beta");
+  });
+
+  it("lets a strict majority win over the first-seen base", () => {
+    const ids = [
+      "switch.alpha_radar_engineering_mode",
+      "number.beta_radar_timeout",
+      "number.beta_g3_move_threshold",
+    ];
+    expect(baseNameFromDevice(hassWith(ids), "dev1")).toBe("beta");
   });
 
   // A device the user named after its chip ("Office LD2412") repeats the
@@ -279,6 +297,40 @@ describe("resolveEntities base-name fallback profile", () => {
   });
 });
 
+describe("device_base_name on an R-PRO-1 (LD2412)", () => {
+  const b = "apollo_r_pro_1_abcd";
+  const config = { type: "x", device_base_name: b };
+
+  it("resolves the LD2412 profile and 14-gate map", () => {
+    const hass = hassWith([`switch.${b}_ld2412_engineering_mode`]);
+    expect(detectProfile(hass, b)?.key).toBe("ld2412");
+    expect(resolveProfile(hass, config)?.key).toBe("ld2412");
+    const { map, fallbackBase } = resolveEntitiesDetailed(hass, config);
+    expect(fallbackBase).toBe(b);
+    expect(map.engineering_mode).toBe(`switch.${b}_ld2412_engineering_mode`);
+    expect(map.move_threshold).toHaveLength(14);
+    expect(map.move_threshold[0]).toBe(`number.${b}_ld2412_g00_move_threshold`);
+    expect(map.still_energy[13]).toBe(`sensor.${b}_ld2412_g13_still_energy`);
+    expect(map).toEqual(LD2412_PROFILE.entityMap(b));
+  });
+
+  // detectProfile probes only each profile's engineering-mode switch, so with
+  // that switch disabled or renamed the base-name path keeps the LD2410
+  // default even though other LD2412 entities exist. A device_id config still
+  // reads the chip from the device's registered entities.
+  it("falls back to LD2410 when no engineering-mode switch exists", () => {
+    const hass = hassWith([`number.${b}_ld2412_g00_move_threshold`]);
+    hass.devices.dev1 = { manufacturer: "ApolloAutomation", model: "R-PRO-1-W" };
+    expect(detectProfile(hass, b)).toBeUndefined();
+    expect(resolveProfile(hass, config)?.key).toBe("ld2410");
+    const map = resolveEntities(hass, config);
+    expect(map.engineering_mode).toBe(`switch.${b}_radar_engineering_mode`);
+    expect(map.move_threshold).toHaveLength(9);
+    expect(map).toEqual(entityMapFromBaseName(b));
+    expect(resolveProfile(hass, { type: "x", device_id: "dev1" })?.key).toBe("ld2412");
+  });
+});
+
 describe("classifyObjectId", () => {
   it("classifies gate entities and parses the gate index", () => {
     expect(classifyObjectId("number", `${base}_g1_move_threshold`)).toEqual({
@@ -358,6 +410,17 @@ describe("classifyObjectId", () => {
   it("rejects a matching suffix in the wrong domain", () => {
     expect(classifyObjectId("automation", `${base}_radar_engineering_mode`)).toBeUndefined();
     expect(classifyObjectId("sensor", `${base}_g3_move_threshold`)).toBeUndefined();
+  });
+
+  // The first pattern whose suffix matches decides: a domain mismatch returns
+  // undefined at once instead of trying later patterns. No two suffixes
+  // overlap today; if one is added that also matches these ids in these
+  // domains, this pins which one wins.
+  it("a wrong-domain hit short-circuits classification", () => {
+    expect(classifyObjectId("sensor", `${base}_radar_engineering_mode`)).toBeUndefined();
+    expect(classifyObjectId("number", `${base}_g3_move_energy`)).toBeUndefined();
+    expect(classifyObjectId("sensor", `${base}_ld2412_presence`)).toBeUndefined();
+    expect(classifyObjectId("switch", `${base}_radar_timeout_2`)).toBeUndefined();
   });
 
   it("returns undefined for unrelated object ids", () => {
