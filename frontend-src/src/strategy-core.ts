@@ -4,6 +4,7 @@ import {
   detectProfileFromEntities,
   entityMapFromDevice,
 } from "./entities";
+import { entitiesForDevice } from "./entity-index";
 import { ld2450EntityIds } from "./ld2450";
 import { apolloModelInfo, isEsphomeDevice, type RadarProfile } from "./profiles";
 import { hasLd2450Device, zoneMapCard } from "./ld2450";
@@ -108,9 +109,8 @@ function hasLiveRadarEvidence(
   // that platform is skipped: older frontends send no platform at all.
   return (
     registryMatched &&
-    Object.entries(hass.entities).some(
-      ([id, e]) =>
-        e.device_id === deviceId && e.platform !== OWN_PLATFORM && isLive(hass, id)
+    entitiesForDevice(hass.entities, deviceId).some(
+      ([id, e]) => e.platform !== OWN_PLATFORM && isLive(hass, id)
     )
   );
 }

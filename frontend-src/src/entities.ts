@@ -1,4 +1,5 @@
 import type { EntityMap, HomeAssistant, Ld2410CardConfig } from "./types";
+import { entitiesForDevice } from "./entity-index";
 import {
   LD2410_PROFILE,
   LD2412_PROFILE,
@@ -60,9 +61,9 @@ export function baseNameFromDevice(
   hass: HomeAssistant,
   deviceId: string
 ): string | undefined {
-  const objectIds = Object.entries(hass.entities)
-    .filter(([, e]) => e.device_id === deviceId)
-    .map(([id]) => id.slice(id.indexOf(".") + 1));
+  const objectIds = entitiesForDevice(hass.entities, deviceId).map(([id]) =>
+    id.slice(id.indexOf(".") + 1)
+  );
 
   const counts = new Map<string, number>();
   for (const oid of objectIds) {
@@ -220,8 +221,7 @@ export function detectProfileFromEntities(
   deviceId: string
 ): RadarProfile | undefined {
   let sawLd2410 = false;
-  for (const [id, e] of Object.entries(hass.entities)) {
-    if (e.device_id !== deviceId) continue;
+  for (const [id] of entitiesForDevice(hass.entities, deviceId)) {
     const oid = id.slice(id.indexOf(".") + 1);
     if (/_ld2412_/.test(oid)) return LD2412_PROFILE;
     if (!sawLd2410) sawLd2410 = LD2410_MARKERS.some((re) => re.test(oid));
@@ -239,8 +239,7 @@ export function entityMapFromDevice(
 ): EntityMap | undefined {
   const map = emptyMap();
   let matched = false;
-  for (const [id, e] of Object.entries(hass.entities)) {
-    if (e.device_id !== deviceId) continue;
+  for (const [id] of entitiesForDevice(hass.entities, deviceId)) {
     const dot = id.indexOf(".");
     const c = classifyObjectId(id.slice(0, dot), id.slice(dot + 1));
     if (!c) continue;

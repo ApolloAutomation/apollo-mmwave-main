@@ -1,4 +1,5 @@
 import type { EntityMap, HomeAssistant } from "./types";
+import { entitiesForDevice } from "./entity-index";
 
 /** Describes one radar chip family and how its entities are named. */
 export interface RadarProfile {
@@ -227,8 +228,7 @@ export function apolloModelInfo(device?: {
 export function isEsphomeDevice(hass: HomeAssistant, deviceId: string): boolean {
   let sawEntity = false;
   let sawPlatform = false;
-  for (const e of Object.values(hass.entities)) {
-    if (e.device_id !== deviceId) continue;
+  for (const [, e] of entitiesForDevice(hass.entities, deviceId)) {
     sawEntity = true;
     if (e.platform === undefined) continue;
     sawPlatform = true;

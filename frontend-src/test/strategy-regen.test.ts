@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { shouldRegenerate } from "../src/strategy";
+import { detectRadarDevices } from "../src/strategy-core";
 import type { HomeAssistant, HassEntity } from "../src/types";
 
 const base = "apollo_msr_2_m4c4dd";
@@ -288,5 +289,84 @@ describe('shouldRegenerate treats "unknown" as live', () => {
 
   it("regenerates when a radar goes from unavailable to unknown", () => {
     expect(shouldRegenerate({}, at("unavailable"), at("unknown"))).toBe(true);
+  });
+});
+
+describe("shouldRegenerate cost on a large install", () => {
+  // The detection helpers each used to scan all of `hass.entities` per device,
+  // so one availability flip anywhere cost O(devices x entities), twice (old
+  // and new hass): about 170 registry enumerations for this fixture. Each
+  // registry object is now grouped by device once and the index reused.
+  const lamp = "light.lamp_7";
+  const radarEng = "switch.apollo_msr_2_m4c4dd_radar_engineering_mode";
+  const rproEng = "switch.apollo_r_pro_1_abcd_ld2412_engineering_mode";
+
+  function largeInstall() {
+    const states: Record<string, HassEntity> = {};
+    const entities: HomeAssistant["entities"] = {};
+    const devices: HomeAssistant["devices"] = {
+      msr: { name: "Living Room MSR-2" },
+      rpro: { name: "Office R-PRO-1", manufacturer: "ApolloAutomation", model: "R-PRO-1-W" },
+    };
+    const add = (id: string, value: string, deviceId?: string, platform?: string) => {
+      states[id] = state(id, value);
+      entities[id] = deviceId ? { device_id: deviceId, platform } : {};
+    };
+    add(radarEng, "off", "msr", "esphome");
+    for (let g = 0; g < 9; g++) {
+      add(`number.apollo_msr_2_m4c4dd_g${g}_move_threshold`, "50", "msr", "esphome");
+    }
+    add(rproEng, "off", "rpro", "esphome");
+    add("sensor.apollo_r_pro_1_abcd_ld2450_target_1_x", "0", "rpro", "esphome");
+    // 38 unrelated devices with a few entities each, plus device-less helpers.
+    for (let n = 0; n < 38; n++) {
+      devices[`lamp${n}`] = { name: `Lamp ${n}`, manufacturer: "Signify", model: "Bulb" };
+      add(`light.lamp_${n}`, "on", `lamp${n}`, "hue");
+      add(`sensor.lamp_${n}_power`, "4", `lamp${n}`, "hue");
+      add(`update.lamp_${n}_firmware`, "off", `lamp${n}`, "hue");
+    }
+    for (let n = 0; n < 10; n++) add(`input_boolean.helper_${n}`, "off");
+    return { states, entities, devices };
+  }
+
+  /** Wrap a registry in a Proxy that counts full key enumerations. */
+  function counted(entities: HomeAssistant["entities"]) {
+    const counter = { enumerations: 0 };
+    const proxy = new Proxy(entities, {
+      ownKeys(target) {
+        counter.enumerations++;
+        return Reflect.ownKeys(target);
+      },
+    });
+    return { proxy, counter };
+  }
+
+  it("enumerates the registry at most twice when an unrelated entity goes unavailable", () => {
+    const { states, entities, devices } = largeInstall();
+    // Sanity: the fixture really has two radars among 40 devices.
+    expect(Object.keys(devices)).toHaveLength(40);
+    const radars = detectRadarDevices({ states, entities, devices });
+    expect(radars.map((d) => d.deviceId)).toEqual(["msr", "rpro"]);
+
+    const { proxy, counter } = counted(entities);
+    const before = hassWith(states, proxy, devices);
+    const after = hassWith({ ...states, [lamp]: state(lamp, "unavailable") }, proxy, devices);
+    expect(shouldRegenerate({}, before, after)).toBe(false);
+    expect(counter.enumerations).toBeLessThanOrEqual(2);
+  });
+
+  it("enumerates each registry at most once when the entity registry is replaced", () => {
+    const { states, entities, devices } = largeInstall();
+    const old = counted(entities);
+    const zone = "sensor.apollo_msr_2_m4c4dd_zone_1";
+    const replaced = counted({
+      ...entities,
+      [zone]: { device_id: "msr", platform: "apollo_mmwave" },
+    });
+    const before = hassWith(states, old.proxy, devices);
+    const after = hassWith({ ...states, [zone]: state(zone, "rect") }, replaced.proxy, devices);
+    expect(shouldRegenerate({}, before, after)).toBe(false);
+    expect(old.counter.enumerations).toBeLessThanOrEqual(1);
+    expect(replaced.counter.enumerations).toBeLessThanOrEqual(1);
   });
 });

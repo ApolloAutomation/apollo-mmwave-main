@@ -1,4 +1,5 @@
 import type { HomeAssistant } from "./types";
+import { entitiesForDevice } from "./entity-index";
 
 /**
  * LD2450 tracking radar support (X/Y target coordinates), used by R-PRO-1 and
@@ -26,8 +27,8 @@ const TARGET_Y = /(?:_ld2450)?_target_(\d+)_y(?:_\d+)?$/;
  *  X with its Y disabled still counts as radar evidence). */
 export function ld2450EntityIds(hass: HomeAssistant, deviceId: string): string[] {
   const ids: string[] = [];
-  for (const [id, e] of Object.entries(hass.entities)) {
-    if (e.device_id !== deviceId || !id.startsWith("sensor.")) continue;
+  for (const [id] of entitiesForDevice(hass.entities, deviceId)) {
+    if (!id.startsWith("sensor.")) continue;
     const oid = id.slice(id.indexOf(".") + 1);
     if (TARGET_X.test(oid) || TARGET_Y.test(oid)) ids.push(id);
   }
@@ -37,8 +38,8 @@ export function ld2450EntityIds(hass: HomeAssistant, deviceId: string): string[]
 /** True when the device's registered entities include LD2450 target sensors.
  *  Only the X sensor is required — Y may be individually disabled. */
 export function hasLd2450Device(hass: HomeAssistant, deviceId: string): boolean {
-  for (const [id, e] of Object.entries(hass.entities)) {
-    if (e.device_id !== deviceId || !id.startsWith("sensor.")) continue;
+  for (const [id] of entitiesForDevice(hass.entities, deviceId)) {
+    if (!id.startsWith("sensor.")) continue;
     if (TARGET_X.test(id.slice(id.indexOf(".") + 1))) return true;
   }
   return false;
