@@ -1,11 +1,14 @@
 import { describe, it, expect } from "vitest";
 import {
   anyResolved,
+  drawnStatesChanged,
   entityIds,
   radarEntityIds,
   resolveRadar,
   resolvedDeviceId,
   resolvedStatesChanged,
+  watchedIds,
+  watchResolved,
 } from "../src/cards/resolution";
 import type { EntityMap, HomeAssistant, HassEntity } from "../src/types";
 
@@ -33,6 +36,96 @@ describe("entityIds", () => {
       still_energy: [],
     };
     expect(entityIds(m)).toEqual([eng, thr, `number.${base}_g2_move_threshold`]);
+  });
+});
+
+describe("watchedIds", () => {
+  const g2 = `number.${base}_g2_move_threshold`;
+  const energy = `sensor.${base}_g0_move_energy`;
+  const dist = `sensor.${base}_radar_detection_distance`;
+  const m: EntityMap = {
+    engineering_mode: eng,
+    detection_distance: dist,
+    gate_size: undefined,
+    move_threshold: [thr, undefined as any, g2],
+    still_threshold: [],
+    move_energy: [energy],
+    still_energy: [],
+  };
+
+  it("returns only the listed slots' ids, gate arrays flattened and holes skipped", () => {
+    expect(watchedIds(m, ["move_threshold", "detection_distance"])).toEqual([thr, g2, dist]);
+    expect(watchedIds(m, ["engineering_mode", "move_energy"])).toEqual([eng, energy]);
+  });
+
+  it("skips listed slots the map leaves empty", () => {
+    expect(watchedIds(m, ["gate_size", "still_energy", "zone_1_start"])).toEqual([]);
+  });
+});
+
+describe("watchResolved", () => {
+  const config = { type: "x", device_id: "dev1" };
+
+  it("keeps the watched ids while the resolution is the same object", () => {
+    const r = resolveRadar(undefined, hassWith([eng, thr]), config);
+    const w = watchResolved(undefined, r, ["engineering_mode"]);
+    expect(w).toEqual({ resolved: r, ids: [eng] });
+    expect(watchResolved(w, r, ["engineering_mode"])).toBe(w);
+  });
+
+  it("recomputes the watched ids for a new resolution", () => {
+    const hass = hassWith([eng, thr]);
+    const r = resolveRadar(undefined, hass, config);
+    const w = watchResolved(undefined, r, ["move_threshold"]);
+    const next = resolveRadar(r, { ...hass, entities: { ...hass.entities } }, config);
+    const w2 = watchResolved(w, next, ["move_threshold"]);
+    expect(w2).not.toBe(w);
+    expect(w2).toEqual({ resolved: next, ids: [thr] });
+  });
+});
+
+describe("drawnStatesChanged", () => {
+  const config = { type: "x", device_id: "dev1" };
+  const energy = `sensor.${base}_g0_move_energy`;
+
+  function withState(hass: HomeAssistant, id: string, state: string): HomeAssistant {
+    return { ...hass, states: { ...hass.states, [id]: { entity_id: id, state, attributes: {} } } };
+  }
+
+  it("ignores a tick of a resolved entity the card does not draw", () => {
+    const hass = hassWith([eng, thr, energy]);
+    const r = resolveRadar(undefined, hass, config);
+    const next = withState(hass, energy, "40");
+    expect(resolvedStatesChanged(hass, next, r.ids)).toBe(true);
+    expect(drawnStatesChanged(hass, next, r, r, [thr])).toBe(false);
+  });
+
+  it("is true for a tick of an entity the card draws", () => {
+    const hass = hassWith([eng, thr, energy]);
+    const r = resolveRadar(undefined, hass, config);
+    expect(drawnStatesChanged(hass, withState(hass, thr, "30"), r, r, [thr])).toBe(true);
+  });
+
+  it("is true when an undrawn radar entity flips the device-not-found decision", () => {
+    // Registered but with no states yet: the card says "device not found".
+    const registered = hassWith([eng, thr, energy]);
+    const empty: HomeAssistant = { ...registered, states: {} };
+    const r = resolveRadar(undefined, empty, config);
+    expect(anyResolved(empty, r.radarIds)).toBe(false);
+    const arrived = withState(empty, energy, "40");
+    expect(drawnStatesChanged(empty, arrived, r, r, [thr])).toBe(true);
+    // And back: the only state disappears again.
+    expect(drawnStatesChanged(arrived, empty, r, r, [thr])).toBe(true);
+  });
+
+  it("checks every resolved id when the resolution was recomputed on this tick", () => {
+    const hass = hassWith([eng, thr, energy]);
+    const r = resolveRadar(undefined, hass, config);
+    const next = withState(hass, energy, "40");
+    // A different cached object: this tick's resolution is a fresh one.
+    expect(drawnStatesChanged(hass, next, { ...r }, r, [thr])).toBe(true);
+    expect(drawnStatesChanged(hass, next, undefined, r, [thr])).toBe(true);
+    expect(drawnStatesChanged(hass, { ...hass }, undefined, r, [thr])).toBe(false);
   });
 });
 

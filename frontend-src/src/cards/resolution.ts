@@ -34,14 +34,43 @@ export interface ResolvedRadar {
   fallbackDetected?: RadarProfile;
 }
 
+/** Append the ids a slot value holds (a gate array flattened, holes skipped). */
+function pushIds(out: string[], v: EntityMap[keyof EntityMap]): void {
+  if (typeof v === "string") out.push(v);
+  else if (Array.isArray(v)) for (const id of v) if (id) out.push(id);
+}
+
 /** Every entity id in the map (gate arrays flattened, holes skipped). */
 export function entityIds(m: EntityMap): string[] {
   const out: string[] = [];
-  for (const v of Object.values(m)) {
-    if (typeof v === "string") out.push(v);
-    else if (Array.isArray(v)) for (const id of v) if (id) out.push(id);
-  }
+  for (const v of Object.values(m)) pushIds(out, v);
   return out;
+}
+
+/** The entity ids of only `slots` in the map (gate arrays flattened, holes
+ *  skipped): what a card that draws just those slots has to watch. */
+export function watchedIds(m: EntityMap, slots: readonly (keyof EntityMap)[]): string[] {
+  const out: string[] = [];
+  for (const slot of slots) pushIds(out, m[slot]);
+  return out;
+}
+
+/** A card's watched ids together with the resolution they came from. */
+export interface WatchedIds {
+  resolved: ResolvedRadar;
+  ids: string[];
+}
+
+/** Return `cache` while it was built from `resolved`, else rebuild it, so a
+ *  card flattens its slots once per resolution instead of on every tick. */
+export function watchResolved(
+  cache: WatchedIds | undefined,
+  resolved: ResolvedRadar,
+  slots: readonly (keyof EntityMap)[]
+): WatchedIds {
+  return cache?.resolved === resolved
+    ? cache
+    : { resolved, ids: watchedIds(resolved.map, slots) };
 }
 
 /** Every entity id in the map except the ESP Reboot button. Any ESPHome device
@@ -93,6 +122,30 @@ export function resolvedStatesChanged(
   ids: string[]
 ): boolean {
   return ids.some((id) => oldHass.states[id] !== newHass.states[id]);
+}
+
+/** The render gate of a card that draws only some of its map's entities, for
+ *  a hass tick that kept the config and the registries. `cached` is the
+ *  resolution the card held before this tick, `resolved` the one
+ *  resolveRadar returned for it, and `watched` the ids the card draws.
+ *  - A resolution recomputed on this tick (a base-name fallback whose chip
+ *    detection changed) may draw other entities, so every id of its map is
+ *    checked, as the cards always did.
+ *  - The "device not found" decision looks at every radar id, drawn or not,
+ *    so a tick that flips it re-renders.
+ *  - Otherwise only the drawn entities count: an energy tick does not
+ *    re-render the distance card, nor a distance tick the gate-energy card. */
+export function drawnStatesChanged(
+  oldHass: HomeAssistant,
+  newHass: HomeAssistant,
+  cached: ResolvedRadar | undefined,
+  resolved: ResolvedRadar,
+  watched: string[]
+): boolean {
+  if (resolved !== cached) return resolvedStatesChanged(oldHass, newHass, resolved.ids);
+  const { radarIds } = resolved;
+  if (anyResolved(oldHass, radarIds) !== anyResolved(newHass, radarIds)) return true;
+  return resolvedStatesChanged(oldHass, newHass, watched);
 }
 
 /** True when any resolved entity id exists in states — a configured card whose

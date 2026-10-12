@@ -27,6 +27,16 @@ export interface GateEnergyModel {
   gates: GateRow[];
 }
 
+/** The EntityMap slots whose states gateEnergyModel and renderGateEnergyChart
+ *  read, so the gate-energy card re-renders only when one of them changes. */
+export const GATE_ENERGY_CHART_SLOTS: readonly (keyof EntityMap)[] = [
+  "engineering_mode",
+  "move_threshold",
+  "still_threshold",
+  "move_energy",
+  "still_energy",
+];
+
 export function gateEnergyModel(hass: HomeAssistant, m: EntityMap): GateEnergyModel {
   let present = false;
   const seen = (id?: string) => {

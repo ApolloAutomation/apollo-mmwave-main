@@ -64,6 +64,26 @@ function distInUnit(
   return convert(v, uomOf(hass, id, unit), unit);
 }
 
+/** The EntityMap slots whose states distanceModel and renderDistanceChart
+ *  read, so the distance card re-renders only when one of them changes. The
+ *  gate arrays are read only for their length (the gate count), which comes
+ *  from the map rather than from states, so they are not listed. */
+export const DISTANCE_CHART_SLOTS: readonly (keyof EntityMap)[] = [
+  "gate_size",
+  "detection_distance",
+  "moving_distance",
+  "still_distance",
+  "zone_1_start",
+  "end_zone_1",
+  "end_zone_2",
+  "end_zone_3",
+  "zone_1_occupancy",
+  "zone_2_occupancy",
+  "zone_3_occupancy",
+  "max_move_distance",
+  "max_still_distance",
+];
+
 export function distanceModel(
   hass: HomeAssistant,
   m: EntityMap,

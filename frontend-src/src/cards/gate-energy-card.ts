@@ -10,18 +10,22 @@ import { property, state } from "lit/decorators.js";
 import type { HomeAssistant, Ld2410CardConfig } from "../types";
 import {
   resolveRadar,
-  resolvedStatesChanged,
+  drawnStatesChanged,
+  watchResolved,
   anyResolved,
   type ResolvedRadar,
+  type WatchedIds,
 } from "./resolution";
 import { registerElement } from "../register";
-import { renderGateEnergyChart } from "../charts/gate-energy-chart";
+import { GATE_ENERGY_CHART_SLOTS, renderGateEnergyChart } from "../charts/gate-energy-chart";
 
 export class ApolloLd2410GateEnergyCard extends LitElement {
   @property({ attribute: false }) public hass?: HomeAssistant;
   @state() private _config?: Ld2410CardConfig;
 
   private _resolved?: ResolvedRadar;
+  /** The ids of the entities the chart draws, for the resolution above. */
+  private _watched?: WatchedIds;
 
   public setConfig(config: Ld2410CardConfig): void {
     this._config = config;
@@ -35,7 +39,8 @@ export class ApolloLd2410GateEnergyCard extends LitElement {
     return { type: "custom:apollo-radar-gate-energy-card" };
   }
 
-  /** Skip the hass ticks (most of them) that touch none of our entities. */
+  /** Skip the hass ticks (most of them) that touch none of the entities the
+   *  chart draws. */
   protected shouldUpdate(changed: PropertyValues): boolean {
     if (!changed.has("hass") || changed.has("_config")) return true;
     const oldHass = changed.get("hass") as HomeAssistant | undefined;
@@ -47,8 +52,16 @@ export class ApolloLd2410GateEnergyCard extends LitElement {
     ) {
       return true;
     }
-    this._resolved = resolveRadar(this._resolved, this.hass, this._config);
-    return resolvedStatesChanged(oldHass, this.hass, this._resolved.ids);
+    const cached = this._resolved;
+    this._resolved = resolveRadar(cached, this.hass, this._config);
+    this._watched = watchResolved(this._watched, this._resolved, GATE_ENERGY_CHART_SLOTS);
+    return drawnStatesChanged(
+      oldHass,
+      this.hass,
+      cached,
+      this._resolved,
+      this._watched.ids
+    );
   }
 
   protected render(): TemplateResult | typeof nothing {

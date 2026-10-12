@@ -2,14 +2,22 @@
  * The distance and gate-energy cards, mounted in happy-dom. These pin the
  * "device not found" guard: a card pointed at a device with no gate radar
  * must say so instead of rendering nothing. They also pin the default title,
- * which names the chip the card resolved to.
+ * which names the chip the card resolved to, and the render gate: each card
+ * re-renders only for the entities its own chart draws.
  */
 
-import { afterEach, describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
+import { nothing } from "lit";
 import { ApolloLd2410DistanceCard } from "../src/cards/distance-card";
 import { ApolloLd2410GateEnergyCard } from "../src/cards/gate-energy-card";
+import { entityIds, resolveRadar, watchedIds } from "../src/cards/resolution";
+import { DISTANCE_CHART_SLOTS, renderDistanceChart } from "../src/charts/distance-chart";
+import {
+  GATE_ENERGY_CHART_SLOTS,
+  renderGateEnergyChart,
+} from "../src/charts/gate-energy-chart";
 import { LD2410_PROFILE, LD2412_PROFILE } from "../src/profiles";
-import type { HassEntity, HomeAssistant } from "../src/types";
+import type { EntityMap, HassEntity, HomeAssistant } from "../src/types";
 
 const NOT_FOUND = "device not found";
 const AIR = "apollo_air_1_abc123";
@@ -165,5 +173,262 @@ describe.each(TITLED)("%s title", (_name, make, what) => {
     const card = await mount(make(), { device_id: "air" });
     expect(card.shadowRoot!.textContent).toContain(NOT_FOUND);
     expect(header(card)).toBe(`LD2410 ${what}`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Render gate: a card re-renders only for the entities its chart draws, so an
+// engineering-mode energy tick does not redraw the distance chart, nor a
+// distance tick the gate-energy chart.
+// ---------------------------------------------------------------------------
+
+/** A state for `id` that takes every branch of both charts: numeric
+ *  distances and zone bounds in meters, occupied zones, a gate size, and
+ *  engineering mode on. */
+function liveState(id: string, n: number): HassEntity {
+  const domain = id.slice(0, id.indexOf("."));
+  if (domain === "switch" || domain === "binary_sensor") {
+    return { entity_id: id, state: "on", attributes: {} };
+  }
+  if (domain === "select") return { entity_id: id, state: "0.75m", attributes: {} };
+  if (domain === "button") return { entity_id: id, state: "unknown", attributes: {} };
+  return { entity_id: id, state: String((n % 5) + 1), attributes: { unit_of_measurement: "m" } };
+}
+
+/** One registered device with a live state for every id of `m`. */
+function liveHass(m: EntityMap, model: string): HomeAssistant {
+  const states: Record<string, HassEntity> = {};
+  const entities: HomeAssistant["entities"] = {};
+  entityIds(m).forEach((id, n) => {
+    states[id] = liveState(id, n);
+    entities[id] = { device_id: "dev" };
+  });
+  return {
+    states,
+    entities,
+    devices: { dev: { name: "Radar", manufacturer: "ApolloAutomation", model } },
+    config: { unit_system: { length: "km" } },
+  };
+}
+
+/** `h` after HA replaced just `id`'s state object, with a new value. */
+function tick(h: HomeAssistant, id: string): HomeAssistant {
+  const old = h.states[id];
+  const state = old.state === "on" ? "off" : old.state === "off" ? "on" : `${old.state}0`;
+  return { ...h, states: { ...h.states, [id]: { ...old, state } } };
+}
+
+/** Hand `next` to the card and report whether it called render() for it. */
+async function rendersFor(card: Card, next: HomeAssistant): Promise<boolean> {
+  const spy = vi.spyOn(card as unknown as { render(): unknown }, "render");
+  card.hass = next;
+  await card.updateComplete;
+  const called = spy.mock.calls.length > 0;
+  spy.mockRestore();
+  return called;
+}
+
+const GATED: [string, () => Card, readonly (keyof EntityMap)[]][] = [
+  ["distance card", () => new ApolloLd2410DistanceCard(), DISTANCE_CHART_SLOTS],
+  ["gate-energy card", () => new ApolloLd2410GateEnergyCard(), GATE_ENERGY_CHART_SLOTS],
+];
+
+describe.each(GATED)("%s render gate", (name, make, slots) => {
+  const config = { type: "custom:x", device_id: "dev" };
+  const msrHass = liveHass(LD2410_PROFILE.entityMap(MSR), "MSR-2");
+  const map = resolveRadar(undefined, msrHass, config).map;
+  const drawn = watchedIds(map, slots);
+  const undrawn = entityIds(map).filter((id) => !drawn.includes(id));
+
+  async function mountLive(h: HomeAssistant): Promise<Card> {
+    const card = make();
+    document.body.appendChild(card);
+    card.setConfig(config);
+    card.hass = h;
+    await card.updateComplete;
+    return card;
+  }
+
+  it("partitions the device's entities into drawn and undrawn ones", () => {
+    if (name === "distance card") {
+      expect(undrawn).toEqual(expect.arrayContaining([
+        map.engineering_mode,
+        ...map.move_energy,
+        ...map.still_energy,
+        ...map.move_threshold,
+        ...map.still_threshold,
+      ]));
+      expect(drawn).toContain(map.detection_distance);
+    } else {
+      expect(undrawn).toEqual(expect.arrayContaining([
+        map.gate_size,
+        map.detection_distance,
+        map.moving_distance,
+        map.still_distance,
+        map.zone_1_start,
+        map.end_zone_3,
+        map.zone_2_occupancy,
+        map.max_move_distance,
+        map.max_still_distance,
+      ]));
+      expect(drawn).toContain(map.move_energy[3]);
+    }
+  });
+
+  it("does not re-render for a tick of an entity its chart does not draw", async () => {
+    let h = msrHass;
+    const card = await mountLive(h);
+    expect(card.shadowRoot!.querySelector("svg")).not.toBeNull();
+    const rendered: string[] = [];
+    for (const id of undrawn) {
+      h = tick(h, id);
+      if (await rendersFor(card, h)) rendered.push(id);
+    }
+    expect(rendered).toEqual([]);
+  });
+
+  it("re-renders for a tick of each entity its chart draws", async () => {
+    let h = msrHass;
+    const card = await mountLive(h);
+    const skipped: string[] = [];
+    for (const id of drawn) {
+      h = tick(h, id);
+      if (!(await rendersFor(card, h))) skipped.push(id);
+    }
+    expect(skipped).toEqual([]);
+  });
+
+  it("re-renders when the entity or device registry is replaced", async () => {
+    const card = await mountLive(msrHass);
+    expect(await rendersFor(card, { ...msrHass, entities: { ...msrHass.entities } })).toBe(true);
+    expect(await rendersFor(card, { ...card.hass!, devices: { ...msrHass.devices } })).toBe(true);
+    // Still gated after the registries were replaced and resolved again.
+    expect(await rendersFor(card, tick(card.hass!, undrawn[0]))).toBe(false);
+    expect(await rendersFor(card, tick(card.hass!, drawn[0]))).toBe(true);
+  });
+
+  it("re-renders when an undrawn radar entity ends the device-not-found state", async () => {
+    // Registered, but no states yet: the card says the device is not found.
+    const card = await mountLive({ ...msrHass, states: {} });
+    expect(card.shadowRoot!.textContent).toContain(NOT_FOUND);
+    const id = undrawn.find((u) => u !== map.esp_reboot)!;
+    const arrived: HomeAssistant = {
+      ...card.hass!,
+      states: { [id]: msrHass.states[id] },
+    };
+    expect(await rendersFor(card, arrived)).toBe(true);
+    expect(card.shadowRoot!.textContent).not.toContain(NOT_FOUND);
+  });
+});
+
+describe("distance card render gate and server config", () => {
+  it("re-renders when hass.config is replaced (the default unit may change)", async () => {
+    const h = liveHass(LD2410_PROFILE.entityMap(MSR), "MSR-2");
+    const card = new ApolloLd2410DistanceCard();
+    document.body.appendChild(card);
+    card.setConfig({ type: "custom:x", device_id: "dev" });
+    card.hass = h;
+    await card.updateComplete;
+    expect(
+      await rendersFor(card, { ...h, config: { unit_system: { length: "mi" } } })
+    ).toBe(true);
+  });
+});
+
+describe("distance card render gate and a base-name fallback", () => {
+  it("re-renders when the LD2412 switch alone arrives and the chip detection changes", async () => {
+    // Base-name config, nothing registered: the chip is detected from which
+    // engineering-mode switch is in states. Without one it falls back to the
+    // LD2410 ids, none of which exist for an R-PRO-1, so the card says the
+    // device is not found although its LD2412 distance entities are there.
+    const r = LD2412_PROFILE.entityMap(RPRO);
+    const live = liveHass(r, "R-PRO-1-W");
+    const { [r.engineering_mode!]: eng, ...withoutSwitch } = live.states;
+    const before: HomeAssistant = { states: withoutSwitch, entities: {}, devices: {} };
+    const card = new ApolloLd2410DistanceCard();
+    document.body.appendChild(card);
+    card.setConfig({ type: "custom:x", device_base_name: RPRO });
+    card.hass = before;
+    await card.updateComplete;
+    expect(card.shadowRoot!.textContent).toContain(NOT_FOUND);
+
+    // The switch is not drawn by the distance chart, but it re-resolves the
+    // card onto the LD2412 map, so the card must re-render.
+    const after: HomeAssistant = {
+      ...before,
+      states: { ...before.states, [r.engineering_mode!]: eng },
+    };
+    expect(await rendersFor(card, after)).toBe(true);
+    expect(card.shadowRoot!.textContent).not.toContain(NOT_FOUND);
+    expect(header(card)).toBe("LD2412 Distances");
+  });
+});
+
+/** `m` behind a Proxy that records each slot whose entity ids are read: a
+ *  scalar slot when it is read, a gate array only when one of its entries is
+ *  (its length alone is the gate count, which comes from the map, not from
+ *  states). */
+function recordingMap(m: EntityMap): { map: EntityMap; read: Set<keyof EntityMap> } {
+  const read = new Set<keyof EntityMap>();
+  const map = new Proxy(m, {
+    get(target, key, receiver) {
+      const v = Reflect.get(target, key, receiver);
+      if (typeof key !== "string") return v;
+      const slot = key as keyof EntityMap;
+      if (!Array.isArray(v)) {
+        read.add(slot);
+        return v;
+      }
+      return new Proxy(v, {
+        get(arr, k, r) {
+          if (typeof k === "string" && /^\d+$/.test(k)) read.add(slot);
+          return Reflect.get(arr, k, r);
+        },
+      });
+    },
+  });
+  return { map, read };
+}
+
+// Every slot whose state a chart reads must be in its card's watch list, or
+// the card would keep drawing a stale value when that entity changes.
+describe("chart slot lists cover every state the chart reads", () => {
+  const DEVICES: [string, EntityMap, string][] = [
+    ["MSR-2 (LD2410)", LD2410_PROFILE.entityMap(MSR), "MSR-2"],
+    ["R-PRO-1 (LD2412)", LD2412_PROFILE.entityMap(RPRO), "R-PRO-1-W"],
+  ];
+
+  describe.each(DEVICES)("%s", (_name, m, model) => {
+    const on = liveHass(m, model);
+    const off: HomeAssistant = {
+      ...on,
+      callService: async () => undefined,
+      states: {
+        ...on.states,
+        [m.engineering_mode!]: { ...on.states[m.engineering_mode!], state: "off" },
+      },
+    };
+
+    it.each([
+      ["on", on],
+      ["off", off],
+    ])("distance chart, engineering mode %s", (_mode, h) => {
+      const { map, read } = recordingMap(m);
+      expect(renderDistanceChart(h, map, "m")).not.toBe(nothing);
+      expect(read).toContain("gate_size");
+      expect(read).toContain("detection_distance");
+      expect([...read].filter((s) => !DISTANCE_CHART_SLOTS.includes(s))).toEqual([]);
+    });
+
+    it.each([
+      ["on", on],
+      ["off", off],
+    ])("gate-energy chart, engineering mode %s", (_mode, h) => {
+      const { map, read } = recordingMap(m);
+      expect(renderGateEnergyChart(h, map)).not.toBe(nothing);
+      expect(read).toContain("engineering_mode");
+      expect(read).toContain("move_energy");
+      expect([...read].filter((s) => !GATE_ENERGY_CHART_SLOTS.includes(s))).toEqual([]);
+    });
   });
 });
