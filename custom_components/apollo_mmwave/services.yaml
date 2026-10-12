@@ -1,6 +1,6 @@
 update_zone:
   name: Update Zone
-  description: "Create, update, clear, or delete a zone. Geometry is in millimetres (Y-down). To clear a zone set shape: none (data may be omitted or null); data without a shape is ignored. Set delete: true to remove the zone and its entities. Rotation and tracked entities are device-wide and can be updated without zone_id."
+  description: "Create, update, clear, or delete a zone. Geometry is in millimeters (Y-down). To clear a zone set shape: none (data may be omitted or null); data without a shape is ignored. Set delete: true to remove the zone and its entities. Rotation and tracked entities are device-wide and can be updated without zone_id."
   fields:
     device_id:
       name: Radar Device

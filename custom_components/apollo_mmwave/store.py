@@ -18,7 +18,7 @@ in-memory shape is::
             "rotation_deg": 0,          # optional
             "label": "Apollo R_PRO-1 abc123",   # optional, display only
             "aliases": ["Kitchen"],   # optional, other merged v1 names
-            "input_units": "mm",  # optional; absent means millimetres
+            "input_units": "mm",  # optional; absent means millimeters
         },
     }
 
@@ -298,8 +298,8 @@ def _parse_entry(raw: Any, device_id: str | None = None) -> dict[str, Any] | Non
         names = [alias for alias in aliases if isinstance(alias, str)]
         if names:
             entry[STORE_ALIASES] = names
-    # Absent stays absent (millimetres). A value the service could never have
-    # written is dropped rather than carried, so it reads as millimetres too.
+    # Absent stays absent (millimeters). A value the service could never have
+    # written is dropped rather than carried, so it reads as millimeters too.
     units = raw.get(STORE_INPUT_UNITS)
     if isinstance(units, str) and units in INPUT_UNIT_FACTORS:
         entry[STORE_INPUT_UNITS] = units

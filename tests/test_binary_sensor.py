@@ -421,12 +421,12 @@ async def test_presence_scales_readings_by_the_devices_input_units(
 async def test_presence_scales_readings_by_each_input_unit(
     hass, entity_registry, setup_entry_with_zone, units, inside_and_outside_y
 ) -> None:
-    """Every unit the service accepts is converted to millimetres first."""
+    """Every unit the service accepts is converted to millimeters first."""
     device_id, _ = setup_entry_with_zone
     inside_y, outside_y = inside_and_outside_y
     presence_id = _presence_id(entity_registry, device_id)
     # The zone spans y 0..2000 mm. Each outside reading would be inside if it
-    # were taken as millimetres, so it only reads off once it is scaled.
+    # were taken as millimeters, so it only reads off once it is scaled.
     await hass.services.async_call(
         DOMAIN,
         SERVICE_UPDATE_ZONE,
@@ -444,7 +444,7 @@ async def test_presence_scales_readings_by_each_input_unit(
     assert hass.states.get(presence_id).state == "off"
 
 
-async def test_unrecognised_stored_input_units_read_as_millimetres(
+async def test_unrecognized_stored_input_units_read_as_millimeters(
     hass, entity_registry, setup_entry_with_zone
 ) -> None:
     """A unit the service would refuse, already in the store, is no scaling."""
@@ -641,7 +641,7 @@ async def test_polygon_presence_concave_notch(
 async def test_ellipse_presence_includes_the_rim(
     hass, entity_registry, setup_entry_with_zone
 ) -> None:
-    """The centre and a point on the rim read on, one just past the rim off."""
+    """The center and a point on the rim read on, one just past the rim off."""
     device_id, _ = setup_entry_with_zone
     _draw_zone(
         hass,
@@ -651,7 +651,7 @@ async def test_ellipse_presence_includes_the_rim(
     await hass.async_block_till_done()
     presence_id = _presence_id(entity_registry, device_id)
 
-    _set_target(hass, TARGET_1, 0, 1000)  # the centre
+    _set_target(hass, TARGET_1, 0, 1000)  # the center
     await hass.async_block_till_done()
     assert hass.states.get(presence_id).state == "on"
 
@@ -766,7 +766,7 @@ async def test_input_units_survive_a_reload(
     assert (await client.receive_json())["result"]["input_units"] == "cm"
 
     # The zone spans y 0..2000 mm: 250 cm is outside, 150 cm is inside. Read
-    # as millimetres both would be inside.
+    # as millimeters both would be inside.
     presence_id = _presence_id(entity_registry, device_id)
     _set_target(hass, TARGET_1, 0, 250)
     await hass.async_block_till_done()

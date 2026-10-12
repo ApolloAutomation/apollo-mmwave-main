@@ -76,7 +76,7 @@ describe("row builders on an LD2412 map", () => {
   const m2 = LD2412_PROFILE.entityMap(b);
   const gateNames = Array.from({ length: 14 }, (_, n) => `G${n}`);
 
-  it("splits thresholds into 14 move + 14 still rows, labelled G0..G13", () => {
+  it("splits thresholds into 14 move + 14 still rows, labeled G0..G13", () => {
     expect(moveThresholdRows(m2).map((r) => r.name)).toEqual(gateNames);
     expect(stillThresholdRows(m2).map((r) => r.name)).toEqual(gateNames);
     expect(moveThresholdRows(m2)[13].entity).toBe(`number.${b}_ld2412_g13_move_threshold`);

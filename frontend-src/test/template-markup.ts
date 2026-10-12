@@ -1,7 +1,7 @@
 import { nothing, type TemplateResult } from "lit";
 
 /**
- * Serialise a Lit template result to its markup, bindings inlined. happy-dom
+ * Serialize a Lit template result to its markup, bindings inlined. happy-dom
  * drops Lit's child-part markers inside <svg>, so nested chart parts never
  * reach the DOM in tests; the template itself is what a browser renders, so
  * assert on it.

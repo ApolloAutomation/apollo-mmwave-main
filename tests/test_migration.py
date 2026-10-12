@@ -523,7 +523,7 @@ async def test_label_beats_alias_on_slug_tie(
     # The aliased device comes first in store order, so a single pass over
     # labels and aliases together would hand it the slug.
     aliased = _make_radar(hass, device_registry, "Radar A")
-    labelled = _make_radar(hass, device_registry, "Radar B")
+    labeled = _make_radar(hass, device_registry, "Radar B")
     old = entity_registry.async_get_or_create(
         "sensor",
         DOMAIN,
@@ -535,16 +535,16 @@ async def test_label_beats_alias_on_slug_tie(
         hass_storage,
         {
             aliased.id: {"zones": {}, "label": "Office", "aliases": ["den"]},
-            labelled.id: {"zones": {}, "label": "Den"},
+            labeled.id: {"zones": {}, "label": "Den"},
         },
     )
 
     await async_migrate_unique_ids(hass, store)
 
     assert entity_registry.async_get(old.entity_id).unique_id == (
-        f"{labelled.id}_zone_1"
+        f"{labeled.id}_zone_1"
     )
-    assert _device_id_for_label(store, "Den") == labelled.id
+    assert _device_id_for_label(store, "Den") == labeled.id
     assert _device_id_for_label(store, "Office") == aliased.id
 
 
@@ -830,7 +830,7 @@ async def test_promotion_does_not_overwrite_zones_already_on_the_device(
 async def _store_with_a_renamed_orphan(hass, hass_storage, device_id: str) -> ZoneStore:
     """Load a store whose orphan resolves only through its tracked pairs."""
     # No device is named "Old Office" and the entry already on the radar is
-    # labelled "Kitchen", so neither name leads the orphan to the radar. The
+    # labeled "Kitchen", so neither name leads the orphan to the radar. The
     # entry was drawn in 2.0 with no coordinate sensors picked, so it has no
     # `entities` of its own.
     return await _v2_store(
@@ -887,7 +887,7 @@ async def test_promoted_orphan_under_another_name_rekeys_its_entities(
     )
 
 
-async def test_promotion_into_an_unlabelled_device_keeps_the_location_name(
+async def test_promotion_into_an_unlabeled_device_keeps_the_location_name(
     hass, hass_storage, entity_registry, device_registry
 ) -> None:
     """An entity skipped while promoting is still adopted on a later setup."""

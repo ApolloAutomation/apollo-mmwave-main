@@ -499,7 +499,7 @@ describe("zone map card grid and cone config", () => {
       .map((value) => `${value}${unit}`);
   }
 
-  it("labels the default mm grid every half metre when unit_display is on", async () => {
+  it("labels the default mm grid every half meter when unit_display is on", async () => {
     const card = await mountCard(fakeHass(), { unit_display: true });
 
     const { labels } = card._getGridRenderState();
