@@ -590,6 +590,24 @@ function n2(t2) {
 function r(r2) {
   return n2({ ...r2, state: true, attribute: false });
 }
+const NO_ENTITIES = [];
+const INDEX = /* @__PURE__ */ new WeakMap();
+function indexFor(entities) {
+  let index = INDEX.get(entities);
+  if (!index) {
+    index = /* @__PURE__ */ new Map();
+    for (const [id, e2] of Object.entries(entities)) {
+      const list = index.get(e2.device_id);
+      if (list) list.push([id, e2]);
+      else index.set(e2.device_id, [[id, e2]]);
+    }
+    INDEX.set(entities, index);
+  }
+  return index;
+}
+function entitiesForDevice(entities, deviceId) {
+  return indexFor(entities).get(deviceId) ?? NO_ENTITIES;
+}
 function emptyZones() {
   return {
     zone_1_start: void 0,
@@ -602,6 +620,10 @@ function emptyZones() {
   };
 }
 const CALIBRATE_TIP = "Or press **Calibrate with empty room** on the Auto-calibrate card to set them from your empty room.";
+function rangeLimitTip(label) {
+  return `${label}: the configured detection-range limit, shown as a gate number.`;
+}
+const GATE_TIP = "💡 Each gate's **move / still threshold** is how strong a signal must be to count as presence at that distance. Lower = more sensitive (more false triggers), higher = less. Turn on **Radar Engineering Mode** and watch the Gate Energy chart while you move around to pick values. " + CALIBRATE_TIP;
 const RADAR_TIMEOUT_TIP = "**Radar Timeout** is how long presence stays on after the last detection; raise it if lights flick off while you sit still.";
 const LD2410_FACTORY_THRESHOLDS = {
   move: [50, 50, 40, 30, 20, 15, 15, 15, 15],
@@ -614,13 +636,17 @@ const LD2410_PROFILE = {
   rangeLabels: ["Max Move Gate", "Max Still Gate"],
   gateSizeLabel: "Gate Size",
   rangeTip: "💡 **Gate Size** sets how far each gate reaches (e.g. 0.75 m). **Max Move / Still Gate** cap the farthest gate used to detect moving vs. still targets; lower them to ignore distant motion. " + RADAR_TIMEOUT_TIP,
-  gateTip: "💡 Each gate's **move / still threshold** is how strong a signal must be to count as presence at that distance. Lower = more sensitive (more false triggers), higher = less. Turn on **Radar Engineering Mode** and watch the Gate Energy chart while you move around to pick values. " + CALIBRATE_TIP,
+  gateTip: GATE_TIP,
+  // TODO(REVIEW_REPORT.md X61): once its wiki docs PR is live (it 404s until then), point both
+  // profiles at products/general/calibrating-and-updating/radar-tuning/apollo-mmwave-dashboard/.
   wikiUrl: "https://wiki.apolloautomation.com/products/msr2/setup/zones-ha/",
   entityMap(base) {
     const gates = [0, 1, 2, 3, 4, 5, 6, 7, 8];
     const g2 = (suffix) => gates.map((n3) => suffix(n3));
     return {
       engineering_mode: `switch.${base}_radar_engineering_mode`,
+      // TODO(REVIEW_REPORT.md X24): bluetooth and gate_size use MSR-2 spellings only, so a
+      // base-name MSR-1 config hides both; use MSR-1 ids when present or document device_id.
       bluetooth: `switch.${base}_ld2410_bluetooth`,
       restart_radar: `button.${base}_restart_radar`,
       factory_reset_radar: `button.${base}_factory_reset_radar`,
@@ -653,10 +679,16 @@ const LD2412_PROFILE = {
   key: "ld2412",
   label: "LD2412",
   maxBarLabels: ["Max Gate", "Min Gate"],
+  // The second bar is a near bound: the chip ignores the gates below it.
+  maxBarTips: [
+    rangeLimitTip("Max Gate"),
+    "Min Gate: gates below this one are ignored for detection."
+  ],
   rangeLabels: ["Max Gate", "Min Gate"],
   gateSizeLabel: "Distance Resolution",
   rangeTip: "💡 **Distance Resolution** sets gate spacing: smaller (0.5 m) gives finer tuning over a shorter range, larger (0.75 m) reaches farther. **Min / Max Gate** limit which gates are used for detection. " + RADAR_TIMEOUT_TIP,
-  gateTip: "💡 Each gate's **move / still threshold** is how strong a signal must be to count as presence at that distance. Lower = more sensitive (more false triggers), higher = less. Turn on **Radar Engineering Mode** and watch the Gate Energy chart while you move around to pick values. " + CALIBRATE_TIP,
+  gateTip: GATE_TIP,
+  // TODO(REVIEW_REPORT.md X61): switch with LD2410_PROFILE.wikiUrl once the new guide is live.
   wikiUrl: "https://wiki.apolloautomation.com/products/rpro1/setup/zones-ha/#ld2412-configuration",
   entityMap(base) {
     const gates = Array.from({ length: 14 }, (_2, i2) => i2);
@@ -708,8 +740,7 @@ function apolloModelInfo(device) {
 function isEsphomeDevice(hass, deviceId) {
   let sawEntity = false;
   let sawPlatform = false;
-  for (const e2 of Object.values(hass.entities)) {
-    if (e2.device_id !== deviceId) continue;
+  for (const [, e2] of entitiesForDevice(hass.entities, deviceId)) {
     sawEntity = true;
     if (e2.platform === void 0) continue;
     sawPlatform = true;
@@ -726,10 +757,15 @@ function detectProfile(hass, base) {
 }
 const KNOWN_SUFFIXES = [
   // LD2412 — every entity is `{base}_ld2412_...`, so one pattern covers all.
-  /_ld2412_.+$/,
+  // The lookahead anchors on the LAST chip token so a base that itself holds
+  // it (device "Office LD2412" -> `office_ld2412_ld2412_engineering_mode`)
+  // keeps its full name. It must tolerate the two tokens sharing an
+  // underscore, which a `(?:(?!_ld2412_).)+` tail does not.
+  /_ld2412_(?!.*ld2412_).+$/,
   // LD2450 tracking radar — every entity is `{base}_ld2450_...`. Needed so
   // zone-only devices (e.g. MTR-1, no gate radar) still resolve to a base name.
-  /_ld2450_.+$/,
+  // Anchored on the last chip token for the same reason as LD2412 above.
+  /_ld2450_(?!.*ld2450_).+$/,
   // MTR-1 firmware names its target sensors "Target-1 X" with no chip prefix.
   /_target_\d+_[xy](?:_\d+)?$/,
   // LD2410 (MSR) — varied prefixes.
@@ -765,7 +801,9 @@ function baseFromObjectId(objectId) {
   return void 0;
 }
 function baseNameFromDevice(hass, deviceId) {
-  const objectIds = Object.entries(hass.entities).filter(([, e2]) => e2.device_id === deviceId).map(([id]) => id.slice(id.indexOf(".") + 1));
+  const objectIds = entitiesForDevice(hass.entities, deviceId).map(
+    ([id]) => id.slice(id.indexOf(".") + 1)
+  );
   const counts = /* @__PURE__ */ new Map();
   for (const oid of objectIds) {
     const base = baseFromObjectId(oid);
@@ -781,6 +819,12 @@ function baseNameFromDevice(hass, deviceId) {
   }
   return best;
 }
+const GATE_SLOTS = [
+  "move_threshold",
+  "still_threshold",
+  "move_energy",
+  "still_energy"
+];
 const DEDUP = "(?:_\\d+)?$";
 const S2 = (slot, domain, suffix) => ({
   slot,
@@ -867,8 +911,7 @@ const LD2410_MARKERS = [
 ];
 function detectProfileFromEntities(hass, deviceId) {
   let sawLd2410 = false;
-  for (const [id, e2] of Object.entries(hass.entities)) {
-    if (e2.device_id !== deviceId) continue;
+  for (const [id] of entitiesForDevice(hass.entities, deviceId)) {
     const oid = id.slice(id.indexOf(".") + 1);
     if (/_ld2412_/.test(oid)) return LD2412_PROFILE;
     if (!sawLd2410) sawLd2410 = LD2410_MARKERS.some((re) => re.test(oid));
@@ -878,8 +921,7 @@ function detectProfileFromEntities(hass, deviceId) {
 function entityMapFromDevice(hass, deviceId) {
   const map = emptyMap();
   let matched = false;
-  for (const [id, e2] of Object.entries(hass.entities)) {
-    if (e2.device_id !== deviceId) continue;
+  for (const [id] of entitiesForDevice(hass.entities, deviceId)) {
     const dot = id.indexOf(".");
     const c2 = classifyObjectId(id.slice(0, dot), id.slice(dot + 1));
     if (!c2) continue;
@@ -921,48 +963,75 @@ function emptyMap() {
     still_energy: []
   };
 }
-function resolveEntities(hass, config) {
+function resolveEntitiesDetailed(hass, config) {
   let resolved;
+  let fallbackBase;
   if (config.device_id) resolved = entityMapFromDevice(hass, config.device_id);
   if (!resolved) {
-    const base = resolveBase(hass, config);
-    const profile = base ? detectProfile(hass, base) ?? LD2410_PROFILE : void 0;
-    resolved = base && profile ? profile.entityMap(base) : emptyMap();
+    fallbackBase = resolveBase(hass, config);
+    const profile = fallbackBase ? resolveProfile(hass, config) ?? LD2410_PROFILE : void 0;
+    resolved = fallbackBase && profile ? profile.entityMap(fallbackBase) : emptyMap();
   }
-  if (config.entities) {
-    return { ...resolved, ...config.entities };
+  const map = config.entities ? withOverrides(resolved, config.entities) : resolved;
+  return fallbackBase ? { map, fallbackBase } : { map };
+}
+function withOverrides(resolved, overrides) {
+  const map = { ...resolved, ...overrides };
+  for (const slot of GATE_SLOTS) {
+    if (!Array.isArray(map[slot])) map[slot] = resolved[slot];
   }
-  return resolved;
+  return map;
 }
 function exists(hass, id) {
   return !!id && id in hass.states;
 }
+function pushIds(out, v2) {
+  if (typeof v2 === "string") out.push(v2);
+  else if (Array.isArray(v2)) {
+    for (const id of v2) if (id) out.push(id);
+  }
+}
 function entityIds(m2) {
   const out = [];
-  for (const v2 of Object.values(m2)) {
-    if (typeof v2 === "string") out.push(v2);
-    else if (Array.isArray(v2)) {
-      for (const id of v2) if (id) out.push(id);
-    }
-  }
+  for (const v2 of Object.values(m2)) pushIds(out, v2);
   return out;
 }
+function watchedIds(m2, slots) {
+  const out = [];
+  for (const slot of slots) pushIds(out, m2[slot]);
+  return out;
+}
+function watchResolved(cache, resolved, slots) {
+  return (cache == null ? void 0 : cache.resolved) === resolved ? cache : { resolved, ids: watchedIds(resolved.map, slots) };
+}
+function radarEntityIds(m2) {
+  return entityIds(m2).filter((id) => id !== m2.esp_reboot);
+}
 function resolveRadar(cache, hass, config) {
-  if (cache && cache.config === config && cache.entities === hass.entities && cache.devices === hass.devices) {
+  if (cache && cache.config === config && cache.entities === hass.entities && cache.devices === hass.devices && (cache.fallbackBase === void 0 || detectProfile(hass, cache.fallbackBase) === cache.fallbackDetected)) {
     return cache;
   }
-  const map = resolveEntities(hass, config);
+  const { map, fallbackBase } = resolveEntitiesDetailed(hass, config);
   return {
     config,
     entities: hass.entities,
     devices: hass.devices,
     map,
     profile: resolveProfile(hass, config),
-    ids: entityIds(map)
+    ids: entityIds(map),
+    radarIds: radarEntityIds(map),
+    fallbackBase,
+    fallbackDetected: fallbackBase === void 0 ? void 0 : detectProfile(hass, fallbackBase)
   };
 }
 function resolvedStatesChanged(oldHass, newHass, ids) {
   return ids.some((id) => oldHass.states[id] !== newHass.states[id]);
+}
+function drawnStatesChanged(oldHass, newHass, cached, resolved, watched) {
+  if (resolved !== cached) return resolvedStatesChanged(oldHass, newHass, resolved.ids);
+  const { radarIds } = resolved;
+  if (anyResolved(oldHass, radarIds) !== anyResolved(newHass, radarIds)) return true;
+  return resolvedStatesChanged(oldHass, newHass, watched);
 }
 function anyResolved(hass, ids) {
   return ids.some((id) => id in hass.states);
@@ -997,6 +1066,16 @@ function registerElement(tag, ctor) {
   for (const marker of ["home-assistant", "hc-main"]) {
     window.customElements.whenDefined(marker).then(reassertAll, () => void 0);
   }
+}
+function registerCustomCard(type, name, description) {
+  const customCards2 = window.customCards = window.customCards || [];
+  if (customCards2.some((c2) => c2.type === type)) return;
+  customCards2.push({
+    type,
+    name,
+    description,
+    documentationURL: "https://github.com/ApolloAutomation/apollo-mmwave-main"
+  });
 }
 const VALID_UOMS = ["mm", "cm", "m", "in", "ft", "yd"];
 const METERS_PER = {
@@ -1047,6 +1126,14 @@ function scaleX(value, maxRange, width) {
   if (maxRange <= 0) return 0;
   return clamp(value / maxRange * width, 0, width);
 }
+function gateRegisterCount(m2) {
+  return Math.max(
+    m2.move_threshold.length,
+    m2.still_threshold.length,
+    m2.move_energy.length,
+    m2.still_energy.length
+  );
+}
 const DEFAULT_GATE_SIZE_M = 0.75;
 const GATE_COUNT = 8;
 const STILL_COLOR$1 = "#2e7d32";
@@ -1058,17 +1145,33 @@ function gateColor(i2, count) {
   return `hsl(${hue}, 64%, 48%)`;
 }
 const TXT = "var(--primary-text-color, #e6e6e6)";
-const TXT2 = "var(--secondary-text-color, #9aa0a6)";
+const TXT2$1 = "var(--secondary-text-color, #9aa0a6)";
 function distInUnit(hass, id, unit) {
   const v2 = numState(hass, id);
   if (v2 === void 0) return void 0;
   return convert(v2, uomOf(hass, id, unit), unit);
 }
+const DISTANCE_CHART_SLOTS = [
+  "gate_size",
+  "detection_distance",
+  "moving_distance",
+  "still_distance",
+  "zone_1_start",
+  "end_zone_1",
+  "end_zone_2",
+  "end_zone_3",
+  "zone_1_occupancy",
+  "zone_2_occupancy",
+  "zone_3_occupancy",
+  "max_move_distance",
+  "max_still_distance"
+];
 function distanceModel(hass, m2, unit) {
   var _a2, _b;
   const gateSizeM = parseGateSizeMeters(m2.gate_size ? (_a2 = hass.states[m2.gate_size]) == null ? void 0 : _a2.state : void 0) ?? DEFAULT_GATE_SIZE_M;
   const gateSizeChart = convert(gateSizeM, "m", unit);
-  const gateCount = m2.move_threshold.length > 1 ? m2.move_threshold.length - 1 : GATE_COUNT;
+  const registers = gateRegisterCount(m2);
+  const gateCount = registers > 1 ? registers - 1 : GATE_COUNT;
   const maxRange = gateSizeChart * gateCount;
   const bars = [];
   const pushBar = (id, label, color) => {
@@ -1121,7 +1224,7 @@ const INNER = WIDTH$1 - LBL - RPAD;
 const TOP = 6;
 const ROW_H = 30;
 const BAR_H = ROW_H - 8;
-const AXIS_H = 36;
+const AXIS_H = 52;
 const MID = BAR_H / 2 + 4;
 function rowLabel(r2) {
   if (r2.kind === "zones") return "Zones";
@@ -1133,9 +1236,8 @@ function rowTip(r2) {
   if (r2.kind === "zones")
     return "Detection zones. The circle shows whether a target is currently in each zone (filled = present).";
   if (r2.kind === "gates")
-    return "The radar splits its range into gates — each colored segment is one distance bin (G1, G2, ...).";
-  if (r2.kind === "max")
-    return `${r2.label}: the configured detection-range limit, shown as a gate number.`;
+    return "The radar splits its range into gates. Each colored segment is one distance bin (G1, G2, ...).";
+  if (r2.kind === "max") return r2.tip ?? rangeLimitTip(r2.label);
   if (r2.bar.label === "Detection")
     return "Current distance to the detected target.";
   if (r2.bar.label === "Moving")
@@ -1146,7 +1248,7 @@ function valueLabel(xEnd, text, y3) {
   const inside = xEnd > WIDTH$1 * 0.62;
   return inside ? w`<text x=${xEnd - 6} y=${y3 + MID} font-size="13" text-anchor="end" fill="#fff">${text}</text>` : w`<text x=${xEnd + 6} y=${y3 + MID} font-size="13" fill=${TXT}>${text}</text>`;
 }
-function renderDistanceChart(hass, m2, unit, maxLabels = ["Max Move", "Max Still"]) {
+function renderDistanceChart(hass, m2, unit, maxLabels = LD2410_PROFILE.maxBarLabels, label = "LD2410", maxTips) {
   if (m2.move_threshold.length === 0) return A;
   const model = distanceModel(hass, m2, unit);
   const x2 = (v2) => LBL + scaleX(v2, model.maxRange, INNER);
@@ -1155,10 +1257,24 @@ function renderDistanceChart(hass, m2, unit, maxLabels = ["Max Move", "Max Still
   if (model.zones.length) rows.push({ kind: "zones" });
   for (const bar of model.bars) rows.push({ kind: "bar", bar });
   rows.push({ kind: "gates" });
-  if (model.maxMove !== void 0)
-    rows.push({ kind: "max", label: maxLabels[0], value: model.maxMove, gate: model.maxMoveGate, color: MOVE_COLOR$1 });
-  if (model.maxStill !== void 0)
-    rows.push({ kind: "max", label: maxLabels[1], value: model.maxStill, gate: model.maxStillGate, color: STILL_COLOR$1 });
+  if (model.maxMove !== void 0 && model.maxMoveGate !== void 0)
+    rows.push({
+      kind: "max",
+      label: maxLabels[0],
+      value: model.maxMove,
+      gate: model.maxMoveGate,
+      tip: maxTips == null ? void 0 : maxTips[0],
+      color: MOVE_COLOR$1
+    });
+  if (model.maxStill !== void 0 && model.maxStillGate !== void 0)
+    rows.push({
+      kind: "max",
+      label: maxLabels[1],
+      value: model.maxStill,
+      gate: model.maxStillGate,
+      tip: maxTips == null ? void 0 : maxTips[1],
+      color: STILL_COLOR$1
+    });
   const plotBottom = TOP + rows.length * ROW_H;
   const height = plotBottom + AXIS_H;
   const tickFmt = (v2) => model.gateSizeChart >= 10 ? v2.toFixed(0) : String(Number(v2.toFixed(2)));
@@ -1170,12 +1286,12 @@ function renderDistanceChart(hass, m2, unit, maxLabels = ["Max Move", "Max Still
       <line x1=${gx} y1=${TOP} x2=${gx} y2=${plotBottom}
         stroke="var(--divider-color, #555)" stroke-width="1" opacity="0.3"></line>
       <text x=${gx} y=${plotBottom + 13} font-size="11" text-anchor="end"
-        transform="rotate(-45 ${gx} ${plotBottom + 13})" fill=${TXT2}>${tickFmt(val)} ${unit}</text>`);
+        transform="rotate(-45 ${gx} ${plotBottom + 13})" fill=${TXT2$1}>${tickFmt(val)} ${unit}</text>`);
   }
   const rowEls = rows.map((r2, i2) => {
     const y3 = TOP + i2 * ROW_H;
-    const label = w`<text x=${LBL - 6} y=${y3 + MID} font-size="12"
-      text-anchor="end" fill=${TXT2}>${rowLabel(r2)}</text>`;
+    const label2 = w`<text x=${LBL - 6} y=${y3 + MID} font-size="12"
+      text-anchor="end" fill=${TXT2$1}>${rowLabel(r2)}</text>`;
     let content;
     if (r2.kind === "zones") {
       content = model.zones.map((z2, idx) => {
@@ -1211,7 +1327,7 @@ function renderDistanceChart(hass, m2, unit, maxLabels = ["Max Move", "Max Still
       content = segs;
     } else {
       const xe = x2(r2.value);
-      const text = r2.gate !== void 0 ? `G${r2.gate}` : fmt(r2.value);
+      const text = `G${r2.gate}`;
       content = w`
         <rect x=${LBL} y=${y3} width=${Math.max(1, xe - LBL)} height=${BAR_H}
           rx="4" fill=${r2.color} opacity="0.6"></rect>
@@ -1221,12 +1337,12 @@ function renderDistanceChart(hass, m2, unit, maxLabels = ["Max Move", "Max Still
     return w`<g>
       <title>${rowTip(r2)}</title>
       <rect x="0" y=${y3} width=${WIDTH$1} height=${BAR_H} fill="transparent"></rect>
-      ${label}${content}
+      ${label2}${content}
     </g>`;
   });
   return b`
     <svg viewBox="0 0 ${WIDTH$1} ${height}" width="100%" role="img"
-      aria-label="LD2410 distances">
+      aria-label="${label} distances">
       ${axis} ${rowEls}
     </svg>
   `;
@@ -1250,7 +1366,8 @@ const _ApolloLd2410DistanceCard = class _ApolloLd2410DistanceCard extends i {
   static getStubConfig() {
     return { type: "custom:apollo-radar-distance-card" };
   }
-  /** Skip the hass ticks (most of them) that touch none of our entities. */
+  /** Skip the hass ticks (most of them) that touch none of the entities the
+   *  chart draws. */
   shouldUpdate(changed) {
     if (!changed.has("hass") || changed.has("_config")) return true;
     const oldHass = changed.get("hass");
@@ -1258,29 +1375,46 @@ const _ApolloLd2410DistanceCard = class _ApolloLd2410DistanceCard extends i {
     if (oldHass.entities !== this.hass.entities || oldHass.devices !== this.hass.devices || oldHass.config !== this.hass.config) {
       return true;
     }
-    this._resolved = resolveRadar(this._resolved, this.hass, this._config);
-    return resolvedStatesChanged(oldHass, this.hass, this._resolved.ids);
+    const cached = this._resolved;
+    this._resolved = resolveRadar(cached, this.hass, this._config);
+    this._watched = watchResolved(this._watched, this._resolved, DISTANCE_CHART_SLOTS);
+    return drawnStatesChanged(
+      oldHass,
+      this.hass,
+      cached,
+      this._resolved,
+      this._watched.ids
+    );
   }
   render() {
     if (!this.hass || !this._config) return A;
     this._resolved = resolveRadar(this._resolved, this.hass, this._config);
-    const { map: m2, profile, ids } = this._resolved;
-    if (!anyResolved(this.hass, ids)) return this._renderNotFound();
+    const { map: m2, profile, radarIds } = this._resolved;
+    if (!anyResolved(this.hass, radarIds)) return this._renderNotFound();
     const unit = isValidUom(this._config.distance_unit) ? this._config.distance_unit : defaultDistanceUnit(this.hass);
-    const chart = renderDistanceChart(this.hass, m2, unit, profile == null ? void 0 : profile.maxBarLabels);
+    const label = (profile == null ? void 0 : profile.label) ?? "LD2410";
+    const chart = renderDistanceChart(
+      this.hass,
+      m2,
+      unit,
+      profile == null ? void 0 : profile.maxBarLabels,
+      label,
+      profile == null ? void 0 : profile.maxBarTips
+    );
     if (chart === A) return A;
     return b`
-      <ha-card .header=${this._config.title ?? "LD2410 Distances"}>
+      <ha-card .header=${this._config.title ?? `${label} Distances`}>
         <div class="wrap">${chart}</div>
       </ha-card>
     `;
   }
   _renderNotFound() {
-    var _a2;
+    var _a2, _b, _c;
+    const label = ((_b = (_a2 = this._resolved) == null ? void 0 : _a2.profile) == null ? void 0 : _b.label) ?? "LD2410";
     return b`
-      <ha-card .header=${((_a2 = this._config) == null ? void 0 : _a2.title) ?? "LD2410 Distances"}>
+      <ha-card .header=${((_c = this._config) == null ? void 0 : _c.title) ?? `${label} Distances`}>
         <div class="not-found">
-          Apollo mmWave: device not found — check the card's device
+          Apollo mmWave: device not found. Check the card's device
           configuration.
         </div>
       </ha-card>
@@ -1305,15 +1439,11 @@ __decorateClass$2([
   r()
 ], ApolloLd2410DistanceCard.prototype, "_config");
 registerElement("apollo-radar-distance-card", ApolloLd2410DistanceCard);
-const customCards$2 = window.customCards = window.customCards || [];
-if (!customCards$2.some((c2) => c2.type === "apollo-radar-distance-card")) {
-  customCards$2.push({
-    type: "apollo-radar-distance-card",
-    name: "Apollo Radar Distance Chart",
-    description: "Distance / zone chart for Apollo MSR (LD2410) & R-PRO (LD2412).",
-    documentationURL: "https://github.com/ApolloAutomation/apollo-mmwave-main"
-  });
-}
+registerCustomCard(
+  "apollo-radar-distance-card",
+  "Apollo Radar Distance Chart",
+  "Distance / zone chart for Apollo MSR (LD2410) & R PRO (LD2412)."
+);
 const DOMAIN = "apollo_mmwave";
 const CALIBRATION_SUBSCRIBE = `${DOMAIN}/calibration/subscribe`;
 const CONFIG_ENTRIES_SUBSCRIBE = "config_entries/subscribe";
@@ -1451,13 +1581,31 @@ const MOVE_COLOR = "#4b0082";
 const MOVE_THR_COLOR = "#9467bd";
 const STILL_COLOR = "#274e13";
 const STILL_THR_COLOR = "#8cb640";
+const TXT2 = "var(--secondary-text-color, #9aa0a6)";
+const chartLegendStyles = i$3`
+  .chart-legend {
+    font-size: 0.8em;
+    color: var(--secondary-text-color);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 14px;
+    margin-top: 6px;
+  }
+`;
+const GATE_ENERGY_CHART_SLOTS = [
+  "engineering_mode",
+  "move_threshold",
+  "still_threshold",
+  "move_energy",
+  "still_energy"
+];
 function gateEnergyModel(hass, m2) {
-  var _a2;
+  var _a2, _b;
   let present = false;
   const seen = (id) => {
     if (id && id in hass.states) present = true;
   };
-  const count = m2.move_threshold.length;
+  const count = gateRegisterCount(m2);
   const gates = Array.from({ length: count }, (_2, n3) => {
     seen(m2.move_energy[n3]);
     seen(m2.still_energy[n3]);
@@ -1473,6 +1621,7 @@ function gateEnergyModel(hass, m2) {
   });
   return {
     engineeringMode: !!m2.engineering_mode && ((_a2 = hass.states[m2.engineering_mode]) == null ? void 0 : _a2.state) === "on",
+    unavailable: !!m2.engineering_mode && ((_b = hass.states[m2.engineering_mode]) == null ? void 0 : _b.state) === "unavailable",
     present,
     gates
   };
@@ -1489,7 +1638,7 @@ function yFor(energy) {
   const clamped = Math.max(0, Math.min(MAX_ENERGY, energy));
   return PAD_T + PLOT_H * (1 - clamped / MAX_ENERGY);
 }
-function renderGateEnergyChart(hass, m2) {
+function renderGateEnergyChart(hass, m2, label = "LD2410") {
   var _a2;
   const model = gateEnergyModel(hass, m2);
   if (!model.present) return A;
@@ -1513,7 +1662,7 @@ function renderGateEnergyChart(hass, m2) {
         stroke="${stillAbove ? STILL_THR_COLOR : A}"
         stroke-width="${stillAbove ? "2" : A}"></rect>
       <text x=${cx} y=${HEIGHT - 7} font-size="13" text-anchor="middle"
-        fill="var(--secondary-text-color)">G${g2.index}</text>`);
+        fill=${TXT2}>G${g2.index}</text>`);
     if (model.engineeringMode && g2.moveThr !== void 0) {
       const ty = yFor(g2.moveThr);
       const tx = moveX + barW / 2;
@@ -1533,15 +1682,16 @@ function renderGateEnergyChart(hass, m2) {
       <line x1=${PAD_L} y1=${yFor(v2)} x2=${WIDTH} y2=${yFor(v2)}
         stroke="var(--divider-color, #888)" stroke-width="1" opacity="0.3"></line>
       <text x=${PAD_L - 4} y=${yFor(v2) + 3} font-size="11" text-anchor="end"
-        fill="var(--secondary-text-color)">${v2}</text>`
+        fill=${TXT2}>${v2}</text>`
   );
+  const [overlayLine1, overlayLine2] = model.unavailable ? ["Radar unavailable", "Waiting for the device to reconnect"] : ["Turn on Radar Engineering Mode", "to see gate energy values"];
   const overlay = model.engineeringMode ? A : w`
         <rect x=${PAD_L} y=${PAD_T} width=${WIDTH - PAD_L} height=${PLOT_H}
           fill="var(--card-background-color, #000)" opacity="0.78"></rect>
         <text x=${(WIDTH + PAD_L) / 2} y=${PAD_T + PLOT_H / 2} font-size="20"
           font-weight="600" text-anchor="middle" fill="var(--primary-text-color, #e6e6e6)">
-          <tspan x=${(WIDTH + PAD_L) / 2} dy="-4">Turn on Radar Engineering Mode</tspan>
-          <tspan x=${(WIDTH + PAD_L) / 2} dy="28">to see gate energy values</tspan>
+          <tspan x=${(WIDTH + PAD_L) / 2} dy="-4">${overlayLine1}</tspan>
+          <tspan x=${(WIDTH + PAD_L) / 2} dy="28">${overlayLine2}</tspan>
         </text>`;
   const switchId = m2.engineering_mode;
   const switchState = switchId ? (_a2 = hass.states[switchId]) == null ? void 0 : _a2.state : void 0;
@@ -1566,7 +1716,7 @@ function renderGateEnergyChart(hass, m2) {
       </button>` : A;
   const plot = b`
     <svg viewBox="0 0 ${WIDTH} ${HEIGHT}" width="100%" role="img"
-      aria-label="LD2410 gate energy">
+      aria-label="${label} gate energy">
       <title>
         Per-gate signal energy (bars) vs your thresholds (triangles). A gate
         detects a target when its energy rises above the threshold. Turn on
@@ -1607,7 +1757,8 @@ const _ApolloLd2410GateEnergyCard = class _ApolloLd2410GateEnergyCard extends i 
   static getStubConfig() {
     return { type: "custom:apollo-radar-gate-energy-card" };
   }
-  /** Skip the hass ticks (most of them) that touch none of our entities. */
+  /** Skip the hass ticks (most of them) that touch none of the entities the
+   *  chart draws. */
   shouldUpdate(changed) {
     if (!changed.has("hass") || changed.has("_config")) return true;
     const oldHass = changed.get("hass");
@@ -1615,66 +1766,71 @@ const _ApolloLd2410GateEnergyCard = class _ApolloLd2410GateEnergyCard extends i 
     if (oldHass.entities !== this.hass.entities || oldHass.devices !== this.hass.devices) {
       return true;
     }
-    this._resolved = resolveRadar(this._resolved, this.hass, this._config);
-    return resolvedStatesChanged(oldHass, this.hass, this._resolved.ids);
+    const cached = this._resolved;
+    this._resolved = resolveRadar(cached, this.hass, this._config);
+    this._watched = watchResolved(this._watched, this._resolved, GATE_ENERGY_CHART_SLOTS);
+    return drawnStatesChanged(
+      oldHass,
+      this.hass,
+      cached,
+      this._resolved,
+      this._watched.ids
+    );
   }
   render() {
     if (!this.hass || !this._config) return A;
     this._resolved = resolveRadar(this._resolved, this.hass, this._config);
-    const { map: m2, ids } = this._resolved;
-    if (!anyResolved(this.hass, ids)) return this._renderNotFound();
-    const chart = renderGateEnergyChart(this.hass, m2);
+    const { map: m2, profile, radarIds } = this._resolved;
+    if (!anyResolved(this.hass, radarIds)) return this._renderNotFound();
+    const label = (profile == null ? void 0 : profile.label) ?? "LD2410";
+    const chart = renderGateEnergyChart(this.hass, m2, label);
     if (chart === A) return A;
     return b`
-      <ha-card .header=${this._config.title ?? "LD2410 Gate Energy"}>
+      <ha-card .header=${this._config.title ?? `${label} Gate Energy`}>
         <div class="wrap">${chart}</div>
       </ha-card>
     `;
   }
   _renderNotFound() {
-    var _a2;
+    var _a2, _b, _c;
+    const label = ((_b = (_a2 = this._resolved) == null ? void 0 : _a2.profile) == null ? void 0 : _b.label) ?? "LD2410";
     return b`
-      <ha-card .header=${((_a2 = this._config) == null ? void 0 : _a2.title) ?? "LD2410 Gate Energy"}>
+      <ha-card .header=${((_c = this._config) == null ? void 0 : _c.title) ?? `${label} Gate Energy`}>
         <div class="not-found">
-          Apollo mmWave: device not found — check the card's device
+          Apollo mmWave: device not found. Check the card's device
           configuration.
         </div>
       </ha-card>
     `;
   }
 };
-_ApolloLd2410GateEnergyCard.styles = i$3`
-    .wrap {
-      padding: 4px 12px 12px;
-    }
-    .not-found {
-      padding: 12px 16px 16px;
-      color: var(--error-color, #db4437);
-      font-size: 0.9em;
-    }
-    .chart-legend {
-      font-size: 0.8em;
-      color: var(--secondary-text-color);
-      display: flex;
-      flex-wrap: wrap;
-      gap: 4px 14px;
-      margin-top: 6px;
-    }
-    /* The chart's engineering-mode button; its position is inline so the
-       chart template is self-contained. */
-    button.overlay {
-      font: inherit;
-      font-size: 0.9em;
-      font-weight: 500;
-      cursor: pointer;
-      border: none;
-      border-radius: 4px;
-      padding: 8px 14px;
-      background: var(--primary-color);
-      color: var(--text-primary-color, #fff);
-      white-space: nowrap;
-    }
-  `;
+_ApolloLd2410GateEnergyCard.styles = [
+  chartLegendStyles,
+  i$3`
+      .wrap {
+        padding: 4px 12px 12px;
+      }
+      .not-found {
+        padding: 12px 16px 16px;
+        color: var(--error-color, #db4437);
+        font-size: 0.9em;
+      }
+      /* The chart's engineering-mode button; its position is inline so the
+         chart template is self-contained. */
+      button.overlay {
+        font: inherit;
+        font-size: 0.9em;
+        font-weight: 500;
+        cursor: pointer;
+        border: none;
+        border-radius: 4px;
+        padding: 8px 14px;
+        background: var(--primary-color);
+        color: var(--text-primary-color, #fff);
+        white-space: nowrap;
+      }
+    `
+];
 let ApolloLd2410GateEnergyCard = _ApolloLd2410GateEnergyCard;
 __decorateClass$1([
   n2({ attribute: false })
@@ -1683,15 +1839,11 @@ __decorateClass$1([
   r()
 ], ApolloLd2410GateEnergyCard.prototype, "_config");
 registerElement("apollo-radar-gate-energy-card", ApolloLd2410GateEnergyCard);
-const customCards$1 = window.customCards = window.customCards || [];
-if (!customCards$1.some((c2) => c2.type === "apollo-radar-gate-energy-card")) {
-  customCards$1.push({
-    type: "apollo-radar-gate-energy-card",
-    name: "Apollo Radar Gate Energy Chart",
-    description: "Per-gate move/still energy chart for Apollo MSR (LD2410) & R-PRO (LD2412).",
-    documentationURL: "https://github.com/ApolloAutomation/apollo-mmwave-main"
-  });
-}
+registerCustomCard(
+  "apollo-radar-gate-energy-card",
+  "Apollo Radar Gate Energy Chart",
+  "Per-gate move/still energy chart for Apollo MSR (LD2410) & R PRO (LD2412)."
+);
 const DEFAULT_SETTLE_S = 15;
 const DEFAULT_DURATION_S = 60;
 const TOLERANCE = 0.5;
@@ -2774,7 +2926,7 @@ const _ApolloRadarCalibrateCard = class _ApolloRadarCalibrateCard extends i {
     const settle = ((_b = (_a2 = this._config) == null ? void 0 : _a2.calibration) == null ? void 0 : _b.settle_s) ?? DEFAULT_SETTLE_S;
     const duration = ((_d = (_c = this._config) == null ? void 0 : _c.calibration) == null ? void 0 : _d.duration_s) ?? DEFAULT_DURATION_S;
     const ld2412 = this._profileKey() === "ld2412";
-    const engineeringBullet = this._engineeringOn() ? "Radar Engineering Mode is already on and will stay on." : "Home Assistant turns Radar Engineering Mode on for the listen and back off afterwards.";
+    const engineeringBullet = this._engineeringOn() ? "Radar Engineering Mode is already on and will stay on." : "Home Assistant turns Radar Engineering Mode on for the listen and back off afterward.";
     const factory = this.hass && this._resolved ? isFactoryThresholds(this.hass, this._resolved.map, this._profileKey(), payload.snapshots ?? []) : false;
     return b`
       <div class="idle-body">
@@ -2788,7 +2940,7 @@ const _ApolloRadarCalibrateCard = class _ApolloRadarCalibrateCard extends i {
         <li>${engineeringBullet}</li>
         ${ld2412 ? b`<li>
               LD2412: run Start Dynamic Background Correction (Controls card) first with the
-              room empty and wait for its status to turn off. Calibrate afterwards.
+              room empty and wait for its status to turn off. Calibrate afterward.
             </li>` : A}
         ${ld2412 && this._backgroundOn() ? b`<li>
               Background correction is running on the LD2412. Wait for its status to turn off.
@@ -3071,36 +3223,27 @@ if (!customCards.some((c2) => c2.type === CALIBRATE_CARD_TAG)) {
   customCards.push({
     type: CALIBRATE_CARD_TAG,
     name: "Apollo Radar Auto-Calibrate",
-    description: "One-button empty-room calibration of every gate threshold on an Apollo MSR (LD2410) or R-PRO (LD2412), with undo.",
+    description: "One-button empty-room calibration of every gate threshold on an Apollo MSR (LD2410) or R PRO (LD2412), with undo.",
     documentationURL: "https://github.com/ApolloAutomation/apollo-mmwave-main"
   });
-}
-function ld2450TargetPairs(base) {
-  return [1, 2, 3].map((n3) => ({
-    x: `sensor.${base}_ld2450_target_${n3}_x`,
-    y: `sensor.${base}_ld2450_target_${n3}_y`
-  }));
 }
 const TARGET_X = /(?:_ld2450)?_target_(\d+)_x(?:_\d+)?$/;
 const TARGET_Y = /(?:_ld2450)?_target_(\d+)_y(?:_\d+)?$/;
 function ld2450EntityIds(hass, deviceId) {
   const ids = [];
-  for (const [id, e2] of Object.entries(hass.entities)) {
-    if (e2.device_id !== deviceId || !id.startsWith("sensor.")) continue;
+  for (const [id] of entitiesForDevice(hass.entities, deviceId)) {
+    if (!id.startsWith("sensor.")) continue;
     const oid = id.slice(id.indexOf(".") + 1);
     if (TARGET_X.test(oid) || TARGET_Y.test(oid)) ids.push(id);
   }
   return ids;
 }
 function hasLd2450Device(hass, deviceId) {
-  for (const [id, e2] of Object.entries(hass.entities)) {
-    if (e2.device_id !== deviceId || !id.startsWith("sensor.")) continue;
+  for (const [id] of entitiesForDevice(hass.entities, deviceId)) {
+    if (!id.startsWith("sensor.")) continue;
     if (TARGET_X.test(id.slice(id.indexOf(".") + 1))) return true;
   }
   return false;
-}
-function hasLd2450(hass, base) {
-  return ld2450TargetPairs(base).some((p2) => p2.x in hass.states) || [1, 2, 3].some((n3) => `sensor.${base}_target_${n3}_x` in hass.states);
 }
 function zoneMapCard(deviceId, title) {
   return {
@@ -3170,21 +3313,20 @@ function presentRows(hass, rows) {
   return rows.filter((r2) => exists(hass, r2.entity));
 }
 function historyEntities(m2) {
-  const rows = [];
-  const push = (entity, name) => {
-    if (entity) rows.push({ entity, name });
-  };
-  push(m2.radar_target, "Detected");
-  push(m2.zone_1_occupancy, "Zone 1");
-  push(m2.zone_2_occupancy, "Zone 2");
-  push(m2.zone_3_occupancy, "Zone 3");
-  return rows;
+  return [
+    ...row(m2.radar_target, "Detected"),
+    ...row(m2.zone_1_occupancy, "Zone 1"),
+    ...row(m2.zone_2_occupancy, "Zone 2"),
+    ...row(m2.zone_3_occupancy, "Zone 3")
+  ];
 }
-function isLive(hass, entityId) {
-  if (!entityId) return false;
-  const state = hass.states[entityId];
+function isLiveState(state) {
   return state !== void 0 && state.state !== "unavailable";
 }
+function isLive(hass, entityId) {
+  return !!entityId && isLiveState(hass.states[entityId]);
+}
+const OWN_PLATFORM = "apollo_mmwave";
 function hasLiveRadarEvidence(hass, deviceId, registryMatched) {
   const m2 = entityMapFromDevice(hass, deviceId);
   const radarIds = [];
@@ -3207,8 +3349,8 @@ function hasLiveRadarEvidence(hass, deviceId, registryMatched) {
   radarIds.push(...ld2450EntityIds(hass, deviceId));
   if (radarIds.some((id) => isLive(hass, id))) return true;
   if (radarIds.some((id) => id !== void 0)) return false;
-  return registryMatched && Object.entries(hass.entities).some(
-    ([id, e2]) => e2.device_id === deviceId && isLive(hass, id)
+  return registryMatched && entitiesForDevice(hass.entities, deviceId).some(
+    ([id, e2]) => e2.platform !== OWN_PLATFORM && isLive(hass, id)
   );
 }
 function deviceFromId(hass, deviceId, forced = false) {
@@ -3220,7 +3362,7 @@ function deviceFromId(hass, deviceId, forced = false) {
   const online = hasLiveRadarEvidence(hass, deviceId, !!reg);
   if (!forced && !reg && !online) return void 0;
   const profile = detectProfileFromEntities(hass, deviceId) ?? (reg == null ? void 0 : reg.profile);
-  const ld2450 = hasLd2450Device(hass, deviceId) || (base ? hasLd2450(hass, base) : false) || ((reg == null ? void 0 : reg.ld2450) ?? false);
+  const ld2450 = hasLd2450Device(hass, deviceId) || ((reg == null ? void 0 : reg.ld2450) ?? false);
   if (!forced && !profile && !ld2450) return void 0;
   return {
     deviceId,
@@ -3273,7 +3415,7 @@ function helpCardBody(dev) {
   if (!dev.profile && !dev.ld2450) {
     return {
       type: "markdown",
-      content: `**${dev.name}** — no radar data available right now.
+      content: `**${dev.name}**: no radar data available right now.
 
 The device looks offline (or exposes no recognizable radar entities). Its cards will appear here once it reports in.`
     };
@@ -3281,7 +3423,7 @@ The device looks offline (or exposes no recognizable radar entities). Its cards 
   if (!dev.profile) {
     return {
       type: "markdown",
-      content: `**${dev.name}** — Apollo mmWave (LD2450 tracking radar).
+      content: `**${dev.name}**, Apollo mmWave (LD2450 tracking radar).
 
 Draw occupancy zones over the live target positions below.`
     };
@@ -3316,7 +3458,7 @@ function cardMap(hass, dev, distanceUnit, calibration) {
     };
     const m2 = entityMapFromDevice(hass, dev.deviceId) ?? profile.entityMap(dev.base);
     const label = profile.label;
-    const historyRows = historyEntities(m2).filter((r2) => r2.entity in hass.states);
+    const historyRows = presentRows(hass, historyEntities(m2));
     const range = entitiesCard(
       `${label} Detection Range`,
       presentRows(hass, rangeRows(m2, profile.rangeLabels, profile.gateSizeLabel))
@@ -3410,6 +3552,9 @@ function buildDeviceSections(hass, dev, distanceUnit, calibration) {
       [c2.history, c2.stillThr]
     );
   }
+  if (!dev.profile && (!dev.online || !c2.zoneMap)) {
+    columns.push([c2.help]);
+  }
   if (c2.zoneMap) {
     columns.push([c2.zoneHeader, c2.zoneMap]);
   }
@@ -3446,35 +3591,47 @@ function radarDeviceKey(hass, config) {
   return strategyDevices(hass, config).map(
     (d2) => {
       var _a2;
-      return `${d2.deviceId}:${((_a2 = d2.profile) == null ? void 0 : _a2.key) ?? ""}:${d2.ld2450 ? 1 : 0}:${d2.online ? 1 : 0}`;
+      return JSON.stringify([d2.deviceId, ((_a2 = d2.profile) == null ? void 0 : _a2.key) ?? "", d2.ld2450, d2.online, d2.name, d2.base]);
     }
   ).sort().join(",");
+}
+function isLegacyOptions(config) {
+  const options = config.options;
+  return Object.keys(config).length === 2 && typeof options === "object" && options !== null;
 }
 function shouldRegenerate(config, oldHass, newHass) {
   if (oldHass.devices === newHass.devices && oldHass.entities === newHass.entities) {
     if (!availabilityChanged(oldHass, newHass)) return false;
   }
-  const cfg = config ?? {};
+  const cfg = isLegacyOptions(config) ? { ...config, ...config.options } : config;
   return radarDeviceKey(oldHass, cfg) !== radarDeviceKey(newHass, cfg);
-}
-function isUnavailable(state) {
-  return state === void 0 || state.state === "unavailable";
 }
 function availabilityChanged(oldHass, newHass) {
   for (const id in newHass.states) {
     const next = newHass.states[id];
     const prev = oldHass.states[id];
     if (prev === next) continue;
-    if (isUnavailable(prev) !== isUnavailable(next)) return true;
+    if (isLiveState(prev) !== isLiveState(next)) return true;
   }
   return false;
 }
 const EMPTY_VIEW = {
+  // TODO(REVIEW_REPORT.md X32): differs from the "Apollo mmWave" sidebar name; to unify, set that
+  // here, in STALE_SELECTION_VIEW and the dashboard title, with a test (picker name can stay).
   title: "Apollo Radar Tuning",
   cards: [
     {
       type: "markdown",
-      content: "No Apollo mmWave devices found. Make sure your MSR-1/MSR-2 (LD2410), R-PRO-1 (LD2412 + LD2450), or MTR-1 (LD2450) is added to Home Assistant."
+      content: "No Apollo mmWave devices found. Make sure your MSR-1/MSR-2 (LD2410), R PRO-1 (LD2412 + LD2450), or MTR-1 (LD2450) is added to Home Assistant."
+    }
+  ]
+};
+const STALE_SELECTION_VIEW = {
+  title: "Apollo Radar Tuning",
+  cards: [
+    {
+      type: "markdown",
+      content: "The dashboard's device selection points at devices that no longer exist in Home Assistant. Open Settings > Devices & Services > Apollo mmWave > Configure and clear or update Dashboard devices (leave it empty to show every Apollo mmWave device automatically)."
     }
   ]
 };
@@ -3487,10 +3644,12 @@ _ApolloLd2410ViewStrategy.shouldRegenerate = shouldRegenerate;
 let ApolloLd2410ViewStrategy = _ApolloLd2410ViewStrategy;
 const _ApolloLd2410DashboardStrategy = class _ApolloLd2410DashboardStrategy extends HTMLElement {
   static async generate(config, hass) {
+    var _a2;
     const views = generateViews(hass, config);
+    const empty = ((_a2 = config.devices) == null ? void 0 : _a2.length) || config.device_id ? STALE_SELECTION_VIEW : EMPTY_VIEW;
     return {
       title: "Apollo Radar Tuning",
-      views: views.length ? views : [EMPTY_VIEW]
+      views: views.length ? views : [empty]
     };
   }
 };
@@ -3520,7 +3679,7 @@ if (!window.customStrategies.some(
     type: "apollo-radar-tuning",
     strategyType: "dashboard",
     name: "Apollo Radar Tuning",
-    description: "Auto-built tuning dashboard for Apollo radar devices (MSR / LD2410, R-PRO / LD2412).",
+    description: "Auto-built tuning dashboard for Apollo radar devices (MSR / LD2410, R PRO / LD2412 + LD2450, MTR-1 / LD2450).",
     documentationURL: "https://github.com/ApolloAutomation/apollo-mmwave-main"
   });
 }

@@ -55,13 +55,17 @@ async function subscribeEntryLoads(hass, callback) {
   }
 }
 const ERR_NOT_LOADED = "not_loaded";
+const ERR_UNKNOWN_COMMAND = "unknown_command";
 const ERR_NOT_FOUND = "not_found";
+function isNotLoaded(code) {
+  return code === ERR_NOT_LOADED || code === ERR_UNKNOWN_COMMAND;
+}
 function describeError(error, deviceId, willRetry) {
   const code = error == null ? void 0 : error.code;
   if (code === ERR_NOT_FOUND) {
     return `Home Assistant has no device with id ${deviceId}. The radar was probably removed and re-added; pick it again in this card's settings.`;
   }
-  if (code === ERR_NOT_LOADED) {
+  if (isNotLoaded(code)) {
     return willRetry ? "Apollo mmWave is not loaded, so this radar's zones cannot be read. They will come back on their own once the integration finishes loading." : "Apollo mmWave is still not loaded, so this radar's zones cannot be read. Reload the page once the integration is back.";
   }
   return (error == null ? void 0 : error.message) ? String(error.message) : "Could not read this radar's zone configuration.";
@@ -109,7 +113,7 @@ async function connectZones(hass, deviceId, handlers) {
       handlers.onConfig(config);
     } catch (error) {
       if (disposed) return;
-      const willRetry = (error == null ? void 0 : error.code) === ERR_NOT_LOADED && retryIndex < RETRY_DELAYS_MS.length;
+      const willRetry = isNotLoaded(error == null ? void 0 : error.code) && retryIndex < RETRY_DELAYS_MS.length;
       handlers.onError(describeError(error, deviceId, willRetry));
       if (willRetry) scheduleRetry();
     }
@@ -145,10 +149,28 @@ async function connectZones(hass, deviceId, handlers) {
     }
   };
 }
+const NO_ENTITIES = [];
+const INDEX = /* @__PURE__ */ new WeakMap();
+function indexFor(entities) {
+  let index = INDEX.get(entities);
+  if (!index) {
+    index = /* @__PURE__ */ new Map();
+    for (const [id, e] of Object.entries(entities)) {
+      const list = index.get(e.device_id);
+      if (list) list.push([id, e]);
+      else index.set(e.device_id, [[id, e]]);
+    }
+    INDEX.set(entities, index);
+  }
+  return index;
+}
+function entitiesForDevice(entities, deviceId) {
+  return indexFor(entities).get(deviceId) ?? NO_ENTITIES;
+}
 const TARGET_X = /(?:_ld2450)?_target_(\d+)_x(?:_\d+)?$/;
 function hasLd2450Device(hass, deviceId) {
-  for (const [id, e] of Object.entries(hass.entities)) {
-    if (e.device_id !== deviceId || !id.startsWith("sensor.")) continue;
+  for (const [id] of entitiesForDevice(hass.entities, deviceId)) {
+    if (!id.startsWith("sensor.")) continue;
     if (TARGET_X.test(id.slice(id.indexOf(".") + 1))) return true;
   }
   return false;
@@ -165,6 +187,10 @@ function emptyZones() {
   };
 }
 const CALIBRATE_TIP = "Or press **Calibrate with empty room** on the Auto-calibrate card to set them from your empty room.";
+function rangeLimitTip(label) {
+  return `${label}: the configured detection-range limit, shown as a gate number.`;
+}
+const GATE_TIP = "💡 Each gate's **move / still threshold** is how strong a signal must be to count as presence at that distance. Lower = more sensitive (more false triggers), higher = less. Turn on **Radar Engineering Mode** and watch the Gate Energy chart while you move around to pick values. " + CALIBRATE_TIP;
 const RADAR_TIMEOUT_TIP = "**Radar Timeout** is how long presence stays on after the last detection; raise it if lights flick off while you sit still.";
 const LD2410_PROFILE = {
   key: "ld2410",
@@ -173,13 +199,17 @@ const LD2410_PROFILE = {
   rangeLabels: ["Max Move Gate", "Max Still Gate"],
   gateSizeLabel: "Gate Size",
   rangeTip: "💡 **Gate Size** sets how far each gate reaches (e.g. 0.75 m). **Max Move / Still Gate** cap the farthest gate used to detect moving vs. still targets; lower them to ignore distant motion. " + RADAR_TIMEOUT_TIP,
-  gateTip: "💡 Each gate's **move / still threshold** is how strong a signal must be to count as presence at that distance. Lower = more sensitive (more false triggers), higher = less. Turn on **Radar Engineering Mode** and watch the Gate Energy chart while you move around to pick values. " + CALIBRATE_TIP,
+  gateTip: GATE_TIP,
+  // TODO(REVIEW_REPORT.md X61): once its wiki docs PR is live (it 404s until then), point both
+  // profiles at products/general/calibrating-and-updating/radar-tuning/apollo-mmwave-dashboard/.
   wikiUrl: "https://wiki.apolloautomation.com/products/msr2/setup/zones-ha/",
   entityMap(base) {
     const gates = [0, 1, 2, 3, 4, 5, 6, 7, 8];
     const g = (suffix) => gates.map((n) => suffix(n));
     return {
       engineering_mode: `switch.${base}_radar_engineering_mode`,
+      // TODO(REVIEW_REPORT.md X24): bluetooth and gate_size use MSR-2 spellings only, so a
+      // base-name MSR-1 config hides both; use MSR-1 ids when present or document device_id.
       bluetooth: `switch.${base}_ld2410_bluetooth`,
       restart_radar: `button.${base}_restart_radar`,
       factory_reset_radar: `button.${base}_factory_reset_radar`,
@@ -212,10 +242,16 @@ const LD2412_PROFILE = {
   key: "ld2412",
   label: "LD2412",
   maxBarLabels: ["Max Gate", "Min Gate"],
+  // The second bar is a near bound: the chip ignores the gates below it.
+  maxBarTips: [
+    rangeLimitTip("Max Gate"),
+    "Min Gate: gates below this one are ignored for detection."
+  ],
   rangeLabels: ["Max Gate", "Min Gate"],
   gateSizeLabel: "Distance Resolution",
   rangeTip: "💡 **Distance Resolution** sets gate spacing: smaller (0.5 m) gives finer tuning over a shorter range, larger (0.75 m) reaches farther. **Min / Max Gate** limit which gates are used for detection. " + RADAR_TIMEOUT_TIP,
-  gateTip: "💡 Each gate's **move / still threshold** is how strong a signal must be to count as presence at that distance. Lower = more sensitive (more false triggers), higher = less. Turn on **Radar Engineering Mode** and watch the Gate Energy chart while you move around to pick values. " + CALIBRATE_TIP,
+  gateTip: GATE_TIP,
+  // TODO(REVIEW_REPORT.md X61): switch with LD2410_PROFILE.wikiUrl once the new guide is live.
   wikiUrl: "https://wiki.apolloautomation.com/products/rpro1/setup/zones-ha/#ld2412-configuration",
   entityMap(base) {
     const gates = Array.from({ length: 14 }, (_, i) => i);
@@ -266,8 +302,7 @@ function apolloModelInfo(device) {
 function isEsphomeDevice(hass, deviceId) {
   let sawEntity = false;
   let sawPlatform = false;
-  for (const e of Object.values(hass.entities)) {
-    if (e.device_id !== deviceId) continue;
+  for (const [, e] of entitiesForDevice(hass.entities, deviceId)) {
     sawEntity = true;
     if (e.platform === void 0) continue;
     sawPlatform = true;
@@ -501,11 +536,11 @@ const COLOR = Object.freeze({
     deviceConeFill: "rgba(128, 233, 31, 0.06)",
     deviceConeStroke: "rgba(117, 243, 33, 0.6)",
     zonePalette: [
-      "rgba(244, 67, 54, 0.30)",
-      "rgba(33, 150, 243, 0.30)",
-      "rgba(76, 175, 80, 0.30)",
-      "rgba(255, 193, 7, 0.30)",
-      "rgba(156, 39, 176, 0.30)"
+      { fill: "rgba(244, 67, 54, 0.30)", stroke: "rgba(244, 67, 54, 1)" },
+      { fill: "rgba(33, 150, 243, 0.30)", stroke: "rgba(33, 150, 243, 1)" },
+      { fill: "rgba(76, 175, 80, 0.30)", stroke: "rgba(76, 175, 80, 1)" },
+      { fill: "rgba(255, 193, 7, 0.30)", stroke: "rgba(255, 193, 7, 1)" },
+      { fill: "rgba(156, 39, 176, 0.30)", stroke: "rgba(156, 39, 176, 1)" }
     ],
     targetPalette: ["#f44336", "#2196f3", "#4caf50", "#ffc107", "#9c27b0"]
   }
@@ -526,7 +561,10 @@ const DEFAULT_CONE = Object.freeze({
   fovDeg: 120,
   angleDeg: 0
 });
+const DEFAULT_SHOW_UNDO = true;
+const DEFAULT_UNIT_LABEL_SIZE = 18;
 const POLYGON_MAX_POINTS = 32;
+const POLY_DOUBLE_TAP_SLOP_PX = 24;
 const LOCK_STORAGE_PREFIX = "apollo-mmwave.zone-map.lock";
 function lockStorageKey(deviceId) {
   return `${LOCK_STORAGE_PREFIX}.${deviceId}`;
@@ -546,6 +584,13 @@ function writeStoredLock(deviceId, locked) {
     window.localStorage.setItem(lockStorageKey(deviceId), locked ? "1" : "0");
   } catch {
   }
+}
+function findTouch(list, identifier) {
+  if (!list) return null;
+  for (let i = 0; i < list.length; i += 1) {
+    if (list[i] && list[i].identifier === identifier) return list[i];
+  }
+  return null;
 }
 const LENGTH_UNITS = Object.freeze({
   mm: 1,
@@ -595,7 +640,9 @@ class ZoneMapCard extends HTMLElement {
     this.startPoint = null;
     this._cursorPoint = null;
     this._activeInput = null;
+    this._activeTouchId = null;
     this.trackedEntities = [];
+    this._paintedTrackedKey = null;
     this.showZones = false;
     this.showConfig = false;
     this._polyPoints = [];
@@ -620,14 +667,13 @@ class ZoneMapCard extends HTMLElement {
     this.showModeMenu = false;
     this.isLocked = false;
     this._lastLockWarningTs = 0;
-    this.showUndo = true;
+    this.showUndo = DEFAULT_SHOW_UNDO;
     this._undoSnapshot = null;
     this.inputUnits = "mm";
     this.gridUnits = "mm";
     this.inputUnitMultiplier = LENGTH_UNITS.mm;
-    this.gridUnitMultiplier = LENGTH_UNITS.mm;
     this.unitDisplay = false;
-    this.unitLabelSize = 18;
+    this.unitLabelSize = DEFAULT_UNIT_LABEL_SIZE;
     this._gridCache = null;
     this._coneRingsCache = null;
   }
@@ -657,6 +703,8 @@ class ZoneMapCard extends HTMLElement {
       // Units support: 'mm', 'cm', 'm', 'in', 'ft' converts to millimeters internally
       // Zones can be managed in-card; you can optionally pre-seed a list here:
       // zones: [ { id: 1, name: 'Zone 1' } ],
+      // TODO(REVIEW_REPORT.md X42): this grid and unit_display: false differ from DEFAULT_GRID
+      // and strategy cards. Pick one, derive the stub from DEFAULT_GRID or drop grid; add a test.
       grid: {
         x_min: -6e3,
         x_max: 6e3,
@@ -667,6 +715,9 @@ class ZoneMapCard extends HTMLElement {
       cone: {
         y_max: 6e3,
         fov_deg: 120,
+        // Only the slider's double-click reset target. What is drawn and what
+        // the presence sensors evaluate is the store's rotation_deg (0 when it
+        // was never set), which the slider writes.
         angle_deg: 0
       }
     };
@@ -685,24 +736,26 @@ class ZoneMapCard extends HTMLElement {
       this._resetDeviceState();
     }
     this.cardTitle = config.title === void 0 ? "" : String(config.title);
+    const wasLockConfigured = this._lockConfigured;
     this._lockConfigured = config.start_locked !== void 0;
     if (this._lockConfigured) {
       this.isLocked = !!config.start_locked;
+    } else if (wasLockConfigured) {
+      this._autoLockApplied = false;
     }
-    if (config.show_undo !== void 0) {
-      this.showUndo = !!config.show_undo;
-    }
+    this.showUndo = config.show_undo === void 0 ? DEFAULT_SHOW_UNDO : !!config.show_undo;
     this.inputUnits = this._normalizeUnit(config.input_units);
     this.gridUnits = this._normalizeUnit(config.grid_units);
     this.inputUnitMultiplier = this._unitMultiplier(this.inputUnits);
-    this.gridUnitMultiplier = this._unitMultiplier(this.gridUnits);
     this.unitDisplay = !!config.unit_display;
+    let unitLabelSize = DEFAULT_UNIT_LABEL_SIZE;
     if (config.unit_label_size !== void 0) {
       const s = Number(config.unit_label_size);
       if (Number.isFinite(s)) {
-        this.unitLabelSize = Math.max(8, Math.min(24, Math.round(s)));
+        unitLabelSize = Math.max(8, Math.min(24, Math.round(s)));
       }
     }
+    this.unitLabelSize = unitLabelSize;
     this.zoneConfig = Array.isArray(config.zones) ? [...config.zones] : [];
     this.trackedEntities = this.buildTrackedEntities(config);
     this._darkModeConfigured = config.dark_mode !== void 0;
@@ -731,7 +784,7 @@ class ZoneMapCard extends HTMLElement {
     if (!this._hass) return false;
     const request = { ...payload, input_units: this.inputUnits };
     try {
-      await this._hass.callService("apollo_mmwave", "update_zone", request);
+      await this._hass.callService("apollo_mmwave", "update_zone", request, void 0, false);
     } catch (error) {
       const reason = (error == null ? void 0 : error.message) ? String(error.message) : "Home Assistant rejected it.";
       this._notify(`Could not save: ${reason}`);
@@ -751,6 +804,7 @@ class ZoneMapCard extends HTMLElement {
     this.trackedEntities = [];
     this.selectedZone = null;
     this._undoSnapshot = null;
+    this._resetDrawingState();
     this.coneAngleDeg = DEFAULT_CONE.angleDeg;
     this._invalidateConeCache();
     this.isLocked = false;
@@ -764,7 +818,7 @@ class ZoneMapCard extends HTMLElement {
       const themeDark = !!((_a = hass == null ? void 0 : hass.themes) == null ? void 0 : _a.darkMode);
       if (themeDark !== this.darkMode) {
         this.darkMode = themeDark;
-        if (this.canvas) {
+        if (this.canvas || this._loadError) {
           this._invalidateGridCache();
           this._invalidateConeCache();
           this.render();
@@ -772,11 +826,35 @@ class ZoneMapCard extends HTMLElement {
       }
     }
     if (this.canvas) {
-      this.drawGrid();
+      const trackedKey = this._trackedStatesKey();
+      if (trackedKey !== this._paintedTrackedKey) {
+        this._paintedTrackedKey = trackedKey;
+        this.drawGrid();
+      }
     }
     if (firstTime && this._hass) {
       this._connectZones();
     }
+  }
+  /**
+   * Everything _drawTrackedTargets reads from hass: each pair's entity ids and
+   * the state strings of both. Two hass objects with the same key paint the
+   * same targets.
+   */
+  _trackedStatesKey() {
+    var _a;
+    const states = (_a = this._hass) == null ? void 0 : _a.states;
+    return JSON.stringify(
+      this.trackedEntities.map((pair) => {
+        var _a2, _b;
+        return [
+          pair.x,
+          (_a2 = states == null ? void 0 : states[pair.x]) == null ? void 0 : _a2.state,
+          pair.y,
+          (_b = states == null ? void 0 : states[pair.y]) == null ? void 0 : _b.state
+        ];
+      })
+    );
   }
   connectedCallback() {
     this._connectZones();
@@ -844,14 +922,17 @@ class ZoneMapCard extends HTMLElement {
     });
     ids.forEach((id) => {
       var _a2;
-      const name = (_a2 = zones[String(id)]) == null ? void 0 : _a2.name;
-      names.set(id, typeof name === "string" && name.trim() ? name : `Zone ${id}`);
+      const stored = (_a2 = zones[String(id)]) == null ? void 0 : _a2.name;
+      names.set(
+        id,
+        typeof stored === "string" && stored.trim() ? stored : names.get(id) ?? `Zone ${id}`
+      );
     });
     this.zoneConfig = Array.from(names.keys()).sort((a, b) => a - b).map((id) => ({ id, name: names.get(id) }));
   }
   _applyRotation(config) {
-    if (typeof config.rotation_deg !== "number") return;
-    const nextAngle = this._clampConeAngle(Math.round(config.rotation_deg));
+    const stored = typeof config.rotation_deg === "number" ? config.rotation_deg : 0;
+    const nextAngle = this._clampConeAngle(Math.round(stored));
     if (nextAngle !== this.coneAngleDeg) {
       this.coneAngleDeg = nextAngle;
       this._invalidateConeCache();
@@ -1207,6 +1288,9 @@ class ZoneMapCard extends HTMLElement {
       },
       { passive: false }
     );
+    this.canvas.addEventListener("touchcancel", (event) => this._cancelTouch(event), {
+      passive: true
+    });
     this.canvas.addEventListener("dblclick", () => {
       if (this.drawMode === DRAW_MODES.POLYGON) {
         this.finishPolygon();
@@ -1216,7 +1300,13 @@ class ZoneMapCard extends HTMLElement {
     const canvasContainer = this.canvas.parentElement;
     if (canvasContainer) {
       canvasContainer.addEventListener("mouseleave", () => {
-        if (this.isDrawing) this.cancelDrawing();
+        if (!this.isDrawing) return;
+        if (this.drawMode === DRAW_MODES.POLYGON) {
+          this._cursorPoint = null;
+          this.drawGrid();
+          return;
+        }
+        this.cancelDrawing();
       });
     }
   }
@@ -1227,22 +1317,26 @@ class ZoneMapCard extends HTMLElement {
     if (!this.canvas) return;
     this._detachGlobalListeners();
     this._onKeyDown = (event) => {
+      const origin = event.composedPath()[0];
+      if (origin instanceof HTMLInputElement || origin instanceof HTMLTextAreaElement || origin instanceof HTMLSelectElement || (origin == null ? void 0 : origin.isContentEditable)) {
+        return;
+      }
       if (this.drawMode !== DRAW_MODES.POLYGON) return;
       if (event.key === "Escape") {
         this._polyPoints = [];
         this.isDrawing = false;
         this.drawGrid();
       } else if (event.key === "Backspace" && this._polyPoints.length > 0) {
-        this._polyPoints.pop();
-        this.drawGrid();
+        this._popPolyPoint();
       }
     };
     window.addEventListener("keydown", this._onKeyDown);
     const canvasContainer = this.canvas.parentElement;
     this._outsideClickHandler = (event) => {
       if (!this.canvas) return;
-      if (canvasContainer && canvasContainer.contains(event.target)) return;
-      if (!this.shadowRoot.contains(event.target)) return;
+      const path = event.composedPath();
+      if (canvasContainer && path.includes(canvasContainer)) return;
+      if (!path.includes(this)) return;
       if (this.isDrawing) this.cancelDrawing();
     };
     document.addEventListener("mousedown", this._outsideClickHandler, true);
@@ -1300,8 +1394,7 @@ class ZoneMapCard extends HTMLElement {
     if (btnPolyUndo) {
       btnPolyUndo.addEventListener("click", () => {
         if (this.drawMode === DRAW_MODES.POLYGON && this._polyPoints.length) {
-          this._polyPoints.pop();
-          this.drawGrid();
+          this._popPolyPoint();
         }
       });
     }
@@ -1371,11 +1464,12 @@ class ZoneMapCard extends HTMLElement {
     }
   }
   _applyGridConfig(grid) {
+    this.xMin = DEFAULT_GRID.xMin;
+    this.xMax = DEFAULT_GRID.xMax;
+    this.yMin = DEFAULT_GRID.yMin;
+    this.yMax = DEFAULT_GRID.yMax;
     if (!grid || typeof grid !== "object") return;
-    const convert = (value) => {
-      const mmValue = this._convertToMm(value, this.gridUnits);
-      return mmValue === null ? null : mmValue;
-    };
+    const convert = (value) => this._convertToMm(value, this.gridUnits);
     const next = {
       xMin: convert(grid.x_min),
       xMax: convert(grid.x_max),
@@ -1402,6 +1496,10 @@ class ZoneMapCard extends HTMLElement {
     this._invalidateConeCache();
   }
   _applyConeConfig(cone) {
+    this.coneYMax = DEFAULT_CONE.yMax;
+    this.coneFovDeg = DEFAULT_CONE.fovDeg;
+    this.coneAngleDefault = DEFAULT_CONE.angleDeg;
+    this.coneAngleDeg = DEFAULT_CONE.angleDeg;
     if (!cone || typeof cone !== "object") return;
     if (cone.y_max !== void 0) {
       const mmValue = this._convertToMm(cone.y_max, this.gridUnits);
@@ -1496,13 +1594,6 @@ class ZoneMapCard extends HTMLElement {
   }
   _invalidateConeCache() {
     this._coneRingsCache = null;
-  }
-  _clampGridPixel(value, size) {
-    if (!Number.isFinite(value)) return 0;
-    const limit = Math.max(size - 1, 0);
-    if (value <= 0) return 0;
-    if (value >= limit) return limit;
-    return value;
   }
   _computeGridMetrics() {
     const unit = this.gridUnits;
@@ -1695,18 +1786,13 @@ class ZoneMapCard extends HTMLElement {
   }
   _setDrawMode(mode) {
     const nextMode = mode || DRAW_MODES.RECT;
-    if (this.drawMode === nextMode && !this.isDrawing) {
+    if (this.drawMode === nextMode) {
       this._highlightActiveModeButton();
       this._updatePolygonButtonsVisibility();
       return;
     }
     this.drawMode = nextMode;
-    if (this.drawMode !== DRAW_MODES.POLYGON) {
-      this._polyPoints = [];
-    }
-    this._cursorPoint = null;
-    this.startPoint = null;
-    this.isDrawing = false;
+    this._resetDrawingState();
     this._highlightActiveModeButton();
     this._updatePolygonButtonsVisibility();
     this._invalidateGridCache();
@@ -1737,6 +1823,15 @@ class ZoneMapCard extends HTMLElement {
       btn.classList.toggle("active", targetId === this.selectedZone);
     });
   }
+  /** Undo the last polygon vertex (Backspace or the undo button). Popping
+   *  the only one also drops `startPoint`, the press that placed it: with no
+   *  vertices left, `_drawInProgress` draws a dot and anchors the rubber band
+   *  there, so the removed vertex stayed on the canvas until the next press. */
+  _popPolyPoint() {
+    this._polyPoints.pop();
+    if (!this._polyPoints.length) this.startPoint = null;
+    this.drawGrid();
+  }
   _resetDrawingState() {
     this.isDrawing = false;
     this._polyPoints = [];
@@ -1744,6 +1839,7 @@ class ZoneMapCard extends HTMLElement {
     this.startPoint = null;
     this._lastPolyTap = 0;
     this._activeInput = null;
+    this._activeTouchId = null;
   }
   _getZone(zoneId) {
     return this.zones.find((zone) => Number(zone.id) === Number(zoneId)) || null;
@@ -1807,13 +1903,28 @@ class ZoneMapCard extends HTMLElement {
     );
   }
   endDrawing(e) {
+    if (typeof e.button === "number" && e.button !== 0) return;
     if (!this.isDrawing) return;
     const isTouch = !!(e.changedTouches || e.touches);
     if (this._activeInput && (isTouch && this._activeInput !== "touch" || !isTouch && this._activeInput !== "mouse")) {
       return;
     }
+    if (isTouch && !this._carriesTrackedTouch(e)) return;
+    if (this.selectedZone === null || this.selectedZone === void 0) {
+      this.cancelDrawing();
+      return;
+    }
     if (this.drawMode === DRAW_MODES.POLYGON) {
       const p = this._getPointFromEvent(e);
+      if (!p) {
+        this.cancelDrawing();
+        return;
+      }
+      const now = Date.now();
+      if (this._isPolyFinishTap(p, now)) {
+        if (this._polyPoints.length >= 3) this.finishPolygon();
+        return;
+      }
       const vx = this._clampAndRound(this.pixelsToValue(p.x, "x"), this.xMin, this.xMax);
       const vy = this._clampAndRound(this.pixelsToValue(p.y, "y"), this.yMin, this.yMax);
       if (this._polyPoints.length < this.polyMaxPoints) {
@@ -1822,18 +1933,7 @@ class ZoneMapCard extends HTMLElement {
           this.finishPolygon();
           return;
         }
-        const now = Date.now();
-        if (this._lastPolyTap && now - this._lastPolyTap < 350) {
-          if (this._polyPoints.length >= 3) {
-            this.finishPolygon();
-            this._lastPolyTap = 0;
-            return;
-          }
-        }
         this._lastPolyTap = now;
-      } else {
-        if (this._polyPoints.length >= 3) this.finishPolygon();
-        return;
       }
       this.drawGrid();
       return;
@@ -1841,9 +1941,15 @@ class ZoneMapCard extends HTMLElement {
     this.isDrawing = false;
     if (!this.startPoint) {
       this._activeInput = null;
+      this._activeTouchId = null;
       return;
     }
     const endPoint = this._getPointFromEvent(e);
+    this._activeTouchId = null;
+    if (!endPoint) {
+      this.cancelDrawing();
+      return;
+    }
     let payload = null;
     if (this.drawMode === DRAW_MODES.RECT) {
       const x1 = this.pixelsToValue(this.startPoint.x, "x");
@@ -1854,6 +1960,10 @@ class ZoneMapCard extends HTMLElement {
       const xMaxRounded = this._clampAndRound(Math.max(x1, x2), this.xMin, this.xMax);
       const yMinRounded = this._clampAndRound(Math.min(y1, y2), this.yMin, this.yMax);
       const yMaxRounded = this._clampAndRound(Math.max(y1, y2), this.yMin, this.yMax);
+      if (xMinRounded === xMaxRounded || yMinRounded === yMaxRounded) {
+        this.cancelDrawing();
+        return;
+      }
       payload = {
         shape: DRAW_MODES.RECT,
         data: {
@@ -1864,10 +1974,10 @@ class ZoneMapCard extends HTMLElement {
         }
       };
     } else if (this.drawMode === DRAW_MODES.ELLIPSE) {
-      const x1 = this.pixelsToValue(this.startPoint.x, "x");
-      const y1 = this.pixelsToValue(this.startPoint.y, "y");
-      const x2 = this.pixelsToValue(endPoint.x, "x");
-      const y2 = this.pixelsToValue(endPoint.y, "y");
+      const x1 = this._clampValue(this.pixelsToValue(this.startPoint.x, "x"), this.xMin, this.xMax);
+      const y1 = this._clampValue(this.pixelsToValue(this.startPoint.y, "y"), this.yMin, this.yMax);
+      const x2 = this._clampValue(this.pixelsToValue(endPoint.x, "x"), this.xMin, this.xMax);
+      const y2 = this._clampValue(this.pixelsToValue(endPoint.y, "y"), this.yMin, this.yMax);
       const cx = this._clampAndRound((x1 + x2) / 2, this.xMin, this.xMax);
       const cy = this._clampAndRound((y1 + y2) / 2, this.yMin, this.yMax);
       const rx = Math.max(1, Math.round(Math.abs(x2 - x1) / 2));
@@ -1885,26 +1995,79 @@ class ZoneMapCard extends HTMLElement {
     this.startPoint = null;
     this._cursorPoint = null;
   }
-  _getPointFromEvent(e) {
-    if (!this.canvas) return { x: 0, y: 0 };
+  /** Whether a polygon tap at canvas point `p` (backing px) finishes the
+   *  polygon: it came within 350 ms of the previous vertex AND landed within
+   *  POLY_DOUBLE_TAP_SLOP_PX CSS px of the last placed vertex. Time alone is
+   *  not a double-tap: two quick taps at different spots are two vertices. */
+  _isPolyFinishTap(p, now) {
+    if (!this._lastPolyTap || now - this._lastPolyTap >= 350) return false;
+    const last = this._polyPoints[this._polyPoints.length - 1];
+    if (!last || !this.canvas) return false;
     const rect = this.canvas.getBoundingClientRect();
+    const cssPerPxX = this.canvas.width ? rect.width / this.canvas.width : 1;
+    const cssPerPxY = this.canvas.height ? rect.height / this.canvas.height : 1;
+    const dx = (p.x - this.valueToPixels(last.x, "x")) * cssPerPxX;
+    const dy = (p.y - this.valueToPixels(last.y, "y")) * cssPerPxY;
+    return Math.hypot(dx, dy) <= POLY_DOUBLE_TAP_SLOP_PX;
+  }
+  /** The event's position in canvas backing px, or null when there is no
+   *  usable point: a canvas with no layout box (a hidden tab or a collapsed
+   *  container) would divide by zero and pin every shape to the grid corner.
+   *  A touch event is read at finger `touchId` (the tracked one by default),
+   *  and has no point when that finger is not in it. */
+  _getPointFromEvent(e, touchId = this._activeTouchId) {
+    if (!this.canvas) return null;
+    const rect = this.canvas.getBoundingClientRect();
+    if (!(rect.width > 0 && rect.height > 0)) return null;
     const scaleX = this.canvas.width / rect.width;
     const scaleY = this.canvas.height / rect.height;
-    let clientX, clientY;
-    if (e.touches && e.touches.length) {
-      clientX = e.touches[0].clientX;
-      clientY = e.touches[0].clientY;
-    } else if (e.changedTouches && e.changedTouches.length) {
-      clientX = e.changedTouches[0].clientX;
-      clientY = e.changedTouches[0].clientY;
-    } else {
-      clientX = e.clientX;
-      clientY = e.clientY;
+    let source = e;
+    if (e.touches || e.changedTouches) {
+      source = this._touchFor(e, touchId);
+      if (!source) return null;
     }
-    return {
-      x: (clientX - rect.left) * scaleX,
-      y: (clientY - rect.top) * scaleY
-    };
+    const x = (source.clientX - rect.left) * scaleX;
+    const y = (source.clientY - rect.top) * scaleY;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    return { x, y };
+  }
+  /** The Touch of finger `touchId` in a touch event: its live position in
+   *  `touches`, else its last one in `changedTouches` (a lifted finger is only
+   *  there). With no finger tracked the first touch stands in, which is all an
+   *  event without identifiers offers. Null when the finger is absent. */
+  _touchFor(e, touchId) {
+    if (touchId === null || touchId === void 0) {
+      return e.touches && e.touches[0] || e.changedTouches && e.changedTouches[0] || null;
+    }
+    return findTouch(e.touches, touchId) || findTouch(e.changedTouches, touchId);
+  }
+  /** The identifier of the finger a touchstart is about, or null when the
+   *  event carries none to track. */
+  _touchIdOf(e) {
+    const touch = e.changedTouches && e.changedTouches[0];
+    return touch && typeof touch.identifier === "number" ? touch.identifier : null;
+  }
+  /** Whether a touch event is about the tracked finger. Every touch event is
+   *  when no finger is tracked. */
+  _carriesTrackedTouch(e) {
+    if (this._activeTouchId === null) return true;
+    return findTouch(e.changedTouches, this._activeTouchId) !== null;
+  }
+  /** A cancelled touch never finished, so nothing it drew is committed. A
+   *  rect or ellipse drag is dropped. A polygon keeps its placed vertices, as
+   *  when the mouse leaves the canvas, and only loses the rubber-band line and
+   *  the finger. A cancelled finger other than the tracked one changes
+   *  nothing, as its touchend would not. */
+  _cancelTouch(e) {
+    if (!this.isDrawing || !this._carriesTrackedTouch(e)) return;
+    if (this.drawMode === DRAW_MODES.POLYGON) {
+      this._cursorPoint = null;
+      this._activeInput = null;
+      this._activeTouchId = null;
+      this.drawGrid();
+      return;
+    }
+    this.cancelDrawing();
   }
   _snapshotZones(zoneIds) {
     const snap = [];
@@ -1992,6 +2155,7 @@ class ZoneMapCard extends HTMLElement {
     var _a;
     const host = (_a = this.shadowRoot) == null ? void 0 : _a.getElementById("zoneManager");
     if (!host) return;
+    const drafts = this._captureZoneNameDrafts(host);
     host.innerHTML = "";
     const zones = (this.zoneConfig || []).slice().sort((a, b) => Number(a.id) - Number(b.id));
     zones.forEach((z) => {
@@ -2001,8 +2165,11 @@ class ZoneMapCard extends HTMLElement {
       label.textContent = `Zone ${z.id}`;
       const input = document.createElement("input");
       input.type = "text";
-      input.value = z.name || `Zone ${z.id}`;
+      const storedName = z.name || `Zone ${z.id}`;
+      input.value = storedName;
       input.placeholder = `Zone ${z.id}`;
+      input.dataset.zoneId = String(z.id);
+      input.dataset.storedName = storedName;
       const saveBtn = document.createElement("button");
       saveBtn.textContent = "Save";
       const delBtn = document.createElement("button");
@@ -2010,17 +2177,17 @@ class ZoneMapCard extends HTMLElement {
       saveBtn.addEventListener("click", () => {
         var _a2;
         const newName = ((_a2 = input.value) == null ? void 0 : _a2.trim()) || `Zone ${z.id}`;
-        z.name = newName;
+        const current = (this.zoneConfig || []).find((zz) => String(zz.id) === String(z.id));
+        if (current) current.name = newName;
         if (this._hass) {
           const zoneId = Number(z.id);
           if (!Number.isFinite(zoneId) || zoneId <= 0) {
             this._notify("Unable to save name: invalid zone id");
             return;
           }
-          this._saveZoneUpdate(
-            { device_id: this.deviceId, zone_id: zoneId, name: newName },
-            `${this._zoneLabel(z.id)} saved`
-          );
+          const rename = { device_id: this.deviceId, zone_id: zoneId, name: newName };
+          const payload = this._zoneIsUnsaved(zoneId) ? { ...rename, shape: "none", data: null } : rename;
+          this._saveZoneUpdate(payload, `${this._zoneLabel(z.id)} saved`);
         }
         this.renderZoneButtons();
         this.drawGrid();
@@ -2041,6 +2208,8 @@ class ZoneMapCard extends HTMLElement {
         this.zoneConfig = (this.zoneConfig || []).filter((zz) => String(zz.id) !== String(z.id));
         this.zones = (this.zones || []).filter((zz) => String(zz.id) !== String(z.id));
         if (String(this.selectedZone) === String(z.id)) this.selectedZone = null;
+        const removedId = Number(z.id);
+        this._setUndoSnapshot((this._undoSnapshot || []).filter((s) => s.zoneId !== removedId));
         this.renderZoneButtons();
         this._renderZoneManager();
         this.drawGrid();
@@ -2051,6 +2220,69 @@ class ZoneMapCard extends HTMLElement {
       row.appendChild(delBtn);
       host.appendChild(row);
     });
+    this._restoreZoneNameDrafts(host, drafts);
+  }
+  /**
+   * The zone-name edits a rebuild of the manager rows would throw away.
+   *
+   * `values` holds every input whose text differs from the name its row was
+   * built with, keyed by zone id; a row nobody edited is left out, so it picks
+   * up a rename from the payload. `focus` is the focused input's zone id and
+   * selection, or null when focus is elsewhere.
+   */
+  _captureZoneNameDrafts(host) {
+    var _a;
+    const values = /* @__PURE__ */ new Map();
+    let focus = null;
+    const active = (_a = this.shadowRoot) == null ? void 0 : _a.activeElement;
+    host.querySelectorAll("input[data-zone-id]").forEach((input) => {
+      const zoneId = input.dataset.zoneId;
+      if (input.value !== input.dataset.storedName) values.set(zoneId, input.value);
+      if (input === active) {
+        focus = {
+          zoneId,
+          start: input.selectionStart,
+          end: input.selectionEnd,
+          direction: input.selectionDirection
+        };
+      }
+    });
+    return { values, focus };
+  }
+  /** Lay captured drafts back over the rebuilt rows of the zones still listed. */
+  _restoreZoneNameDrafts(host, drafts) {
+    const inputs = /* @__PURE__ */ new Map();
+    host.querySelectorAll("input[data-zone-id]").forEach((input) => {
+      inputs.set(input.dataset.zoneId, input);
+    });
+    drafts.values.forEach((value, zoneId) => {
+      const input = inputs.get(zoneId);
+      if (input) input.value = value;
+    });
+    const focused = drafts.focus ? inputs.get(drafts.focus.zoneId) : null;
+    if (!focused) return;
+    focused.focus({ preventScroll: true });
+    const { start, end, direction } = drafts.focus;
+    if (typeof start === "number" && typeof end === "number") {
+      focused.setSelectionRange(start, end, direction || void 0);
+    }
+  }
+  /**
+   * Whether a zone row exists only because the card YAML names it.
+   *
+   * The backend renames only zones the store holds, so a name-only save for
+   * such a zone was dropped while the card said it was saved, and the next
+   * payload put the YAML name back. Saving it the way Add Zone does creates it.
+   * Before the first payload the store's contents are unknown, and a zone drawn
+   * here may still be on its way to the store; shape none would erase real
+   * geometry in either case, so both keep the name-only save.
+   */
+  _zoneIsUnsaved(zoneId) {
+    const config = this._zoneConfigPayload;
+    if (!config) return false;
+    const stored = config.zones && typeof config.zones === "object" ? config.zones : {};
+    if (String(zoneId) in stored) return false;
+    return !(this.zones || []).some((zone) => Number(zone.id) === zoneId);
   }
   _handleAddZone() {
     const ids = /* @__PURE__ */ new Set([
@@ -2076,12 +2308,12 @@ class ZoneMapCard extends HTMLElement {
     this._renderZoneManager();
   }
   finishPolygon() {
-    if (this._polyPoints.length >= 3 && this.selectedZone !== null) {
-      if (this._polyPoints.length > this.polyMaxPoints) {
-        this._polyPoints = this._polyPoints.slice(0, this.polyMaxPoints);
-      }
+    const pts = this._polyPoints.filter(
+      (p, i, a) => i === 0 || p.x !== a[i - 1].x || p.y !== a[i - 1].y
+    );
+    if (pts.length >= 3 && this.selectedZone !== null) {
       const zoneId = this.selectedZone;
-      const points = this._polyPoints.slice(0, this.polyMaxPoints).map((pt) => ({
+      const points = pts.slice(0, this.polyMaxPoints).map((pt) => ({
         x: this._clampAndRound(pt.x, this.xMin, this.xMax),
         y: this._clampAndRound(pt.y, this.yMin, this.yMax)
       }));
@@ -2218,8 +2450,8 @@ class ZoneMapCard extends HTMLElement {
     orderedZones.forEach((zone, idx) => {
       if (!zone || !zone.shape || !zone.data) return;
       const color = colors[(Number(zone.id) - 1) % colors.length] || colors[idx % colors.length];
-      ctx.strokeStyle = color.replace("0.30", "1");
-      ctx.fillStyle = color;
+      ctx.strokeStyle = color.stroke;
+      ctx.fillStyle = color.fill;
       ctx.lineWidth = 3;
       let bbox = null;
       if (zone.shape === DRAW_MODES.RECT) {
@@ -2314,41 +2546,54 @@ class ZoneMapCard extends HTMLElement {
         ctx.restore();
       }
       ctx.save();
-      const fill = this.darkMode ? COLOR.canvas.polygonVertexFillDark : COLOR.canvas.polygonVertexFillLight;
-      const stroke = this.darkMode ? COLOR.canvas.polygonVertexStrokeDark : COLOR.canvas.polygonVertexStrokeLight;
-      for (const pt of pts) {
-        ctx.beginPath();
-        ctx.arc(pt.x, pt.y, 3.5, 0, Math.PI * 2);
-        ctx.fillStyle = fill;
-        ctx.fill();
-        ctx.lineWidth = 2;
-        ctx.strokeStyle = stroke;
-        ctx.stroke();
-      }
+      for (const pt of pts) this._drawVertexDot(ctx, pt.x, pt.y);
       if (!pts.length && this.startPoint) {
-        ctx.beginPath();
-        ctx.arc(this.startPoint.x, this.startPoint.y, 3.5, 0, Math.PI * 2);
-        ctx.fillStyle = fill;
-        ctx.fill();
-        ctx.lineWidth = 2;
-        ctx.strokeStyle = stroke;
-        ctx.stroke();
+        this._drawVertexDot(ctx, this.startPoint.x, this.startPoint.y);
       }
       ctx.restore();
     } else if (this.isDrawing && this.startPoint && (this.drawMode === DRAW_MODES.RECT || this.drawMode === DRAW_MODES.ELLIPSE)) {
       const pt = this.startPoint;
       ctx.save();
-      const fill = this.darkMode ? COLOR.canvas.polygonVertexFillDark : COLOR.canvas.polygonVertexFillLight;
-      const stroke = this.darkMode ? COLOR.canvas.polygonVertexStrokeDark : COLOR.canvas.polygonVertexStrokeLight;
-      ctx.beginPath();
-      ctx.arc(pt.x, pt.y, 3.5, 0, Math.PI * 2);
-      ctx.fillStyle = fill;
-      ctx.fill();
-      ctx.lineWidth = 2;
-      ctx.strokeStyle = stroke;
-      ctx.stroke();
+      this._drawVertexDot(ctx, pt.x, pt.y);
       ctx.restore();
+      const cur = this._cursorPoint;
+      if (cur && (cur.x !== pt.x || cur.y !== pt.y)) {
+        const width = cur.x - pt.x;
+        const height = cur.y - pt.y;
+        ctx.save();
+        ctx.strokeStyle = this.darkMode ? COLOR.canvas.drawStrokeDark : COLOR.canvas.drawStrokeLight;
+        ctx.lineWidth = 2;
+        ctx.setLineDash([5, 5]);
+        if (this.drawMode === DRAW_MODES.RECT) {
+          ctx.strokeRect(pt.x, pt.y, width, height);
+        } else {
+          ctx.beginPath();
+          ctx.ellipse(
+            pt.x + width / 2,
+            pt.y + height / 2,
+            Math.abs(width) / 2,
+            Math.abs(height) / 2,
+            0,
+            0,
+            Math.PI * 2
+          );
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
     }
+  }
+  /** One in-progress vertex marker: a filled dot with a contrasting ring. */
+  _drawVertexDot(ctx, x, y) {
+    const fill = this.darkMode ? COLOR.canvas.polygonVertexFillDark : COLOR.canvas.polygonVertexFillLight;
+    const stroke = this.darkMode ? COLOR.canvas.polygonVertexStrokeDark : COLOR.canvas.polygonVertexStrokeLight;
+    ctx.beginPath();
+    ctx.arc(x, y, 3.5, 0, Math.PI * 2);
+    ctx.fillStyle = fill;
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = stroke;
+    ctx.stroke();
   }
   _drawZoneLabel(zone, bbox) {
     var _a;
@@ -2395,13 +2640,8 @@ class ZoneMapCard extends HTMLElement {
     const phiL = -halfFovRad;
     const phiR = halfFovRad;
     const rotRad = this.coneAngleDeg * Math.PI / 180;
-    let thetaStart = phiL + rotRad;
-    let thetaEnd = phiR + rotRad;
-    if (thetaStart > thetaEnd) {
-      const tmp = thetaStart;
-      thetaStart = thetaEnd;
-      thetaEnd = tmp;
-    }
+    const thetaStart = phiL + rotRad;
+    const thetaEnd = phiR + rotRad;
     const radius = Math.max(0, this.coneYMax);
     const ax = this.valueToPixels(apex.x, "x");
     const ay = this.valueToPixels(apex.y, "y");
@@ -2565,6 +2805,9 @@ class ZoneMapCard extends HTMLElement {
     this.drawGrid();
   }
   startDrawing(e) {
+    if (typeof e.button === "number" && e.button !== 0) return;
+    const isTouch = !!e.touches;
+    if (isTouch && e.touches.length > 1) return;
     if (this.isLocked) {
       const now = Date.now();
       if (!this._lastLockWarningTs || now - this._lastLockWarningTs > 1500) {
@@ -2575,10 +2818,14 @@ class ZoneMapCard extends HTMLElement {
     }
     if (this.selectedZone === null) return;
     if (!this.canvas) return;
+    const touchId = isTouch ? this._touchIdOf(e) : null;
+    const point = this._getPointFromEvent(e, touchId);
+    if (!point) return;
     this.isDrawing = true;
-    this._activeInput = e.touches ? "touch" : "mouse";
-    this.startPoint = this._getPointFromEvent(e);
-    this._cursorPoint = this.startPoint;
+    this._activeInput = isTouch ? "touch" : "mouse";
+    this._activeTouchId = touchId;
+    this.startPoint = point;
+    this._cursorPoint = point;
     this.drawGrid();
   }
   draw(e) {
@@ -2587,35 +2834,11 @@ class ZoneMapCard extends HTMLElement {
     if (this._activeInput && (isTouch && this._activeInput !== "touch" || !isTouch && this._activeInput !== "mouse")) {
       return;
     }
-    const currentPoint = this._getPointFromEvent(e);
-    if (this.drawMode === DRAW_MODES.POLYGON) {
-      this._cursorPoint = currentPoint;
-      this.drawGrid();
-      return;
-    }
+    if (isTouch && !this._carriesTrackedTouch(e)) return;
+    const point = this._getPointFromEvent(e);
+    if (!point) return;
+    this._cursorPoint = point;
     this.drawGrid();
-    const ctx = this.ctx;
-    ctx.strokeStyle = this.darkMode ? COLOR.canvas.drawStrokeDark : COLOR.canvas.drawStrokeLight;
-    ctx.lineWidth = 2;
-    ctx.setLineDash([5, 5]);
-    const width = currentPoint.x - this.startPoint.x;
-    const height = currentPoint.y - this.startPoint.y;
-    if (this.drawMode === DRAW_MODES.RECT) {
-      ctx.strokeRect(this.startPoint.x, this.startPoint.y, width, height);
-    } else if (this.drawMode === DRAW_MODES.ELLIPSE) {
-      ctx.beginPath();
-      ctx.ellipse(
-        this.startPoint.x + width / 2,
-        this.startPoint.y + height / 2,
-        Math.abs(width) / 2,
-        Math.abs(height) / 2,
-        0,
-        0,
-        Math.PI * 2
-      );
-      ctx.stroke();
-    }
-    ctx.setLineDash([]);
   }
   valueToPixels(val, axis) {
     if (axis === "x") {
@@ -2669,7 +2892,9 @@ class ZoneMapCard extends HTMLElement {
    *
    * Never configured and deliberately cleared both draw an empty canvas, and
    * telling a user that nothing is tracked when the radar is quietly tracking
-   * its own targets is how the old card hid its state. Read only: the
+   * its own targets is how the old card hid its state. Until the store has
+   * answered (the first load, or the round trip after a retarget) none of the
+   * three is known, so the line says so instead of guessing. Read only: the
    * integration resolves the pairs and `apollo_mmwave.update_zone` overrides
    * them.
    */
@@ -2677,6 +2902,10 @@ class ZoneMapCard extends HTMLElement {
     var _a;
     const host = (_a = this.shadowRoot) == null ? void 0 : _a.getElementById("entityStatus");
     if (!host) return;
+    if (this._zoneConfigPayload === null) {
+      host.textContent = "Waiting for this radar's configuration.";
+      return;
+    }
     const configured = (this.trackedEntities || []).filter((pair) => pair.x && pair.y);
     if (this._usingSuggestedEntities) {
       host.textContent = configured.length ? `Using this radar's own detected targets (${configured.length}).` : "This radar has no detected targets yet, and none are configured.";
