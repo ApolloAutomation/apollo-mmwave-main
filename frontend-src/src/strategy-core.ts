@@ -5,9 +5,8 @@ import {
   entityMapFromDevice,
 } from "./entities";
 import { entitiesForDevice } from "./entity-index";
-import { ld2450EntityIds } from "./ld2450";
+import { hasLd2450Device, ld2450EntityIds, zoneMapCard } from "./ld2450";
 import { apolloModelInfo, isEsphomeDevice, type RadarProfile } from "./profiles";
-import { hasLd2450Device, zoneMapCard } from "./ld2450";
 import {
   controlRows,
   zoneConfigRows,
@@ -301,7 +300,7 @@ function cardMap(
     // ids are only right when nothing was renamed.
     const m = entityMapFromDevice(hass, dev.deviceId) ?? profile.entityMap(dev.base);
     const label = profile.label;
-    const historyRows = historyEntities(m).filter((r) => r.entity in hass.states);
+    const historyRows = presentRows(hass, historyEntities(m));
     const range = entitiesCard(
       `${label} Detection Range`,
       presentRows(hass, rangeRows(m, profile.rangeLabels, profile.gateSizeLabel))

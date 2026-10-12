@@ -134,6 +134,65 @@ describe("buildDeviceCards", () => {
   });
 });
 
+describe("occupancy history card", () => {
+  const m = LD2410_PROFILE.entityMap(base);
+  const state = (id: string): HassEntity => ({
+    entity_id: id,
+    state: "off",
+    attributes: {},
+  });
+  const historyCard = (hass: HomeAssistant) =>
+    buildDeviceCards(hass, ld2410Dev).find((c: any) => c.type === "history-graph") as any;
+
+  it("lists only the registered occupancy sensors that have a state", () => {
+    const registered = [
+      m.engineering_mode!,
+      m.radar_target!,
+      m.zone_1_occupancy!,
+      m.zone_2_occupancy!,
+      m.zone_3_occupancy!,
+    ];
+    const live = [m.engineering_mode!, m.radar_target!, m.zone_2_occupancy!];
+    const hass: HomeAssistant = {
+      states: Object.fromEntries(live.map((id) => [id, state(id)])),
+      entities: Object.fromEntries(registered.map((id) => [id, { device_id: "dev1" }])),
+      devices: { dev1: { name: "Living Room MSR-2" } },
+    };
+    expect(historyCard(hass)).toEqual({
+      type: "history-graph",
+      title: "LD2410 Occupancy History",
+      hours_to_show: 1,
+      entities: [
+        { entity: m.radar_target, name: "Detected" },
+        { entity: m.zone_2_occupancy, name: "Zone 2" },
+      ],
+    });
+  });
+
+  it("filters the constructed ids by state when the registry has no entities", () => {
+    const live = [m.radar_target!, m.zone_3_occupancy!];
+    const hass: HomeAssistant = {
+      states: Object.fromEntries(live.map((id) => [id, state(id)])),
+      entities: {},
+      devices: { dev1: { name: "Living Room MSR-2" } },
+    };
+    expect(historyCard(hass).entities).toEqual([
+      { entity: m.radar_target, name: "Detected" },
+      { entity: m.zone_3_occupancy, name: "Zone 3" },
+    ]);
+  });
+
+  it("is left out when no occupancy sensor has a state", () => {
+    const registered = [m.engineering_mode!, m.radar_target!, m.zone_1_occupancy!];
+    const hass: HomeAssistant = {
+      states: { [m.engineering_mode!]: state(m.engineering_mode!) },
+      entities: Object.fromEntries(registered.map((id) => [id, { device_id: "dev1" }])),
+      devices: { dev1: { name: "Living Room MSR-2" } },
+    };
+    expect(historyCard(hass)).toBeUndefined();
+  });
+});
+
 describe("calibrate card placement in sections", () => {
   it("is the first card of the first section for an LD2410 device", () => {
     const sections = buildDeviceSections(deviceHass(), ld2410Dev, "in");

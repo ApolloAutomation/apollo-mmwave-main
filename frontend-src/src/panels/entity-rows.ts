@@ -6,7 +6,8 @@ export interface Row {
   name: string;
 }
 
-function row(entity: string | undefined, name: string): Row[] {
+/** One row for a resolved entity, none for an unresolved slot. */
+export function row(entity: string | undefined, name: string): Row[] {
   return entity ? [{ entity, name }] : [];
 }
 
