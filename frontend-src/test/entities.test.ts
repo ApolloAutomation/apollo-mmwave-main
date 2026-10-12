@@ -39,6 +39,47 @@ describe("baseNameFromDevice", () => {
     const hass = hassWith([`sensor.${base}_radar_detection_distance`]);
     expect(baseNameFromDevice(hass, "nope")).toBeUndefined();
   });
+
+  // A device the user named after its chip ("Office LD2412") repeats the
+  // chip token in every entity id; the base must keep it, not stop at the
+  // first occurrence.
+  const ld2412Ids = (b: string, tail: string) => [
+    `switch.${b}_ld2412_engineering_mode${tail}`,
+    `number.${b}_ld2412_g00_move_threshold${tail}`,
+    `sensor.${b}_ld2412_g13_still_energy${tail}`,
+    `binary_sensor.${b}_ld2412_presence${tail}`,
+  ];
+  const ld2450Ids = (b: string, tail: string) => [
+    `sensor.${b}_ld2450_target_1_x${tail}`,
+    `sensor.${b}_ld2450_target_1_y${tail}`,
+    `sensor.${b}_ld2450_target_2_x${tail}`,
+  ];
+
+  for (const tail of ["", "_2"]) {
+    const label = tail ? ` with a \`${tail}\` dedup tail` : "";
+
+    it.each(["office_ld2412", "office_ld2412_radar"])(
+      `keeps the full LD2412 base %s when it contains the chip token${label}`,
+      (b) => {
+        expect(baseNameFromDevice(hassWith(ld2412Ids(b, tail)), "dev1")).toBe(b);
+      }
+    );
+
+    it.each(["den_ld2450", "den_ld2450_radar"])(
+      `keeps the full LD2450 base %s when it contains the chip token${label}`,
+      (b) => {
+        expect(baseNameFromDevice(hassWith(ld2450Ids(b, tail)), "dev1")).toBe(b);
+      }
+    );
+
+    it.each(["office", "apollo_r_pro_1_abcd"])(
+      `still strips the chip suffix from a token-free base %s${label}`,
+      (b) => {
+        expect(baseNameFromDevice(hassWith(ld2412Ids(b, tail)), "dev1")).toBe(b);
+        expect(baseNameFromDevice(hassWith(ld2450Ids(b, tail)), "dev1")).toBe(b);
+      }
+    );
+  }
 });
 
 describe("entityMapFromBaseName", () => {

@@ -11,10 +11,15 @@ import {
  *  Stripping one of these from an entity's object_id yields the base name. */
 const KNOWN_SUFFIXES: RegExp[] = [
   // LD2412 — every entity is `{base}_ld2412_...`, so one pattern covers all.
-  /_ld2412_.+$/,
+  // The lookahead anchors on the LAST chip token so a base that itself holds
+  // it (device "Office LD2412" -> `office_ld2412_ld2412_engineering_mode`)
+  // keeps its full name. It must tolerate the two tokens sharing an
+  // underscore, which a `(?:(?!_ld2412_).)+` tail does not.
+  /_ld2412_(?!.*ld2412_).+$/,
   // LD2450 tracking radar — every entity is `{base}_ld2450_...`. Needed so
   // zone-only devices (e.g. MTR-1, no gate radar) still resolve to a base name.
-  /_ld2450_.+$/,
+  // Anchored on the last chip token for the same reason as LD2412 above.
+  /_ld2450_(?!.*ld2450_).+$/,
   // MTR-1 firmware names its target sensors "Target-1 X" with no chip prefix.
   /_target_\d+_[xy](?:_\d+)?$/,
   // LD2410 (MSR) — varied prefixes.
