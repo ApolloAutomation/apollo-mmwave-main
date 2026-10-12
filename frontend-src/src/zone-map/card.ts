@@ -1705,6 +1705,10 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   endDrawing(e) {
+    // Only the primary button draws (see startDrawing). A polygon keeps
+    // isDrawing set between vertices, so a right-button release would
+    // otherwise still place a vertex.
+    if (typeof e.button === 'number' && e.button !== 0) return;
     if (!this.isDrawing) return;
     const isTouch = !!(e.changedTouches || e.touches);
     if (
@@ -2777,6 +2781,9 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   startDrawing(e) {
+    // A right or middle press opens the browser menu or autoscroll; it must
+    // not start a drag or place a vertex. Touch events carry no button.
+    if (typeof e.button === 'number' && e.button !== 0) return;
     const isTouch = !!e.touches;
     // A second finger on the canvas is never a new gesture. Restarting here
     // moved the drag's origin to the first finger, and the next lift of

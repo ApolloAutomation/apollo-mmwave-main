@@ -2700,3 +2700,121 @@ describe("zone map card undoing polygon vertices", () => {
     expect(vertexDots(card, calls)).toEqual([[100, 100]]);
   });
 });
+
+/**
+ * Non-primary mouse buttons on the canvas.
+ *
+ * Neither drawing handler read `button`, so a right or middle press started a
+ * rect or ellipse drag, and in rect mode the matching release wrote the zone.
+ * A polygon keeps `isDrawing` set between vertices, so after one left-click
+ * vertex a right-button release alone placed another. Only the primary button
+ * draws now; the browser's context menu is left alone. The canvas is laid out
+ * at 800x800 CSS px over the 800x800 bitmap.
+ */
+describe("zone map card non-primary mouse buttons", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** Unlocked on ZONE_PAYLOAD with zone 1 (Doorway) selected, laid out. */
+  async function drawingCard(mode: string) {
+    const hass = fakeHass();
+    const card = await mountCard(hass);
+    card.isLocked = false;
+    expect(card.selectedZone).toBe(1);
+    card._setDrawMode(mode);
+    vi.spyOn(card.canvas, "getBoundingClientRect").mockReturnValue({
+      left: 0,
+      top: 0,
+      right: 800,
+      bottom: 800,
+      x: 0,
+      y: 0,
+      width: 800,
+      height: 800,
+      toJSON: () => ({}),
+    } as DOMRect);
+    hass.callService.mockClear();
+    return { card, hass };
+  }
+
+  function mouse(card: any, type: string, x: number, y: number, button = 0) {
+    card.canvas.dispatchEvent(new MouseEvent(type, { clientX: x, clientY: y, button }));
+  }
+
+  function zoneSaves(hass: any): any[] {
+    return hass.callService.mock.calls.filter((call: any[]) => call[1] === "update_zone");
+  }
+
+  it.each([
+    ["middle", 1],
+    ["right", 2],
+  ])("starts no rect drag and saves nothing for a %s-button drag", async (_name, button) => {
+    const { card, hass } = await drawingCard("rect");
+
+    mouse(card, "mousedown", 100, 100, button);
+    expect(card.isDrawing).toBe(false);
+    expect(card.startPoint).toBeNull();
+    expect(card._activeInput).toBeNull();
+
+    mouse(card, "mousemove", 300, 300);
+    mouse(card, "mouseup", 300, 300, button);
+
+    expect(zoneSaves(hass)).toEqual([]);
+    expect(card.isDrawing).toBe(false);
+  });
+
+  it("places no polygon vertex for a right-button click after a left-click vertex", async () => {
+    const { card, hass } = await drawingCard("polygon");
+    mouse(card, "mousedown", 100, 100);
+    mouse(card, "mouseup", 100, 100);
+    expect(card._polyPoints).toEqual([{ x: -3750, y: 1250 }]);
+    expect(card.isDrawing).toBe(true);
+    const startPoint = card.startPoint;
+
+    card._lastPolyTap = 0;
+    mouse(card, "mousedown", 300, 100, 2);
+    expect(card.startPoint).toBe(startPoint);
+    mouse(card, "mouseup", 300, 100, 2);
+    expect(card._polyPoints).toHaveLength(1);
+
+    // A right-button release with no press of its own (the menu took the
+    // press) adds nothing either.
+    mouse(card, "mouseup", 500, 500, 2);
+    expect(card._polyPoints).toHaveLength(1);
+    expect(card.isDrawing).toBe(true);
+
+    // The next left click is still the next vertex.
+    card._lastPolyTap = 0;
+    mouse(card, "mousedown", 300, 100);
+    mouse(card, "mouseup", 300, 100);
+    expect(card._polyPoints).toEqual([
+      { x: -3750, y: 1250 },
+      { x: -1250, y: 1250 },
+    ]);
+    expect(zoneSaves(hass)).toEqual([]);
+  });
+
+  it("still saves a left-button rect drag, past a right-button release mid-drag", async () => {
+    const { card, hass } = await drawingCard("rect");
+
+    mouse(card, "mousedown", 100, 100);
+    mouse(card, "mousemove", 300, 300);
+    mouse(card, "mouseup", 300, 300, 2);
+    expect(card.isDrawing).toBe(true);
+    expect(zoneSaves(hass)).toEqual([]);
+
+    mouse(card, "mouseup", 300, 300);
+
+    const saves = zoneSaves(hass);
+    expect(saves).toHaveLength(1);
+    expect(saves[0][2]).toEqual(
+      expect.objectContaining({
+        zone_id: 1,
+        shape: "rect",
+        data: { x_min: -3750, x_max: -1250, y_min: 1250, y_max: 3750 },
+      })
+    );
+    expect(card.isDrawing).toBe(false);
+  });
+});
