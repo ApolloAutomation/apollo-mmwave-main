@@ -6,7 +6,7 @@ It also built the scope you added during the run: empty-room auto-calibration fo
 All 7 high-severity findings are fixed. pytest went from 107 to 490 tests, vitest from 208 tests in 20 files to 737 in 27, and npm audit from 10 advisories (3 critical) to 0. The shipped bundles stayed byte-identical through the toolchain upgrade.
 As of ca4d56e the branch had 129 commits on top of the baseline. Two more fixes (cdd64a5, 711f65b) and the docs commit that adds this file come on top of that.
 Merge status: all merge conditions met (full build, every baseline test kept or deliberately replaced, all new tests, CI green, no conflicts). Merged into `main` with a merge commit through PR #7; the post-merge verification is recorded as the final comment on the PR.
-PR: [ApolloAutomation/apollo-mmwave-main#7](https://github.com/ApolloAutomation/apollo-mmwave-main/pull/7) (draft, into `main`).
+PR: [ApolloAutomation/apollo-mmwave-main#7](https://github.com/ApolloAutomation/apollo-mmwave-main/pull/7) (merged into `main`).
 Wiki: [ApolloAutomation/docs#1150](https://github.com/ApolloAutomation/docs/pull/1150), branch `docs/apollo-mmwave-dashboard` (commits f1d3fab2 and 0b782fbf) into `dev`, open for the wiki maintainers to merge. Publish it after this PR is merged.
 
 ## Repo health before and after
@@ -302,11 +302,11 @@ The 129 commits in `pre-audit-2026-10-10..ca4d56e`:
   - 31 `SPEC NOTE:` comments mark places where the spec was unclear and the conservative choice was taken;
   - spec follow-ups F1 to F11 (for example live peak markers, a walk test and an older-snapshot picker) were left out;
   - CI tests only HA 2026.10.0, documented per addendum item 8 rather than adding a test matrix.
-- **The factory-threshold table was left unconfirmed (X60).** The values match the commonly published HLK defaults, but the HLK-LD2410B datasheet in the MSR-2 repository does not list default sensitivities. The table only decides whether the card shows its "these look like factory thresholds" hint, so the values stay as they are, with a TODO.
+- **The factory-threshold table was left unconfirmed (X60).** The values match the commonly published HLK defaults, but the HLK-LD2410B datasheet in the MSR-2 repository does not list default sensitivities. The table only decides whether the card shows its "these look like factory thresholds" hint, so the values stay as they are, with a TODO. Hardware testing on 2026-10-12 later confirmed them: a real MSR-1 read back exactly this table (X60, done in 2.2.3).
 - **The walk-test copy fix (e76b424).** The wiki's first-time-reader review found that the card's post-calibration line contradicted how Radar Target works. The product copy was corrected instead of explaining the old line in the wiki, and the wiki now quotes the new line (0b782fbf).
 
 **Wiki**
-- **Help-card links stay on the old pages until the wiki is live (X61).** `profiles.ts` still links to `products/msr2/setup/zones-ha/` and `products/rpro1/setup/zones-ha/#ld2412-configuration`, because the new guide would 404 until it is published.
+- **Help-card links stay on the old pages until the wiki is live (X61).** `profiles.ts` still links to `products/msr2/setup/zones-ha/` and `products/rpro1/setup/zones-ha/#ld2412-configuration`, because the new guide would 404 until it is published. Done in 2.2.3: both now link to the new tuning guide.
 - **The MTR-1 tip uses a site-absolute `.md` link,** against the style guide's relative-link rule. The page is included at three folder depths, and only that form resolves on all of them. The repo already uses it in 102 places.
 - **Left for you:** the Homey copy of the MTR-1 page now shows the Home Assistant tip, because it includes that page.
 - **Navigation:** each new page appears once under General > Radar Tuning, and the product sections get link entries, so the sidebar does not jump between products.
@@ -334,7 +334,7 @@ The 129 commits in `pre-audit-2026-10-10..ca4d56e`:
 
 ## Flagged and left alone
 
-These 61 items were flagged rather than fixed; X10 was later fixed (711f65b) and is kept here for traceability. They touch tuning values, would change intended behavior, or need a product decision. 58 of them have a `TODO(REVIEW_REPORT.md Xnn)` comment at their code site. X55 (a binary image), X56 (the untracked local venv) and X57 (ARCHITECTURE.md, which lanes could not edit) have none by design. Four markers also ship inside each built bundle, because Vite keeps those comments: X24, X32 and X61 (twice) in the tuning bundle, and X24, X42 and X61 (twice) in the zone-map bundle.
+These 61 items were flagged rather than fixed; X10 was later fixed (711f65b) and is kept here for traceability. They touch tuning values, would change intended behavior, or need a product decision. 58 of them have a `TODO(REVIEW_REPORT.md Xnn)` comment at their code site. X55 (a binary image), X56 (the untracked local venv) and X57 (ARCHITECTURE.md, which lanes could not edit) have none by design. Up to 2.2.2, four markers also shipped inside each built bundle, because Vite 6 kept those comments: X24, X32 and X61 (twice) in the tuning bundle, and X24, X42 and X61 (twice) in the zone-map bundle. Since 2.2.3 terser strips them, and the X61 markers are gone.
 
 ### Tuning-parameter items
 
@@ -354,7 +354,7 @@ A finder marked these as touching a tuning parameter, or the work list names a t
 | X42 (tuning) | `zone-map/card.ts` `getStubConfig` | Cards added from the picker draw -6000..6000 by 0..12000 mm with `unit_display` false, while strategy cards use `DEFAULT_GRID` (-5000..5000 by 0..10000, `unit_display` true). | Pick one and derive the stub from `DEFAULT_GRID` and `DEFAULT_CONE`, or drop `grid` from the stub, with a test. |
 | X45 (tuning) | `zone-map/card.ts` `_getConeRingsRenderState` | Cone rings are built out to `cone.y_max`, which has no ceiling, even past the visible grid. Only a hand-edited `y_max` is affected. | If touched, stop at the farthest grid corner (no visible change). Do not clamp `y_max`. |
 | X59 (tuning) | `binary_sensor.py` `_LINE_INTERSECTION_EPSILON` | The `or epsilon` fallback in `_point_in_polygon` can never run, because the crossing guard already excludes y1 == y2. | Removing the fallback and the constant changes no output. Do it together with the polygon tests, if whoever owns the tuning table agrees. |
-| X60 (tuning) | `profiles.ts` `LD2410_FACTORY_THRESHOLDS` doc block | The table (move 50,50,40,30,20,15,15,15,15; still 0,0,40,40,30,30,20,20,20) matches the commonly published HLK defaults but was not confirmed on hardware. It only decides whether the calibrate card shows its factory-thresholds hint. The doc block says "from the manual", but the repo's HLK-LD2410B manual does not list these values. | Confirm on a factory-reset MSR-2. The values are unchanged and have one copy in the source. Consider rewording "from the manual". |
+| X60 (tuning) | `profiles.ts` `LD2410_FACTORY_THRESHOLDS` doc block | The table (move 50,50,40,30,20,15,15,15,15; still 0,0,40,40,30,30,20,20,20) matches the commonly published HLK defaults but was not confirmed on hardware. It only decides whether the calibrate card shows its factory-thresholds hint. The doc block says "from the manual", but the repo's HLK-LD2410B manual does not list these values. | **Done in 2.2.3:** a real MSR-1 read back exactly this table during hardware testing on 2026-10-12. The doc block no longer says "from the manual", and the TODO comment is gone. |
 
 ### Other flagged items
 
@@ -407,7 +407,7 @@ A finder marked these as touching a tuning parameter, or the work list names a t
 | X56 | local `.venv` against the requirements pins (no marker: untracked) | `.venv` still has HA 2026.8.1, pytest-homeassistant-custom-component 0.13.355 and frontend 20260930.2, while the repo pins 2026.10.0, 0.13.371 and 20260930.3. Local runs, including this audit's, therefore tested 2026.8.1. | **Done** after the docs pass: `.venv` re-synced to 2026.10.0, 0.13.371 and 20260930.3; 490 passed. Keep it in step whenever the pins move. |
 | X57 | ARCHITECTURE.md Known limitations intro (no marker: docs were off limits to lanes) | It pointed at REVIEW_REPORT.md before that file existed. | Resolved by this file. `test -f REVIEW_REPORT.md` should pass before merge. |
 | X58 | `zone_entities.py` module docstring and `_sync_entities` | Four items that were never verified: a disabled entity is constructed on every signal before being skipped; an add that raises inside HA is never retried; the removal nudge fires before HA frees the old state, so a retry could get a `_2` entity id; the docstring describes a race the pinned HA cannot produce. | Verify these four before changing anything. B09 fixed only the disabled-device pending leak, and T09 now covers the refused-add retry. |
-| X61 | `profiles.ts` `LD2410_PROFILE.wikiUrl` and `LD2412_PROFILE.wikiUrl` | The help card's tuning links still point at the older zones-ha wiki pages. | Once the docs PR is live, switch both to `products/general/calibrating-and-updating/radar-tuning/apollo-mmwave-dashboard/` (it returns 404 until then) and rebuild the bundles. |
+| X61 | `profiles.ts` `LD2410_PROFILE.wikiUrl` and `LD2412_PROFILE.wikiUrl` | The help card's tuning links still point at the older zones-ha wiki pages. | **Done in 2.2.3:** the LD2410 profile links to `products/general/setup/apollo-mmwave-dashboard/` and the LD2412 profile to the R PRO-1 copy, `products/rpro1/setup/apollo-mmwave-dashboard/#r-pro-1-and-its-ld2412-radar`, `test/strategy-core.test.ts` pins both, and the two TODO comments are gone. |
 
 ## Attempted and reverted
 
@@ -432,17 +432,17 @@ A finder marked these as touching a tuning parameter, or the work list names a t
 
 ### High
 
-1. **Validate auto-calibration on a real MSR-2 and a real R PRO-1 before announcing it.** Check a full run, Undo, Preview and Stop, an HA restart mid-run, and the LD2412 background-correction guard, and confirm the 15 s and 60 s defaults. Tests and reviews ran against simulated entities, plus the ESPHome sources for the driver behavior.
-2. **Confirm the LD2410 factory-threshold table on a factory-reset MSR-2 (X60),** and reword "from the manual" if the manual still does not list the values.
+1. **(Mostly done) Validate auto-calibration on real hardware.** Hardware testing on 2026-10-12 ran, on a real MSR-1: a full calibration with every written value read back, Undo back to the exact previous values, Redo, Preview, Stop, and an HA restart mid-run (nothing written, Radar Engineering Mode turned back off). On an MSR-2 whose thresholds were unknown it checked the refusal and Read settings from the radar, and on a real R PRO-1 an LD2412 Preview. The 15 s and 60 s defaults worked as designed. Still open: a writing calibration on an R PRO-1 LD2412, including the background-correction guard, with Undo back to its current values.
+2. **(Done) Confirm the LD2410 factory-threshold table (X60).** A real MSR-1 read back exactly the table, and "from the manual" is gone (2.2.3).
 3. **(Done) X10.** Fixed in 711f65b before the merge.
-4. **Ship release notes for every user-visible change.** Most important is the `zone_id: 0` refusal and its workaround (edit `.storage/apollo_mmwave.zones` with HA stopped). Also cover B02's dropped events for no-op calls, `input_units` now surviving restarts, a malformed store file being replaced on setup, and the calibration feature. The docs pass is adding a "What changed in 2.2.0" section to the README for this.
+4. **Ship release notes for every user-visible change.** Most important is the `zone_id: 0` refusal and its workaround (edit `.storage/apollo_mmwave.zones` with HA stopped). Also cover B02's dropped events for no-op calls, `input_units` now surviving restarts, a malformed store file being replaced on setup, and the calibration feature. Done: CHANGELOG.md has an entry for each release from 2.2.0 to 2.2.3, including the `zone_id: 0` refusal.
 5. **(Done) Merge.** PR #7 merged into `main` with a merge commit after CI passed; see its final comment for the post-merge check. Note that HACS installs from the default branch while the repository has no releases, so the merge makes 2.2.0 available to HACS users. Consider tagging a release once items 1 and 2 are done.
 6. **Wiki.**
-   - Review and merge [ApolloAutomation/docs#1150](https://github.com/ApolloAutomation/docs/pull/1150) into `dev`, then publish.
-   - Add screenshots; the guides have none yet.
+   - Done: [ApolloAutomation/docs#1150](https://github.com/ApolloAutomation/docs/pull/1150) merged into `dev` and was published through [ApolloAutomation/docs#1151](https://github.com/ApolloAutomation/docs/pull/1151). Each mmWave sensor has its own copy of both guides in its Radar Tuning or Zone Configuration section.
+   - Done: screenshots and looping clips from a live install are in both guides.
    - Check the HA UI details the fixer could not confirm in a live install: the Take control dialog, no tab bar on a single-radar install, the Finish button, "+ N entities not shown", and the power icon.
    - Decide whether the Homey copy should show the MTR-1 tip.
-   - Once the pages are published, switch the help-card links (X61) and rebuild the bundles.
+   - Once the pages are published, switch the help-card links (X61) and rebuild the bundles. Done in 2.2.3.
 
 ### Medium
 
@@ -453,8 +453,8 @@ A finder marked these as touching a tuning parameter, or the work list names a t
 11. **Decide the flagged behavior items with user impact.** X07 (configured pairs do not follow renames), X09 (presence reads off while the radar is offline), X08 (zones of a removed radar cannot be deleted), X03 (auto-create off deletes a hand-built dashboard), X28, X48, X01, X04, and X06 with X46 (lock semantics and touch scrolling).
 12. **Fix two drawing bugs the fix agents reported but left out of scope.** F24: when a payload removes the selected zone mid-drag and other zones remain, the card selects the first remaining zone, so the drag commits to a different zone than the one the user started on. F21 and F23: in ellipse mode a click or tap still saves a 1 mm radius ellipse (the `Math.max(1, ...)` floor).
 13. **Add brand images for HACS and HA (X54).** Done in 2.2.1: the icons ship in `brand/`, and `ignore: brands` is gone.
-14. **Upgrade the remaining frontend tools.** TypeScript 5.9 to 7 (type check only, likely new errors) and terser 5.48 to 5.51 (changes the minified output, so rebuild and review the bundle diff). Consider vite 8 at the same time.
-15. **Reword or retarget the `TODO(REVIEW_REPORT.md ...)` comments that ship inside the bundles** (X24, X32, X42 and X61). The X61 one tells users a wiki page returns 404.
+14. **Upgrade the remaining frontend tools.** Done in 2.2.3: TypeScript 7.0 type checks the project with no new errors, and terser 5.51 and Vite 8.3 build the bundles. Unlike Vite 6, Vite 8 runs terser on ES library output, so the bundles are now minified.
+15. **Reword or retarget the `TODO(REVIEW_REPORT.md ...)` comments that ship inside the bundles** (X24, X32, X42 and X61). The X61 one tells users a wiki page returns 404. Done in 2.2.3: the X61 comments are gone, and terser now strips the other comments from the bundles, so none of them ships.
 
 ### Low
 

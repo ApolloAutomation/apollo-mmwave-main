@@ -42,7 +42,7 @@ draw presence zones.
 | Sensor | Radar tuning | Zone map |
 | --- | --- | --- |
 | MSR-1, MSR-2 | Yes (LD2410) | No |
-| R PRO-1 | Yes (LD2412) | Yes (LD2450) |
+| R PRO-1 | With the optional LD2412 | Yes (LD2450) |
 | MTR-1 | No | Yes (LD2450) |
 
 The radar splits the room into distance steps called gates, 0.75 m each by
@@ -94,8 +94,9 @@ for you. Add the two lines shown in
 
 1. Open the **Apollo mmWave** dashboard in the sidebar. Each sensor has its own
    tab.
-2. On an MSR-1, MSR-2 or R PRO-1 tab, find the **Auto-calibrate** card.
-   Before you start:
+2. On an MSR-1 or MSR-2 tab, or an R PRO-1 tab if the sensor has the
+   optional LD2412, find the **Auto-calibrate** card. On an R PRO-1 without
+   it, skip to step 6. Before you start:
    - Make sure nobody is in the room, pets included. Turn off robot vacuums.
    - Leave fans and curtains the way they usually are.
    - **R PRO-1 only:** with the room empty, press **Start Dynamic Background
@@ -136,9 +137,10 @@ more.
 
 ## More help and docs
 
-- Setup and radar tuning guides for this integration are coming to the
-  [Apollo Automation wiki](https://wiki.apolloautomation.com/). Until then,
-  [docs/configuration.md](docs/configuration.md) has the details.
+- Apollo Automation wiki guides:
+  [setup](https://wiki.apolloautomation.com/products/general/setup/apollo-mmwave-dashboard-setup/)
+  and
+  [radar tuning](https://wiki.apolloautomation.com/products/general/setup/apollo-mmwave-dashboard/).
 - [docs/configuration.md](docs/configuration.md): which devices appear,
   auto-calibration and its services, zones in automations, your own dashboards,
   card options and the full troubleshooting list.

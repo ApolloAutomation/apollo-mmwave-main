@@ -66,8 +66,7 @@ Items found in review and left open for a decision are marked in the code with
 `TODO(REVIEW_REPORT.md <id>)` comments, where `<id>` is the item's entry in
 `REVIEW_REPORT.md`. Ruff flags every TODO, so a Python marker ends its first
 line with `# noqa: FIX002, TD003`; remove both when the item is fixed. To list
-the open items (the zone-map bundle repeats its source comments, so it is left
-out):
+the open items (`www/` is build output, so it is left out):
 
 ```bash
 git grep -n "TODO(REVIEW_REPORT.md" -- ':!custom_components/apollo_mmwave/www'
@@ -90,13 +89,14 @@ the pieces fit together.
 
 Frontend source lives in `frontend-src/` (TypeScript + Lit + Vite, with Vitest
 tests). The build writes straight into the integration's `www/` folder, and the
-built bundles are committed. CI runs the first four steps, on Node 22:
+built bundles are committed. CI runs the first five steps, on Node 22:
 
 ```bash
 cd frontend-src
 npm ci              # install exactly what package-lock.json pins
 npx tsc --noEmit    # type check
 npm test            # vitest
+npm run test:bundles # the card suites again, against the committed bundles
 npm run build       # → ../custom_components/apollo_mmwave/www/*.js (one pass per bundle)
 npm run watch       # rebuild both bundles on every save (Ctrl+C stops both)
 ```
@@ -105,12 +105,19 @@ Use `npm ci` rather than `npm install`, which can rewrite `package-lock.json`.
 CI rebuilds the bundles and fails if anything under
 `custom_components/apollo_mmwave/www/` differs from what is committed
 (including a new or deleted file), so run `npm run build` and commit `www/` with
-every frontend change. Build with Node 22 to match the committed output. The
-zone-map bundle keeps the comments from `src/zone-map/card.ts`, so even a
-comment-only change there needs a rebuild. `npm run watch` needs a POSIX shell
-(macOS, Linux, the devcontainer or WSL). On Windows npm runs scripts with
-`cmd.exe`, even from Git Bash, so run `npm run watch:tuning` and
-`npm run watch:zone-map` in two terminals.
+every frontend change. Build with Node 22 to match the committed output. Terser
+strips most comments from the bundles, so a comment-only change usually leaves
+them as they are, but comments inside template strings (CSS in the card
+styles) do ship; run the build and let the check decide.
+
+`npm run test:bundles` runs every suite that imports a card, the dashboard
+strategy or the zone map against the bundles in `www/` instead of the sources
+(see `vitest.bundles.config.ts`), so it tests what you last built: rebuild
+first after a source change.
+
+`npm run watch` needs a POSIX shell (macOS, Linux, the devcontainer or WSL). On
+Windows npm runs scripts with `cmd.exe`, even from Git Bash, so run
+`npm run watch:tuning` and `npm run watch:zone-map` in two terminals.
 
 ### Python backend
 

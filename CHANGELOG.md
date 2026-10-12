@@ -4,6 +4,31 @@ What changed in each release of Apollo mmWave, newest first. Setup and
 everyday use are in [README.md](README.md) and
 [docs/configuration.md](docs/configuration.md).
 
+## What changed in 2.2.3
+
+A new wiki link, a note for R PRO-1 owners and a newer build toolchain.
+Nothing needs changing by hand unless your Lovelace resources are managed in
+YAML (replace both `?v=` URLs; see
+[Lovelace resources](docs/configuration.md#lovelace-resources)).
+
+- **Tuning guide.** The help card's **Full tuning guide** link now opens the
+  new
+  [Apollo mmWave dashboard guide](https://wiki.apolloautomation.com/products/general/setup/apollo-mmwave-dashboard/)
+  on the Apollo Automation wiki instead of the older zone pages. On an R PRO-1
+  tab it opens the R PRO-1's own copy of the guide at its LD2412 section. The
+  README links the new setup and tuning guides too.
+- **R PRO-1.** Every R PRO-1 has the LD2450 for the zone map; the LD2412 that
+  radar tuning uses is an optional add-on. The README and
+  [Auto-calibration](docs/configuration.md#auto-calibration) now say so. On an
+  R PRO-1 without the LD2412 the tab still shows the tuning cards, but the
+  Auto-calibrate card says the radar is offline and the charts say "device not
+  found", so use the zone map on that tab.
+- **Build toolchain.** The cards are now built with Vite 8 and type checked
+  with TypeScript 7. They work as before, and the files your browser downloads
+  are smaller because they are now minified: the tuning cards went from 158 kB
+  to 100 kB and the zone map from 122 kB to 72 kB (41 kB to 30 kB and 31 kB to
+  20 kB compressed).
+
 ## What changed in 2.2.2
 
 Two fixes to the Auto-calibrate card from a second round of hardware testing.

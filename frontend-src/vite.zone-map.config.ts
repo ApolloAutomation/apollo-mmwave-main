@@ -1,5 +1,5 @@
 import { defineConfig } from "vite";
-import { bundle } from "./vite.config";
+import { bundle } from "./vite.config.ts";
 
 // The zone-drawing card ships as its own file because HA loads it as a
 // separate card resource. The filename matches the element name and must stay
