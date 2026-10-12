@@ -1169,3 +1169,180 @@ describe("zone map card drawing across mode changes and re-renders", () => {
     expect(card._polyPoints).toEqual(TWO_CORNERS);
   });
 });
+
+/**
+ * The rect and ellipse rubber band across repaints.
+ *
+ * `set hass` repaints on every state change in the instance, and a zone
+ * payload repaints too. The dashed rect or ellipse preview used to be painted
+ * only by the pointer-move handler, right after its own repaint, so any other
+ * repaint wiped it until the next move and a still finger saw it blink out.
+ * The preview is now rebuilt from the stored cursor point on every repaint,
+ * like the polygon one already was.
+ */
+describe("zone map card rect and ellipse preview across repaints", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** A 2D context that records every method call and keeps property writes. */
+  function recordingContext() {
+    const calls: Array<[string, any[]]> = [];
+    const sink: any = new Proxy(function () {} as object, {
+      get(_target, prop) {
+        if (prop === Symbol.toPrimitive) return () => 0;
+        return sink;
+      },
+      set() {
+        return true;
+      },
+      apply() {
+        return sink;
+      },
+    });
+    const ctx = new Proxy({} as Record<string | symbol, any>, {
+      get(target, prop) {
+        if (prop in target) return target[prop];
+        return (...args: any[]) => {
+          calls.push([String(prop), args]);
+          return sink;
+        };
+      },
+      set(target, prop, value) {
+        target[prop] = value;
+        return true;
+      },
+    });
+    return { ctx, calls };
+  }
+
+  /** Unlocked with zone 1 selected, an 800x800 CSS box and a recording ctx. */
+  async function drawingCard(mode: string) {
+    const hass = fakeHass({ ...ZONE_PAYLOAD, zones: {} });
+    const card = await mountCard(hass, { start_locked: false });
+    card._setSelectedZone(1);
+    card._setDrawMode(mode);
+    vi.spyOn(card.canvas, "getBoundingClientRect").mockReturnValue({
+      left: 0,
+      top: 0,
+      right: 800,
+      bottom: 800,
+      x: 0,
+      y: 0,
+      width: 800,
+      height: 800,
+      toJSON: () => ({}),
+    } as DOMRect);
+    const { ctx, calls } = recordingContext();
+    card.ctx = ctx;
+    hass.callService.mockClear();
+    return { card, hass, calls };
+  }
+
+  /** How many times the rect/ellipse preview's 5px dash was set. */
+  function dashes(calls: Array<[string, any[]]>): number {
+    const isPreviewDash = ([name, args]: [string, any[]]) =>
+      name === "setLineDash" && args[0]?.join() === "5,5";
+    return calls.filter(isPreviewDash).length;
+  }
+
+  function rectPreviews(calls: Array<[string, any[]]>): any[][] {
+    return calls.filter(([name]) => name === "strokeRect").map(([, args]) => args);
+  }
+
+  function ellipsePreviews(calls: Array<[string, any[]]>): any[][] {
+    return calls.filter(([name]) => name === "ellipse").map(([, args]) => args);
+  }
+
+  /** Start a drag at canvas (100,100) and hold the pointer at (300,250). */
+  function dragTo300x250(card: any) {
+    card.canvas.dispatchEvent(new MouseEvent("mousedown", { clientX: 100, clientY: 100 }));
+    card.canvas.dispatchEvent(new MouseEvent("mousemove", { clientX: 300, clientY: 250 }));
+  }
+
+  it("keeps the rect preview when a hass push repaints mid-drag", async () => {
+    const { card, hass, calls } = await drawingCard("rect");
+    dragTo300x250(card);
+    calls.length = 0;
+
+    card.hass = hass;
+
+    expect(card.isDrawing).toBe(true);
+    expect(calls.some(([name]) => name === "clearRect")).toBe(true);
+    expect(dashes(calls)).toBe(1);
+    expect(rectPreviews(calls)).toEqual([[100, 100, 200, 150]]);
+  });
+
+  it("keeps the ellipse preview when a hass push repaints mid-drag", async () => {
+    const { card, hass, calls } = await drawingCard("ellipse");
+    dragTo300x250(card);
+    calls.length = 0;
+
+    card.hass = hass;
+
+    expect(card.isDrawing).toBe(true);
+    expect(dashes(calls)).toBe(1);
+    expect(ellipsePreviews(calls)).toEqual([[200, 175, 100, 75, 0, 0, Math.PI * 2]]);
+  });
+
+  it("keeps the rect preview of a touch drag when a hass push repaints", async () => {
+    const { card, hass, calls } = await drawingCard("rect");
+    const touch = (type: string, x: number, y: number) =>
+      Object.assign(new Event(type, { cancelable: true }), {
+        touches: [{ clientX: x, clientY: y }],
+        changedTouches: [{ clientX: x, clientY: y }],
+      });
+    card.canvas.dispatchEvent(touch("touchstart", 100, 100));
+    card.canvas.dispatchEvent(touch("touchmove", 300, 250));
+    calls.length = 0;
+
+    card.hass = hass;
+
+    expect(card.isDrawing).toBe(true);
+    expect(rectPreviews(calls)).toEqual([[100, 100, 200, 150]]);
+  });
+
+  it.each([
+    ["rect", rectPreviews],
+    ["ellipse", ellipsePreviews],
+  ])("paints exactly one %s preview per pointer move", async (mode, previews) => {
+    const { card, calls } = await drawingCard(mode as string);
+    card.canvas.dispatchEvent(new MouseEvent("mousedown", { clientX: 100, clientY: 100 }));
+    // Nothing to outline before the pointer has moved.
+    expect(dashes(calls)).toBe(0);
+    expect((previews as typeof rectPreviews)(calls)).toEqual([]);
+
+    calls.length = 0;
+    card.canvas.dispatchEvent(new MouseEvent("mousemove", { clientX: 300, clientY: 250 }));
+
+    expect(calls.filter(([name]) => name === "clearRect")).toHaveLength(1);
+    expect(dashes(calls)).toBe(1);
+    expect((previews as typeof rectPreviews)(calls)).toHaveLength(1);
+  });
+
+  it.each([
+    ["rect", rectPreviews],
+    ["ellipse", ellipsePreviews],
+  ])("leaves no stale %s preview after the drag ends", async (mode, previews) => {
+    const { card, hass, calls } = await drawingCard(mode as string);
+    dragTo300x250(card);
+    card.canvas.dispatchEvent(new MouseEvent("mouseup", { clientX: 300, clientY: 250 }));
+
+    const saves = hass.callService.mock.calls.filter(
+      (call: any[]) => call[1] === "update_zone"
+    );
+    expect(saves).toHaveLength(1);
+    expect(saves[0][2].shape).toBe(mode);
+    expect(card.isDrawing).toBe(false);
+    expect(card.startPoint).toBeNull();
+    expect(card._cursorPoint).toBeNull();
+
+    calls.length = 0;
+    card.hass = hass;
+
+    expect(calls.some(([name]) => name === "clearRect")).toBe(true);
+    expect(dashes(calls)).toBe(0);
+    // Only the saved zone's own solid outline, with no preview beside it.
+    expect((previews as typeof rectPreviews)(calls)).toHaveLength(1);
+  });
+});

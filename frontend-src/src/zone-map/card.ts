@@ -2245,6 +2245,35 @@ export class ZoneMapCard extends HTMLElement {
       ctx.strokeStyle = stroke;
       ctx.stroke();
       ctx.restore();
+      // The dashed rubber band from the start point to the last pointer
+      // position. Nothing to outline until the pointer has moved.
+      const cur = this._cursorPoint;
+      if (cur && (cur.x !== pt.x || cur.y !== pt.y)) {
+        const width = cur.x - pt.x;
+        const height = cur.y - pt.y;
+        ctx.save();
+        ctx.strokeStyle = this.darkMode
+          ? COLOR.canvas.drawStrokeDark
+          : COLOR.canvas.drawStrokeLight;
+        ctx.lineWidth = 2;
+        ctx.setLineDash([5, 5]);
+        if (this.drawMode === DRAW_MODES.RECT) {
+          ctx.strokeRect(pt.x, pt.y, width, height);
+        } else {
+          ctx.beginPath();
+          ctx.ellipse(
+            pt.x + width / 2,
+            pt.y + height / 2,
+            Math.abs(width) / 2,
+            Math.abs(height) / 2,
+            0,
+            0,
+            Math.PI * 2,
+          );
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
     }
   }
 
@@ -2526,36 +2555,11 @@ export class ZoneMapCard extends HTMLElement {
     ) {
       return;
     }
-    const currentPoint = this._getPointFromEvent(e);
-    // polygon cache cursor point
-    if (this.drawMode === DRAW_MODES.POLYGON) {
-      this._cursorPoint = currentPoint;
-      this.drawGrid();
-      return;
-    }
+    // Every mode keeps the cursor point and lets drawGrid() rebuild the
+    // preview from it, so any other repaint (a hass push, a zone payload)
+    // redraws the rubber band instead of wiping it until the next move.
+    this._cursorPoint = this._getPointFromEvent(e);
     this.drawGrid();
-    const ctx = this.ctx;
-    ctx.strokeStyle = this.darkMode ? COLOR.canvas.drawStrokeDark : COLOR.canvas.drawStrokeLight;
-    ctx.lineWidth = 2;
-    ctx.setLineDash([5, 5]);
-    const width = currentPoint.x - this.startPoint.x;
-    const height = currentPoint.y - this.startPoint.y;
-    if (this.drawMode === DRAW_MODES.RECT) {
-      ctx.strokeRect(this.startPoint.x, this.startPoint.y, width, height);
-    } else if (this.drawMode === DRAW_MODES.ELLIPSE) {
-      ctx.beginPath();
-      ctx.ellipse(
-        this.startPoint.x + width / 2,
-        this.startPoint.y + height / 2,
-        Math.abs(width) / 2,
-        Math.abs(height) / 2,
-        0,
-        0,
-        Math.PI * 2,
-      );
-      ctx.stroke();
-    }
-    ctx.setLineDash([]);
   }
 
   valueToPixels(val, axis) {
