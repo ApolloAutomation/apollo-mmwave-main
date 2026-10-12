@@ -12,11 +12,14 @@ from pytest_homeassistant_custom_component.common import (
     async_fire_time_changed,
 )
 
+from custom_components.apollo_mmwave.binary_sensor import ZonePresenceBinarySensor
 from custom_components.apollo_mmwave.const import (
     DATA_STORE,
     DOMAIN,
     SERVICE_UPDATE_ZONE,
+    STORE_ZONES,
 )
+from custom_components.apollo_mmwave.sensor import ZoneCoordsSensor
 from custom_components.apollo_mmwave.store import STORAGE_KEY as ZONE_STORAGE_KEY
 from custom_components.apollo_mmwave.store import ZoneStore
 
@@ -465,6 +468,45 @@ async def test_a_new_device_entry_has_no_entities_key(hass) -> None:
     store = ZoneStore(hass)
 
     assert "entities" not in store.device("some_device_id")
+
+
+def _store_with_one_zone(hass) -> ZoneStore:
+    store = ZoneStore(hass)
+    store.device("stored")[STORE_ZONES][1] = {"shape": "rect", "data": {}}
+    return store
+
+
+async def test_reading_a_zone_does_not_create_the_device(hass) -> None:
+    """Asking for a zone is a read, so an unknown device stays unknown."""
+    store = _store_with_one_zone(hass)
+    before = copy.deepcopy(store._data_to_save())  # noqa: SLF001
+
+    assert store.zone("ghost", 1) is None
+    assert store.zone("stored", 2) is None
+    assert store.zone("stored", 1) == {"shape": "rect", "data": {}}
+
+    assert "ghost" not in store.devices
+    assert store._data_to_save() == before  # noqa: SLF001
+
+
+async def test_zone_entities_reading_an_unknown_device_store_nothing(hass) -> None:
+    """Evaluating presence or publishing geometry never mints a device entry."""
+    store = _store_with_one_zone(hass)
+    before = copy.deepcopy(store._data_to_save())  # noqa: SLF001
+    presence = ZonePresenceBinarySensor(hass, store, "ghost", 1)
+    presence.hass = hass
+    geometry = ZoneCoordsSensor(hass, store, "ghost", 1)
+    geometry.hass = hass
+
+    assert presence._evaluate_presence() is False  # noqa: SLF001
+    assert geometry.extra_state_attributes == {
+        "shape": None,
+        "data": None,
+        "entities": [],
+    }
+
+    assert "ghost" not in store.devices
+    assert store._data_to_save() == before  # noqa: SLF001
 
 
 async def test_v1_merge_keeps_an_explicit_zero_rotation(

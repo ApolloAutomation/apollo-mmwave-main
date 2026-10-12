@@ -289,8 +289,8 @@ class ZonePresenceBinarySensor(ZoneEntityMixin, BinarySensorEntity):
             return False
         data = zone_def.get(ATTR_DATA)
 
-        rotation = self._store.device(self._device_id).get(ATTR_ROTATION_DEG)
-        rotate = _build_point_rotator(rotation)
+        device = self._store.devices.get(self._device_id) or {}
+        rotate = _build_point_rotator(device.get(ATTR_ROTATION_DEG))
 
         return any(
             shape_tester(x_val, y_val, data)

@@ -300,8 +300,11 @@ class ZoneStore:
         return self.devices.setdefault(device_id, _empty_device())
 
     def zone(self, device_id: str, zone_id: int) -> dict[str, Any] | None:
-        """Return a zone definition or None."""
-        zone_def = self.device(device_id)[STORE_ZONES].get(zone_id)
+        """Return a zone definition or None, without creating the device."""
+        # Read through `devices`, not `device()`: that one is a setdefault, and
+        # asking for a zone must not write down an entry for an unknown device.
+        zones = (self.devices.get(device_id) or {}).get(STORE_ZONES) or {}
+        zone_def = zones.get(zone_id)
         return zone_def if isinstance(zone_def, dict) else None
 
     def async_delay_save(self) -> None:

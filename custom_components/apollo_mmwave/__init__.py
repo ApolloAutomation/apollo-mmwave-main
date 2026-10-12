@@ -464,7 +464,7 @@ def _zone_part_changes_something(
     if call.data.get("name") is None:
         return False
     # A rename without geometry only lands on a stored zone. `store.device()`
-    # and `store.zone()` are both setdefaults, so the lookup must not use them.
+    # is a setdefault, so the lookup must not use it.
     zones = (store.devices.get(device_id) or {}).get(STORE_ZONES) or {}
     if isinstance(zones.get(zone_id), dict):
         return True
