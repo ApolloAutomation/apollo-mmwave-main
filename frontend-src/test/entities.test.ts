@@ -6,6 +6,7 @@ import {
   entityMapFromBaseName,
   entityMapFromDevice,
   resolveEntities,
+  resolveEntitiesDetailed,
   resolveProfile,
   exists,
 } from "../src/entities";
@@ -84,6 +85,38 @@ describe("resolveEntities", () => {
   it("returns empty gate arrays when nothing resolves", () => {
     const map = resolveEntities(hassWith([]), { type: "x" });
     expect(map.move_threshold).toEqual([]);
+  });
+});
+
+describe("resolveEntitiesDetailed", () => {
+  it("reports the base name only when the base-name fallback ran", () => {
+    const hass = hassWith([`sensor.${base}_radar_detection_distance`]);
+    expect(
+      resolveEntitiesDetailed(hass, { type: "x", device_id: "dev1" }).fallbackBase
+    ).toBeUndefined();
+    expect(
+      resolveEntitiesDetailed(hassWith([]), { type: "x", device_base_name: base })
+        .fallbackBase
+    ).toBe(base);
+    // A device_id whose entities are not registered falls back too.
+    expect(
+      resolveEntitiesDetailed(hassWith([]), {
+        type: "x",
+        device_id: "dev1",
+        device_base_name: base,
+      }).fallbackBase
+    ).toBe(base);
+    expect(resolveEntitiesDetailed(hassWith([]), { type: "x" }).fallbackBase).toBeUndefined();
+  });
+
+  it("returns the same map resolveEntities does", () => {
+    const config = {
+      type: "x",
+      device_base_name: base,
+      entities: { engineering_mode: "switch.custom_mode" },
+    };
+    const hass = hassWith([]);
+    expect(resolveEntitiesDetailed(hass, config).map).toEqual(resolveEntities(hass, config));
   });
 });
 

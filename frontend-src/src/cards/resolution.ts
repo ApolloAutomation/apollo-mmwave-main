@@ -1,15 +1,21 @@
 import type { EntityMap, HomeAssistant, Ld2410CardConfig } from "../types";
-import { resolveEntities, resolveProfile } from "../entities";
-import type { RadarProfile } from "../profiles";
+import { resolveEntitiesDetailed, resolveProfile } from "../entities";
+import { detectProfile, type RadarProfile } from "../profiles";
 
 /**
  * Memoized entity/profile resolution for the custom cards.
  *
  * Resolution scans every registry entry against ~25 suffix regexes — far too
  * heavy to redo on every hass tick (HA replaces `hass` on each state change).
- * The result only depends on the config object and the entity/device
- * registries, all of which HA replaces (never mutates) on change, so
- * reference equality on those three inputs is a sound cache key.
+ * The result depends on the config object and the entity/device registries,
+ * all of which HA replaces (never mutates) on change, so reference equality
+ * on those three inputs is the main cache key. One input lives in
+ * `hass.states`: when resolution falls back to building ids from a base name
+ * (a `device_base_name`-only config, or a device whose entities are not in
+ * the registry yet), `detectProfile(hass, base)` picks the chip by which
+ * engineering-mode switch exists in states. The cache keeps that detection
+ * result and is reused only while a fresh detection still agrees, so an
+ * R-PRO-1 resolved before its states arrived does not stay on LD2410 ids.
  */
 export interface ResolvedRadar {
   config: Ld2410CardConfig;
@@ -21,6 +27,11 @@ export interface ResolvedRadar {
   ids: string[];
   /** `ids` minus the ESP Reboot button, for the "device not found" decision. */
   radarIds: string[];
+  /** Base name of a base-name fallback resolution; undefined otherwise. */
+  fallbackBase?: string;
+  /** `detectProfile(hass, fallbackBase)` when resolved (undefined when no
+   *  engineering-mode switch for that base was in states). */
+  fallbackDetected?: RadarProfile;
 }
 
 /** Every entity id in the map (gate arrays flattened, holes skipped). */
@@ -40,7 +51,9 @@ export function radarEntityIds(m: EntityMap): string[] {
   return entityIds(m).filter((id) => id !== m.esp_reboot);
 }
 
-/** Return `cache` untouched while its inputs are reference-equal, else resolve. */
+/** Return `cache` untouched while its inputs are reference-equal (and, for a
+ *  base-name fallback, while the chip detected from states is unchanged),
+ *  else resolve. */
 export function resolveRadar(
   cache: ResolvedRadar | undefined,
   hass: HomeAssistant,
@@ -50,11 +63,13 @@ export function resolveRadar(
     cache &&
     cache.config === config &&
     cache.entities === hass.entities &&
-    cache.devices === hass.devices
+    cache.devices === hass.devices &&
+    (cache.fallbackBase === undefined ||
+      detectProfile(hass, cache.fallbackBase) === cache.fallbackDetected)
   ) {
     return cache;
   }
-  const map = resolveEntities(hass, config);
+  const { map, fallbackBase } = resolveEntitiesDetailed(hass, config);
   return {
     config,
     entities: hass.entities,
@@ -63,6 +78,9 @@ export function resolveRadar(
     profile: resolveProfile(hass, config),
     ids: entityIds(map),
     radarIds: radarEntityIds(map),
+    fallbackBase,
+    fallbackDetected:
+      fallbackBase === undefined ? undefined : detectProfile(hass, fallbackBase),
   };
 }
 

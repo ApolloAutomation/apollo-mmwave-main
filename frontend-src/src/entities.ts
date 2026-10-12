@@ -290,24 +290,46 @@ function emptyMap(): EntityMap {
   };
 }
 
+/** What `resolveEntitiesDetailed` resolved, and from where. */
+export interface EntityResolution {
+  map: EntityMap;
+  /** The base name the map was built from when resolution fell back to
+   *  base-name construction. That path picks the chip with
+   *  `detectProfile(hass, fallbackBase)`, which reads `hass.states`, so a
+   *  caller caching the map must recheck that detection on state ticks.
+   *  Undefined when the map came from the device's registered entities. */
+  fallbackBase?: string;
+}
+
 export function resolveEntities(
   hass: HomeAssistant,
   config: Ld2410CardConfig
 ): EntityMap {
+  return resolveEntitiesDetailed(hass, config).map;
+}
+
+/** `resolveEntities`, plus the base name when the base-name fallback ran. */
+export function resolveEntitiesDetailed(
+  hass: HomeAssistant,
+  config: Ld2410CardConfig
+): EntityResolution {
   // Preferred: the device's actual entities (rename/dedup-proof).
   let resolved: EntityMap | undefined;
+  let fallbackBase: string | undefined;
   if (config.device_id) resolved = entityMapFromDevice(hass, config.device_id);
   // Fallback: construct ids from the base name (device_base_name configs,
   // or a device whose entities haven't registered yet).
   if (!resolved) {
-    const base = resolveBase(hass, config);
-    const profile = base ? detectProfile(hass, base) ?? LD2410_PROFILE : undefined;
-    resolved = base && profile ? profile.entityMap(base) : emptyMap();
+    fallbackBase = resolveBase(hass, config);
+    const profile = fallbackBase
+      ? detectProfile(hass, fallbackBase) ?? LD2410_PROFILE
+      : undefined;
+    resolved = fallbackBase && profile ? profile.entityMap(fallbackBase) : emptyMap();
   }
-  if (config.entities) {
-    return { ...resolved, ...config.entities } as EntityMap;
-  }
-  return resolved;
+  const map = config.entities
+    ? ({ ...resolved, ...config.entities } as EntityMap)
+    : resolved;
+  return fallbackBase ? { map, fallbackBase } : { map };
 }
 
 export function exists(hass: HomeAssistant, id?: string): boolean {

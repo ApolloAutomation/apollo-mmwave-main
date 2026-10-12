@@ -75,6 +75,80 @@ describe("resolveRadar memoization", () => {
   });
 });
 
+describe("resolveRadar base-name fallback", () => {
+  const rpro = "apollo_r_pro_1_abc123";
+  const ld2410Eng = `switch.${rpro}_radar_engineering_mode`;
+  const ld2412Eng = `switch.${rpro}_ld2412_engineering_mode`;
+
+  /** A states-only tick: new hass and states, same registry objects. */
+  function tick(hass: HomeAssistant, ids: string[]): HomeAssistant {
+    const states = { ...hass.states };
+    for (const id of ids) states[id] = { entity_id: id, state: "off", attributes: {} };
+    return { ...hass, states };
+  }
+
+  it("recomputes when a base-name fallback resolution later gains LD2412 states", () => {
+    const config = { type: "x", device_base_name: rpro };
+    const before: HomeAssistant = { states: {}, entities: {}, devices: {} };
+    const first = resolveRadar(undefined, before, config);
+    // No engineering-mode switch in states yet: the LD2410 default.
+    expect(first.map.engineering_mode).toBe(ld2410Eng);
+    expect(first.profile?.key).toBe("ld2410");
+
+    const after = tick(before, [ld2412Eng]);
+    expect(after.entities).toBe(before.entities);
+    expect(after.devices).toBe(before.devices);
+    const second = resolveRadar(first, after, config);
+    expect(second).not.toBe(first);
+    expect(second.map.engineering_mode).toBe(ld2412Eng);
+    expect(second.profile?.key).toBe("ld2412");
+    expect(anyResolved(after, second.radarIds)).toBe(true);
+    // The card's shouldUpdate sees the new ids change, so it re-renders.
+    expect(resolvedStatesChanged(before, after, second.ids)).toBe(true);
+
+    // Healed once, it stays cached while the detection holds.
+    expect(resolveRadar(second, tick(after, ["sensor.kitchen_temperature"]), config)).toBe(
+      second
+    );
+  });
+
+  it("recomputes a device_id config whose entities are not registered yet", () => {
+    // Strategy-shaped config: device_id plus device_base_name.
+    const config = { type: "x", device_id: "dev9", device_base_name: rpro };
+    const before: HomeAssistant = { states: {}, entities: {}, devices: {} };
+    const first = resolveRadar(undefined, before, config);
+    expect(first.map.engineering_mode).toBe(ld2410Eng);
+    const second = resolveRadar(first, tick(before, [ld2412Eng]), config);
+    expect(second.map.engineering_mode).toBe(ld2412Eng);
+  });
+
+  it("a fallback cache stays reference-equal across states-only ticks while the device has no states", () => {
+    const config = { type: "x", device_base_name: rpro };
+    const hass: HomeAssistant = { states: {}, entities: {}, devices: {} };
+    const first = resolveRadar(undefined, hass, config);
+    expect(first.fallbackBase).toBe(rpro);
+    const t1 = tick(hass, ["sensor.kitchen_temperature"]);
+    const t2 = tick(t1, ["light.hallway"]);
+    expect(resolveRadar(first, t1, config)).toBe(first);
+    expect(resolveRadar(first, t2, config)).toBe(first);
+    expect(anyResolved(t2, first.radarIds)).toBe(false);
+  });
+
+  it("a fallback cache for an LD2410 device stays reference-equal across ticks", () => {
+    const config = { type: "x", device_base_name: base };
+    const hass = tick({ states: {}, entities: {}, devices: {} }, [eng]);
+    const first = resolveRadar(undefined, hass, config);
+    expect(first.map.engineering_mode).toBe(eng);
+    expect(resolveRadar(first, tick(hass, [eng, thr]), config)).toBe(first);
+  });
+
+  it("records no fallback base when the registry resolves the device", () => {
+    const r = resolveRadar(undefined, hassWith([eng, thr]), { type: "x", device_id: "dev1" });
+    expect(r.fallbackBase).toBeUndefined();
+    expect(r.fallbackDetected).toBeUndefined();
+  });
+});
+
 describe("resolvedStatesChanged", () => {
   const oldHass = hassWith([eng, thr]);
 
