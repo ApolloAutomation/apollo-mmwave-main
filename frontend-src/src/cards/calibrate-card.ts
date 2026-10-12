@@ -129,6 +129,15 @@ interface ServiceFailure {
   code?: string;
 }
 
+/** A threshold cell as its value and its trailing note ("100 → 15" and
+ *  "(was off)"), so the table can wrap the note under the value. Text with
+ *  no trailing note ("skipped: ...", "(not selected)") stays one piece. */
+export function thresholdCell(text: string): TemplateResult {
+  const m = /^(.+?) (\([^()]*\))$/.exec(text);
+  if (!m) return html`<span class="value">${text}</span>`;
+  return html`<span class="value">${m[1]}</span> <span class="note">${m[2]}</span>`;
+}
+
 function safeUnsubscribe(unsubscribe: Unsubscribe): void {
   try {
     const result = unsubscribe();
@@ -921,9 +930,9 @@ export class ApolloRadarCalibrateCard extends LitElement {
       <tr class=${row.unused ? "unused" : ""}>
         <th scope="row">${row.label}</th>
         <td class=${cellClass(row.move.flags)}>${row.move.peak}</td>
-        <td class=${cellClass(row.move.flags)}>${row.move.text}</td>
+        <td class="threshold ${cellClass(row.move.flags)}">${thresholdCell(row.move.text)}</td>
         <td class=${cellClass(row.still.flags)}>${row.still.peak}</td>
-        <td class=${cellClass(row.still.flags)}>${row.still.text}</td>
+        <td class="threshold ${cellClass(row.still.flags)}">${thresholdCell(row.still.text)}</td>
       </tr>
     `;
     return html`
@@ -1276,6 +1285,16 @@ export class ApolloRadarCalibrateCard extends LitElement {
       text-align: left;
       padding: 4px 6px;
       border-bottom: 1px solid var(--divider-color, #e0e0e0);
+      white-space: nowrap;
+    }
+    /* A threshold cell may wrap, but only between its value and its note,
+       so "(was off)" drops under "100 → 15" on a narrow card instead of
+       pushing the column out of view. */
+    td.threshold {
+      white-space: normal;
+    }
+    td.threshold .value,
+    td.threshold .note {
       white-space: nowrap;
     }
     th {

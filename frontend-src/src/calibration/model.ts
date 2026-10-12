@@ -337,12 +337,12 @@ function thresholdText(ch: ChannelResult, preview: boolean, max: number): string
   const tags: string[] = [];
   if (off) tags.push("off");
   if (wasOff(ch, max)) tags.push("was off");
-  if (preview) {
-    // SPEC NOTE: the spec asks for "would set" in the threshold columns of a
-    // preview without fixing the cell text; the arrow plus the tag keeps the
-    // table identical to the applied one.
-    tags.push("would set");
-  } else if (ch.written && ch.confirmed === false) {
+  // SPEC NOTE: the spec asks for "would set" in the threshold columns of a
+  // preview. Hardware testing on a 500 px card showed a tag in every cell
+  // pushes the Still threshold column out of view, so the preview says it
+  // once, in the line above the table ("These are the thresholds calibration
+  // would set:"), and the cells match the applied table.
+  if (!preview && ch.written && ch.confirmed === false) {
     // SPEC NOTE: a mismatch (actual differs from asked) has no cell text in the
     // spec; the warning line carries the numbers, the cell says it is unproven.
     tags.push("not confirmed");
@@ -407,12 +407,18 @@ export function unusedFootnote(result: CalibrationResult): string[] {
   return lines;
 }
 
-/** "G3 move" for an entity id in the result, or the id itself when the
- *  result carries no gate table (a restore). */
+/** "G3 still threshold": a gate channel named so "still" cannot be read as
+ *  "not yet" ("G3 still is off" read as "G3 is still off"). */
+function thresholdName(gate: number, channel: string): string {
+  return `G${gate} ${channel} threshold`;
+}
+
+/** "G3 move threshold" for an entity id in the result, or the id itself when
+ *  the result carries no gate table (a restore). */
 function channelLabel(result: CalibrationResult, entityId: string): string {
   for (const g of result.gates ?? []) {
-    if (g.move.entity_id === entityId) return `G${g.gate} move`;
-    if (g.still.entity_id === entityId) return `G${g.gate} still`;
+    if (g.move.entity_id === entityId) return thresholdName(g.gate, "move");
+    if (g.still.entity_id === entityId) return thresholdName(g.gate, "still");
   }
   return entityId;
 }
@@ -425,7 +431,7 @@ function unverifiedLine(result: CalibrationResult): string | null {
     if (e.actual === null || e.actual === undefined) {
       return `${label} could not be read (radar offline)`;
     }
-    return `${label} still reports ${num(e.actual)} (asked for ${num(e.asked)})`;
+    return `${label} reads back ${num(e.actual)} (asked for ${num(e.asked)})`;
   });
   return `${plural(entries.length, "value")} could not be confirmed: ${parts.join(", ")}. Check the Move / Still Thresholds cards.`;
 }
@@ -450,7 +456,7 @@ export function warningLines(result: CalibrationResult): string[] {
     } else if (code === "gate_off") {
       for (const entry of result.gates_off ?? []) {
         lines.push(
-          `G${entry.gate} ${entry.channel} is now off (its background peaked at ${num(entry.peak)}). If a fan or curtain moves there all day this is fine; if not, press Undo and run again with the room really empty.`
+          `The ${thresholdName(entry.gate, entry.channel)} is now off (its background peaked at ${num(entry.peak)}). If a fan or curtain moves there all day this is fine; if not, press Undo and run again with the room really empty.`
         );
       }
     }
@@ -484,13 +490,13 @@ export function reenabledLines(result: CalibrationResult, maxOf: MaxOf = default
       if (!wasOff(ch, max)) continue;
       // A write the radar did not confirm has its own line (`unverified`).
       if (!preview && (!ch.written || ch.confirmed === false)) continue;
-      const label = `G${g.gate} ${channel}`;
+      const label = thresholdName(g.gate, channel);
       const top = num(max);
       const card = thresholdsCard(channel);
       lines.push(
         preview
-          ? `${label} is off (set to ${top}) and calibration would turn it back on (would set ${num(ch.new)}). If you turned it off on purpose, set it back to ${top} on the ${card} card after you calibrate.`
-          : `${label} was off (set to ${top}) and calibration turned it back on (now ${num(ch.new)}). If you turned it off on purpose, set it back to ${top} on the ${card} card, or press Undo to put back all your previous values.`
+          ? `The ${label} is off (set to ${top}) and calibration would turn it back on (would set ${num(ch.new)}). If you turned it off on purpose, set it back to ${top} on the ${card} card after you calibrate.`
+          : `The ${label} was off (set to ${top}) and calibration turned it back on (now ${num(ch.new)}). If you turned it off on purpose, set it back to ${top} on the ${card} card, or press Undo to put back all your previous values.`
       );
     }
   }
@@ -621,12 +627,12 @@ export function offGatesLine(channels: OffChannel[]): string | null {
   const label = (c: OffChannel) => `G${c.gate} ${c.channel}`;
   if (channels.length === 1) {
     const c = channels[0];
-    return `${label(c)} is off (set to ${num(c.max)}). Calibrating will turn it back on.`;
+    return `The ${thresholdName(c.gate, c.channel)} is off (set to ${num(c.max)}). Calibrating will turn it back on.`;
   }
   const top = channels[0].max;
   const names = channels.every((c) => c.max === top)
-    ? `${channels.map(label).join(", ")} are off (set to ${num(top)}).`
-    : `${channels.map((c) => `${label(c)} (set to ${num(c.max)})`).join(", ")} are off.`;
+    ? `These thresholds are off (set to ${num(top)}): ${channels.map(label).join(", ")}.`
+    : `These thresholds are off: ${channels.map((c) => `${label(c)} (set to ${num(c.max)})`).join(", ")}.`;
   return `${names} Calibrating will turn them back on.`;
 }
 

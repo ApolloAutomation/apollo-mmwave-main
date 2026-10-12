@@ -11,7 +11,9 @@ import {
   CALIBRATE_CARD_TAG,
   READ_SETTINGS_LABEL,
   READ_SETTINGS_WAIT_MS,
+  thresholdCell,
 } from "../src/cards/calibrate-card";
+import { render } from "lit";
 import {
   CALIBRATION_RETRY_DELAYS_MS,
   CALIBRATION_SUBSCRIBE,
@@ -768,7 +770,8 @@ describe("calibrate card idle state", () => {
     const t = text(card);
     expect(t).toMatch(/Previewed at .* from 60 samples\. 12 of 18 thresholds would change\./);
     expect(t).not.toContain("Calibrated at");
-    expect(t).toContain("50 → 24 (would set)");
+    expect(t).toContain("50 → 24");
+    expect(t).not.toContain("(would set)");
   });
 
   it("shows a stored stop as the stopped sentence", async () => {
@@ -1023,7 +1026,7 @@ describe("calibrate card finished states", () => {
     const t = text(card);
     expect(t).toContain("Thresholds updated, 2 could not be confirmed");
     expect(t).toContain(
-      "2 values could not be confirmed: G0 move still reports 35 (asked for 24), G1 still could not be read (radar offline). Check the Move / Still Thresholds cards."
+      "2 values could not be confirmed: G0 move threshold reads back 35 (asked for 24), G1 still threshold could not be read (radar offline). Check the Move / Still Thresholds cards."
     );
   });
 
@@ -1036,7 +1039,7 @@ describe("calibrate card finished states", () => {
       result({ warnings: ["gate_off"], gates_off: [{ gate: 3, channel: "move", peak: 92 }] })
     );
     expect(text(card)).toContain(
-      "G3 move is now off (its background peaked at 92). If a fan or curtain moves there all day this is fine; if not, press Undo and run again with the room really empty."
+      "The G3 move threshold is now off (its background peaked at 92). If a fan or curtain moves there all day this is fine; if not, press Undo and run again with the room really empty."
     );
   });
 
@@ -1065,7 +1068,8 @@ describe("calibrate card finished states", () => {
     const t = text(card);
     expect(t).toContain("Preview: no threshold was changed.");
     expect(t).toContain("These are the thresholds calibration would set:");
-    expect(t).toContain("50 → 24 (would set)");
+    expect(t).toContain("50 → 24");
+    expect(t).not.toContain("(would set)");
     const apply = button(card, "Calibrate and apply")!;
     expect(apply).toBeTruthy();
     button(card, "Close")!.click();
@@ -1662,7 +1666,7 @@ describe("calibrate card turned-off gates", () => {
     const hass = ld2410Hass({ thresholds: thresholds((t) => ((t.still[2] = 100), (t.still[8] = 100))) });
     const card = await mount(hass);
     await push(card, hass, payload());
-    expect(idleWarnings(card)).toEqual(["G2 still is off (set to 100). Calibrating will turn it back on."]);
+    expect(idleWarnings(card)).toEqual(["The G2 still threshold is off (set to 100). Calibrating will turn it back on."]);
   });
 
   it("names several gates in one sentence and drops the line once they are set", async () => {
@@ -1670,10 +1674,10 @@ describe("calibrate card turned-off gates", () => {
     const card = await mount(hass);
     await push(card, hass, payload());
     expect(idleWarnings(card)).toEqual([
-      "G0 move, G2 still are off (set to 100). Calibrating will turn them back on.",
+      "These thresholds are off (set to 100): G0 move, G2 still. Calibrating will turn them back on.",
     ]);
     hass = await setStates(card, hass, { [M.still_threshold[2]]: "40" });
-    expect(idleWarnings(card)).toEqual(["G0 move is off (set to 100). Calibrating will turn it back on."]);
+    expect(idleWarnings(card)).toEqual(["The G0 move threshold is off (set to 100). Calibrating will turn it back on."]);
     await setStates(card, hass, { [M.move_threshold[0]]: "50" });
     expect(idleWarnings(card)).toEqual([]);
   });
@@ -1700,7 +1704,7 @@ describe("calibrate card turned-off gates", () => {
     const t = text(card);
     expect(t).toContain("100 → 15 (was off)");
     expect(t).toContain(
-      "G2 still was off (set to 100) and calibration turned it back on (now 15). If you turned it off on purpose, set it back to 100 on the Still Thresholds card, or press Undo to put back all your previous values."
+      "The G2 still threshold was off (set to 100) and calibration turned it back on (now 15). If you turned it off on purpose, set it back to 100 on the Still Thresholds card, or press Undo to put back all your previous values."
     );
   });
 
@@ -1722,10 +1726,40 @@ describe("calibrate card turned-off gates", () => {
     await push(card, hass, payload({ job: job({ job_id: last.job_id, apply: false }) }));
     await push(card, hass, payload({ job: null, last_result: last }));
     const t = text(card);
-    expect(t).toContain("80 → 30 (was off, would set)");
+    expect(t).toContain("80 → 30 (was off)");
+    expect(t).not.toContain("would set)");
     expect(t).toContain(
-      "G3 move is off (set to 80) and calibration would turn it back on (would set 30). If you turned it off on purpose, set it back to 80 on the Move Thresholds card after you calibrate."
+      "The G3 move threshold is off (set to 80) and calibration would turn it back on (would set 30). If you turned it off on purpose, set it back to 80 on the Move Thresholds card after you calibrate."
     );
+    // On a narrow card the note wraps under the value, never inside it.
+    const cell = Array.from(card.shadowRoot!.querySelectorAll("td.threshold")).find((td) =>
+      td.textContent?.includes("80 → 30")
+    )!;
+    expect(cell).toBeTruthy();
+    expect(cell.querySelector(".value")?.textContent).toBe("80 → 30");
+    expect(cell.querySelector(".note")?.textContent).toBe("(was off)");
+  });
+});
+
+describe("thresholdCell", () => {
+  const parts = (s: string) => {
+    const host = document.createElement("div");
+    render(thresholdCell(s), host);
+    return [host.querySelector(".value")?.textContent ?? null, host.querySelector(".note")?.textContent ?? null];
+  };
+
+  it("splits a trailing note off the value", () => {
+    expect(parts("100 → 15 (was off)")).toEqual(["100 → 15", "(was off)"]);
+    expect(parts("100 → 15 (was off, not confirmed)")).toEqual(["100 → 15", "(was off, not confirmed)"]);
+    expect(parts("50 (unchanged)")).toEqual(["50", "(unchanged)"]);
+    expect(parts("26 (not selected)")).toEqual(["26", "(not selected)"]);
+  });
+
+  it("keeps text without a trailing note in one piece", () => {
+    expect(parts("50 → 24")).toEqual(["50 → 24", null]);
+    expect(parts("(not selected)")).toEqual(["(not selected)", null]);
+    expect(parts("no data")).toEqual(["no data", null]);
+    expect(parts("skipped: radar unavailable")).toEqual(["skipped: radar unavailable", null]);
   });
 });
 
