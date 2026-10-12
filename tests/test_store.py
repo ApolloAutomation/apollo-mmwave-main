@@ -3,18 +3,24 @@
 from __future__ import annotations
 
 import copy
+import logging
 from typing import TYPE_CHECKING
 
+from homeassistant.config_entries import ConfigEntryState
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
     async_fire_time_changed,
 )
 
-from custom_components.apollo_mmwave.const import DOMAIN, SERVICE_UPDATE_ZONE
+from custom_components.apollo_mmwave.const import (
+    DATA_STORE,
+    DOMAIN,
+    SERVICE_UPDATE_ZONE,
+)
 from custom_components.apollo_mmwave.store import STORAGE_KEY as ZONE_STORAGE_KEY
 from custom_components.apollo_mmwave.store import ZoneStore
 
-from .conftest import CALIBRATION_STORAGE_KEY, radar_ids
+from .conftest import CALIBRATION_STORAGE_KEY, radar_ids, setup_integration
 
 if TYPE_CHECKING:
     from homeassistant.helpers.device_registry import DeviceEntry
@@ -506,3 +512,75 @@ async def test_calibration_file_is_separate_from_zone_store(
     assert [snapshot["id"] for snapshot in snapshots] == [result["snapshot_id"]]
     assert "zones" not in calibration_file
     assert "devices" in hass_storage[ZONE_STORAGE_KEY]["data"]
+
+
+def _malformed_file(version: int, data: object) -> dict:
+    """Build a syntactically valid zone file whose payload has the wrong shape."""
+    return {
+        "version": version,
+        "minor_version": 1,
+        "key": ZONE_STORAGE_KEY,
+        "data": data,
+    }
+
+
+async def _assert_setup_survives(hass, config_entry, caplog) -> ZoneStore:
+    """Set the entry up and check it logged an error but no traceback."""
+    await setup_integration(hass, config_entry)
+
+    assert config_entry.state is ConfigEntryState.LOADED
+    assert any(
+        record.levelno == logging.ERROR and "zone store" in record.getMessage()
+        for record in caplog.records
+    )
+    assert not any(record.exc_info for record in caplog.records)
+    assert "Error setting up entry" not in caplog.text
+    return hass.data[DOMAIN][DATA_STORE]
+
+
+async def test_v1_null_data_loads_empty(
+    hass, hass_storage, config_entry, caplog
+) -> None:
+    """A v1 file with `data: null` starts empty instead of failing setup."""
+    hass_storage[ZONE_STORAGE_KEY] = _malformed_file(1, None)
+
+    store = await _assert_setup_survives(hass, config_entry, caplog)
+
+    assert store.devices == {}
+    assert store.orphans == {}
+
+
+async def test_v1_list_data_loads_empty(
+    hass, hass_storage, config_entry, caplog
+) -> None:
+    """A v1 file whose payload is a list starts empty instead of failing setup."""
+    hass_storage[ZONE_STORAGE_KEY] = _malformed_file(1, [])
+
+    store = await _assert_setup_survives(hass, config_entry, caplog)
+
+    assert store.devices == {}
+    assert store.orphans == {}
+
+
+async def test_v1_list_locations_loads_empty(hass, hass_storage) -> None:
+    """A non-empty `locations` list has no names to rekey, so nothing migrates."""
+    hass_storage[ZONE_STORAGE_KEY] = _malformed_file(1, {"locations": [1]})
+
+    store = ZoneStore(hass)
+    assert await store.async_load() is True
+
+    assert store.devices == {}
+    assert store.orphans == {}
+
+
+async def test_v2_list_data_is_reported_and_ignored(
+    hass, hass_storage, config_entry, caplog
+) -> None:
+    """A v2 list payload is treated like a missing file and saved over."""
+    hass_storage[ZONE_STORAGE_KEY] = _malformed_file(2, [])
+
+    store = await _assert_setup_survives(hass, config_entry, caplog)
+
+    assert store.devices == {}
+    assert any("list" in record.getMessage() for record in caplog.records)
+    assert hass_storage[ZONE_STORAGE_KEY]["data"] == {"devices": {}, "orphans": {}}

@@ -163,12 +163,24 @@ class _MigratingStore(Store[dict[str, Any]]):
     ) -> dict[str, Any]:
         if old_major_version > 1:
             return old_data
+        # Store hands over the file's `data` field verbatim, so a hand edit or a
+        # partial restore can leave something other than an object here. There
+        # is nothing to rekey in that case, so start empty rather than crash.
+        if not isinstance(old_data, dict):
+            _LOGGER.error(
+                "Apollo mmWave: zone store version 1 payload is not an object;"
+                " starting empty"
+            )
+            return {STORE_DEVICES: {}, STORE_ORPHANS: {}}
         devices: dict[str, Any] = {}
         orphans: dict[str, Any] = {}
         # Which location contributed each zone id, per device, so a collision
         # warning can name both sides of it.
         sources: dict[str, dict[str, str]] = {}
-        for location, raw in (old_data.get("locations") or {}).items():
+        locations = old_data.get("locations")
+        if not isinstance(locations, dict):
+            locations = {}
+        for location, raw in locations.items():
             if not isinstance(raw, dict):
                 continue
             device_id = _resolve_device_id(self.hass, location, raw.get(STORE_ENTITIES))
@@ -235,9 +247,17 @@ class ZoneStore:
         self.orphans: dict[str, dict[str, Any]] = {}
 
     async def async_load(self) -> bool:
-        """Load from disk. Returns False when no store file exists yet."""
+        """Load from disk. Returns False when there is no usable store file."""
         data = await self._store.async_load()
         if data is None:
+            return False
+        if not isinstance(data, dict):
+            # Same outcome as a missing file: setup runs the legacy migration
+            # and saves over this one, instead of failing with a traceback.
+            _LOGGER.error(
+                "Apollo mmWave: zone store payload is a %s, not an object; ignoring it",
+                type(data).__name__,
+            )
             return False
         self.devices = {}
         self.orphans = {}
