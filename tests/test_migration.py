@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from homeassistant.core import State
@@ -813,6 +814,28 @@ async def test_imports_zones_from_the_standalone_zone_mapper(
     assert store.devices[device.id][STORE_ZONES][1]["shape"] == "rect"
     assert store.devices[device.id]["rotation_deg"] == 30
     assert entity_registry.async_get(legacy) is not None
+
+
+async def test_import_count_includes_replaced_placeholders(
+    hass, device_registry, caplog
+) -> None:
+    """Filling a zone our migration left empty is an import and is counted."""
+    device = _make_radar(hass, device_registry, "Kitchen")
+    legacy = _register_zone_mapper_zone(hass, "Kitchen", 1)
+    mock_restore_cache(hass, [State(legacy, "1", ZONE_MAPPER_ATTRS)])
+    store = ZoneStore(hass)
+    # What the pre-1.2 migration leaves for a zone whose restore data was lost.
+    store.device(device.id)[STORE_ZONES][1] = {}
+
+    with caplog.at_level(logging.INFO):
+        imported = await async_import_zone_mapper(hass, store)
+
+    assert imported == 1
+    assert store.devices[device.id][STORE_ZONES][1]["shape"] == "rect"
+    assert any(
+        "imported 1 zone(s) from zone_mapper" in record.message
+        for record in caplog.records
+    )
 
 
 async def test_import_skips_a_non_finite_rotation(hass, device_registry) -> None:

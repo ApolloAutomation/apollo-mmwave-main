@@ -275,6 +275,11 @@ def _collect_zone_mapper_locations(
     return locations
 
 
+def _defined_zone_count(zones: dict[int, dict[str, Any]]) -> int:
+    """Count the zones that carry a definition, leaving empty placeholders out."""
+    return sum(1 for zone_def in zones.values() if zone_def)
+
+
 async def async_import_zone_mapper(hass: HomeAssistant, store: ZoneStore) -> int:
     """
     Copy zones out of the standalone zone_mapper integration.
@@ -314,12 +319,14 @@ async def async_import_zone_mapper(hass: HomeAssistant, store: ZoneStore) -> int
             },
         )
         _record_location(target, location)
-        before = len(target[STORE_ZONES])
+        # Counted by definitions, not keys: a zone our own migration left as an
+        # empty placeholder is filled in place, which adds no key.
+        before = _defined_zone_count(target[STORE_ZONES])
         # Shared with the pre-1.2 migration because the failure mode is the same:
         # a renamed radar leaves two locations resolving onto one device, and a
         # plain assignment would wipe the first one's geometry and zone names.
         _merge_legacy_location(target, records, location, zone_sources)
-        imported += len(target[STORE_ZONES]) - before
+        imported += _defined_zone_count(target[STORE_ZONES]) - before
 
     if imported:
         _LOGGER.info("Apollo mmWave: imported %d zone(s) from zone_mapper", imported)
