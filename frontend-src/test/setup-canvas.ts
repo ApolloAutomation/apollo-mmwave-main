@@ -4,7 +4,8 @@
  * Give it a context that swallows everything: each property read hands back a
  * callable that returns the same proxy, so chained calls and property reads
  * (ctx.measureText(t).width) resolve instead of blowing up, and nothing is
- * actually rasterised.
+ * actually rasterized. `then` is the exception: it reads as undefined, so the
+ * stub is not a thenable and awaiting it settles.
  *
  * This is a harness, not a canvas. Assert on card state, never on pixels.
  */
@@ -14,6 +15,11 @@ const noopContext: unknown = new Proxy(function () {} as object, {
     // Let a stringified context stay printable in failure output.
     if (prop === Symbol.toPrimitive || prop === "toString") {
       return () => "[stub CanvasRenderingContext2D]";
+    }
+    // Without this the proxy is a thenable whose then() never calls resolve,
+    // so awaiting the context (or anything read off it) would hang the test.
+    if (prop === "then") {
+      return undefined;
     }
     return noopContext;
   },
