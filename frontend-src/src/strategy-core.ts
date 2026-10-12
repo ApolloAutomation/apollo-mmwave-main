@@ -1,4 +1,4 @@
-import type { CalibrationOptions, HomeAssistant } from "./types";
+import type { CalibrationOptions, HassEntity, HomeAssistant } from "./types";
 import {
   baseNameFromDevice,
   detectProfileFromEntities,
@@ -46,10 +46,16 @@ export interface StrategyConfig {
   calibration?: CalibrationOptions;
 }
 
-function isLive(hass: HomeAssistant, entityId: string | undefined): boolean {
-  if (!entityId) return false;
-  const state = hass.states[entityId];
+/** Whether a state object is a real reading. Only "unavailable" (or no state
+ *  at all) means offline; "unknown" counts as live. `shouldRegenerate` uses
+ *  the same test for its availability fast path, so the two cannot drift
+ *  apart and miss an `online` flip in the device key. */
+export function isLiveState(state: HassEntity | undefined): boolean {
   return state !== undefined && state.state !== "unavailable";
+}
+
+function isLive(hass: HomeAssistant, entityId: string | undefined): boolean {
+  return !!entityId && isLiveState(hass.states[entityId]);
 }
 
 /**

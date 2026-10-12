@@ -1,6 +1,7 @@
 import type { HomeAssistant } from "./types";
 import { registerElement } from "./register";
 import {
+  isLiveState,
   strategyDevices,
   generateCards,
   generateSections,
@@ -10,27 +11,52 @@ import {
 
 /** Stable key for the devices this strategy config would render. Includes
  *  detected capabilities so a forced (explicitly selected) device whose
- *  entities register late still triggers a rebuild, and liveness so the
- *  offline note on a tab tracks the radar. */
+ *  entities register late still triggers a rebuild, liveness so the offline
+ *  note on a tab tracks the radar, and the name and base so a rename
+ *  refreshes the tab title, help-card heading, zone-map title and view path.
+ *  Each entry is JSON so no name can run into the next field. */
 function radarDeviceKey(hass: HomeAssistant, config: StrategyConfig): string {
   return strategyDevices(hass, config)
-    .map(
-      (d) =>
-        `${d.deviceId}:${d.profile?.key ?? ""}:${d.ld2450 ? 1 : 0}:${d.online ? 1 : 0}`
+    .map((d) =>
+      JSON.stringify([d.deviceId, d.profile?.key ?? "", d.ld2450, d.online, d.name, d.base])
     )
     .sort()
     .join(",");
 }
 
+/** The older `strategy: {type, options: {...}}` form, which Home Assistant
+ *  still accepts. */
+interface LegacyStrategyConfig {
+  type?: string;
+  options: StrategyConfig;
+}
+
+/** Home Assistant's own legacy test: exactly two keys, one of them an
+ *  `options` object. Its dispatcher unwraps `options` before it calls
+ *  `generate()`, but hands `shouldRegenerate` the raw strategy object, so the
+ *  hook has to unwrap the same way or it keys on the wrong device selection. */
+function isLegacyOptions(
+  config: StrategyConfig | LegacyStrategyConfig
+): config is LegacyStrategyConfig {
+  const options = (config as Partial<LegacyStrategyConfig>).options;
+  return (
+    Object.keys(config).length === 2 && typeof options === "object" && options !== null
+  );
+}
+
 /**
- * Only rebuild the dashboard when the *set of detected devices* changes.
+ * Only rebuild the dashboard when what it renders for the detected devices
+ * changes.
  *
  * HA regenerates a strategy dashboard whenever `hass.entities`/`devices`/`areas`
  * changes. Drawing a zone creates new `apollo_mmwave` zone sensors, which mutates
- * `hass.entities` — regenerating mid-draw would tear down the zone-mapper card
+ * `hass.entities`; regenerating mid-draw would tear down the zone-mapper card
  * ("Subscription not found") and wipe the in-progress zone. Comparing the actual
- * detected-device key keeps "add a device → a tab appears" while ignoring that
- * churn (zone sensors belong to no radar device, so the key is unchanged).
+ * detected-device key keeps "add a device, a tab appears" while ignoring that
+ * churn. The zone sensors are attached to the radar device, but their ids
+ * (`<base>_zone_N`, `<base>_zone_N_presence`) match no radar entity pattern, so
+ * the device's base, capabilities and liveness, and with them the key, are
+ * unchanged.
  *
  * The fast path must include `entities`: a freshly added ESPHome device lands
  * in the device registry *before* its entities/states register, so detection
@@ -39,7 +65,7 @@ function radarDeviceKey(hass: HomeAssistant, config: StrategyConfig): string {
  * appear until a manual page reload.
  */
 export function shouldRegenerate(
-  config: StrategyConfig,
+  config: StrategyConfig | LegacyStrategyConfig,
   oldHass: HomeAssistant,
   newHass: HomeAssistant
 ): boolean {
@@ -55,23 +81,22 @@ export function shouldRegenerate(
   if (oldHass.devices === newHass.devices && oldHass.entities === newHass.entities) {
     if (!availabilityChanged(oldHass, newHass)) return false;
   }
-  const cfg = config ?? {};
+  const cfg = isLegacyOptions(config) ? { ...config, ...config.options } : config;
   return radarDeviceKey(oldHass, cfg) !== radarDeviceKey(newHass, cfg);
 }
 
-function isUnavailable(state: HomeAssistant["states"][string] | undefined): boolean {
-  return state === undefined || state.state === "unavailable";
-}
-
-/** True when any entity became available or unavailable between two hass
- *  objects. Home Assistant replaces the state object of exactly the entities
- *  that changed, so unchanged ones are skipped on reference equality. */
+/** True when an entity present in `newHass` became available or unavailable.
+ *  Home Assistant replaces the state object of exactly the entities that
+ *  changed, so unchanged ones are skipped on reference equality. Only ids in
+ *  `newHass` are compared; a vanished state needs no check, because a removed
+ *  registry entity keeps a restored "unavailable" state and deleting the
+ *  registry entry replaces `hass.entities`, which bypasses this check. */
 function availabilityChanged(oldHass: HomeAssistant, newHass: HomeAssistant): boolean {
   for (const id in newHass.states) {
     const next = newHass.states[id];
     const prev = oldHass.states[id];
     if (prev === next) continue;
-    if (isUnavailable(prev) !== isUnavailable(next)) return true;
+    if (isLiveState(prev) !== isLiveState(next)) return true;
   }
   return false;
 }
