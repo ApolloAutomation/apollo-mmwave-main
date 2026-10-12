@@ -89,6 +89,13 @@ export function baseNameFromDevice(
 type GateSlot = "move_threshold" | "still_threshold" | "move_energy" | "still_energy";
 type ScalarSlot = Exclude<keyof EntityMap, GateSlot>;
 
+const GATE_SLOTS: readonly GateSlot[] = [
+  "move_threshold",
+  "still_threshold",
+  "move_energy",
+  "still_energy",
+];
+
 export type ClassifiedSlot =
   | { slot: ScalarSlot }
   | { slot: GateSlot; gate: number };
@@ -331,10 +338,21 @@ export function resolveEntitiesDetailed(
       : undefined;
     resolved = fallbackBase && profile ? profile.entityMap(fallbackBase) : emptyMap();
   }
-  const map = config.entities
-    ? ({ ...resolved, ...config.entities } as EntityMap)
-    : resolved;
+  const map = config.entities ? withOverrides(resolved, config.entities) : resolved;
   return fallbackBase ? { map, fallbackBase } : { map };
+}
+
+/** Apply the card's `entities:` overrides to the resolved map. YAML can hand a
+ *  gate slot null (`move_threshold:`) or a single id string, and the charts and
+ *  rows index gate slots as arrays, so a gate slot keeps its resolved array
+ *  unless the override is an array. Scalar overrides apply as given: a null
+ *  scalar is a deliberate "unset" that hides that row. */
+function withOverrides(resolved: EntityMap, overrides: Partial<EntityMap>): EntityMap {
+  const map = { ...resolved, ...overrides } as EntityMap;
+  for (const slot of GATE_SLOTS) {
+    if (!Array.isArray(map[slot])) map[slot] = resolved[slot];
+  }
+  return map;
 }
 
 export function exists(hass: HomeAssistant, id?: string): boolean {

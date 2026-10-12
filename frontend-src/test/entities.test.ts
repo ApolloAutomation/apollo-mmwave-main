@@ -1,4 +1,8 @@
 import { describe, it, expect } from "vitest";
+import { render } from "lit";
+import { renderDistanceChart } from "../src/charts/distance-chart";
+import { renderGateEnergyChart } from "../src/charts/gate-energy-chart";
+import { controlRows, moveThresholdRows } from "../src/panels/entity-rows";
 import {
   baseNameFromDevice,
   classifyObjectId,
@@ -11,7 +15,8 @@ import {
   exists,
 } from "../src/entities";
 import { LD2412_PROFILE } from "../src/profiles";
-import type { HomeAssistant } from "../src/types";
+import type { EntityMap, HomeAssistant } from "../src/types";
+import { flat } from "./template-markup";
 
 const base = "apollo_msr_2_m4c4dd";
 
@@ -126,6 +131,75 @@ describe("resolveEntities", () => {
   it("returns empty gate arrays when nothing resolves", () => {
     const map = resolveEntities(hassWith([]), { type: "x" });
     expect(map.move_threshold).toEqual([]);
+  });
+
+  // YAML `move_threshold:` parses to null, and a single id is a string; the
+  // casts stand in for that untyped card config.
+  const badGateOverrides: [string, Partial<EntityMap>][] = [
+    ["null", { move_threshold: null as unknown as string[] }],
+    ["a string", { move_threshold: "number.foo" as unknown as string[] }],
+    [
+      "non-arrays in every gate slot",
+      {
+        move_threshold: null as unknown as string[],
+        still_threshold: "number.foo" as unknown as string[],
+        move_energy: undefined,
+        still_energy: 3 as unknown as string[],
+      },
+    ],
+  ];
+
+  for (const [what, entities] of badGateOverrides) {
+    it(`keeps the resolved gate arrays when a gate override is ${what}`, () => {
+      const resolved = entityMapFromBaseName(base);
+      const map = resolveEntities(hassWith([]), { type: "x", device_base_name: base, entities });
+      expect(resolved.move_threshold).toHaveLength(9);
+      expect(map.move_threshold).toEqual(resolved.move_threshold);
+      expect(map.still_threshold).toEqual(resolved.still_threshold);
+      expect(map.move_energy).toEqual(resolved.move_energy);
+      expect(map.still_energy).toEqual(resolved.still_energy);
+      expect(moveThresholdRows(map)).toHaveLength(9);
+    });
+
+    it(`renders the gate charts when a gate override is ${what}`, () => {
+      const resolved = entityMapFromBaseName(base);
+      const hass = hassWith([
+        resolved.gate_size!,
+        resolved.engineering_mode!,
+        ...resolved.move_threshold,
+        ...resolved.move_energy,
+      ]);
+      const map = resolveEntities(hass, { type: "x", device_base_name: base, entities });
+      const distance = renderDistanceChart(hass, map, "m");
+      const energy = renderGateEnergyChart(hass, map);
+      expect(() => render(distance, document.createElement("div"))).not.toThrow();
+      expect(() => render(energy, document.createElement("div"))).not.toThrow();
+      // Both charts drew the nine resolved gates (G0..G8 on the energy chart).
+      expect(flat(distance)).toContain(">G1</text>");
+      expect(flat(energy)).toContain(">G8</text>");
+      expect(flat(energy)).not.toContain(">G9</text>");
+    });
+  }
+
+  it("lets an array gate override replace the resolved array", () => {
+    const map = resolveEntities(hassWith([]), {
+      type: "x",
+      device_base_name: base,
+      entities: { move_threshold: ["number.a", "number.b"] },
+    });
+    expect(map.move_threshold).toEqual(["number.a", "number.b"]);
+  });
+
+  it("still lets a null scalar override clear its slot", () => {
+    const resolved = entityMapFromBaseName(base);
+    const map = resolveEntities(hassWith([]), {
+      type: "x",
+      device_base_name: base,
+      entities: { bluetooth: null as unknown as string },
+    });
+    expect(resolved.bluetooth).toBeDefined();
+    expect(map.bluetooth).toBeNull();
+    expect(controlRows(map).map((r) => r.entity)).not.toContain(resolved.bluetooth);
   });
 });
 
