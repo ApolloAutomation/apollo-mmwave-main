@@ -196,10 +196,10 @@ def _normalize_rect(data: Any, zone_id: int, device_id: str) -> dict[str, Any] |
     if not (x_min_i < x_max_i and y_min_i < y_max_i):
         _LOGGER.warning(WARN_RECT_INVALID, zone_id, device_id)
         return None
+    # Only the bounds are kept, as for an ellipse: an extra caller key would be
+    # stored, published as an attribute, and could hold a value (an int past
+    # 64 bits, say) that makes every later store write fail.
     return {
-        # TODO(REVIEW_REPORT.md X10): extra caller keys are  # noqa: FIX002, TD003
-        # stored and published; return only the four bounds, as ellipse does.
-        **data,
         ATTR_X_MIN: x_min_i,
         ATTR_X_MAX: x_max_i,
         ATTR_Y_MIN: y_min_i,
@@ -266,9 +266,8 @@ def _normalize_polygon(
             POLYGON_MIN_POINTS,
         )
         return None
-    # TODO(REVIEW_REPORT.md X10): extra caller keys are  # noqa: FIX002, TD003
-    # stored and published; return only the points, as ellipse does.
-    return {**data, ATTR_POINTS: normalized_points}
+    # Only the points are kept, for the same reason as in _normalize_rect.
+    return {ATTR_POINTS: normalized_points}
 
 
 def _zone_entity_unique_ids(device_id: str, zone_id: int) -> tuple[str, str]:

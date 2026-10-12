@@ -1202,6 +1202,51 @@ async def test_out_of_range_geometry_is_rejected(
     assert msg["result"]["zones"]["1"]["data"] is None
 
 
+@pytest.mark.parametrize(
+    "case",
+    [
+        (
+            "rect",
+            {"x_min": 0, "x_max": 100, "y_min": 0, "y_max": 50},
+            {"x_min": 0, "x_max": 100, "y_min": 0, "y_max": 50},
+        ),
+        (
+            "polygon",
+            {"points": [{"x": 0, "y": 0}, {"x": 10, "y": 0}, {"x": 0, "y": 10}]},
+            {"points": [{"x": 0, "y": 0}, {"x": 10, "y": 0}, {"x": 0, "y": 10}]},
+        ),
+    ],
+    ids=["rect", "polygon"],
+)
+@pytest.mark.usefixtures("init_integration")
+async def test_extra_data_keys_are_dropped(
+    hass, hass_ws_client, device_id, case
+) -> None:
+    """Extra keys in data are not stored, so they cannot break the store."""
+    shape, data, expected = case
+    # An int past 64 bits in an extra key used to be stored verbatim and made
+    # every later store write fail, the failure the geometry bound prevents.
+    noisy = {**data, "note": 10**20, "color": "red"}
+    await _update_zone(
+        hass, {"device_id": device_id, "zone_id": 1, "shape": shape, "data": noisy}
+    )
+
+    store = get_store(hass)
+    assert store.device(device_id)[STORE_ZONES][1] == {
+        "shape": shape,
+        "data": expected,
+    }
+    json_bytes(store._data_to_save())  # noqa: SLF001
+
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id(
+        {"type": "apollo_mmwave/zones/get", "device_id": device_id}
+    )
+    msg = await client.receive_json()
+    assert msg["success"]
+    assert msg["result"]["zones"]["1"]["data"] == expected
+
+
 async def test_geometry_at_the_safe_bound_is_kept(
     hass, init_integration, device_id
 ) -> None:
