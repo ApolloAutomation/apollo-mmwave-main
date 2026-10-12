@@ -39,6 +39,9 @@ STORE_LABEL = "label"
 # has to scale the same way or the two disagree about who is inside a zone.
 # Absent means millimetres, which is what every Apollo firmware reports.
 STORE_INPUT_UNITS = "input_units"
+# TODO(REVIEW_REPORT.md X04): card lacks yd; decide unit owner.  # noqa: FIX002, TD003
+# The zone card maps yd to mm and rewrites input_units from its YAML on every
+# save. Keep yd here; removing it is the less safe direction.
 INPUT_UNIT_FACTORS = {
     "mm": 1.0,
     "cm": 10.0,

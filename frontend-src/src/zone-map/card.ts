@@ -142,6 +142,9 @@ function findTouch(list, identifier) {
   return null;
 }
 
+// TODO(REVIEW_REPORT.md X04): no yd here (backend and tuning cards accept it, so yd becomes
+// mm), and the YAML input_units overwrites the store's on every save. Decide the owner; if the
+// card keeps it, add yd: 914.4 plus yard aliases and test the keys against INPUT_UNIT_FACTORS.
 const LENGTH_UNITS = Object.freeze({
   mm: 1,
   cm: 10,
@@ -273,6 +276,8 @@ export class ZoneMapCard extends HTMLElement {
       // Units support: 'mm', 'cm', 'm', 'in', 'ft' converts to millimeters internally
       // Zones can be managed in-card; you can optionally pre-seed a list here:
       // zones: [ { id: 1, name: 'Zone 1' } ],
+      // TODO(REVIEW_REPORT.md X42): this grid and unit_display: false differ from DEFAULT_GRID
+      // and strategy cards. Pick one, derive the stub from DEFAULT_GRID or drop grid; add a test.
       grid: {
         x_min: -6000,
         x_max: 6000,
@@ -656,6 +661,8 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   buildTrackedEntities(cfg) {
+    // TODO(REVIEW_REPORT.md X41): direct_entity pairs are a placeholder the first store payload
+    // replaces. Retire the key deliberately (release note, zone-mapper-card) or document it.
     if (cfg && cfg.direct_entity) {
       return this.processEntityConfig(cfg.entities);
     }
@@ -850,6 +857,8 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   render() {
+    // TODO(REVIEW_REPORT.md X47): with a cached payload, chips, manager, status and drawGrid run
+    // twice. Skipping the first pass changes selection on a same-device setConfig; decide first.
     this._detachGlobalListeners();
     this.shadowRoot.innerHTML = this._template();
     this._renderTitle();
@@ -965,6 +974,8 @@ export class ZoneMapCard extends HTMLElement {
     this.canvas.addEventListener('mousemove', handleMouseMove);
     this.canvas.addEventListener('mouseup', handleMouseUp);
 
+    // TODO(REVIEW_REPORT.md X46): a locked canvas still preventDefaults every touch (touch-action
+    // none), blocking page scroll. Consider skipping it and using pan-y while locked, with a test.
     this.canvas.addEventListener(
       'touchstart',
       (event) => {
@@ -1026,6 +1037,8 @@ export class ZoneMapCard extends HTMLElement {
    *  `disconnectedCallback` removes exactly these, and a re-attached card has
    *  to get them back without re-wiring a canvas that never lost its own. */
   _attachGlobalListeners() {
+    // TODO(REVIEW_REPORT.md X40): render() reaches this on a detached card, so these listeners
+    // retain it. If tightened, attach (and subscribe) only while isConnected; update the tests.
     if (!this.canvas) return;
     this._detachGlobalListeners();
 
@@ -1165,6 +1178,8 @@ export class ZoneMapCard extends HTMLElement {
         this._lastLockWarningTs = 0;
         if (this.isLocked) {
           if (this.isDrawing) this.cancelDrawing();
+          // TODO(REVIEW_REPORT.md X06): the lock gates only drawing; chip double-click clear,
+          // Clear All, Undo and the manager still write. Gate the two clears or say "draw".
           this._notify('Drawing locked. Unlock the grid to edit zones.');
         } else {
           this._notify('Drawing unlocked. You can edit zones now.');
@@ -1713,6 +1728,8 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   _clearAllZones() {
+    // TODO(REVIEW_REPORT.md X43): this and undo write shape none for YAML-seeded ids the store
+    // never held. Consider clearing only ids in this.zones or the payload; no delete from undo.
     const zoneIds = (this.zoneConfig || []).map((zone) => zone.id);
     this._setUndoSnapshot(this._snapshotZones(zoneIds));
     this.zones = [];
@@ -2206,6 +2223,8 @@ export class ZoneMapCard extends HTMLElement {
     const pts = this._polyPoints.filter(
       (p, i, a) => i === 0 || p.x !== a[i - 1].x || p.y !== a[i - 1].y,
     );
+    // TODO(REVIEW_REPORT.md X44): too few points (or no zone selected) cancels silently. Suggest
+    // a toast ("A polygon needs at least 3 points", "Select a zone first"), with a test.
     if (pts.length >= 3 && this.selectedZone !== null) {
       const zoneId = this.selectedZone;
       // Enforce max points on commit
@@ -2684,6 +2703,8 @@ export class ZoneMapCard extends HTMLElement {
     const offsetX = -this.xMin * pxPerMmX;
     const offsetY = -this.yMin * pxPerMmY;
 
+    // TODO(REVIEW_REPORT.md X45): rings run out to cone.y_max (no ceiling), even past the grid.
+    // If touched, stop at the farthest grid corner distance; do not clamp y_max.
     for (let r = stepMm; r <= radius + 1e-6; r += stepMm) {
       let sinAng = sinStart;
       let cosAng = cosStart;
@@ -2769,6 +2790,8 @@ export class ZoneMapCard extends HTMLElement {
       return;
     }
     this.ctx = this.canvas.getContext('2d');
+    // TODO(REVIEW_REPORT.md X39): fixed 800 px store with no devicePixelRatio (blurry on HiDPI);
+    // non-square grids draw stretched. DPR sizing must scale the px constants; document stretch.
     this.canvas.width = 800;
     this.canvas.height = 800;
     const safeWidth = Math.max(1, this.xMax - this.xMin);

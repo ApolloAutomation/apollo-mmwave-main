@@ -96,6 +96,9 @@ export async function subscribeZones(
   deviceId: string,
   callback: (config: ZoneConfig) => void
 ): Promise<Unsubscribe> {
+  // TODO(REVIEW_REPORT.md X48): a library re-subscribe after a reconnect can be
+  // refused silently. Consider resubscribe: false plus a "ready" listener that
+  // calls requestOpen (removed on dispose), with a fake-connection test.
   return hass.connection.subscribeMessage<ZoneConfig>(callback, {
     type: ZONES_SUBSCRIBE,
     device_id: deviceId,
