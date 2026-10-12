@@ -55,6 +55,7 @@ from homeassistant.components.lovelace.const import (
     CONF_TITLE,
     CONF_URL_PATH,
     LOVELACE_DATA,
+    MODE_STORAGE,
     ConfigNotFound,
 )
 from homeassistant.components.websocket_api.const import (
@@ -305,10 +306,33 @@ def _dashboard_item(collection: Any) -> dict[str, Any] | None:
     )
 
 
-async def _async_stored_config(hass: HomeAssistant) -> dict[str, Any] | None:
-    """Return the dashboard's stored Lovelace config, or None if it has none."""
+async def _async_stored_config(
+    hass: HomeAssistant, item: dict[str, Any]
+) -> dict[str, Any] | None:
+    """
+    Return the row's own stored Lovelace config, or None if it has none.
+
+    Lovelace registers YAML dashboards first and, when a storage row on the
+    same url path loads later, keeps the YAML one and only warns. So the
+    object holding our url path is not necessarily ``item``'s: reading its
+    config would judge the row by someone else's dashboard, and writing or
+    deleting on that verdict hits the YAML dashboard instead (deleting the
+    row makes Lovelace drop whatever holds the path). Unless the holder is
+    the row's own storage dashboard, the row is reported as having no config,
+    which every caller already treats as not ours.
+    """
     config = hass.data[LOVELACE_DATA].dashboards.get(DASHBOARD_URL_PATH)
     if config is None:
+        return None
+    if (
+        getattr(config, "mode", None) != MODE_STORAGE
+        or (config.config or {}).get("id") != item["id"]
+    ):
+        _LOGGER.debug(
+            "Apollo mmWave: another dashboard holds url path %s; leaving the"
+            " row alone.",
+            DASHBOARD_URL_PATH,
+        )
         return None
     try:
         return await config.async_load(force=False)
@@ -366,6 +390,10 @@ async def async_register_dashboard(
     selection can change). Never touches a dashboard that is not ours. Returns
     False only if Lovelace's internals could not be reached at all.
     """
+    collection: Any = None
+    # The row this call created, if any; it is rolled back if anything after
+    # its creation fails, so a failed first save does not strand it.
+    created: dict[str, Any] | None = None
     try:
         collection = _dashboards_collection(hass)
         if collection is None:
@@ -378,12 +406,12 @@ async def async_register_dashboard(
             )
             return False
 
-        # Ownership is decided by who created the row, not by what is stored on
-        # it. A dashboard someone else made has no config until they save one,
-        # and inferring "unowned" from that empty config would let us write our
-        # strategy over their work and then delete it as if it were ours.
-        created = False
-        if _dashboard_item(collection) is None:
+        # Ownership is read from the stored strategy config (_is_ours). The
+        # call that creates the row is exempt only because the row has no
+        # config yet. A dashboard someone else made has no config either until
+        # they save one, so an empty config never makes a row ours to write.
+        item = _dashboard_item(collection)
+        if item is None:
             if DASHBOARD_URL_PATH in hass.data[LOVELACE_DATA].dashboards:
                 # A YAML dashboard holds the url path. Lovelace refuses a second
                 # panel there, and it isn't ours to replace.
@@ -392,7 +420,7 @@ async def async_register_dashboard(
                     DASHBOARD_URL_PATH,
                 )
                 return True
-            await collection.async_create_item(
+            item = await collection.async_create_item(
                 {
                     CONF_URL_PATH: DASHBOARD_URL_PATH,
                     CONF_TITLE: DASHBOARD_TITLE,
@@ -401,7 +429,7 @@ async def async_register_dashboard(
                     CONF_REQUIRE_ADMIN: False,
                 }
             )
-            created = True
+            created = item
             _LOGGER.info(
                 "Apollo mmWave: created the '%s' dashboard. The 'auto-create"
                 " dashboard' option in the integration's settings is what"
@@ -411,8 +439,8 @@ async def async_register_dashboard(
                 DASHBOARD_TITLE,
             )
 
-        stored = await _async_stored_config(hass)
-        if not created and not _is_ours(stored):
+        stored = await _async_stored_config(hass, item)
+        if created is None and not _is_ours(stored):
             _LOGGER.debug(
                 "Apollo mmWave: the '%s' dashboard is not ours to write to;"
                 " leaving its config alone.",
@@ -435,9 +463,31 @@ async def async_register_dashboard(
             DASHBOARD_STRATEGY_TYPE,
             exc_info=True,
         )
+        if created is not None:
+            await _async_roll_back_created_row(collection, created)
         return True
     else:
         return True
+
+
+async def _async_roll_back_created_row(collection: Any, item: dict[str, Any]) -> None:
+    """
+    Delete a row this setup created but could not give its strategy config.
+
+    Left in place it would have no config, which every later call reads as not
+    ours, so it would stay in the sidebar as an auto-generated dashboard that
+    neither a reload nor turning the option off could repair or remove.
+    Deleting it lets the next setup start over.
+    """
+    try:
+        await collection.async_delete_item(item["id"])
+    except Exception:
+        _LOGGER.warning(
+            "Apollo mmWave: could not remove the half-made '%s' dashboard; you"
+            " can delete it in Settings > Dashboards.",
+            DASHBOARD_TITLE,
+            exc_info=True,
+        )
 
 
 async def async_remove_dashboard(hass: HomeAssistant) -> None:
@@ -451,7 +501,8 @@ async def async_remove_dashboard(hass: HomeAssistant) -> None:
     page. Deleting the collection item is what removes the sidebar panel and
     the stored config; lovelace does both from its own collection listener.
     Only a config that is still our generated strategy is deleted, so a
-    dashboard the user built or took control of here is left standing.
+    dashboard the user built or took control of here is left standing, and so
+    is a row a YAML dashboard on the same url path is shadowing.
     """
     try:
         collection = _dashboards_collection(hass)
@@ -460,7 +511,7 @@ async def async_remove_dashboard(hass: HomeAssistant) -> None:
         item = _dashboard_item(collection)
         if item is None:
             return
-        if not _is_ours(await _async_stored_config(hass)):
+        if not _is_ours(await _async_stored_config(hass, item)):
             _LOGGER.debug(
                 "Apollo mmWave: the '%s' dashboard is no longer ours; leaving it.",
                 DASHBOARD_TITLE,

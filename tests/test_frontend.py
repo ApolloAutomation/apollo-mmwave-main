@@ -10,17 +10,23 @@ element with no way to recover short of a hard refresh.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import logging
+from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from homeassistant.components.frontend import DATA_PANELS
 from homeassistant.components.lovelace.const import LOVELACE_DATA, ConfigNotFound
+from homeassistant.components.lovelace.dashboard import LovelaceStorage, LovelaceYAML
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.loader import async_get_integration
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.apollo_mmwave.const import (
     CONF_AUTO_CREATE_VIEW,
+    CONF_DASHBOARD_DEVICES,
+    DASHBOARD_ICON,
     DASHBOARD_STRATEGY_TYPE,
     DASHBOARD_TITLE,
     DASHBOARD_URL_PATH,
@@ -389,3 +395,173 @@ async def test_user_added_strategy_options_survive_a_re_register(
         "type": DASHBOARD_STRATEGY_TYPE,
         "distance_unit": "ft",
     }
+
+
+# The row an earlier auto-create left behind, exactly as Lovelace stores it.
+STALE_ROW: dict[str, Any] = {
+    "id": "apollo_mmwave",
+    "url_path": DASHBOARD_URL_PATH,
+    "title": DASHBOARD_TITLE,
+    "icon": DASHBOARD_ICON,
+    "show_in_sidebar": True,
+    "require_admin": False,
+    "mode": "storage",
+}
+
+
+async def _yaml_dashboard_over_a_stale_row(hass, hass_storage) -> None:
+    """
+    Boot Lovelace with a user's YAML dashboard on our url path and our old row.
+
+    Lovelace registers YAML dashboards first, so when the storage row on the
+    same url path loads it keeps the YAML dashboard there and only warns. The
+    YAML uses our strategy, the way our own warnings suggest building one.
+    """
+    hass_storage["lovelace_dashboards"] = {
+        "version": 1,
+        "minor_version": 1,
+        "key": "lovelace_dashboards",
+        "data": {"items": [dict(STALE_ROW)]},
+    }
+    assert await async_setup_component(
+        hass,
+        "lovelace",
+        {
+            "lovelace": {
+                "dashboards": {
+                    DASHBOARD_URL_PATH: {
+                        "mode": "yaml",
+                        "filename": "apollo-mmwave.yaml",
+                        "title": "My Radar",
+                        "show_in_sidebar": True,
+                    }
+                }
+            }
+        },
+    )
+
+
+def _assert_yaml_dashboard_untouched(hass) -> None:
+    """Assert the user's YAML dashboard is still served and our row is kept."""
+    assert DASHBOARD_URL_PATH in hass.data[DATA_PANELS]
+    dashboard = hass.data[LOVELACE_DATA].dashboards.get(DASHBOARD_URL_PATH)
+    assert isinstance(dashboard, LovelaceYAML)
+    rows = [
+        i
+        for i in _dashboards_collection(hass).async_items()
+        if i["url_path"] == DASHBOARD_URL_PATH
+    ]
+    assert [i["id"] for i in rows] == [STALE_ROW["id"]]
+
+
+def _apollo_warnings(caplog) -> list[str]:
+    """Return every warning or worse this integration logged."""
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if r.name.startswith("custom_components.apollo_mmwave")
+        and r.levelno >= logging.WARNING
+    ]
+
+
+async def test_yaml_dashboard_on_our_path_is_never_removed(
+    hass, hass_storage, config_entry, caplog
+) -> None:
+    """
+    A stale row is not judged by the YAML dashboard shadowing it.
+
+    The ownership check read whichever dashboard held the url path, so a YAML
+    dashboard using our strategy made the stale row look ours. Deleting that
+    row made Lovelace drop the YAML dashboard's panel, and the user's own
+    dashboard vanished from the sidebar until the next restart.
+    """
+    yaml_config = {"strategy": {"type": DASHBOARD_STRATEGY_TYPE}}
+    with patch.object(LovelaceYAML, "async_load", AsyncMock(return_value=yaml_config)):
+        await _yaml_dashboard_over_a_stale_row(hass, hass_storage)
+        # Auto-create is off, so setup itself runs the removal.
+        await setup_integration(hass, config_entry)
+        _assert_yaml_dashboard_untouched(hass)
+
+        await async_remove_dashboard(hass)
+        await hass.async_block_till_done()
+        _assert_yaml_dashboard_untouched(hass)
+
+    assert _apollo_warnings(caplog) == []
+
+
+async def test_yaml_dashboard_on_our_path_is_not_written_to(
+    hass, hass_storage, caplog
+) -> None:
+    """
+    With auto-create on, a stale row never makes us save onto a YAML dashboard.
+
+    A device selection makes the wanted config differ from the YAML one, and
+    saving it onto the YAML dashboard raised and logged a traceback on every
+    start.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Apollo mmWave",
+        data={},
+        options={CONF_AUTO_CREATE_VIEW: True, CONF_DASHBOARD_DEVICES: ["dev1"]},
+        unique_id=DOMAIN,
+    )
+    yaml_config = {"strategy": {"type": DASHBOARD_STRATEGY_TYPE}}
+    load = AsyncMock(return_value=yaml_config)
+    save = AsyncMock()
+    with (
+        patch.object(LovelaceYAML, "async_load", load),
+        patch.object(LovelaceYAML, "async_save", save),
+    ):
+        await _yaml_dashboard_over_a_stale_row(hass, hass_storage)
+        await setup_integration(hass, entry)
+        _assert_yaml_dashboard_untouched(hass)
+
+        await async_register_dashboard(hass, ["dev1"])
+        await hass.async_block_till_done()
+        _assert_yaml_dashboard_untouched(hass)
+
+    save.assert_not_awaited()
+    assert _apollo_warnings(caplog) == []
+
+
+async def test_failed_first_config_save_does_not_strand_the_row(
+    hass, dashboard_entry, caplog
+) -> None:
+    """
+    A row whose first config save fails is rolled back, and the next setup works.
+
+    Left behind with no config it read as not ours forever: Lovelace showed it
+    as an auto-generated dashboard, reloads never seeded it, and turning the
+    option off never removed it.
+    """
+    real_save = LovelaceStorage.async_save
+    failures: list[str] = []
+
+    async def save_failing_once(self, config) -> None:
+        if self.url_path == DASHBOARD_URL_PATH and not failures:
+            failures.append(DASHBOARD_URL_PATH)
+            msg = "simulated save failure"
+            raise HomeAssistantError(msg)
+        await real_save(self, config)
+
+    with patch.object(LovelaceStorage, "async_save", save_failing_once):
+        await setup_integration(hass, dashboard_entry)
+
+        assert failures == [DASHBOARD_URL_PATH]
+        collection = _dashboards_collection(hass)
+        assert not [
+            i for i in collection.async_items() if i["url_path"] == DASHBOARD_URL_PATH
+        ]
+        assert DASHBOARD_URL_PATH not in hass.data[LOVELACE_DATA].dashboards
+        assert DASHBOARD_URL_PATH not in hass.data[DATA_PANELS]
+        warnings = _apollo_warnings(caplog)
+        assert len(warnings) == 1
+        assert "could not register the dashboard" in warnings[0]
+
+        await hass.config_entries.async_reload(dashboard_entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert DASHBOARD_URL_PATH in hass.data[DATA_PANELS]
+    stored = await _dashboard_config(hass)
+    assert stored["strategy"]["type"] == DASHBOARD_STRATEGY_TYPE
