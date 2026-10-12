@@ -35,6 +35,8 @@ draw presence zones.
 - **No YAML** and no separate card downloads. The integration serves its own
   cards.
 
+![The Auto-calibrate card running a calibration, sped up: a 15 second countdown, a one minute listen that shows the highest energy at each gate, then the result table with each gate's new threshold and an Undo button](https://raw.githubusercontent.com/ApolloAutomation/apollo-mmwave-main/main/docs/images/apollo-mmwave-calibrate.gif)
+
 ## Supported sensors
 
 | Sensor | Radar tuning | Zone map |
@@ -47,6 +49,8 @@ The radar splits the room into distance steps called gates, 0.75 m each by
 default. Each gate has a threshold: how strong a signal must be to count as
 presence. Radar tuning covers auto-calibration, the distance and gate energy
 charts, thresholds, detection range and occupancy.
+
+![The Gate Energy chart turning on: dimmed until Radar Engineering Mode is on, then a move bar and a still bar for each gate, with a triangle marking each threshold](https://raw.githubusercontent.com/ApolloAutomation/apollo-mmwave-main/main/docs/images/apollo-mmwave-gate-energy.gif)
 
 ## Install with HACS
 
@@ -111,6 +115,8 @@ for you. Add the two lines shown in
    new zone's button, choose a shape from the ✎ menu and draw on the grid.
    Each zone gets a presence sensor. See
    [Drawing zones](docs/configuration.md#drawing-zones).
+
+   ![The zone map on an R PRO-1: a grid in meters, the radar's view cone, a rectangle and an ellipse drawn as zones, and the zone buttons under the grid](https://raw.githubusercontent.com/ApolloAutomation/apollo-mmwave-main/main/docs/images/apollo-mmwave-zone-map.png)
 
 ## If something is wrong
 
