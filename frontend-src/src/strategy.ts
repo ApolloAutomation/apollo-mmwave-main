@@ -113,6 +113,25 @@ const EMPTY_VIEW = {
   ],
 };
 
+/** Shown instead of EMPTY_VIEW when the config names devices (`devices` or
+ *  `device_id`) and none of them is in the device registry any more: replaced
+ *  hardware with a new MAC, a re-add after Home Assistant's deleted-device
+ *  window, or a hand-typed id. The radars may well be added and live, so the
+ *  fix is the selection, not the device. */
+const STALE_SELECTION_VIEW = {
+  title: "Apollo Radar Tuning",
+  cards: [
+    {
+      type: "markdown",
+      content:
+        "The dashboard's device selection points at devices that no longer exist " +
+        "in Home Assistant. Open Settings > Devices & Services > Apollo mmWave > " +
+        "Configure and clear or update Dashboard devices (leave it empty to show " +
+        "every Apollo mmWave device automatically).",
+    },
+  ],
+};
+
 /**
  * View strategy: turns a single view into an auto-generated LD2410 tuning view.
  * Usage in a view config:
@@ -144,9 +163,13 @@ class ApolloLd2410DashboardStrategy extends HTMLElement {
     hass: HomeAssistant
   ): Promise<Record<string, any>> {
     const views = generateViews(hass, config);
+    // A selected device is rendered whenever it is in the registry, so an
+    // explicit selection that yields no views means every selected id is gone.
+    const empty =
+      config.devices?.length || config.device_id ? STALE_SELECTION_VIEW : EMPTY_VIEW;
     return {
       title: "Apollo Radar Tuning",
-      views: views.length ? views : [EMPTY_VIEW],
+      views: views.length ? views : [empty],
     };
   }
 }
