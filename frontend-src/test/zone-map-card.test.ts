@@ -584,6 +584,98 @@ describe("zone map card writes", () => {
   });
 });
 
+describe("zone map card renaming a zone only the YAML names", () => {
+  // The backend renames only zones the store holds. A name-only save for a
+  // zone seeded from the card YAML was dropped, the card still said it was
+  // saved, and the next payload put the YAML name back.
+  const YAML_ZONES = { zones: [{ id: 7, name: "Desk" }] };
+
+  /** Type a name into a zone manager row and press its Save button. */
+  function rename(card: any, zoneId: number, name: string) {
+    const rows = Array.from(card.shadowRoot.querySelectorAll("#zoneManager .entity-row"));
+    const row: any = rows.find(
+      (r: any) => r.querySelector("label")?.textContent === `Zone ${zoneId}`
+    );
+    expect(row).toBeTruthy();
+    row.querySelector("input").value = name;
+    const save: any = Array.from(row.querySelectorAll("button")).find(
+      (b: any) => b.textContent === "Save"
+    );
+    save.click();
+  }
+
+  function zoneSaves(hass: any): any[] {
+    return hass.callService.mock.calls
+      .filter((call: any[]) => call[1] === "update_zone")
+      .map((call: any[]) => call[2]);
+  }
+
+  it("creates the zone with its name when the store has never seen it", async () => {
+    const hass = fakeHass();
+    const card = await mountCard(hass, YAML_ZONES);
+    hass.callService.mockClear();
+
+    rename(card, 7, "Desk 2");
+
+    expect(zoneSaves(hass)).toEqual([
+      {
+        device_id: "dev123",
+        zone_id: 7,
+        shape: "none",
+        data: null,
+        name: "Desk 2",
+        input_units: "mm",
+      },
+    ]);
+  });
+
+  it("renames a stored zone without touching its shape", async () => {
+    const hass = fakeHass();
+    const card = await mountCard(hass, YAML_ZONES);
+    hass.callService.mockClear();
+
+    rename(card, 1, "Front door");
+
+    const saves = zoneSaves(hass);
+    expect(saves).toEqual([
+      { device_id: "dev123", zone_id: 1, name: "Front door", input_units: "mm" },
+    ]);
+    expect(saves[0]).not.toHaveProperty("shape");
+    expect(saves[0]).not.toHaveProperty("data");
+  });
+
+  it("only renames before the first payload, when the store's zones are unknown", async () => {
+    const hass = fakeHass();
+    // The read never answers, so the card has no payload to check against.
+    hass.callWS = vi.fn(() => new Promise(() => {}));
+    const card: any = new ZoneMapCard();
+    card.setConfig({ device_id: "dev123", ...YAML_ZONES } as any);
+    card.hass = hass;
+    expect(card._zoneConfigPayload).toBeNull();
+
+    rename(card, 7, "Desk 2");
+
+    const saves = zoneSaves(hass);
+    expect(saves).toHaveLength(1);
+    expect(saves[0]).toEqual({ device_id: "dev123", zone_id: 7, name: "Desk 2", input_units: "mm" });
+  });
+
+  it("only renames a zone drawn here whose shape has not reached the store yet", async () => {
+    const hass = fakeHass();
+    const card = await mountCard(hass, YAML_ZONES);
+    // What a finished drag does before its save is echoed back.
+    card._upsertZone(7, "rect", { x_min: 0, x_max: 10, y_min: 0, y_max: 10 });
+    hass.callService.mockClear();
+
+    rename(card, 7, "Desk 2");
+
+    const saves = zoneSaves(hass);
+    expect(saves).toHaveLength(1);
+    expect(saves[0]).not.toHaveProperty("shape");
+    expect(saves[0].name).toBe("Desk 2");
+  });
+});
+
 describe("zone map card rotation source", () => {
   // The presence sensors rotate targets by the store's rotation_deg, and by 0
   // when it was never set. A card that kept the YAML cone.angle_deg for such a

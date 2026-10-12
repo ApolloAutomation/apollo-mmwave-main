@@ -1974,17 +1974,19 @@ export class ZoneMapCard extends HTMLElement {
       saveBtn.addEventListener('click', () => {
         const newName = input.value?.trim() || `Zone ${z.id}`;
         z.name = newName;
-        // Persist the friendly name to backend (no shape/data change)
+        // Persist the friendly name to backend. A stored zone keeps its
+        // shape and data; one only the YAML names is created without a shape.
         if (this._hass) {
           const zoneId = Number(z.id);
           if (!Number.isFinite(zoneId) || zoneId <= 0) {
             this._notify('Unable to save name: invalid zone id');
             return;
           }
-          this._saveZoneUpdate(
-            { device_id: this.deviceId, zone_id: zoneId, name: newName },
-            `${this._zoneLabel(z.id)} saved`,
-          );
+          const rename = { device_id: this.deviceId, zone_id: zoneId, name: newName };
+          const payload = this._zoneIsUnsaved(zoneId)
+            ? { ...rename, shape: 'none', data: null }
+            : rename;
+          this._saveZoneUpdate(payload, `${this._zoneLabel(z.id)} saved`);
         }
         this.renderZoneButtons();
         this.drawGrid();
@@ -2019,6 +2021,24 @@ export class ZoneMapCard extends HTMLElement {
       row.appendChild(delBtn);
       host.appendChild(row);
     });
+  }
+
+  /**
+   * Whether a zone row exists only because the card YAML names it.
+   *
+   * The backend renames only zones the store holds, so a name-only save for
+   * such a zone was dropped while the card said it was saved, and the next
+   * payload put the YAML name back. Saving it the way Add Zone does creates it.
+   * Before the first payload the store's contents are unknown, and a zone drawn
+   * here may still be on its way to the store; shape none would erase real
+   * geometry in either case, so both keep the name-only save.
+   */
+  _zoneIsUnsaved(zoneId) {
+    const config = this._zoneConfigPayload;
+    if (!config) return false;
+    const stored = config.zones && typeof config.zones === 'object' ? config.zones : {};
+    if (String(zoneId) in stored) return false;
+    return !(this.zones || []).some((zone) => Number(zone.id) === zoneId);
   }
 
   _handleAddZone() {
