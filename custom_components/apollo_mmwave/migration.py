@@ -38,12 +38,13 @@ from .const import (
     ATTR_ROTATION_DEG,
     ATTR_SHAPE,
     DOMAIN,
+    STORE_ALIASES,
     STORE_ENTITIES,
     STORE_LABEL,
     STORE_ORPHANS,
     STORE_ZONES,
 )
-from .store import _resolve_device_id
+from .store import _record_location, resolve_device_id
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -60,6 +61,7 @@ def _parse_sensor_unique_id(unique_id: str) -> tuple[str, int] | None:
     """Split a coordinate-sensor unique_id into (location_slug, zone_id)."""
     if not unique_id.startswith(f"{DOMAIN}_") or "_zone_" not in unique_id:
         return None
+    # Defensive only: the int() parse below already rejects a "_presence" suffix.
     if unique_id.endswith("_presence"):
         return None
     slug_and_zone = unique_id[len(f"{DOMAIN}_") :]
@@ -200,12 +202,13 @@ def _merge_legacy_location(
         if target.get(ATTR_ROTATION_DEG) is None:
             rotation = attributes.get(ATTR_ROTATION_DEG)
             if rotation is not None:
-                with suppress(TypeError, ValueError):
+                # OverflowError: round() of an inf rotation.
+                with suppress(TypeError, ValueError, OverflowError):
                     target[ATTR_ROTATION_DEG] = round(float(rotation))
 
 
 async def async_migrate_legacy(hass: HomeAssistant, store: ZoneStore) -> None:
-    """Populate an empty store from legacy restore states, then persist it."""
+    """Populate an empty store from legacy restore states; the caller persists it."""
     locations = _collect_legacy_locations(hass, er.async_get(hass))
     # Which location contributed each zone id, per target, so a collision
     # warning can name both sides of it.
@@ -218,7 +221,7 @@ async def async_migrate_legacy(hass: HomeAssistant, store: ZoneStore) -> None:
         # carries no tracked pairs to resolve by, so resolving zone by zone
         # would drop that one through to the name fallback and could land it on
         # a different device from its siblings, or in orphans on its own.
-        device_id = _resolve_device_id(hass, location, _location_pairs(records))
+        device_id = resolve_device_id(hass, location, _location_pairs(records))
         if device_id is None:
             _LOGGER.warning(
                 "Apollo mmWave: legacy zone location '%s' matches no Home"
@@ -232,7 +235,7 @@ async def async_migrate_legacy(hass: HomeAssistant, store: ZoneStore) -> None:
         else:
             target = store.device(device_id)
             source_key = device_id
-        target.setdefault(STORE_LABEL, location)
+        _record_location(target, location)
         _merge_legacy_location(
             target, records, location, sources.setdefault(source_key, {})
         )
@@ -243,7 +246,6 @@ async def async_migrate_legacy(hass: HomeAssistant, store: ZoneStore) -> None:
             "Apollo mmWave: migrated %d legacy zone sensor(s) into the store",
             migrated_zones,
         )
-    await store.async_save()
 
 
 LEGACY_PLATFORM = "zone_mapper"
@@ -273,6 +275,11 @@ def _collect_zone_mapper_locations(
     return locations
 
 
+def _defined_zone_count(zones: dict[int, dict[str, Any]]) -> int:
+    """Count the zones that carry a definition, leaving empty placeholders out."""
+    return sum(1 for zone_def in zones.values() if zone_def)
+
+
 async def async_import_zone_mapper(hass: HomeAssistant, store: ZoneStore) -> int:
     """
     Copy zones out of the standalone zone_mapper integration.
@@ -292,7 +299,7 @@ async def async_import_zone_mapper(hass: HomeAssistant, store: ZoneStore) -> int
     for location, records in locations.items():
         # Resolved per location, not per zone, for the reason spelled out in
         # `async_migrate_legacy`: a location's zones belong on one device.
-        device_id = _resolve_device_id(hass, location, _location_pairs(records))
+        device_id = resolve_device_id(hass, location, _location_pairs(records))
         if device_id is None:
             _LOGGER.warning(
                 "Apollo mmWave: could not match zone_mapper location '%s' to a"
@@ -311,13 +318,15 @@ async def async_import_zone_mapper(hass: HomeAssistant, store: ZoneStore) -> int
                 for zone_id in target[STORE_ZONES]
             },
         )
-        target.setdefault(STORE_LABEL, location)
-        before = len(target[STORE_ZONES])
+        _record_location(target, location)
+        # Counted by definitions, not keys: a zone our own migration left as an
+        # empty placeholder is filled in place, which adds no key.
+        before = _defined_zone_count(target[STORE_ZONES])
         # Shared with the pre-1.2 migration because the failure mode is the same:
         # a renamed radar leaves two locations resolving onto one device, and a
         # plain assignment would wipe the first one's geometry and zone names.
         _merge_legacy_location(target, records, location, zone_sources)
-        imported += len(target[STORE_ZONES]) - before
+        imported += _defined_zone_count(target[STORE_ZONES]) - before
 
     if imported:
         _LOGGER.info("Apollo mmWave: imported %d zone(s) from zone_mapper", imported)
@@ -353,6 +362,10 @@ def _merge_promoted_orphan(
         and orphan.get(ATTR_ROTATION_DEG) is not None
     ):
         target[ATTR_ROTATION_DEG] = orphan[ATTR_ROTATION_DEG]
+    # The name is kept too, as the label or as an alias if the entry already has
+    # one. It is the only bridge a later setup has from this location's old
+    # unique ids to the device, for an entity this run had to skip.
+    _record_location(target, location)
 
 
 async def _promote_resolvable_orphans(
@@ -371,7 +384,7 @@ async def _promote_resolvable_orphans(
     promoted: dict[str, str] = {}
     for location in list(store.orphans):
         entry = store.orphans[location]
-        device_id = _resolve_device_id(hass, location, entry.get(STORE_ENTITIES))
+        device_id = resolve_device_id(hass, location, entry.get(STORE_ENTITIES))
         if device_id is None:
             continue
         orphan = store.orphans.pop(location)
@@ -408,14 +421,21 @@ async def async_migrate_unique_ids(hass: HomeAssistant, store: ZoneStore) -> Non
     registry = er.async_get(hass)
     promoted = await _promote_resolvable_orphans(hass, store)
     # The v1 store keyed everything by display name and the old unique ids were
-    # built from a slug of it, so `label` is the bridge back to a device.
-    slug_to_device = {
-        slugify(entry[STORE_LABEL]): device_id
-        for device_id, entry in store.devices.items()
-        if isinstance(entry.get(STORE_LABEL), str)
-    }
-    # A device can only carry one label, so a promoted location that merged into
-    # a device that already had one contributes a second slug for the same id.
+    # built from a slug of it, so `label` is the bridge back to a device. First
+    # writer wins a slug tie, as the deprecated `location` lookup does; in v1
+    # the location that set up first is the one that created the entity.
+    slug_to_device: dict[str, str] = {}
+    for device_id, entry in store.devices.items():
+        label = entry.get(STORE_LABEL)
+        if isinstance(label, str):
+            slug_to_device.setdefault(slugify(label), device_id)
+    # Every other name merged onto a device bridges too, but only after all the
+    # labels, so a device's own label always wins a tie with another's alias.
+    for device_id, entry in store.devices.items():
+        for alias in entry.get(STORE_ALIASES, []):
+            slug_to_device.setdefault(slugify(alias), device_id)
+    # A promoted location bridges for this run even if its orphan entry carried
+    # no label of its own.
     for location, device_id in promoted.items():
         slug_to_device.setdefault(slugify(location), device_id)
     if not slug_to_device:
@@ -438,6 +458,9 @@ async def async_migrate_unique_ids(hass: HomeAssistant, store: ZoneStore) -> Non
             # the platform is already driving. Renaming onto it would raise, and
             # removing either side would throw away a user's entity, so the old
             # one is left in place and named so the user can delete it.
+            # TODO(REVIEW_REPORT.md X29): repeats on every setup  # noqa: FIX002, TD003
+            # until the stale entity is deleted. Raise a repairs issue keyed by its
+            # entity id instead, or say here that the repetition is deliberate.
             _LOGGER.warning(
                 "Apollo mmWave: %s could not be migrated to unique id %s because"
                 " %s already uses it; %s is stale and can be deleted.",

@@ -118,8 +118,10 @@ async def init_integration(hass, config_entry, esphome_device) -> MockConfigEntr
 async def setup_entry_with_zone(hass, init_integration, device_id) -> tuple[str, Any]:
     """Set the integration up with one rect zone drawn on the radar."""
     # Written straight to the store rather than through the update_zone service:
-    # the service's payload is still being reshaped, and every consumer of this
-    # fixture cares about the resulting entities, not about how they got there.
+    # every consumer of this fixture cares about the resulting entities, not
+    # about how they got there. The direct write skips _notify_zones_updated,
+    # so nothing is saved and no bus event fires; persistence and the service
+    # path are covered in test_init.py and test_zone_entities.py.
     store = get_store(hass)
     store.device(device_id)[STORE_ZONES][1] = dict(RECT_ZONE)
     async_dispatcher_send(hass, SIGNAL_ZONES_UPDATED, device_id)

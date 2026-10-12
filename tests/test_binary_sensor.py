@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -12,6 +13,7 @@ from custom_components.apollo_mmwave.const import (
     SERVICE_UPDATE_ZONE,
     SIGNAL_ZONES_UPDATED,
     STORE_ENTITIES,
+    STORE_INPUT_UNITS,
     STORE_ZONES,
 )
 
@@ -129,6 +131,27 @@ async def test_presence_applies_the_devices_rotation(
     assert hass.states.get(presence_id).state == "on"
 
 
+@pytest.mark.parametrize("rotation", ["inf", "nan", float("-inf")])
+async def test_non_finite_stored_rotation_is_identity(
+    hass, entity_registry, init_integration, device_id, rotation
+) -> None:
+    """A hand-edited store rotation must not leave the entity stateless."""
+    _ = init_integration
+    # In the store before the zone's entities exist, so the very first
+    # evaluation, inside async_added_to_hass, reads it.
+    store = get_store(hass)
+    store.device(device_id)[ATTR_ROTATION_DEG] = rotation
+    store.device(device_id)[STORE_ZONES][1] = dict(RECT_ZONE)
+    async_dispatcher_send(hass, SIGNAL_ZONES_UPDATED, device_id)
+    await hass.async_block_till_done()
+    presence_id = _presence_id(entity_registry, device_id)
+    assert hass.states.get(presence_id) is not None
+
+    _set_target(hass, TARGET_1, 0, 1000)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "on"
+
+
 async def test_presence_entity_attaches_to_the_device(
     hass, entity_registry, setup_entry_with_zone
 ) -> None:
@@ -204,10 +227,9 @@ async def test_presence_scales_readings_by_the_devices_input_units(
     device_id, _ = setup_entry_with_zone
     presence_id = _presence_id(entity_registry, device_id)
 
-    # The zone spans y 0..2000 mm. A reading of 100 cm is inside; taken as
-    # millimetres it would be too, so use one that only fits when scaled: 150
-    # cm is 1500 mm (inside), but 150 mm is inside as well, so go the other
-    # way: 250 cm is 2500 mm (outside), while 250 mm would read inside.
+    # The zone spans y 0..2000 mm. 250 cm = 2500 mm is outside, while 250 mm
+    # would be inside, so only a scaled reading turns presence off; 150 cm =
+    # 1500 mm is inside.
     await hass.services.async_call(
         DOMAIN,
         SERVICE_UPDATE_ZONE,
@@ -233,5 +255,40 @@ async def test_presence_scales_readings_by_the_devices_input_units(
     )
     await hass.async_block_till_done()
     _set_target(hass, TARGET_1, 0, 250)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "on"
+
+
+async def test_input_units_survive_a_reload(
+    hass, hass_ws_client, entity_registry, setup_entry_with_zone
+) -> None:
+    """A reload (every HA restart, every HACS update) must keep the unit."""
+    device_id, entry = setup_entry_with_zone
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_UPDATE_ZONE,
+        {"device_id": device_id, "input_units": "cm"},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert get_store(hass).devices[device_id][STORE_INPUT_UNITS] == "cm"
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id(
+        {"type": "apollo_mmwave/zones/get", "device_id": device_id}
+    )
+    assert (await client.receive_json())["result"]["input_units"] == "cm"
+
+    # The zone spans y 0..2000 mm: 250 cm is outside, 150 cm is inside. Read
+    # as millimetres both would be inside.
+    presence_id = _presence_id(entity_registry, device_id)
+    _set_target(hass, TARGET_1, 0, 250)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "off"
+
+    _set_target(hass, TARGET_1, 0, 150)
     await hass.async_block_till_done()
     assert hass.states.get(presence_id).state == "on"

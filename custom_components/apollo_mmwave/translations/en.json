@@ -2,7 +2,7 @@
     "config": {
         "step": {
             "user": {
-                "description": "Set up Apollo mmWave. The integration serves its own cards and dashboard strategy — no separate downloads.",
+                "description": "Set up Apollo mmWave. The integration serves its own cards and dashboard strategy (no separate downloads).",
                 "data": {
                     "auto_create_view": "Add an 'Apollo mmWave' dashboard to the sidebar"
                 },
@@ -31,18 +31,6 @@
             }
         }
     },
-    "entity": {
-        "sensor": {
-            "apollo_mmwave": {
-                "name": "Sensor"
-            }
-        },
-        "binary_sensor": {
-            "apollo_mmwave": {
-                "name": "Binary sensor"
-            }
-        }
-    },
     "exceptions": {
         "unknown_device": {
             "message": "No Home Assistant device has id {device_id}."
@@ -54,7 +42,7 @@
             "message": "A calibration or restore is already running for this radar."
         },
         "no_gate_entities": {
-            "message": "This device has no gate threshold or energy entities. Auto-calibration needs an MSR-1, MSR-2 or R-PRO-1 with its radar entities enabled."
+            "message": "This device has no gate threshold or energy entities. Auto-calibration needs an MSR-1, MSR-2 or R PRO-1 with its radar entities enabled."
         },
         "engineering_mode_missing": {
             "message": "This radar has no engineering mode switch, so its gate energies cannot be read."

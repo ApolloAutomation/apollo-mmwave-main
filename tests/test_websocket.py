@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 from homeassistant.helpers.dispatcher import DATA_DISPATCHER, async_dispatcher_send
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.apollo_mmwave import get_store
 from custom_components.apollo_mmwave.const import (
@@ -175,8 +176,12 @@ async def test_zones_subscribe_ignores_other_devices(
     hass, hass_ws_client, init_integration, device_id, device_registry
 ) -> None:
     """A card only hears about the radar it is showing."""
+    _ = init_integration
+    # Owned by its own esphome entry, as every radar in the field is.
+    other_entry = MockConfigEntry(domain="esphome", title="Other radar")
+    other_entry.add_to_hass(hass)
     other = device_registry.async_get_or_create(
-        config_entry_id=init_integration.entry_id,
+        config_entry_id=other_entry.entry_id,
         identifiers={("esphome", "some_other_radar")},
         name="Other radar",
     )

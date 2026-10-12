@@ -95,7 +95,7 @@ class ZoneCoordsSensor(ZoneEntityMixin, SensorEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return shape/data plus the device-wide entities and rotation."""
-        device = self._store.device(self._device_id)
+        device = self._store.devices.get(self._device_id) or {}
         zone_def = self._store.zone(self._device_id, self._zone_id) or {}
         attrs: dict[str, Any] = {
             ATTR_SHAPE: zone_def.get(ATTR_SHAPE),

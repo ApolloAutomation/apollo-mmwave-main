@@ -62,6 +62,9 @@ type ShapeData = Any
 type ShapeTester = Callable[[float, float, ShapeData], bool]
 
 
+# TODO(REVIEW_REPORT.md X13): a copy of the one in  # noqa: FIX002, TD003
+# __init__.py, now without its finite and size guard. Share one helper from
+# an import-safe module; keep the tester's shape checks (migrated data is raw).
 def _coerce_float(value: Any) -> float | None:
     if value is None:
         return None
@@ -74,8 +77,20 @@ def _coerce_float(value: Any) -> float | None:
 def _build_point_rotator(
     rotation_raw: Any,
 ) -> Callable[[float, float], tuple[float, float]]:
+    """
+    Return a function that rotates a target point by the device's rotation_deg.
+
+    Positive degrees swing the device's facing direction toward its right (+X):
+    90 maps (x, y) to (y, -x), so a target straight ahead at (0, d) lands at
+    (d, 0). Must match `_drawTrackedTargets` / `drawDeviceCone` in
+    frontend-src/src/zone-map/card.ts.
+    """
     rotation_val = _coerce_float(rotation_raw)
-    if rotation_val is None:
+    # A stored inf would make math.cos raise inside async_added_to_hass, leaving
+    # an entity with no state that is never retried, and nan would silently stop
+    # the zone from ever detecting. Both read as "no rotation", like any other
+    # value that is not a number.
+    if rotation_val is None or not math.isfinite(rotation_val):
         cos_theta = 1.0
         sin_theta = 0.0
     else:
@@ -277,8 +292,8 @@ class ZonePresenceBinarySensor(ZoneEntityMixin, BinarySensorEntity):
             return False
         data = zone_def.get(ATTR_DATA)
 
-        rotation = self._store.device(self._device_id).get(ATTR_ROTATION_DEG)
-        rotate = _build_point_rotator(rotation)
+        device = self._store.devices.get(self._device_id) or {}
+        rotate = _build_point_rotator(device.get(ATTR_ROTATION_DEG))
 
         return any(
             shape_tester(x_val, y_val, data)

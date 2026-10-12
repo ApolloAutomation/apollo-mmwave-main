@@ -94,10 +94,8 @@ async def test_refused_add_is_retried_on_the_next_zone_signal(
     assert not tracker.is_disabled(f"{device_id}_zone_1")
 
 
-async def test_input_units_round_trip_through_the_store(
-    hass, init_integration, device_id
-) -> None:
-    """The service stores the unit and the websocket payload reports it."""
+async def test_service_stores_input_units(hass, init_integration, device_id) -> None:
+    """The service writes the unit into the device's in-memory store entry."""
     _ = init_integration
     await hass.services.async_call(
         DOMAIN,

@@ -1865,6 +1865,8 @@ export class ZoneMapCard extends HTMLElement {
       ...(this.zoneConfig || []).map((z) => Number(z.id)),
       ...(this.zones || []).map((z) => Number(z.id)),
     ]);
+    // TODO(REVIEW_REPORT.md X19): no upper bound here, but services.yaml says
+    // max 32 and the schema allows any safe integer; pick one rule for all three.
     let next = 1;
     while (ids.has(next)) next += 1;
     const newZone = { id: next, name: `Zone ${next}` };

@@ -3,18 +3,31 @@
 from __future__ import annotations
 
 import copy
+import logging
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
+import pytest
+from homeassistant.config_entries import ConfigEntryState
+from homeassistant.exceptions import UnsupportedStorageVersionError
+from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
     async_fire_time_changed,
 )
 
-from custom_components.apollo_mmwave.const import DOMAIN, SERVICE_UPDATE_ZONE
+from custom_components.apollo_mmwave.binary_sensor import ZonePresenceBinarySensor
+from custom_components.apollo_mmwave.const import (
+    DATA_STORE,
+    DOMAIN,
+    SERVICE_UPDATE_ZONE,
+    STORE_ZONES,
+)
+from custom_components.apollo_mmwave.sensor import ZoneCoordsSensor
+from custom_components.apollo_mmwave.store import SAVE_DELAY_SECONDS, ZoneStore
 from custom_components.apollo_mmwave.store import STORAGE_KEY as ZONE_STORAGE_KEY
-from custom_components.apollo_mmwave.store import ZoneStore
 
-from .conftest import CALIBRATION_STORAGE_KEY, radar_ids
+from .conftest import CALIBRATION_STORAGE_KEY, radar_ids, setup_integration
 
 if TYPE_CHECKING:
     from homeassistant.helpers.device_registry import DeviceEntry
@@ -180,6 +193,59 @@ async def test_v1_resolves_by_device_name_when_no_entities(
     assert store.devices[device.id]["zones"][1]["shape"] == "rect"
 
 
+async def test_v1_resolves_by_the_user_given_device_name(
+    hass, hass_storage, device_registry
+) -> None:
+    """A radar renamed in the UI is matched by that name, not its factory one."""
+    device = _make_radar(hass, device_registry, "Apollo R_PRO-1 abc123")
+    device_registry.async_update_device(device.id, name_by_user="Living Room Radar")
+    hass_storage["apollo_mmwave.zones"] = {
+        "version": 1,
+        "data": {
+            "locations": {
+                "Living Room Radar": {
+                    "zones": {"1": {"shape": "rect", "data": {}}},
+                    "entities": [],
+                }
+            }
+        },
+    }
+
+    store = ZoneStore(hass)
+    assert await store.async_load() is True
+
+    assert list(store.devices) == [device.id]
+    assert store.orphans == {}
+    assert store.devices[device.id]["label"] == "Living Room Radar"
+
+
+async def test_v1_factory_name_does_not_match_a_renamed_device(
+    hass, hass_storage, device_registry
+) -> None:
+    """Once the user has named the radar, only that name resolves to it."""
+    # Renaming the radar back to its old name is the documented way to recover
+    # zones orphaned by a rename, which only works if the user-given name wins.
+    device = _make_radar(hass, device_registry, "Apollo R_PRO-1 abc123")
+    device_registry.async_update_device(device.id, name_by_user="Living Room Radar")
+    hass_storage["apollo_mmwave.zones"] = {
+        "version": 1,
+        "data": {
+            "locations": {
+                "Apollo R_PRO-1 abc123": {
+                    "zones": {"1": {"shape": "rect", "data": {}}},
+                    "entities": [],
+                }
+            }
+        },
+    }
+
+    store = ZoneStore(hass)
+    assert await store.async_load() is True
+
+    assert store.devices == {}
+    assert list(store.orphans) == ["Apollo R_PRO-1 abc123"]
+
+
 async def test_v1_locations_colliding_on_one_device_are_merged(
     hass, hass_storage, device_registry, entity_registry, caplog
 ) -> None:
@@ -236,6 +302,91 @@ async def test_v1_locations_colliding_on_one_device_are_merged(
     assert conflict, "expected a warning about the conflicting zone id"
     assert "Apollo R_PRO-1 abc123" in conflict[0]
     assert "2" in conflict[0]
+
+
+def _v1_payload(*locations: tuple[str, dict]) -> dict:
+    """Build a v1 zone file from (location, entry) pairs, in that order."""
+    return {"version": 1, "data": {"locations": dict(locations)}}
+
+
+def _collision_warnings(caplog) -> list[str]:
+    return [
+        record.message
+        for record in caplog.records
+        if record.levelname == "WARNING" and "is defined by both" in record.message
+    ]
+
+
+async def test_v1_placeholder_zone_is_replaced_by_real_definition(
+    hass, hass_storage, device_registry, entity_registry, caplog
+) -> None:
+    """An empty placeholder is a gap, so a later real zone fills it silently."""
+    device = _make_radar(hass, device_registry, "Apollo R_PRO-1 abc123")
+    entity_registry.async_get_or_create(
+        "sensor",
+        "esphome",
+        "x1",
+        device_id=device.id,
+        suggested_object_id="apollo_r_pro_1_abc123_ld2450_target_1_x",
+    )
+    hass_storage["apollo_mmwave.zones"] = _v1_payload(
+        (
+            "Kitchen",
+            {
+                "zones": {"2": {}, "3": {}},
+                "entities": [{"x": TARGET_X, "y": TARGET_Y}],
+            },
+        ),
+        (
+            "Apollo R_PRO-1 abc123",
+            {"zones": {"2": {"shape": "rect", "data": {}}}, "entities": []},
+        ),
+    )
+
+    store = ZoneStore(hass)
+    assert await store.async_load() is True
+
+    entry = store.devices[device.id]
+    assert entry["zones"][2]["shape"] == "rect"
+    # A placeholder nobody else defines is still kept as one.
+    assert entry["zones"][3] == {}
+    # Scalars stay first writer.
+    assert entry["entities"] == [{"x": TARGET_X, "y": TARGET_Y}]
+    assert entry["label"] == "Kitchen"
+    assert _collision_warnings(caplog) == []
+
+
+async def test_v1_real_zone_is_kept_over_a_later_placeholder(
+    hass, hass_storage, device_registry, entity_registry, caplog
+) -> None:
+    """A placeholder arriving second is not a conflict and logs nothing."""
+    device = _make_radar(hass, device_registry, "Apollo R_PRO-1 abc123")
+    entity_registry.async_get_or_create(
+        "sensor",
+        "esphome",
+        "x1",
+        device_id=device.id,
+        suggested_object_id="apollo_r_pro_1_abc123_ld2450_target_1_x",
+    )
+    hass_storage["apollo_mmwave.zones"] = _v1_payload(
+        (
+            "Apollo R_PRO-1 abc123",
+            {"zones": {"2": {"shape": "rect", "data": {}}}, "entities": []},
+        ),
+        (
+            "Kitchen",
+            {
+                "zones": {"2": {}},
+                "entities": [{"x": TARGET_X, "y": TARGET_Y}],
+            },
+        ),
+    )
+
+    store = ZoneStore(hass)
+    assert await store.async_load() is True
+
+    assert store.devices[device.id]["zones"][2]["shape"] == "rect"
+    assert _collision_warnings(caplog) == []
 
 
 async def test_v1_empty_entities_list_becomes_absent(
@@ -308,11 +459,133 @@ async def test_explicit_empty_entities_survive_a_round_trip(
     assert reloaded.devices[device.id]["entities"] == []
 
 
+async def test_input_units_survive_a_round_trip(hass, hass_storage) -> None:
+    """The unit the presence sensor scales by has to come back after a restart."""
+    store = ZoneStore(hass)
+    store.devices["dev"] = {"zones": {}, "input_units": "cm"}
+    await store.async_save()
+    on_disk = hass_storage[ZONE_STORAGE_KEY]["data"]["devices"]["dev"]
+    assert on_disk["input_units"] == "cm"
+
+    reloaded = ZoneStore(hass)
+    assert await reloaded.async_load() is True
+
+    assert reloaded.devices["dev"]["input_units"] == "cm"
+
+
+async def test_delayed_save_writes_after_the_delay(hass, hass_storage) -> None:
+    """A mutation reaches disk once the debounce elapses, not before."""
+    # Every zone edit after setup is persisted this way. The immediate
+    # `async_save` only runs during setup migrations and on unload.
+    store = ZoneStore(hass)
+    store.device("dev")[STORE_ZONES][1] = {"shape": "rect", "data": {}}
+    store.async_delay_save()
+
+    async_fire_time_changed(
+        hass, dt_util.utcnow() + timedelta(seconds=SAVE_DELAY_SECONDS / 2)
+    )
+    await hass.async_block_till_done()
+    assert ZONE_STORAGE_KEY not in hass_storage
+
+    async_fire_time_changed(
+        hass, dt_util.utcnow() + timedelta(seconds=SAVE_DELAY_SECONDS + 1)
+    )
+    await hass.async_block_till_done()
+    on_disk = hass_storage[ZONE_STORAGE_KEY]["data"]["devices"]["dev"]
+    assert on_disk["zones"]["1"]["shape"] == "rect"
+
+
+async def test_unknown_input_units_on_disk_are_dropped(hass, hass_storage) -> None:
+    """Only a unit the service accepts is restored; anything else reads as mm."""
+    hass_storage[ZONE_STORAGE_KEY] = {
+        "version": 2,
+        "data": {
+            "devices": {
+                "number": {"zones": {}, "input_units": 5},
+                "furlong": {"zones": {}, "input_units": "furlong"},
+                "feet": {"zones": {}, "input_units": "ft"},
+                "none": {"zones": {}},
+            },
+            "orphans": {"Ghost Room": {"zones": {}, "input_units": "in"}},
+        },
+    }
+
+    store = ZoneStore(hass)
+    assert await store.async_load() is True
+
+    assert "input_units" not in store.devices["number"]
+    assert "input_units" not in store.devices["furlong"]
+    assert "input_units" not in store.devices["none"]
+    assert store.devices["feet"]["input_units"] == "ft"
+    assert store.orphans["Ghost Room"]["input_units"] == "in"
+
+
+async def test_only_string_aliases_on_disk_are_kept(hass, hass_storage) -> None:
+    """Merged v1 names come back; anything that is not a name is dropped."""
+    hass_storage[ZONE_STORAGE_KEY] = {
+        "version": 2,
+        "data": {
+            "devices": {
+                "mixed": {"zones": {}, "label": "Kitchen", "aliases": ["Den", 5, None]},
+                "scalar": {"zones": {}, "label": "Kitchen", "aliases": "Den"},
+                "nothing_left": {"zones": {}, "label": "Kitchen", "aliases": [7]},
+            },
+            "orphans": {},
+        },
+    }
+
+    store = ZoneStore(hass)
+    assert await store.async_load() is True
+
+    assert store.devices["mixed"]["aliases"] == ["Den"]
+    assert "aliases" not in store.devices["scalar"]
+    assert "aliases" not in store.devices["nothing_left"]
+
+
 async def test_a_new_device_entry_has_no_entities_key(hass) -> None:
     """A device nobody has configured must read as unconfigured, not cleared."""
     store = ZoneStore(hass)
 
     assert "entities" not in store.device("some_device_id")
+
+
+def _store_with_one_zone(hass) -> ZoneStore:
+    store = ZoneStore(hass)
+    store.device("stored")[STORE_ZONES][1] = {"shape": "rect", "data": {}}
+    return store
+
+
+async def test_reading_a_zone_does_not_create_the_device(hass) -> None:
+    """Asking for a zone is a read, so an unknown device stays unknown."""
+    store = _store_with_one_zone(hass)
+    before = copy.deepcopy(store._data_to_save())  # noqa: SLF001
+
+    assert store.zone("ghost", 1) is None
+    assert store.zone("stored", 2) is None
+    assert store.zone("stored", 1) == {"shape": "rect", "data": {}}
+
+    assert "ghost" not in store.devices
+    assert store._data_to_save() == before  # noqa: SLF001
+
+
+async def test_zone_entities_reading_an_unknown_device_store_nothing(hass) -> None:
+    """Evaluating presence or publishing geometry never mints a device entry."""
+    store = _store_with_one_zone(hass)
+    before = copy.deepcopy(store._data_to_save())  # noqa: SLF001
+    presence = ZonePresenceBinarySensor(hass, store, "ghost", 1)
+    presence.hass = hass
+    geometry = ZoneCoordsSensor(hass, store, "ghost", 1)
+    geometry.hass = hass
+
+    assert presence._evaluate_presence() is False  # noqa: SLF001
+    assert geometry.extra_state_attributes == {
+        "shape": None,
+        "data": None,
+        "entities": [],
+    }
+
+    assert "ghost" not in store.devices
+    assert store._data_to_save() == before  # noqa: SLF001
 
 
 async def test_v1_merge_keeps_an_explicit_zero_rotation(
@@ -382,3 +655,196 @@ async def test_calibration_file_is_separate_from_zone_store(
     assert [snapshot["id"] for snapshot in snapshots] == [result["snapshot_id"]]
     assert "zones" not in calibration_file
     assert "devices" in hass_storage[ZONE_STORAGE_KEY]["data"]
+
+
+def _malformed_file(version: int, data: object) -> dict:
+    """Build a syntactically valid zone file whose payload has the wrong shape."""
+    return {
+        "version": version,
+        "minor_version": 1,
+        "key": ZONE_STORAGE_KEY,
+        "data": data,
+    }
+
+
+async def _assert_setup_survives(hass, config_entry, caplog) -> ZoneStore:
+    """Set the entry up and check it logged an error but no traceback."""
+    await setup_integration(hass, config_entry)
+
+    assert config_entry.state is ConfigEntryState.LOADED
+    assert any(
+        record.levelno == logging.ERROR and "zone store" in record.getMessage()
+        for record in caplog.records
+    )
+    assert not any(record.exc_info for record in caplog.records)
+    assert "Error setting up entry" not in caplog.text
+    return hass.data[DOMAIN][DATA_STORE]
+
+
+async def test_v1_null_data_loads_empty(
+    hass, hass_storage, config_entry, caplog
+) -> None:
+    """A v1 file with `data: null` starts empty instead of failing setup."""
+    hass_storage[ZONE_STORAGE_KEY] = _malformed_file(1, None)
+
+    store = await _assert_setup_survives(hass, config_entry, caplog)
+
+    assert store.devices == {}
+    assert store.orphans == {}
+
+
+async def test_v1_list_data_loads_empty(
+    hass, hass_storage, config_entry, caplog
+) -> None:
+    """A v1 file whose payload is a list starts empty instead of failing setup."""
+    hass_storage[ZONE_STORAGE_KEY] = _malformed_file(1, [])
+
+    store = await _assert_setup_survives(hass, config_entry, caplog)
+
+    assert store.devices == {}
+    assert store.orphans == {}
+
+
+async def test_v1_list_locations_loads_empty(hass, hass_storage) -> None:
+    """A non-empty `locations` list has no names to rekey, so nothing migrates."""
+    hass_storage[ZONE_STORAGE_KEY] = _malformed_file(1, {"locations": [1]})
+
+    store = ZoneStore(hass)
+    assert await store.async_load() is True
+
+    assert store.devices == {}
+    assert store.orphans == {}
+
+
+async def test_v2_list_data_is_reported_and_ignored(
+    hass, hass_storage, config_entry, caplog
+) -> None:
+    """A v2 list payload is treated like a missing file and saved over."""
+    hass_storage[ZONE_STORAGE_KEY] = _malformed_file(2, [])
+
+    store = await _assert_setup_survives(hass, config_entry, caplog)
+
+    assert store.devices == {}
+    assert any("list" in record.getMessage() for record in caplog.records)
+    assert hass_storage[ZONE_STORAGE_KEY]["data"] == {"devices": {}, "orphans": {}}
+
+
+async def test_newer_store_version_fails_setup(
+    hass, hass_storage, config_entry
+) -> None:
+    """A file from a newer major version is refused, never read or overwritten."""
+    newer = {
+        "version": 3,
+        "minor_version": 1,
+        "key": ZONE_STORAGE_KEY,
+        "data": {"devices": {"dev": {"zones": {"1": {"shape": "rect"}}}}},
+    }
+    hass_storage[ZONE_STORAGE_KEY] = copy.deepcopy(newer)
+
+    with pytest.raises(UnsupportedStorageVersionError):
+        await ZoneStore(hass).async_load()
+
+    config_entry.add_to_hass(hass)
+    assert not await hass.config_entries.async_setup(config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert config_entry.state is ConfigEntryState.SETUP_ERROR
+    assert hass_storage[ZONE_STORAGE_KEY] == newer
+
+
+async def test_minor_version_mismatch_passes_through(hass, hass_storage) -> None:
+    """A current-major file with another minor version keeps its device keys."""
+    devices = {"dev": {"zones": {"1": {"shape": "rect", "data": {}}}, "label": "Den"}}
+    hass_storage[ZONE_STORAGE_KEY] = {
+        "version": 2,
+        "minor_version": 2,
+        "key": ZONE_STORAGE_KEY,
+        "data": {"devices": copy.deepcopy(devices), "orphans": {}},
+    }
+
+    store = ZoneStore(hass)
+    assert await store.async_load() is True
+
+    # Not run through the v1 rekey, which would find no `locations` and empty it.
+    assert store.devices == {
+        "dev": {"zones": {1: {"shape": "rect", "data": {}}}, "label": "Den"}
+    }
+    on_disk = hass_storage[ZONE_STORAGE_KEY]
+    assert (on_disk["version"], on_disk["minor_version"]) == (2, 1)
+    assert on_disk["data"]["devices"] == devices
+
+
+def _store_warnings(caplog) -> list[str]:
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if record.name.endswith(".store") and record.levelno == logging.WARNING
+    ]
+
+
+async def test_malformed_store_entries_are_reported_when_dropped(
+    hass, hass_storage, caplog
+) -> None:
+    """Each dropped entry or zone gets one warning naming it; siblings survive."""
+    good_zone = {"shape": "rect", "data": {}}
+    hass_storage[ZONE_STORAGE_KEY] = {
+        "version": 2,
+        "data": {
+            "devices": {
+                "dev1": {"zones": {"1": good_zone}},
+                "dev2": ["garbage"],
+                "dev3": {"zones": {"1": None, "2": good_zone, "x": good_zone}},
+            },
+            "orphans": {"Ghost": "nope", "Attic": {"zones": {"4": good_zone}}},
+        },
+    }
+
+    store = ZoneStore(hass)
+    assert await store.async_load() is True
+
+    assert store.devices == {
+        "dev1": {"zones": {1: good_zone}},
+        "dev3": {"zones": {2: good_zone}},
+    }
+    assert store.orphans == {"Attic": {"zones": {4: good_zone}}}
+
+    warnings = _store_warnings(caplog)
+    assert len(warnings) == 4
+    assert [w for w in warnings if "'dev2'" in w and "entry for device" in w]
+    assert [w for w in warnings if "zone 1 of 'dev3'" in w]
+    assert [w for w in warnings if "zone 'x' of 'dev3'" in w]
+    assert [w for w in warnings if "'Ghost'" in w]
+    assert not [w for w in warnings if "dev1" in w or "Attic" in w]
+
+
+async def test_load_v2_skips_malformed_entries(hass, hass_storage) -> None:
+    """Every malformed shape in a v2 file is dropped; a string rotation is kept."""
+    hass_storage[ZONE_STORAGE_KEY] = {
+        "version": 2,
+        "data": {
+            "devices": {
+                "good": {
+                    "zones": {
+                        "1": {"shape": "rect", "data": {}},
+                        "abc": {"shape": "rect", "data": {}},
+                        "2": "nope",
+                    },
+                    "entities": "not-a-list",
+                    "rotation_deg": "15",
+                    "label": 42,
+                },
+                "bad": "not-a-dict",
+                "nullish": None,
+            },
+            "orphans": {"Ghost": []},
+        },
+    }
+
+    store = ZoneStore(hass)
+    assert await store.async_load() is True
+
+    # rotation_deg is carried verbatim: the loader does not coerce it.
+    assert store.devices == {
+        "good": {"zones": {1: {"shape": "rect", "data": {}}}, "rotation_deg": "15"}
+    }
+    assert store.orphans == {}

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from homeassistant.helpers.dispatcher import async_dispatcher_send
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.apollo_mmwave import get_store
 from custom_components.apollo_mmwave.const import (
@@ -172,10 +173,6 @@ async def test_zones_on_two_devices_do_not_collide(
     hass, entity_registry, device_registry, init_integration, device_id
 ) -> None:
     """Two radars with a zone 1 each get distinct entities, not a dedup suffix."""
-    from pytest_homeassistant_custom_component.common import (  # noqa: PLC0415
-        MockConfigEntry,
-    )
-
     other_entry = MockConfigEntry(domain="esphome", title="Apollo MTR-1 def456")
     other_entry.add_to_hass(hass)
     other = device_registry.async_get_or_create(

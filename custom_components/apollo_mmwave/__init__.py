@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from typing import TYPE_CHECKING, Any
 
 import voluptuous as vol
@@ -51,6 +52,7 @@ from .const import (
     SHAPE_POLYGON,
     SHAPE_RECT,
     SIGNAL_ZONES_UPDATED,
+    STORE_ALIASES,
     STORE_ENTITIES,
     STORE_INPUT_UNITS,
     STORE_LABEL,
@@ -59,9 +61,11 @@ from .const import (
     WARN_ELLIPSE_INVALID,
     WARN_ELLIPSE_NON_POSITIVE,
     WARN_POLY_INSUFFICIENT,
+    WARN_POLY_MALFORMED,
     WARN_POLY_TRUNCATING,
     WARN_RECT_INVALID,
     WARN_RECT_NON_NUM,
+    WARN_ZONE_NO_GEOMETRY,
 )
 
 # NOTE: `.frontend` is imported lazily inside the setup path (not here) so that
@@ -78,31 +82,58 @@ PLATFORMS = [Platform.BINARY_SENSOR, Platform.SENSOR]
 # calls update_zone on every rotation drag, which would otherwise flood the log.
 _DATA_LOCATION_WARNED = "location_deprecation_warned"
 
+# The largest integer a zone coordinate or zone id may be: JavaScript's
+# Number.MAX_SAFE_INTEGER. Home Assistant writes the zone store, websocket
+# replies and recorder rows with orjson, which refuses integers outside 64
+# bits, so one bigger value made every later store write fail for every radar;
+# the card could not read such a number exactly either. This is a
+# serialization limit, not a geometry bound.
+_MAX_SAFE_INT = 2**53 - 1
+
 
 def get_store(hass: HomeAssistant) -> ZoneStore:
     """Return the loaded ZoneStore (setup guarantees it exists)."""
     return hass.data[DOMAIN][DATA_STORE]
 
 
-def _coerce_float(value: Any) -> float | None:
+def _finite_float(value: Any) -> float | None:
+    """Return the value as a finite float, or None if it is not one."""
     if value is None:
         return None
     try:
-        return float(value)
-    except TypeError, ValueError:
+        result = float(value)
+    except TypeError, ValueError, OverflowError:
+        # OverflowError: an int too large for a float, such as a long YAML
+        # integer literal.
         return None
+    # round() raises on inf (OverflowError) and nan (ValueError), so neither
+    # may reach it. They are treated like any other value that is not a number.
+    return result if math.isfinite(result) else None
+
+
+# TODO(REVIEW_REPORT.md X17): booleans and YAML on/off  # noqa: FIX002, TD003
+# pass as 1/0 here, and for rotation and zone_id, as HA's own validators
+# do. If unwanted, refuse bool in both _coerce_float copies and the schema.
+def _coerce_float(value: Any) -> float | None:
+    """Return a zone coordinate as a float, or None if it cannot be stored."""
+    result = _finite_float(value)
+    if result is None or abs(result) > _MAX_SAFE_INT:
+        return None
+    return result
 
 
 def _sanitize_rotation(rotation: Any) -> int | None:
-    if rotation is None:
+    # Not `_coerce_float`: a huge but finite angle still clamps to the nearest
+    # end of the range, as it always has. Only inf and nan are ignored.
+    value = _finite_float(rotation)
+    if value is None:
         return None
-    try:
-        value = round(float(rotation))
-    except TypeError, ValueError:
-        return None
-    return max(-180, min(180, value))
+    return max(-180, min(180, round(value)))
 
 
+# TODO(REVIEW_REPORT.md X14): a blank name is stored and  # noqa: FIX002, TD003
+# pins the bare base as the registry name. Consider stripping it and
+# treating blank as a clear (services.yaml documents today's result).
 def _coerce_zone_name(name: Any) -> str | None:
     if name is None:
         return None
@@ -135,20 +166,20 @@ def _normalize_entities(entities: Any) -> list[dict[str, str]] | None:
 
 
 def _normalize_zone_payload(
-    shape: str, data: Any, zone_id: int, location: str
+    shape: str, data: Any, zone_id: int, device_id: str
 ) -> dict[str, Any] | None:
     if shape == SHAPE_NONE or data is None:
         return None
     if shape == SHAPE_RECT:
-        return _normalize_rect(data, zone_id, location)
+        return _normalize_rect(data, zone_id, device_id)
     if shape == SHAPE_ELLIPSE:
-        return _normalize_ellipse(data, zone_id, location)
+        return _normalize_ellipse(data, zone_id, device_id)
     if shape == SHAPE_POLYGON:
-        return _normalize_polygon(data, zone_id, location)
+        return _normalize_polygon(data, zone_id, device_id)
     return None
 
 
-def _normalize_rect(data: Any, zone_id: int, location: str) -> dict[str, Any] | None:
+def _normalize_rect(data: Any, zone_id: int, device_id: str) -> dict[str, Any] | None:
     if not isinstance(data, dict):
         return None
     x_min = _coerce_float(data.get(ATTR_X_MIN))
@@ -156,16 +187,18 @@ def _normalize_rect(data: Any, zone_id: int, location: str) -> dict[str, Any] | 
     y_min = _coerce_float(data.get(ATTR_Y_MIN))
     y_max = _coerce_float(data.get(ATTR_Y_MAX))
     if x_min is None or x_max is None or y_min is None or y_max is None:
-        _LOGGER.warning(WARN_RECT_NON_NUM, zone_id, location)
+        _LOGGER.warning(WARN_RECT_NON_NUM, zone_id, device_id)
         return None
     x_min_i = round(x_min)
     x_max_i = round(x_max)
     y_min_i = round(y_min)
     y_max_i = round(y_max)
     if not (x_min_i < x_max_i and y_min_i < y_max_i):
-        _LOGGER.warning(WARN_RECT_INVALID, zone_id, location)
+        _LOGGER.warning(WARN_RECT_INVALID, zone_id, device_id)
         return None
     return {
+        # TODO(REVIEW_REPORT.md X10): extra caller keys are  # noqa: FIX002, TD003
+        # stored and published; return only the four bounds, as ellipse does.
         **data,
         ATTR_X_MIN: x_min_i,
         ATTR_X_MAX: x_max_i,
@@ -174,7 +207,9 @@ def _normalize_rect(data: Any, zone_id: int, location: str) -> dict[str, Any] | 
     }
 
 
-def _normalize_ellipse(data: Any, zone_id: int, location: str) -> dict[str, Any] | None:
+def _normalize_ellipse(
+    data: Any, zone_id: int, device_id: str
+) -> dict[str, Any] | None:
     if not isinstance(data, dict):
         return None
     cx = _coerce_float(data.get(ATTR_CX))
@@ -182,10 +217,10 @@ def _normalize_ellipse(data: Any, zone_id: int, location: str) -> dict[str, Any]
     rx = _coerce_float(data.get(ATTR_RX))
     ry = _coerce_float(data.get(ATTR_RY))
     if cx is None or cy is None or rx is None or ry is None:
-        _LOGGER.warning(WARN_ELLIPSE_INVALID, zone_id, location)
+        _LOGGER.warning(WARN_ELLIPSE_INVALID, zone_id, device_id)
         return None
     if rx <= 0 or ry <= 0:
-        _LOGGER.warning(WARN_ELLIPSE_NON_POSITIVE, zone_id, location)
+        _LOGGER.warning(WARN_ELLIPSE_NON_POSITIVE, zone_id, device_id)
         return None
     return {
         ATTR_CX: round(cx),
@@ -195,18 +230,22 @@ def _normalize_ellipse(data: Any, zone_id: int, location: str) -> dict[str, Any]
     }
 
 
-def _normalize_polygon(data: Any, zone_id: int, location: str) -> dict[str, Any] | None:
+def _normalize_polygon(
+    data: Any, zone_id: int, device_id: str
+) -> dict[str, Any] | None:
     if not isinstance(data, dict):
         return None
     points = data.get(ATTR_POINTS)
     if not isinstance(points, list) or len(points) < POLYGON_MIN_POINTS:
-        _LOGGER.warning(WARN_POLY_INSUFFICIENT, zone_id, location)
+        _LOGGER.warning(WARN_POLY_INSUFFICIENT, zone_id, device_id, POLYGON_MIN_POINTS)
         return None
     total_points = len(points)
+    # TODO(REVIEW_REPORT.md X11): slicing before the filter  # noqa: FIX002, TD003
+    # lets malformed points use up slots; filter, then slice (limit stays 32).
     trimmed = list(points[:POLYGON_MAX_POINTS])
     if total_points > POLYGON_MAX_POINTS:
         _LOGGER.warning(
-            WARN_POLY_TRUNCATING, zone_id, location, total_points, POLYGON_MAX_POINTS
+            WARN_POLY_TRUNCATING, zone_id, device_id, total_points, POLYGON_MAX_POINTS
         )
     normalized_points = []
     for point in trimmed:
@@ -218,8 +257,17 @@ def _normalize_polygon(data: Any, zone_id: int, location: str) -> dict[str, Any]
             continue
         normalized_points.append({"x": round(x_float), "y": round(y_float)})
     if len(normalized_points) < POLYGON_MIN_POINTS:
-        _LOGGER.warning(WARN_POLY_INSUFFICIENT, zone_id, location)
+        _LOGGER.warning(
+            WARN_POLY_MALFORMED,
+            zone_id,
+            device_id,
+            len(trimmed),
+            len(normalized_points),
+            POLYGON_MIN_POINTS,
+        )
         return None
+    # TODO(REVIEW_REPORT.md X10): extra caller keys are  # noqa: FIX002, TD003
+    # stored and published; return only the points, as ellipse does.
     return {**data, ATTR_POINTS: normalized_points}
 
 
@@ -282,14 +330,22 @@ def _notify_zones_updated(hass: HomeAssistant, device_id: str) -> None:
 def _device_id_for_label(store: ZoneStore, location: Any) -> str | None:
     """Resolve a deprecated `location` value against the stored device labels."""
     # Matching is slug-based so a v1 automation still hits its device however the
-    # name was capitalized or punctuated. Only stored labels are consulted: the
+    # name was capitalized or punctuated. Only stored names are consulted: the
     # service must not invent a target the store has never heard of.
     if not isinstance(location, str) or not location.strip():
         return None
+    # TODO(REVIEW_REPORT.md X16): labels that slugify alike  # noqa: FIX002, TD003
+    # resolve by store order with no warning, and '???' matches '!!!' via the
+    # 'unknown' slug. Try an exact match, then a unique slug match, else warn.
     wanted = slugify(location)
     for device_id, entry in store.devices.items():
         label = entry.get(STORE_LABEL)
         if isinstance(label, str) and slugify(label) == wanted:
+            return device_id
+    # A second v1 name that merged onto a device is as valid a target as the
+    # label, but a label wins a tie, the same as in the unique-id rewrite.
+    for device_id, entry in store.devices.items():
+        if any(slugify(alias) == wanted for alias in entry.get(STORE_ALIASES, [])):
             return device_id
     return None
 
@@ -327,6 +383,9 @@ def _device_id_from_call(hass: HomeAssistant, call: ServiceCall) -> str | None:
     device_id = raw.strip()
     # A stale id from a copied automation, or from a radar that was removed and
     # re-added, must not reach the store.
+    # TODO(REVIEW_REPORT.md X08): zones stored under an id  # noqa: FIX002, TD003
+    # that left the registry for good can never be deleted. Accept delete
+    # (only) for such an id; do not prune the store on device removal.
     if not _device_is_registered(hass, device_id):
         _LOGGER.warning(
             "Apollo mmWave: update_zone device id '%s' matches no Home Assistant"
@@ -378,6 +437,9 @@ def _resolve_target_device(
     hass: HomeAssistant, store: ZoneStore, call: ServiceCall
 ) -> str | None:
     """Return the device id a call targets, or None if it names no known radar."""
+    # TODO(REVIEW_REPORT.md X12): location is ignored with  # noqa: FIX002, TD003
+    # no deprecation warning when device_id is also given; warn whenever it
+    # is present. The schema's 'Exactly one' comment should say at least one.
     if "device_id" in call.data:
         return _device_id_from_call(hass, call)
     if "location" in call.data:
@@ -411,8 +473,33 @@ def _apply_entity_pairs(device: dict[str, Any], call: ServiceCall) -> None:
         device[STORE_ENTITIES] = entities
 
 
+def _zone_part_changes_something(
+    call: ServiceCall, store: ZoneStore, device_id: str, zone_id: int | None
+) -> bool:
+    """Report whether the zone fields of a call act on a zone."""
+    if zone_id is None:
+        return False
+    if call.data.get("delete") or call.data.get("shape") is not None:
+        return True
+    # A zone_id alone, or with data but no shape, writes nothing to the zone.
+    if call.data.get("name") is None:
+        return False
+    # A rename without geometry only lands on a stored zone. `store.device()`
+    # is a setdefault, so the lookup must not use it.
+    zones = (store.devices.get(device_id) or {}).get(STORE_ZONES) or {}
+    if isinstance(zones.get(zone_id), dict):
+        return True
+    _LOGGER.warning(
+        "Apollo mmWave: update_zone for device '%s' named zone %s, which does"
+        " not exist; the name was not applied.",
+        device_id,
+        zone_id,
+    )
+    return False
+
+
 def _call_changes_something(
-    call: ServiceCall, device_id: str, rotation: int | None
+    call: ServiceCall, store: ZoneStore, device_id: str, rotation: int | None
 ) -> bool:
     """Refuse the schema-legal calls that would change nothing, and say why."""
     zone_id = call.data.get("zone_id")
@@ -429,12 +516,23 @@ def _call_changes_something(
             " without a shape, so the data was ignored.",
             device_id,
         )
+    if zone_id is None and (
+        call.data.get("shape") is not None or call.data.get("data") is not None
+    ):
+        _LOGGER.warning(
+            "Apollo mmWave: update_zone for device '%s' carried zone geometry"
+            " without a zone_id, so the geometry was ignored.",
+            device_id,
+        )
+    # Evaluated first so a rename of a missing zone is reported even when the
+    # call's device-wide fields count on their own and still go through.
+    zone_counts = _zone_part_changes_something(call, store, device_id, zone_id)
     if (
         rotation is not None
         or call.data.get("input_units") is not None
         or call.data.get("clear_entities")
         or _normalize_entities(call.data.get("entities")) is not None
-        or zone_id is not None
+        or zone_counts
     ):
         return True
     # `store.device()` is a setdefault: reading it for this call would mint a
@@ -463,7 +561,7 @@ def _build_update_zone_handler(
         zone_name = _coerce_zone_name(call.data.get("name"))
         delete_zone = bool(call.data.get("delete"))
 
-        if not _call_changes_something(call, device_id, rotation):
+        if not _call_changes_something(call, store, device_id, rotation):
             return
 
         device = store.device(device_id)
@@ -472,6 +570,9 @@ def _build_update_zone_handler(
         _apply_entity_pairs(device, call)
 
         if delete_zone and zone_id is not None:
+            # TODO(REVIEW_REPORT.md X15): an unknown zone id  # noqa: FIX002, TD003
+            # still mints a store entry and fires the event; warn and return
+            # when the call has nothing else to change.
             device[STORE_ZONES].pop(zone_id, None)
             _remove_zone_entities(hass, device_id, zone_id)
             _notify_zones_updated(hass, device_id)
@@ -487,13 +588,12 @@ def _build_update_zone_handler(
             _notify_zones_updated(hass, device_id)
             return
 
-        if shape not in SUPPORTED_SHAPES:
-            _LOGGER.debug(
-                "Apollo mmWave: unsupported shape '%s' for device '%s'",
-                shape,
-                device_id,
-            )
-            return
+        # `shape` is one of SUPPORTED_SHAPES here: the schema rejects any other.
+        # A drawable shape with no `data` (omitted or null) is still stored, with
+        # no geometry, so say so as every rejected geometry does. `none` is the
+        # documented way to clear a zone and stays quiet.
+        if shape != SHAPE_NONE and data is None:
+            _LOGGER.warning(WARN_ZONE_NO_GEOMETRY, zone_id, device_id, shape)
 
         zone_entry = {
             ATTR_SHAPE: shape,
@@ -509,6 +609,9 @@ def _build_update_zone_handler(
 
         device[STORE_ZONES][zone_id] = zone_entry
 
+        # TODO(REVIEW_REPORT.md X01): on the creating call the  # noqa: FIX002, TD003
+        # entities do not exist yet, so this name never reaches the registry. Fix
+        # only that call: a one-shot pending name applied when the entity is added.
         if zone_name is not None:
             _update_registry_names(hass, device_id, zone_id, zone_name)
 
@@ -528,7 +631,12 @@ UPDATE_ZONE_SERVICE_SCHEMA = vol.All(
             vol.Optional("device_id"): vol.Any(cv.string, [cv.string]),
             vol.Optional("location"): cv.string,
             vol.Optional("clear_entities"): cv.boolean,
-            vol.Optional("zone_id"): cv.positive_int,
+            # Ids start at 1, as services.yaml documents and the card assumes;
+            # it refuses to edit, rename or delete a zone 0. The upper bound is
+            # the serialization limit above, not a zone count.
+            vol.Optional("zone_id"): vol.All(
+                vol.Coerce(int), vol.Range(min=1, max=_MAX_SAFE_INT)
+            ),
             vol.Optional("shape"): vol.In(list(SUPPORTED_SHAPES)),
             vol.Optional("data"): vol.Any(None, dict),
             vol.Optional(ATTR_ROTATION_DEG): vol.Coerce(float),
@@ -632,6 +740,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         schema=UPDATE_ZONE_SERVICE_SCHEMA,
     )
 
+    def _teardown() -> Coroutine[Any, Any, None]:
+        # A hook rather than code in `async_unload_entry`: Home Assistant runs
+        # the hooks when a later setup step raises too, and never calls
+        # `async_unload_entry` for an entry that failed to set up. The returned
+        # flush is awaited before the unload finishes.
+        hass.services.async_remove(DOMAIN, SERVICE_UPDATE_ZONE)
+        hass.data.get(DOMAIN, {}).pop(DATA_STORE, None)
+        return store.async_save()
+
+    entry.async_on_unload(_teardown)
+
     # How the card reads its configuration. Registering the commands is
     # idempotent and they are never unregistered (Home Assistant has no API for
     # it), so the teardown only closes the subscriptions this entry owns.
@@ -664,7 +783,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """
-    Unload the entry: platforms and service; flush the store.
+    Unload the entry's platforms.
+
+    The service, the store and the rest go in the `entry.async_on_unload` hooks
+    `async_setup_entry` registered, which Home Assistant runs only when this
+    returns True.
 
     The dashboard deliberately survives an unload. It is a real storage
     dashboard now, so removing it here would delete whatever the user renamed,
@@ -672,13 +795,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     integration reloaded (which HACS does on every update). The "auto-create
     dashboard" option owns its lifetime instead.
     """
-    unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    if unloaded:
-        hass.services.async_remove(DOMAIN, SERVICE_UPDATE_ZONE)
-        store = hass.data.get(DOMAIN, {}).pop(DATA_STORE, None)
-        if store is not None:
-            await store.async_save()
-    return unloaded
+    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
@@ -689,5 +806,9 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     from .store import ZoneStore  # noqa: PLC0415
 
     await async_remove_dashboard(hass)
-    await ZoneStore(hass).async_remove()
+    # The live store when an unload failed and left it in place: removing it
+    # cancels its pending delayed save, which a fresh instance cannot reach and
+    # which would write the file back after the delete.
+    store = hass.data.get(DOMAIN, {}).get(DATA_STORE) or ZoneStore(hass)
+    await store.async_remove()
     await CalibrationStore(hass).async_remove()

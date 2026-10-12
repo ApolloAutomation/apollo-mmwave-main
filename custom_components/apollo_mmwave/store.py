@@ -17,6 +17,8 @@ in-memory shape is::
             "entities": [{"x": "<entity_id>", "y": "<entity_id>"}, ...],  # optional
             "rotation_deg": 0,          # optional
             "label": "Apollo R_PRO-1 abc123",   # optional, display only
+            "aliases": ["Kitchen"],   # optional, other merged v1 names
+            "input_units": "mm",  # optional; absent means millimetres
         },
     }
 
@@ -31,9 +33,12 @@ v1 keyed all of this by the device's display name. A rename orphaned the
 zones, and two devices whose names slugified alike collided on one entity id.
 The Home Assistant device id survives renames and is unique, so it is the key;
 ``label`` is carried along for display and is never used to build an
-identifier. v1 entries that resolve to no device land in ``orphans``, still
-keyed by name, so a user who renamed a device mid-upgrade does not silently
-lose their drawn zones.
+identifier. When several v1 names merge onto one device, the first is the
+``label`` and the rest are kept in ``aliases``, so old unique ids and the
+deprecated ``location`` service field still resolve through any of them. v1
+entries that resolve to no device land in ``orphans``, still keyed by name, so
+a user who renamed a device mid-upgrade does not silently lose their drawn
+zones.
 """
 
 from __future__ import annotations
@@ -49,8 +54,11 @@ from homeassistant.util import slugify
 from .const import (
     ATTR_ROTATION_DEG,
     DOMAIN,
+    INPUT_UNIT_FACTORS,
+    STORE_ALIASES,
     STORE_DEVICES,
     STORE_ENTITIES,
+    STORE_INPUT_UNITS,
     STORE_LABEL,
     STORE_ORPHANS,
     STORE_ZONES,
@@ -72,7 +80,7 @@ def _empty_device() -> dict[str, Any]:
     return {STORE_ZONES: {}}
 
 
-def _resolve_device_id(hass: HomeAssistant, location: str, entities: Any) -> str | None:
+def resolve_device_id(hass: HomeAssistant, location: str, entities: Any) -> str | None:
     """Device id for a v1 location: by tracked entity first, then by name."""
     # A tracked coordinate entity points at its device directly, so it stays
     # correct even if the user renamed the device before upgrading. The name
@@ -90,12 +98,29 @@ def _resolve_device_id(hass: HomeAssistant, location: str, entities: Any) -> str
                 )
                 if entry and entry.device_id:
                     return entry.device_id
+    # TODO(REVIEW_REPORT.md X25): devices whose names slugify  # noqa: FIX002, TD003
+    # alike resolve by registry order with no log; at least warn and name the
+    # candidates (refusing to home the location is a product decision).
     wanted = slugify(location)
     for device in dr.async_get(hass).devices.values():
         name = device.name_by_user or device.name or ""
         if slugify(name) == wanted:
             return device.id
     return None
+
+
+def _record_location(target: dict[str, Any], location: str) -> None:
+    """Remember a location name that merged onto this entry, first one as label."""
+    # A rename left the old name behind as a second location on the same
+    # device. Pre-2.0 unique ids were built from whichever name was current at
+    # the time, so keeping only the first would strand the other name's
+    # entities on their old unique ids and its `location` automations too.
+    label = target.setdefault(STORE_LABEL, location)
+    if location == label:
+        return
+    aliases = target.setdefault(STORE_ALIASES, [])
+    if location not in aliases:
+        aliases.append(location)
 
 
 def _merge_location(
@@ -111,26 +136,31 @@ def _merge_location(
     left the old name behind as a second entry. A plain dict update would let
     the second entry silently wipe the first one's zones, and this migration
     runs once with no undo, so every zone id is kept and only true id-level
-    conflicts are dropped (loudly).
+    conflicts are dropped (loudly). Empty placeholders do not count as writers:
+    real data replaces one.
     """
     zones = target.setdefault(STORE_ZONES, {})
     incoming = raw.get(STORE_ZONES)
     if isinstance(incoming, dict):
         for raw_key, zone_def in incoming.items():
             zone_key = str(raw_key)
-            if zone_key in zones:
-                _LOGGER.warning(
-                    "Apollo mmWave: zone %s is defined by both '%s' and '%s',"
-                    " which migrated to the same device; keeping the definition"
-                    " from '%s'.",
-                    zone_key,
-                    zone_sources.get(zone_key, location),
-                    location,
-                    zone_sources.get(zone_key, location),
-                )
+            if zones.get(zone_key):
+                if zone_def:
+                    _LOGGER.warning(
+                        "Apollo mmWave: zone %s is defined by both '%s' and '%s',"
+                        " which migrated to the same device; keeping the"
+                        " definition from '%s'.",
+                        zone_key,
+                        zone_sources.get(zone_key, location),
+                        location,
+                        zone_sources.get(zone_key, location),
+                    )
                 continue
             zones[zone_key] = zone_def
             zone_sources[zone_key] = location
+    # TODO(REVIEW_REPORT.md X26): v1 entities and rotation  # noqa: FIX002, TD003
+    # are copied unvalidated. For parity add type checks only: str ids and
+    # round(float()) rotation, without the [-180, 180] clamp (a tuning bound).
     entities = raw.get(STORE_ENTITIES)
     # v1 seeded `entities: []` on every location, so it had no way to say
     # "explicitly none" and an empty v1 list can only mean "never configured".
@@ -144,7 +174,7 @@ def _merge_location(
     # presence rather than truthiness like the rest of the integration does.
     if rotation is not None and target.get(ATTR_ROTATION_DEG) is None:
         target[ATTR_ROTATION_DEG] = rotation
-    target.setdefault(STORE_LABEL, location)
+    _record_location(target, location)
 
 
 class _MigratingStore(Store[dict[str, Any]]):
@@ -156,17 +186,34 @@ class _MigratingStore(Store[dict[str, Any]]):
         old_minor_version: int,  # noqa: ARG002 - signature fixed by Store
         old_data: dict[str, Any],
     ) -> dict[str, Any]:
+        # Store raises UnsupportedStorageVersionError for a major above
+        # STORAGE_VERSION before calling this, since no `max_readable_version`
+        # is passed, so a newer file fails setup instead of being read. A major
+        # above 1 here is therefore the current one with a different minor
+        # version, which has nothing to rekey.
         if old_major_version > 1:
             return old_data
+        # Store hands over the file's `data` field verbatim, so a hand edit or a
+        # partial restore can leave something other than an object here. There
+        # is nothing to rekey in that case, so start empty rather than crash.
+        if not isinstance(old_data, dict):
+            _LOGGER.error(
+                "Apollo mmWave: zone store version 1 payload is not an object;"
+                " starting empty"
+            )
+            return {STORE_DEVICES: {}, STORE_ORPHANS: {}}
         devices: dict[str, Any] = {}
         orphans: dict[str, Any] = {}
         # Which location contributed each zone id, per device, so a collision
         # warning can name both sides of it.
         sources: dict[str, dict[str, str]] = {}
-        for location, raw in (old_data.get("locations") or {}).items():
+        locations = old_data.get("locations")
+        if not isinstance(locations, dict):
+            locations = {}
+        for location, raw in locations.items():
             if not isinstance(raw, dict):
                 continue
-            device_id = _resolve_device_id(self.hass, location, raw.get(STORE_ENTITIES))
+            device_id = resolve_device_id(self.hass, location, raw.get(STORE_ENTITIES))
             if device_id:
                 _merge_location(
                     devices.setdefault(device_id, {}),
@@ -186,8 +233,13 @@ class _MigratingStore(Store[dict[str, Any]]):
         return {STORE_DEVICES: devices, STORE_ORPHANS: orphans}
 
 
-def _parse_entry(raw: Any) -> dict[str, Any] | None:
-    """Normalise one stored device entry, or None if it is not a mapping."""
+def _parse_entry(raw: Any, device_id: str | None = None) -> dict[str, Any] | None:
+    """
+    Normalise one stored device entry, or None if it is not a mapping.
+
+    ``device_id`` (the entry's key, an orphan's location name included) only
+    names the entry in the warning for each zone that has to be dropped.
+    """
     if not isinstance(raw, dict):
         return None
     entry = _empty_device()
@@ -198,9 +250,24 @@ def _parse_entry(raw: Any) -> dict[str, Any] | None:
             try:
                 zone_id = int(zone_key)
             except TypeError, ValueError:
+                _LOGGER.warning(
+                    "Apollo mmWave: dropped zone '%s' of '%s' from %s; its key"
+                    " is not a zone number.",
+                    zone_key,
+                    device_id,
+                    STORAGE_KEY,
+                )
                 continue
             if isinstance(zone_def, dict):
                 entry[STORE_ZONES][zone_id] = zone_def
+            else:
+                _LOGGER.warning(
+                    "Apollo mmWave: dropped zone %s of '%s' from %s; its"
+                    " definition is not an object.",
+                    zone_key,
+                    device_id,
+                    STORAGE_KEY,
+                )
     entities = raw.get(STORE_ENTITIES)
     if isinstance(entities, list):
         entry[STORE_ENTITIES] = entities
@@ -210,6 +277,16 @@ def _parse_entry(raw: Any) -> dict[str, Any] | None:
     label = raw.get(STORE_LABEL)
     if isinstance(label, str):
         entry[STORE_LABEL] = label
+    aliases = raw.get(STORE_ALIASES)
+    if isinstance(aliases, list):
+        names = [alias for alias in aliases if isinstance(alias, str)]
+        if names:
+            entry[STORE_ALIASES] = names
+    # Absent stays absent (millimetres). A value the service could never have
+    # written is dropped rather than carried, so it reads as millimetres too.
+    units = raw.get(STORE_INPUT_UNITS)
+    if isinstance(units, str) and units in INPUT_UNIT_FACTORS:
+        entry[STORE_INPUT_UNITS] = units
     return entry
 
 
@@ -225,20 +302,44 @@ class ZoneStore:
         self.orphans: dict[str, dict[str, Any]] = {}
 
     async def async_load(self) -> bool:
-        """Load from disk. Returns False when no store file exists yet."""
+        """Load from disk. Returns False when there is no usable store file."""
         data = await self._store.async_load()
         if data is None:
             return False
+        if not isinstance(data, dict):
+            # Same outcome as a missing file: setup runs the legacy migration
+            # and saves over this one, instead of failing with a traceback.
+            _LOGGER.error(
+                "Apollo mmWave: zone store payload is a %s, not an object; ignoring it",
+                type(data).__name__,
+            )
+            return False
         self.devices = {}
         self.orphans = {}
+        # The next save writes out only what was kept, which makes every drop
+        # permanent, so each one is reported by its key.
         for device_id, raw in (data.get(STORE_DEVICES) or {}).items():
-            entry = _parse_entry(raw)
-            if entry is not None:
-                self.devices[device_id] = entry
+            entry = _parse_entry(raw, device_id)
+            if entry is None:
+                _LOGGER.warning(
+                    "Apollo mmWave: dropped the entry for device '%s' from %s;"
+                    " it is not an object.",
+                    device_id,
+                    STORAGE_KEY,
+                )
+                continue
+            self.devices[device_id] = entry
         for location, raw in (data.get(STORE_ORPHANS) or {}).items():
-            entry = _parse_entry(raw)
-            if entry is not None:
-                self.orphans[location] = entry
+            entry = _parse_entry(raw, location)
+            if entry is None:
+                _LOGGER.warning(
+                    "Apollo mmWave: dropped the unmatched location '%s' from %s;"
+                    " it is not an object.",
+                    location,
+                    STORAGE_KEY,
+                )
+                continue
+            self.orphans[location] = entry
         return True
 
     def device(self, device_id: str) -> dict[str, Any]:
@@ -246,8 +347,11 @@ class ZoneStore:
         return self.devices.setdefault(device_id, _empty_device())
 
     def zone(self, device_id: str, zone_id: int) -> dict[str, Any] | None:
-        """Return a zone definition or None."""
-        zone_def = self.device(device_id)[STORE_ZONES].get(zone_id)
+        """Return a zone definition or None, without creating the device."""
+        # Read through `devices`, not `device()`: that one is a setdefault, and
+        # asking for a zone must not write down an entry for an unknown device.
+        zones = (self.devices.get(device_id) or {}).get(STORE_ZONES) or {}
+        zone_def = zones.get(zone_id)
         return zone_def if isinstance(zone_def, dict) else None
 
     def async_delay_save(self) -> None:

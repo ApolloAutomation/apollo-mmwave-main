@@ -105,6 +105,9 @@ def _payload(hass: HomeAssistant, device_id: str) -> dict[str, Any]:
         # it off, and re-enable it the moment they saved anything else.
         STORE_ENTITIES: entry.get(STORE_ENTITIES),
         ATTR_ROTATION_DEG: entry.get(ATTR_ROTATION_DEG),
+        # TODO(REVIEW_REPORT.md X27): a frozen v1 name that  # noqa: FIX002, TD003
+        # goes stale after a rename. Send the registry name_by_user or name,
+        # falling back to the label, and fix 'display only' in store and const.
         STORE_LABEL: entry.get(STORE_LABEL),
         # What the presence sensor scales target readings by; null means mm.
         STORE_INPUT_UNITS: entry.get(STORE_INPUT_UNITS),
@@ -171,9 +174,8 @@ def ws_subscribe_zones(
     def _forward(changed_device_id: str) -> None:
         if changed_device_id != device_id:
             return
-        # The unload pops the store before the entry's teardown callbacks close
-        # this subscription, and a registry update in that gap would otherwise
-        # build a payload from a store that is no longer there.
+        # A safety net: the entry's teardown closes this subscription before it
+        # pops the store, and a payload built without the store would raise.
         if DATA_STORE not in hass.data.get(DOMAIN, {}):
             return
         connection.send_event(msg["id"], _payload(hass, device_id))
@@ -200,9 +202,10 @@ def ws_subscribe_zones(
 
 
 def _calibration_loaded(hass: HomeAssistant) -> bool:
-    # The zone `_answerable` tests only DATA_STORE, which `async_unload_entry`
-    # pops before the on_unload hooks run; a half-set-up entry can have the
-    # reverse. The calibration commands need both of their own keys.
+    # The zone `_answerable` tests only DATA_STORE, which the zone teardown pops
+    # while the calibration teardown may still be waiting on a job; a
+    # half-set-up entry can have the reverse. The calibration commands need
+    # both of their own keys.
     data = hass.data.get(DOMAIN, {})
     return DATA_CALIBRATION_STORE in data and DATA_CALIBRATION_JOBS in data
 
