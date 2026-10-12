@@ -3,6 +3,7 @@
 #
 # This configuration uses local hooks that rely on packages
 # defined in requirements.txt, avoiding separate pre-commit environments.
+# TODO(REVIEW_REPORT.md X05): language: system takes ruff from PATH, so commits fail (or run an unpinned ruff) without .venv active; consider astral-sh/ruff-pre-commit v0.16.10 or entry .venv/bin/ruff, or document committing with .venv active.
 repos:
   - repo: local
     hooks:
