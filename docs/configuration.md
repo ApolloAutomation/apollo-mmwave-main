@@ -28,8 +28,12 @@ the next restart; an integration reload does not recreate it.
 **Resources managed in YAML.** If your Lovelace resources are set in YAML
 (`lovelace: resource_mode: yaml`), the integration cannot add them. It logs a
 warning that ends with the two URLs to add, and until you add them the cards
-may only load after a hard refresh (Ctrl/Cmd+Shift+R). Copy the URLs from the
-warning exactly and add each one once, as a module:
+may only load after a hard refresh (Ctrl/Cmd+Shift+R). Find the warning in
+Settings → System → Logs.
+
+[![Open your Home Assistant instance and show your Home Assistant logs.](https://my.home-assistant.io/badges/logs.svg)](https://my.home-assistant.io/redirect/logs/)
+
+Copy the URLs from the warning exactly and add each one once, as a module:
 
 ```yaml
 lovelace:
@@ -63,6 +67,8 @@ live. To control the list yourself, open the integration's options (Settings
 devices**: the dashboard then shows exactly those devices and hides the rest.
 Leave the selection empty to go back to automatic detection. Changes apply
 immediately.
+
+[![Open your Home Assistant instance and show an integration.](https://my.home-assistant.io/badges/integration.svg)](https://my.home-assistant.io/redirect/integration/?domain=apollo_mmwave)
 
 The selection applies only while the Apollo mmWave dashboard is still generated
 automatically. Once you take control of it, the integration no longer writes to
@@ -158,7 +164,9 @@ The same `calibration:` block on a `custom:apollo-radar-tuning` strategy seeds
 every generated card. The card drives the `apollo_mmwave.calibrate_gates`,
 `apollo_mmwave.cancel_calibration` and `apollo_mmwave.restore_gate_thresholds`
 services, which automations can call directly; see the service descriptions in
-Developer Tools.
+Settings → Tools → Actions.
+
+[![Open your Home Assistant instance and show your action tools with a specific action selected.](https://my.home-assistant.io/badges/tools_perform_action.svg)](https://my.home-assistant.io/redirect/tools_perform_action/?service=apollo_mmwave.calibrate_gates)
 
 ### The calibration services
 
@@ -293,12 +301,14 @@ is inside the zone.
   renames). Clearing the name sets them back to "Zone 1" and "Zone 1 presence",
   still without the radar name. The card's own zone labels are not affected.
 - `apollo_mmwave.update_zone` changes zones from automations and scripts;
-  Developer Tools → Actions lists its fields. It takes the radar's `device_id`
+  Settings → Tools → Actions lists its fields. It takes the radar's `device_id`
   and a `zone_id` of 1 or more, with geometry in millimeters. To clear a zone
   send `shape: none`, and to remove it and its entities send `delete: true`. A
   call that changes nothing, such as a `zone_id` alone or `data` without a
   `shape`, is refused with a warning in the log. An accepted call fires
   `apollo_mmwave_zone_updated` with the radar's `device_id`.
+
+  [![Open your Home Assistant instance and show your action tools with a specific action selected.](https://my.home-assistant.io/badges/tools_perform_action.svg)](https://my.home-assistant.io/redirect/tools_perform_action/?service=apollo_mmwave.update_zone)
 
 ## Use your own dashboards instead
 
@@ -307,8 +317,11 @@ time in the integration's options; it takes effect immediately). The cards and
 strategies stay available:
 
 - **Dashboard strategy**: a whole dashboard with one tab per device, like the
-  integration's own. Create a dashboard, open its raw configuration editor and
-  replace everything with:
+  integration's own. Create a dashboard in Settings → Dashboards.
+
+  [![Open your Home Assistant instance and show your dashboards.](https://my.home-assistant.io/badges/lovelace_dashboards.svg)](https://my.home-assistant.io/redirect/lovelace_dashboards/)
+
+  Then open its raw configuration editor and replace everything with:
 
   ```yaml
   strategy:
