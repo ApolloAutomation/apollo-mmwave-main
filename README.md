@@ -63,7 +63,7 @@ You need:
 
 This button opens the repository in HACS and does steps 1 and 2 for you:
 
-[![Open your Home Assistant instance and open this repository in HACS.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=ApolloAutomation&repository=apollo-mmwave-main&category=integration)
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=ApolloAutomation&repository=apollo-mmwave-main&category=integration)
 
 1. Open **HACS** in the sidebar. Open the menu (⋮) in the top right and
    choose **Custom repositories**.
@@ -74,6 +74,9 @@ This button opens the repository in HACS and does steps 1 and 2 for you:
    **Download** again to confirm.
 4. Restart Home Assistant: go to **Settings → System** and press the power
    icon in the top right.
+
+   [![Open your Home Assistant instance and show the system dashboard.](https://my.home-assistant.io/badges/system_dashboard.svg)](https://my.home-assistant.io/redirect/system_dashboard/)
+
 5. Go to **Settings → Devices & Services**, press **Add Integration** and pick
    **Apollo mmWave**. This button opens the same window:
 
@@ -130,7 +133,11 @@ for you. Add the two lines shown in
 - **The zone map says Apollo mmWave is not loaded:** wait a moment after a
   restart, then reload the page.
 - **A sensor has no tab:** check that it is added through ESPHome, and that
-  **Dashboard devices** in the integration's options is empty or lists it.
+  **Dashboard devices** in the integration's options
+  (**Settings → Devices & Services → Apollo mmWave → Configure**) is empty or
+  lists it.
+
+  [![Open your Home Assistant instance and show an integration.](https://my.home-assistant.io/badges/integration.svg)](https://my.home-assistant.io/redirect/integration/?domain=apollo_mmwave)
 
 The [full troubleshooting list](docs/configuration.md#troubleshooting) covers
 more.
