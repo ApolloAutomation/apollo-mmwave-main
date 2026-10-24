@@ -14,18 +14,22 @@ Lovelace resources are managed in YAML (replace both `?v=` URLs; see
 - **Less sensitive calibration.** Each new threshold is now the highest energy
   the gate reached in the empty room plus 15 points or 35% of that peak,
   whichever is larger, instead of 10 points or 25%. Quiet gates end up about
-  5 points higher than before. Home Assistant sees only about one in ten of
-  the radar's readings during the listen, and short spikes it never caught,
-  such as a fan or the heating cycling, were still tripping gates calibrated
-  10 points above their noise.
+  5 points higher than before. Calibrated radars could still trigger with
+  nobody there: Home Assistant sees only about one in ten of the radar's
+  readings during the listen, and something that moves now and then, like a
+  fan or the heating, may not move during the one-minute listen.
 - **Thresholds you already have stay as they are.** Press **Calibrate with
   empty room** again to get the new headroom, and **Undo** still puts your
   previous values back.
 - **Still too sensitive, or now missing people?** The headroom is a card
-  option: add `calibration: {margin: 20}` (points) or `margin_pct` (percent)
-  to the Auto-calibrate card or the dashboard strategy, or pass `margin` and
-  `margin_pct` to the `apollo_mmwave.calibrate_gates` action. See
-  [Auto-calibration](docs/configuration.md#auto-calibration).
+  option. `margin` (points) is the one that moves quiet gates, which is most
+  of them; `margin_pct` (percent of the peak) only takes over on gates whose
+  peak is 43 or more at the defaults, such as gates right at the sensor. Add
+  `calibration: {margin: 20}` to the Auto-calibrate card or the dashboard
+  strategy, or pass `margin` and `margin_pct` to the
+  `apollo_mmwave.calibrate_gates` action.
+  `calibration: {margin: 10, margin_pct: 25}` gives the 2.2.3 headroom back.
+  See [Auto-calibration](docs/configuration.md#auto-calibration).
 
 ## What changed in 2.2.3
 
