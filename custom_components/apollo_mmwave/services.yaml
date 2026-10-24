@@ -130,7 +130,7 @@ calibrate_gates:
       name: Headroom (points)
       description: Added above the highest energy seen. Home Assistant only sees about one in ten of the radar's readings, so the headroom covers the ones it missed. Raise it if the radar still triggers with nobody there; lower it if it misses people. Headroom (points) and Headroom (percent) cannot both be 0.
       required: false
-      default: 10
+      default: 15
       selector:
         number:
           min: 0
@@ -139,7 +139,7 @@ calibrate_gates:
       name: Headroom (percent)
       description: Relative headroom; the larger of the two headrooms is used per gate.
       required: false
-      default: 25
+      default: 35
       selector:
         number:
           min: 0
