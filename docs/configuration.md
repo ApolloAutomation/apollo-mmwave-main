@@ -39,9 +39,9 @@ Copy the URLs from the warning exactly and add each one once, as a module:
 lovelace:
   resource_mode: yaml
   resources:
-    - url: /apollo_mmwave/apollo-radar-tuning.js?v=2.2.3
+    - url: /apollo_mmwave/apollo-radar-tuning.js?v=2.2.4
       type: module
-    - url: /apollo_mmwave/apollo-radar-zone-map-card.js?v=2.2.3
+    - url: /apollo_mmwave/apollo-radar-zone-map-card.js?v=2.2.4
       type: module
 ```
 
@@ -156,8 +156,8 @@ title: Auto-calibrate          # optional
 calibration:                   # optional; absent keys use the service defaults
   duration_s: 120              # listen for two minutes (15..600)
   settle_s: 0                  # no countdown (0..120)
-  margin: 10                   # headroom in energy points (0..50)
-  margin_pct: 25               # headroom in percent of the peak (0..100)
+  margin: 15                   # headroom in energy points (0..50)
+  margin_pct: 35               # headroom in percent of the peak (0..100)
 ```
 
 The same `calibration:` block on a `custom:apollo-radar-tuning` strategy seeds
@@ -172,7 +172,7 @@ Settings → Tools → Actions.
 
 | Service | What it does |
 |---|---|
-| `apollo_mmwave.calibrate_gates` | The run described above for one radar (`device_id`). Optional `duration_s` (15 to 600, default 60), `settle_s` (0 to 120, default 15), `margin` (0 to 50 points, default 10), `margin_pct` (0 to 100 percent, default 25; the larger headroom wins per gate, and both cannot be 0), `kind` (`both`, `move` or `still`), `apply` (`false` previews without writing) and `wait` (`true` blocks until the job ends and returns the full result). |
+| `apollo_mmwave.calibrate_gates` | The run described above for one radar (`device_id`). Optional `duration_s` (15 to 600, default 60), `settle_s` (0 to 120, default 15), `margin` (0 to 50 points, default 15), `margin_pct` (0 to 100 percent, default 35; the larger headroom wins per gate, and both cannot be 0), `kind` (`both`, `move` or `still`), `apply` (`false` previews without writing) and `wait` (`true` blocks until the job ends and returns the full result). |
 | `apollo_mmwave.cancel_calibration` | Stops the running job for one radar. Nothing is written if it had not started writing; values already written stay until you restore. |
 | `apollo_mmwave.restore_gate_thresholds` | Writes the thresholds saved before the last calibration back (or a chosen `snapshot_id`). The current values are saved first, so a restore can itself be undone. |
 

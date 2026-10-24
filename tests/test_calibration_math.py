@@ -14,6 +14,8 @@ from custom_components.apollo_mmwave.calibration_math import (
     nearest_rank_percentile,
 )
 
+# Fixed inputs for the formula tests (the 2.2.0 defaults), not the service
+# defaults, which test_calibration.py covers.
 DEFAULT_MARGINS = Margins(absolute=10, percent=25)
 
 

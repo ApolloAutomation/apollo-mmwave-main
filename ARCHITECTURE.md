@@ -284,7 +284,7 @@ Zone manager: `_renderZoneManager` rebuilds every row on each payload, but first
 | `RETRY_DELAYS_MS` | `api.ts` | 1000, 2000, 5000, 10000, 20000 | Backoff while the backend is `not_loaded` or its commands are not registered yet (`unknown_command`) | UI choice |
 | `DEFAULT_DURATION_S` | `calibration.py`, `services.yaml` | 60 s | Listening window | Project choice; confirm on MSR-2 and R PRO-1 hardware before release |
 | `DEFAULT_SETTLE_S` | `calibration.py`, `services.yaml` | 15 s | Countdown before the listen so the person can leave; the mode is turned on first | Project choice (10 s was judged tight for a large room) |
-| `DEFAULT_MARGIN` / `DEFAULT_MARGIN_PCT` | `calibration.py`, `services.yaml` | 10 points / 25 % | Headroom above the observed peak, the larger wins per gate; both 0 is refused (`margin_zero`) | Project choice: HA sees about a tenth of the chip's frames, so the maximum under-estimates the true peak |
+| `DEFAULT_MARGIN` / `DEFAULT_MARGIN_PCT` | `calibration.py`, `services.yaml` | 15 points / 35 % (10 / 25 before 2.2.4) | Headroom above the observed peak, the larger wins per gate; both 0 is refused (`margin_zero`) | Project choice: HA sees about a tenth of the chip's frames, so the maximum under-estimates the true peak |
 | `TICK_S` | `calibration.py` | 1 s | Sampling and progress tick | ESPHome's 1 s `throttle_with_priority` on the gate energy sensors |
 | `MIN_SAMPLES` | `calibration_math.py` | 5 | Fewer tick samples than this and a gate is `no_data`; patch it on `calibration_math` (not re-exported by `calibration.py`) | Project choice |
 | `ENGINEERING_CONFIRM_TIMEOUT_S` | `calibration.py` | 10 s | The switch must read `on` within this | Native API acknowledgement bound only: the ESPHome switch publishes `on` optimistically before the UART command |
@@ -307,7 +307,7 @@ Zone manager: `_renderZoneManager` rebuilds every row on each payload, but first
 | `hours_to_show` | `strategy-core.ts` | 1 | Occupancy history window | UI choice |
 | Lock storage key | `card.ts` | `apollo-mmwave.zone-map.lock.<device_id>` | Per-radar remembered lock | UI choice |
 | `zone_id` selector | `services.yaml` | min 1, max 32 | Service UI bound; the schema enforces 1..2**53 - 1 and Add Zone has no cap | UI choice |
-| Manifest version | `manifest.json`, `index.ts` (`CARD_VERSION`), `package.json`, `package-lock.json` (top-level `version` and `packages[""].version`), `pyproject.toml` | 2.2.3 | Integration version and JS `?v=` cache buster | Release process, hand-synced, enforced by `frontend-src/test/build.test.ts` and `tests/test_versions.py` |
+| Manifest version | `manifest.json`, `index.ts` (`CARD_VERSION`), `package.json`, `package-lock.json` (top-level `version` and `packages[""].version`), `pyproject.toml` | 2.2.4 | Integration version and JS `?v=` cache buster | Release process, hand-synced, enforced by `frontend-src/test/build.test.ts` and `tests/test_versions.py` |
 | Minimum HA | `hacs.json` | 2026.8.1 | HACS install floor | Release choice |
 | `requires-python` | `pyproject.toml`, `scripts/bootstrap` | >= 3.14.2 | Interpreter floor; the devcontainer image (`python:3.14`) must satisfy it | HA 2026.8.1 requirement; `tests/test_scripts.py` and `tests/test_devcontainer.py` keep the copies in step |
 | CI Node version | `.github/workflows/test.yml` | 22 | Node major the committed bundles are built and checked with | Matches the committed `www/` output |

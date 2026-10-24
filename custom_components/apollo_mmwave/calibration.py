@@ -162,8 +162,13 @@ _LOGGER = logging.getLogger(__name__)
 
 DEFAULT_DURATION_S = 60
 DEFAULT_SETTLE_S = 15
-DEFAULT_MARGIN = 10
-DEFAULT_MARGIN_PCT = 25
+# Headroom above the observed empty-room peak; the larger of the two wins per
+# gate. 2.2.4 raised these from 10 points / 25 % after live testing on MSR-1
+# panels: the listen sees about one in ten of the chip's frames, and quiet
+# gates calibrated 10 points over their noise still tripped on short spikes
+# the listen never caught (fans cycling, HVAC), well below the factory values.
+DEFAULT_MARGIN = 15
+DEFAULT_MARGIN_PCT = 35
 TICK_S = 1  # sampling and progress tick
 ENGINEERING_CONFIRM_TIMEOUT_S = 10  # switch must read "on" within this
 ENERGY_WARMUP_TIMEOUT_S = 20  # an energy sensor must be numeric within this

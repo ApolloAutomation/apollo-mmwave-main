@@ -46,14 +46,25 @@ from .conftest import (
     setup_integration,
 )
 
-# An energy that moves every LD2410 factory threshold: 60 + max(10, 15) = 75.
+
+
+def proposal(
+    peak: float,
+    margin: int = calibration.DEFAULT_MARGIN,
+    margin_pct: int = calibration.DEFAULT_MARGIN_PCT,
+) -> int:
+    """The threshold the default headroom proposes for a peak (capped at 100)."""
+    return min(100, math.ceil(peak + max(margin, peak * margin_pct / 100)))
+
+
+# An energy that moves every LD2410 factory threshold: 60 + max(15, 21) = 81.
 ALL_CHANGE = 60
-ALL_CHANGE_NEW = 75
-# Ten points of energy gives 10 + max(10, 2.5) = 20, which equals four factory
-# values (g4 move, g6/g7/g8 still), so those four are reported unchanged.
+ALL_CHANGE_NEW = proposal(ALL_CHANGE)
+# The rig's default energy (10 points, conftest.py) gives 10 + max(15, 3.5) = 25,
+# which equals no LD2410 factory value, so every channel changes.
 QUIET = 10
-QUIET_NEW = 20
-QUIET_UNCHANGED = 4
+QUIET_NEW = proposal(QUIET)
+assert ALL_CHANGE_NEW == 81 and QUIET_NEW == 25, "retune the fixtures with the defaults"
 
 EN_JSON = Path(calibration.__file__).parent / "translations" / "en.json"
 EXCEPTION_MESSAGES = json.loads(EN_JSON.read_text(encoding="utf-8"))["exceptions"]
@@ -62,11 +73,6 @@ STORE_WRITE = "homeassistant.helpers.storage.Store._async_write_data"
 
 async def _disk_full(_store, _data) -> None:
     raise WriteError(OSError(28, "No space left on device"))
-
-
-def proposal(peak: float) -> int:
-    """Mirror the two-part headroom rule for expectations."""
-    return min(100, math.ceil(peak + max(10, peak * 25 / 100)))
 
 
 def _jobs(hass) -> dict[str, calibration.CalibrationJob]:
@@ -379,8 +385,7 @@ async def test_calibrate_marker_without_store_stops_before_the_switch(
 
 async def test_calibrate_writes_peak_plus_margin_per_gate(harness, msr) -> None:
     """Each threshold is the gate's own peak plus headroom."""
-    # g2 move ships at the factory value 40, which is also the proposal for a
-    # peak of 30, so it would be skipped as unchanged; start it elsewhere.
+    # Start g2 move away from the proposal for a peak of 30, so it is written.
     harness.hass.states.async_set(
         msr.threshold(2, "move"), "50", {"min": 0, "max": 100}
     )
@@ -395,7 +400,7 @@ async def test_calibrate_writes_peak_plus_margin_per_gate(harness, msr) -> None:
     result = await finish_job(task)
 
     writes = dict(harness.services.writes())
-    assert writes[msr.threshold(2, "move")] == 40
+    assert writes[msr.threshold(2, "move")] == proposal(30)
     assert writes[msr.threshold(0, "still")] == 100
     assert _cell(result, 2, "move")["peak"] == 30
     assert _cell(result, 0, "still")["flags"] == ["off"]
@@ -744,8 +749,9 @@ async def test_calibrate_ld2412_refresh_checks_the_channel_it_does_not_write(
 
 async def test_calibrate_ld2412_refresh_change_is_counted_once(harness, rpro) -> None:
     """A value the refresh moved is written and never also counted unchanged."""
-    # A peak of 30 proposes 40, the LD2412 factory value, so every move channel
-    # is unchanged at compute time; the refresh then reports g3 move at 35.
+    # A peak of 25 proposes 40 (25 + 15), the LD2412 factory value, so every
+    # move channel is unchanged at compute time; the refresh then reports g3
+    # move at 35.
     harness.services.on_press[rpro.query_params] = lambda: (
         None
         if harness.services.writes()
@@ -754,7 +760,8 @@ async def test_calibrate_ld2412_refresh_change_is_counted_once(harness, rpro) ->
         )
     )
 
-    result = await harness.run(rpro, move=30, still=ALL_CHANGE)
+    assert proposal(25) == 40
+    result = await harness.run(rpro, move=25, still=ALL_CHANGE)
 
     assert _cell(result, 3, "move")["old"] == 35
     assert _cell(result, 3, "move")["written"] is True
@@ -790,7 +797,7 @@ async def test_calibrate_rejects_zero_margins(harness, msr) -> None:
 
     assert result["outcome"] == "applied"
     assert result["margin"] == 0
-    assert _cell(result, 0, "move")["new"] == 13
+    assert _cell(result, 0, "move")["new"] == proposal(QUIET, margin=0, margin_pct=25)
 
 
 async def test_calibrate_dry_run_writes_nothing_and_takes_no_snapshot(
@@ -1234,9 +1241,9 @@ async def test_calibrate_offline_before_the_first_write_says_nothing_was_changed
 
 
 async def test_calibrate_echo_compares_numerically_with_tolerance(harness, msr) -> None:
-    """A `35.0` echo confirms a write of 35 (a peak of 25 plus 10 headroom)."""
+    """A `40.0` echo confirms a write of 40 (a peak of 25 plus 15 headroom)."""
     harness.hass.states.async_set(
-        msr.threshold(2, "move"), "40", {"min": 0, "max": 100}
+        msr.threshold(2, "move"), "50", {"min": 0, "max": 100}
     )
     task = harness.start(msr)
     harness.feed.set_all(QUIET, QUIET, msr)
@@ -1244,10 +1251,10 @@ async def test_calibrate_echo_compares_numerically_with_tolerance(harness, msr) 
     await harness.advance(15)
     result = await finish_job(task)
 
-    assert harness.hass.states.get(msr.threshold(2, "move")).state == "35.0"
-    assert _cell(result, 2, "move")["new"] == 35
+    assert harness.hass.states.get(msr.threshold(2, "move")).state == "40.0"
+    assert _cell(result, 2, "move")["new"] == proposal(25) == 40
     assert _cell(result, 2, "move")["confirmed"] is True
-    assert _cell(result, 2, "move")["actual"] == 35
+    assert _cell(result, 2, "move")["actual"] == 40
     assert result["outcome"] == "applied"
     assert result["unverified"] == []
 
