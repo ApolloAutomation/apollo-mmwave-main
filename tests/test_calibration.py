@@ -47,13 +47,12 @@ from .conftest import (
 )
 
 
-
 def proposal(
     peak: float,
     margin: int = calibration.DEFAULT_MARGIN,
     margin_pct: int = calibration.DEFAULT_MARGIN_PCT,
 ) -> int:
-    """The threshold the default headroom proposes for a peak (capped at 100)."""
+    """Return the threshold the default headroom proposes for a peak (capped at 100)."""
     return min(100, math.ceil(peak + max(margin, peak * margin_pct / 100)))
 
 
@@ -64,7 +63,8 @@ ALL_CHANGE_NEW = proposal(ALL_CHANGE)
 # which equals no LD2410 factory value, so every channel changes.
 QUIET = 10
 QUIET_NEW = proposal(QUIET)
-assert ALL_CHANGE_NEW == 81 and QUIET_NEW == 25, "retune the fixtures with the defaults"
+assert ALL_CHANGE_NEW == 81, "retune the fixtures with the defaults"
+assert QUIET_NEW == 25, "retune the fixtures with the defaults"
 
 EN_JSON = Path(calibration.__file__).parent / "translations" / "en.json"
 EXCEPTION_MESSAGES = json.loads(EN_JSON.read_text(encoding="utf-8"))["exceptions"]
