@@ -17,7 +17,7 @@ body:
   attributes:
     label: "Integration version"
     description: "The version of this custom integration you are using"
-    placeholder: "2.2.4"
+    placeholder: "2.2.5"
   validations:
     required: false
 - type: textarea
