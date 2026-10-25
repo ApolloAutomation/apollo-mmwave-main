@@ -14,6 +14,7 @@ install the integration and run your first calibration.
 - [Use your own dashboards instead](#use-your-own-dashboards-instead)
   - [Strategy options](#strategy-options)
   - [Card options](#card-options)
+- [Removing Apollo mmWave](#removing-apollo-mmwave)
 - [Troubleshooting](#troubleshooting)
 
 ## Lovelace resources
@@ -60,10 +61,10 @@ By default the dashboard shows every Apollo mmWave device Home Assistant
 knows about, online or not. An unplugged radar keeps its tab with an
 "offline" note so it is not silently missing; a leftover registry entry from
 reflashed hardware shows the same way until you delete the old device in
-Settings → Devices & Services. A device without an Apollo model in the
+Settings → Devices & services. A device without an Apollo model in the
 registry (DIY builds) is only picked up while one of its radar entities is
 live. To control the list yourself, open the integration's options (Settings
-→ Devices & Services → Apollo mmWave → Configure) and pick **Dashboard
+→ Devices & services → Apollo mmWave → Configure) and pick **Dashboard
 devices**: the dashboard then shows exactly those devices and hides the rest.
 Leave the selection empty to go back to automatic detection. Changes apply
 immediately.
@@ -432,6 +433,23 @@ rotation slider resets to: the cone, the live targets and the presence sensors
 all use the radar's stored rotation, which is 0 until you set it with the
 slider (or with `update_zone`'s `rotation_deg`).
 
+## Removing Apollo mmWave
+
+Deleting Apollo mmWave in Settings → Devices & services (the ⋮ menu on the
+entry, then **Delete**) removes what it made: the Apollo mmWave dashboard
+(unless you took control of it), every zone and its two entities, and the
+saved calibration values that **Undo** uses. From 2.2.5 it also removes its
+two Lovelace resources, so dashboards stop asking for files that are gone.
+The thresholds a calibration wrote stay on the radars. Setting Apollo mmWave
+up again starts from nothing.
+
+With Lovelace resources managed in YAML, the integration cannot remove them:
+delete the two `/apollo_mmwave/` rows from your `resources:` by hand. It logs
+a warning that names them. If you removed a release older than 2.2.5, delete
+the two rows yourself under Settings → Dashboards → ⋮ → **Resources**.
+
+[![Open your Home Assistant instance and show your dashboard resources.](https://my.home-assistant.io/badges/lovelace_resources.svg)](https://my.home-assistant.io/redirect/lovelace_resources/)
+
 ## Troubleshooting
 
 - **A card or the dashboard does not load.** Do a hard refresh
@@ -442,6 +460,13 @@ slider (or with `update_zone`'s `rotation_deg`).
 - **The Gate Energy chart says "Radar unavailable".** The radar is offline; the
   chart fills in once it reconnects. "Turn on Radar Engineering Mode" means the
   radar is online and the mode is off.
+- **The radar triggers with nobody there.** Update to 2.2.4 or later and press
+  **Calibrate with empty room** again, since 2.2.4 leaves more headroom. If it
+  still triggers, raise the `margin` option (headroom in energy points), for
+  example to 20, and calibrate again; see [Auto-calibration](#auto-calibration).
+  The wiki's
+  [the radar still triggers with nobody there](https://wiki.apolloautomation.com/products/general/setup/apollo-mmwave-dashboard/#the-radar-still-triggers-with-nobody-there)
+  has more.
 - **A distance or gate-energy card says "Apollo mmWave: device not found".**
   Its `device_id` matches no device with gate-radar entities, for example an
   MTR-1, an R PRO-1 without the optional LD2412, or a radar that was removed.
