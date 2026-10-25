@@ -57,11 +57,15 @@ charts, thresholds, detection range and occupancy.
 You need:
 
 - Home Assistant 2026.8.1 or later.
-- [HACS](https://hacs.xyz/docs/use/download/download/) installed.
+- [HACS](https://hacs.xyz/docs/use/download/download/) 2.0.5 or later. To
+  check, open the menu (⋮) in HACS, choose **About HACS** and read
+  **Integration version**.
 - Your sensor added to Home Assistant. Apollo sensors use ESPHome, so it
-  shows up under **Settings → Devices & Services → ESPHome**.
+  shows up under **Settings → Devices & services → ESPHome**.
 
-This button opens the repository in HACS and does steps 1 and 2 for you:
+This button adds the repository to HACS and opens Apollo mmWave there, so it
+does steps 1 and 2 for you. If it shows an **Add custom repository** box,
+press **Add**. Then skip to step 3.
 
 [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=ApolloAutomation&repository=apollo-mmwave-main&category=integration)
 
@@ -69,15 +73,16 @@ This button opens the repository in HACS and does steps 1 and 2 for you:
    choose **Custom repositories**.
 2. In **Repository**, paste
    `https://github.com/ApolloAutomation/apollo-mmwave-main`. Set **Type** to
-   **Integration**, press **Add**, then close the window.
-3. Search HACS for **Apollo mmWave** and open it. Press **Download**, then
-   **Download** again to confirm.
+   **Integration**, press **Add**, then close the window. Search HACS for
+   **Apollo mmWave** and open it.
+3. Press **Download** in the bottom right, then **Download** again in the
+   window. Wait for it to finish.
 4. Restart Home Assistant: go to **Settings → System** and press the power
    icon in the top right.
 
    [![Open your Home Assistant instance and show the system dashboard.](https://my.home-assistant.io/badges/system_dashboard.svg)](https://my.home-assistant.io/redirect/system_dashboard/)
 
-5. Go to **Settings → Devices & Services**, press **Add Integration** and pick
+5. Go to **Settings → Devices & services**, press **Add Integration** and pick
    **Apollo mmWave**. This button opens the same window:
 
    [![Open your Home Assistant instance and start setting up a new integration.](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=apollo_mmwave)
@@ -85,13 +90,40 @@ This button opens the repository in HACS and does steps 1 and 2 for you:
    Leave **Add an 'Apollo mmWave' dashboard to the sidebar** turned on and
    press **Submit**.
 
-Upgrading from 1.x or 2.0? Read [CHANGELOG.md](CHANGELOG.md) first. Some
-cards and automations need a change by hand.
+To update later, make a full Home Assistant backup first. After HACS
+updates Apollo mmWave, restart Home Assistant, then refresh your browser
+(Ctrl/Cmd+Shift+R). Upgrading from 1.x or 2.0? Read
+[CHANGELOG.md](CHANGELOG.md) first. Some cards and automations need a change
+by hand.
 
 Most people can skip this. If your `configuration.yaml` sets
 `resource_mode: yaml` under `lovelace:`, Home Assistant cannot add the cards
 for you. Add the two lines shown in
 [Lovelace resources](docs/configuration.md#lovelace-resources).
+
+### Switching from the original repository
+
+If you installed Apollo mmWave from the original repository,
+bharvey88/apollo-mmwave, which is no longer on GitHub, move HACS to this one.
+It is the same integration in the same folder, so your entry, dashboard,
+zones, calibration history and entity ids carry over. Coming from 1.x or 2.0?
+Read [Upgrading to 2.0](CHANGELOG.md#upgrading-to-20) first.
+
+1. Make a full Home Assistant backup. Check that HACS is 2.0.5 or later.
+2. In HACS, open the menu (⋮) in the top right and choose
+   **Custom repositories**. Press the trash can icon on the
+   **bharvey88/apollo-mmwave (integration)** row. This only takes it off the
+   HACS list; the files stay and Apollo mmWave keeps running.
+3. Add this repository and download it with steps 2 and 3 of
+   [Install with HACS](#install-with-hacs), then restart Home Assistant.
+
+Keep your Apollo mmWave entry in **Settings → Devices & services**: deleting
+it also deletes the dashboard, your zones and the values **Undo** uses. In
+HACS, leave **Remove** and **Redownload** alone on both Apollo mmWave
+entries, because they can delete the `custom_components/apollo_mmwave` folder
+the two entries share. The
+[wiki has every step](https://wiki.apolloautomation.com/products/general/setup/apollo-mmwave-dashboard-setup/#from-the-original-apollo-mmwave-repository),
+including what each HACS box says.
 
 ## First steps
 
@@ -128,13 +160,17 @@ for you. Add the two lines shown in
   (Ctrl/Cmd+Shift+R).
 - **The Gate Energy chart says "Radar unavailable":** the radar is offline. The
   chart fills in once it reconnects.
+- **The radar turns on with nobody there:** update to 2.2.4 or later and press
+  **Calibrate with empty room** again. The wiki section
+  [The radar still triggers with nobody there](https://wiki.apolloautomation.com/products/general/setup/apollo-mmwave-dashboard/#the-radar-still-triggers-with-nobody-there)
+  has more.
 - **Calibration says the radar has not reported its threshold values:** press
   **Read settings from the radar** on the card.
 - **The zone map says Apollo mmWave is not loaded:** wait a moment after a
   restart, then reload the page.
 - **A sensor has no tab:** check that it is added through ESPHome, and that
   **Dashboard devices** in the integration's options
-  (**Settings → Devices & Services → Apollo mmWave → Configure**) is empty or
+  (**Settings → Devices & services → Apollo mmWave → Configure**) is empty or
   lists it.
 
   [![Open your Home Assistant instance and show an integration.](https://my.home-assistant.io/badges/integration.svg)](https://my.home-assistant.io/redirect/integration/?domain=apollo_mmwave)

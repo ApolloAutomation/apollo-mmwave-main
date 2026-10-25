@@ -4,6 +4,31 @@ What changed in each release of Apollo mmWave, newest first. Setup and
 everyday use are in [README.md](README.md) and
 [docs/configuration.md](docs/configuration.md).
 
+## What changed in 2.2.5
+
+Removing Apollo mmWave now also removes its dashboard resources, and the
+README explains switching from the original repository. Nothing needs
+changing by hand unless your Lovelace resources are managed in YAML (replace
+both `?v=` URLs; see
+[Lovelace resources](docs/configuration.md#lovelace-resources)).
+
+- **Removal cleans up its resources.** Deleting Apollo mmWave in
+  Settings → Devices & services now also deletes its two Lovelace resources,
+  so dashboards no longer ask for two files that are gone after the next
+  restart. Other resources are left alone. With resources managed in YAML,
+  the log names the two rows to delete by hand. If you removed an older
+  release, delete the two `/apollo_mmwave/` rows yourself; see
+  [Removing Apollo mmWave](docs/configuration.md#removing-apollo-mmwave).
+- **Switching from the original repository.** If you installed from
+  bharvey88/apollo-mmwave, which is no longer on GitHub, the README now has
+  the steps to move HACS to this repository and what not to press on the way.
+  See
+  [Switching from the original repository](README.md#switching-from-the-original-repository).
+  It also says to take a backup before updating, and to restart and refresh
+  the browser after.
+- **Developer tooling.** Ruff 0.17.1, vitest 5.0.5, happy-dom 21.0.4 and a
+  newer hassfest action; none of it ships to Home Assistant.
+
 ## What changed in 2.2.4
 
 Auto-calibration leaves more headroom, so a calibrated radar triggers less
