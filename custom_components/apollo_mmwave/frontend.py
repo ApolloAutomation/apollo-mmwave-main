@@ -345,8 +345,12 @@ async def async_remove_lovelace_resources(hass: HomeAssistant) -> None:
                     ", ".join(str(item.get("url", "")) for item in ours),
                 )
             return
-        removed = await _async_remove_stale_resources(resources, ours, set(), ())
+        # Set before deleting: a delete that fails partway leaves the rows
+        # already gone, and an entry added again must still recreate them.
+        # Setting it when nothing was deleted is harmless, because the re-add
+        # only creates missing rows.
         hass.data.setdefault(DOMAIN, {})[DATA_RESOURCES_REMOVED] = True
+        removed = await _async_remove_stale_resources(resources, ours, set(), ())
         if removed:
             _LOGGER.info(
                 "Apollo mmWave: removed Lovelace resources: %s", ", ".join(removed)

@@ -624,6 +624,47 @@ async def test_a_failed_resource_removal_is_logged_and_the_removal_goes_on(
     assert "Error calling entry remove callback" not in caplog.text
 
 
+async def test_an_entry_added_after_a_partial_removal_gets_every_row_back(
+    hass, config_entry
+) -> None:
+    """
+    A removal that fails halfway still lets an entry added again recreate rows.
+
+    The rows deleted before the failure stay deleted. One of them can be the
+    tuning bundle, which carries the dashboard strategy, and a reload does not
+    put it back, so the re-add has to.
+    """
+    await setup_integration(hass, config_entry)
+    resources = hass.data[LOVELACE_DATA].resources
+    real_delete = resources.async_delete_item
+    calls = 0
+
+    async def delete_then_fail(item_id: str) -> None:
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            msg = "storage is read-only"
+            raise HomeAssistantError(msg)
+        await real_delete(item_id)
+
+    with patch.object(resources, "async_delete_item", delete_then_fail):
+        await hass.config_entries.async_remove(config_entry.entry_id)
+        await hass.async_block_till_done()
+    assert calls == len(JS_BUNDLES)
+    assert len(_our_resource_urls(hass)) == len(JS_BUNDLES) - 1
+
+    again = MockConfigEntry(
+        domain=DOMAIN,
+        title="Apollo mmWave",
+        data={},
+        options={CONF_AUTO_CREATE_VIEW: False},
+        unique_id=DOMAIN,
+    )
+    await setup_integration(hass, again)
+
+    assert sorted(_our_resource_urls(hass)) == sorted(await _current_urls(hass))
+
+
 async def test_the_auto_create_option_removes_and_recreates_the_dashboard(
     hass, dashboard_entry, caplog
 ) -> None:
