@@ -104,8 +104,8 @@ for you. Add the two lines shown in
 ### Switching from the original repository
 
 Apollo mmWave used to come from the original repository,
-bharvey88/apollo-mmwave, which is no longer on GitHub. If HACS still lists
-it, switch to this repository. Coming from 1.x or 2.0? Read
+bharvey88/apollo-mmwave, which is no longer on GitHub. If you installed
+Apollo mmWave from it, switch to this repository. Coming from 1.x or 2.0? Read
 [Upgrading to 2.0](CHANGELOG.md#upgrading-to-20) first.
 
 Avoid these while you switch:
