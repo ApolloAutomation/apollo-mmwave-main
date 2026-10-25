@@ -208,8 +208,8 @@ Then:
 - **The Gate Energy chart says "Radar unavailable":** the radar is offline. The
   chart fills in once it reconnects.
 - **The radar turns on with nobody there:** update to 2.2.4 or later and press
-  **Calibrate with empty room** again. The wiki's
-  [the radar still triggers with nobody there](https://wiki.apolloautomation.com/products/general/setup/apollo-mmwave-dashboard/#the-radar-still-triggers-with-nobody-there)
+  **Calibrate with empty room** again. The wiki section
+  [The radar still triggers with nobody there](https://wiki.apolloautomation.com/products/general/setup/apollo-mmwave-dashboard/#the-radar-still-triggers-with-nobody-there)
   has more.
 - **Calibration says the radar has not reported its threshold values:** press
   **Read settings from the radar** on the card.

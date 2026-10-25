@@ -464,8 +464,8 @@ the two rows yourself under Settings → Dashboards → ⋮ → **Resources**.
   **Calibrate with empty room** again, since 2.2.4 leaves more headroom. If it
   still triggers, raise the `margin` option (headroom in energy points), for
   example to 20, and calibrate again; see [Auto-calibration](#auto-calibration).
-  The wiki's
-  [the radar still triggers with nobody there](https://wiki.apolloautomation.com/products/general/setup/apollo-mmwave-dashboard/#the-radar-still-triggers-with-nobody-there)
+  The wiki section
+  [The radar still triggers with nobody there](https://wiki.apolloautomation.com/products/general/setup/apollo-mmwave-dashboard/#the-radar-still-triggers-with-nobody-there)
   has more.
 - **A distance or gate-energy card says "Apollo mmWave: device not found".**
   Its `device_id` matches no device with gate-radar entities, for example an
