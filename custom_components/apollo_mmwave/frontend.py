@@ -14,6 +14,10 @@ This integration ships its own Lovelace frontend so users install ONE thing:
      collection is read-only. Both point at the same versioned URL, so the
      browser's module cache loads the code exactly once.
 
+   Removing the config entry deletes the resource rows again
+   (``async_remove_lovelace_resources``), so they do not 404 once nothing
+   serves the files.
+
 2. ``async_register_dashboard`` creates an ordinary storage dashboard named
    "Apollo mmWave" in Lovelace's dashboards collection, and saves
    ``{"strategy": {"type": "custom:apollo-radar-tuning"}}`` as its config. The
@@ -69,6 +73,8 @@ from .const import (
     DASHBOARD_TITLE,
     DASHBOARD_URL_PATH,
     DATA_ASSETS_REGISTERED,
+    DATA_RESOURCE_URLS,
+    DATA_RESOURCES_REMOVED,
     DOMAIN,
     FRONTEND_DIR,
     JS_BUNDLES,
@@ -76,6 +82,8 @@ from .const import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from homeassistant.core import HomeAssistant
 
 _LOGGER = logging.getLogger(__name__)
@@ -98,7 +106,14 @@ async def async_register_frontend_assets(hass: HomeAssistant) -> None:
     # row only comes back at the next restart. Keep static paths and
     # add_extra_js_url once per run, but run _async_register_lovelace_resources
     # on every setup, with a reload-recreates-the-row test.
-    if hass.data.setdefault(DOMAIN, {}).get(DATA_ASSETS_REGISTERED):
+    data = hass.data.setdefault(DOMAIN, {})
+    if data.get(DATA_ASSETS_REGISTERED):
+        # Removing the entry deleted the rows but cannot take back the static
+        # paths, so an entry added again in this run puts only the rows back.
+        if data.pop(DATA_RESOURCES_REMOVED, False):
+            await _async_register_lovelace_resources(
+                hass, data.get(DATA_RESOURCE_URLS, [])
+            )
         return
 
     base = _frontend_path()
@@ -128,7 +143,9 @@ async def async_register_frontend_assets(hass: HomeAssistant) -> None:
     for url in js_urls:
         frontend.add_extra_js_url(hass, url)
     await _async_register_lovelace_resources(hass, js_urls)
-    hass.data[DOMAIN][DATA_ASSETS_REGISTERED] = True
+    data[DATA_RESOURCE_URLS] = js_urls
+    data[DATA_ASSETS_REGISTERED] = True
+    data.pop(DATA_RESOURCES_REMOVED, None)
 
 
 async def _async_register_lovelace_resources(
@@ -187,23 +204,9 @@ async def _async_register_lovelace_resources(
                 ", ".join(js_urls),
             )
             return
-        # The storage collection loads lazily: async_items() reads [] until it
-        # has loaded, and only HA's own create/update/delete load it first
-        # (through the private _async_ensure_loaded). This does the same by
-        # hand, so it depends on HA internals; recheck it on HA upgrades.
-        if not getattr(resources, "loaded", True):
-            await resources.async_load()
-            resources.loaded = True
-
-        # Only rows under our own static path are ever looked at. All of them
-        # are collected, grouped by url with the ?v= cache-buster stripped, so
-        # a second row for one bundle is seen instead of hiding behind the last.
-        prefix = f"{STATIC_URL_BASE}/"
-        ours: list[dict[str, Any]] = [
-            item
-            for item in resources.async_items()
-            if str(item.get("url", "")).startswith(prefix)
-        ]
+        # Grouped by url with the ?v= cache-buster stripped, so a second row
+        # for one bundle is seen instead of hiding behind the last.
+        ours = await _async_our_resource_rows(resources)
         by_base: dict[str, list[dict[str, Any]]] = {}
         for item in ours:
             by_base.setdefault(_base_url(item), []).append(item)
@@ -249,8 +252,34 @@ async def _async_register_lovelace_resources(
         )
 
 
+async def _async_our_resource_rows(resources: Any) -> list[dict[str, Any]]:
+    """
+    Return every resource row under our static path, duplicates included.
+
+    Only rows below ``/apollo_mmwave/`` are ever looked at, so nothing here can
+    reach another integration's or the user's own resources.
+    """
+    # The storage collection loads lazily: async_items() reads [] until it
+    # has loaded, and only HA's own create/update/delete load it first
+    # (through the private _async_ensure_loaded). This does the same by
+    # hand, so it depends on HA internals; recheck it on HA upgrades. The
+    # YAML collection has no async_load and reports itself loaded.
+    if not getattr(resources, "loaded", True):
+        await resources.async_load()
+        resources.loaded = True
+    prefix = f"{STATIC_URL_BASE}/"
+    return [
+        item
+        for item in resources.async_items()
+        if str(item.get("url", "")).startswith(prefix)
+    ]
+
+
 async def _async_remove_stale_resources(
-    resources: Any, items: list[dict[str, Any]], duplicate_ids: set[str]
+    resources: Any,
+    items: list[dict[str, Any]],
+    duplicate_ids: set[str],
+    bundles: Iterable[str] = JS_BUNDLES,
 ) -> list[str]:
     """
     Delete resource entries under our static path that we no longer ship.
@@ -263,11 +292,13 @@ async def _async_remove_stale_resources(
 
     ``items`` is every row under our static path, duplicates included, and
     ``duplicate_ids`` names the extra rows for a bundle that already kept one.
+    ``bundles`` is what is still served; entry removal passes none, so every
+    row under the prefix goes.
     """
     if not hasattr(resources, "async_delete_item"):
         return []
     prefix = f"{STATIC_URL_BASE}/"
-    shipped = {f"{prefix}{name}" for name in JS_BUNDLES}
+    shipped = {f"{prefix}{name}" for name in bundles}
     removed: list[str] = []
     for item in items:
         url = _base_url(item)
@@ -277,6 +308,55 @@ async def _async_remove_stale_resources(
             await resources.async_delete_item(item["id"])
             removed.append(str(item.get("url", "")))
     return removed
+
+
+async def async_remove_lovelace_resources(hass: HomeAssistant) -> None:
+    """
+    Delete our Lovelace resource rows when the integration is removed.
+
+    Nothing serves ``/apollo_mmwave/`` once the entry is gone and Home
+    Assistant restarts, so rows left behind make every dashboard load fetch
+    two 404s. This is ``_async_remove_stale_resources`` with no bundle shipped
+    any more: every row under our static path goes, and nothing else is
+    touched.
+
+    The static paths stay registered until Home Assistant stops (there is no
+    API to drop one), and the extra module urls are left with them.
+    ``async_register_frontend_assets`` skips both for the rest of the run, and
+    the flag set here makes it recreate the rows for an entry added again in
+    this run.
+
+    YAML-mode resources are read-only, so their rows are named in a warning
+    to delete by hand. Like registration, this must never break what called
+    it: every failure is logged and swallowed, so the removal goes on.
+    """
+    try:
+        resources = getattr(hass.data.get(LOVELACE_DATA), "resources", None)
+        if resources is None:
+            return
+        ours = await _async_our_resource_rows(resources)
+        if not hasattr(resources, "async_delete_item"):
+            if ours:
+                _LOGGER.warning(
+                    "Apollo mmWave: Lovelace resources are managed in YAML on"
+                    " this system, so they can't be removed automatically."
+                    " Delete these rows from your lovelace resources config,"
+                    " or every dashboard load fetches a missing file: %s",
+                    ", ".join(str(item.get("url", "")) for item in ours),
+                )
+            return
+        removed = await _async_remove_stale_resources(resources, ours, set(), ())
+        hass.data.setdefault(DOMAIN, {})[DATA_RESOURCES_REMOVED] = True
+        if removed:
+            _LOGGER.info(
+                "Apollo mmWave: removed Lovelace resources: %s", ", ".join(removed)
+            )
+    except Exception:
+        _LOGGER.warning(
+            "Apollo mmWave: could not remove the Lovelace resources. Delete"
+            " the /apollo_mmwave/ rows in Settings > Dashboards > Resources.",
+            exc_info=True,
+        )
 
 
 # The websocket command whose handler is bound to the live dashboards

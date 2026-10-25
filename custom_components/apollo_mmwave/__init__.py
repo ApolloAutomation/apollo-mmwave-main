@@ -798,13 +798,24 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Delete the dashboard and both stores when the integration is removed."""
-    _ = entry
+    """Delete the dashboard, resources and both stores when the entry is removed."""
     from .calibration_store import CalibrationStore  # noqa: PLC0415
-    from .frontend import async_remove_dashboard  # noqa: PLC0415
+    from .frontend import (  # noqa: PLC0415
+        async_remove_dashboard,
+        async_remove_lovelace_resources,
+    )
     from .store import ZoneStore  # noqa: PLC0415
 
     await async_remove_dashboard(hass)
+    # The resource rows load the cards for every entry. The config flow allows
+    # only one, so this keeps them for a second entry made some other way.
+    # Home Assistant drops the removed entry from the list before calling this;
+    # the id check covers a direct call.
+    if not any(
+        other.entry_id != entry.entry_id
+        for other in hass.config_entries.async_entries(DOMAIN, include_ignore=False)
+    ):
+        await async_remove_lovelace_resources(hass)
     # The live store when an unload failed and left it in place: removing it
     # cancels its pending delayed save, which a fresh instance cannot reach and
     # which would write the file back after the delete.

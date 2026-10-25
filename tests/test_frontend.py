@@ -428,6 +428,202 @@ async def test_removing_the_entry_removes_the_dashboard(hass, dashboard_entry) -
     assert DASHBOARD_URL_PATH not in hass.data[DATA_PANELS]
 
 
+def _our_resource_urls(hass) -> list[str]:
+    """Return the url of every resource row under our static path."""
+    return [
+        str(i.get("url", ""))
+        for i in hass.data[LOVELACE_DATA].resources.async_items()
+        if str(i.get("url", "")).startswith("/apollo_mmwave/")
+    ]
+
+
+async def test_removing_the_entry_removes_its_resource_rows(
+    hass, config_entry, caplog
+) -> None:
+    """
+    Deleting the entry deletes both bundles' rows and nobody else's.
+
+    Nothing serves /apollo_mmwave/ after the next restart, so the rows used to
+    stay behind and make every dashboard load fetch two 404s.
+    """
+    resources = await _resources_before_setup(hass)
+    await resources.async_create_item({"res_type": "js", "url": FOREIGN_URL})
+    await setup_integration(hass, config_entry)
+    assert sorted(_our_resource_urls(hass)) == sorted(await _current_urls(hass))
+
+    await hass.config_entries.async_remove(config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert _our_resource_urls(hass) == []
+    foreign = [i for i in resources.async_items() if i["url"] == FOREIGN_URL]
+    assert len(foreign) == 1
+    assert foreign[0]["type"] == "js"
+    assert _apollo_warnings(caplog) == []
+
+
+async def test_rows_from_an_earlier_run_are_removed_without_a_setup(
+    hass, hass_storage, config_entry
+) -> None:
+    """
+    An entry that never set up this run still takes its rows with it.
+
+    The resource collection loads lazily, so the rows are only in storage
+    until something loads it; the removal has to load it first.
+    """
+    hass_storage["lovelace_resources"] = {
+        "version": 1,
+        "key": "lovelace_resources",
+        "data": {
+            "items": [
+                {"id": "ours", "type": "module", "url": f"{TUNING_URL}?v=2.2.0"},
+                {"id": "theirs", "type": "js", "url": FOREIGN_URL},
+            ]
+        },
+    }
+    assert await async_setup_component(hass, "lovelace", {})
+    config_entry.add_to_hass(hass)
+
+    await hass.config_entries.async_remove(config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    items = hass.data[LOVELACE_DATA].resources.async_items()
+    assert [i["id"] for i in items] == ["theirs"]
+
+
+async def test_adding_the_entry_again_puts_the_rows_back(hass, config_entry) -> None:
+    """
+    An entry added again without a restart gets its rows back.
+
+    The static paths stay registered for the rest of the run, so the once per
+    run asset setup is skipped; only the rows are recreated.
+    """
+    await setup_integration(hass, config_entry)
+    await hass.config_entries.async_remove(config_entry.entry_id)
+    await hass.async_block_till_done()
+    assert _our_resource_urls(hass) == []
+
+    again = MockConfigEntry(
+        domain=DOMAIN,
+        title="Apollo mmWave",
+        data={},
+        options={CONF_AUTO_CREATE_VIEW: False},
+        unique_id=DOMAIN,
+    )
+    await setup_integration(hass, again)
+
+    assert sorted(_our_resource_urls(hass)) == sorted(await _current_urls(hass))
+    assert _our_extra_module_urls(hass) == set(await _current_urls(hass))
+
+    # A reload after that leaves them alone, as before.
+    assert await hass.config_entries.async_reload(again.entry_id)
+    await hass.async_block_till_done()
+    assert len(_our_resource_urls(hass)) == len(JS_BUNDLES)
+
+
+@pytest.mark.parametrize("ours_listed", [True, False], ids=["listed", "not-listed"])
+async def test_removal_with_yaml_resources_names_the_rows_to_delete(
+    hass, hass_storage, config_entry, caplog, ours_listed
+) -> None:
+    """
+    YAML-mode resources are read-only: removal names our rows and goes on.
+
+    Nothing is raised, the stores still go, and a YAML config that lists
+    none of our rows gets no warning at all.
+    """
+    current = await _current_tuning_url(hass)
+    listed = [{"url": FOREIGN_URL, "type": "js"}]
+    if ours_listed:
+        listed.insert(0, {"url": current, "type": "module"})
+    assert await async_setup_component(
+        hass,
+        "lovelace",
+        {"lovelace": {"resource_mode": "yaml", "resources": listed}},
+    )
+    await setup_integration(hass, config_entry)
+    assert f"{DOMAIN}.zones" in hass_storage
+    caplog.clear()
+
+    await hass.config_entries.async_remove(config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert hass.config_entries.async_get_entry(config_entry.entry_id) is None
+    assert f"{DOMAIN}.zones" not in hass_storage
+    assert hass.data[LOVELACE_DATA].resources.async_items() == listed
+    warnings = _apollo_warning_records(caplog)
+    if not ours_listed:
+        assert warnings == []
+        return
+    assert len(warnings) == 1
+    assert warnings[0].exc_info is None
+    message = warnings[0].getMessage()
+    assert "managed in YAML" in message
+    assert message.endswith(f": {current}")
+    assert FOREIGN_URL not in message
+
+
+@pytest.mark.parametrize(
+    ("source", "rows_kept"),
+    [("user", True), ("ignore", False)],
+    ids=["second-entry", "ignored-entry"],
+)
+async def test_another_entry_keeps_the_resource_rows(
+    hass, config_entry, source, rows_kept
+) -> None:
+    """
+    The rows stay while another Apollo mmWave entry is still there.
+
+    The config flow allows one entry, so a second one only comes from
+    somewhere else. An ignored entry sets nothing up and does not count.
+    """
+    await setup_integration(hass, config_entry)
+    other = MockConfigEntry(
+        domain=DOMAIN,
+        title="Apollo mmWave",
+        data={},
+        options={CONF_AUTO_CREATE_VIEW: False},
+        unique_id=f"{DOMAIN}_other",
+        source=source,
+    )
+    other.add_to_hass(hass)
+
+    await hass.config_entries.async_remove(config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    expected = len(JS_BUNDLES) if rows_kept else 0
+    assert len(_our_resource_urls(hass)) == expected
+
+    if rows_kept:
+        # Removing the last one takes them.
+        await hass.config_entries.async_remove(other.entry_id)
+        await hass.async_block_till_done()
+        assert _our_resource_urls(hass) == []
+
+
+async def test_a_failed_resource_removal_is_logged_and_the_removal_goes_on(
+    hass, hass_storage, config_entry, caplog
+) -> None:
+    """A resource collection that raises never stops the stores from going."""
+    await setup_integration(hass, config_entry)
+    assert f"{DOMAIN}.zones" in hass_storage
+    resources = hass.data[LOVELACE_DATA].resources
+
+    with patch.object(
+        resources,
+        "async_delete_item",
+        AsyncMock(side_effect=HomeAssistantError("storage is read-only")),
+    ):
+        await hass.config_entries.async_remove(config_entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert f"{DOMAIN}.zones" not in hass_storage
+    records = _apollo_warning_records(caplog)
+    assert len(records) == 1
+    assert "could not remove the Lovelace resources" in records[0].getMessage()
+    assert records[0].exc_info is not None
+    # Home Assistant's own "Error calling entry remove callback" never fires.
+    assert "Error calling entry remove callback" not in caplog.text
+
+
 async def test_the_auto_create_option_removes_and_recreates_the_dashboard(
     hass, dashboard_entry, caplog
 ) -> None:

@@ -23,6 +23,11 @@ SIGNAL_CALIBRATION_UPDATED = f"{DOMAIN}_calibration_updated"
 # hass.data keys
 DATA_STORE = "store"
 DATA_ASSETS_REGISTERED = "assets_registered"
+# The versioned bundle urls this run serves, and the flag entry removal sets
+# after deleting their resource rows, so an entry added again in the same run
+# puts the rows back.
+DATA_RESOURCE_URLS = "resource_urls"
+DATA_RESOURCES_REMOVED = "resources_removed"
 DATA_PAIR_CACHE = "ld2450_pair_cache"
 DATA_CALIBRATION_STORE = "calibration_store"
 DATA_CALIBRATION_JOBS = "calibration_jobs"
