@@ -103,74 +103,27 @@ for you. Add the two lines shown in
 
 ### Switching from the original repository
 
-Apollo mmWave used to come from the original repository,
-bharvey88/apollo-mmwave, which is no longer on GitHub. If you installed
-Apollo mmWave from it, switch to this repository. Coming from 1.x or 2.0? Read
-[Upgrading to 2.0](CHANGELOG.md#upgrading-to-20) first.
+If you installed Apollo mmWave from the original repository,
+bharvey88/apollo-mmwave, which is no longer on GitHub, move HACS to this one.
+It is the same integration in the same folder, so your entry, dashboard,
+zones, calibration history and entity ids carry over. Coming from 1.x or 2.0?
+Read [Upgrading to 2.0](CHANGELOG.md#upgrading-to-20) first.
 
-Avoid these while you switch:
+1. Make a full Home Assistant backup. Check that HACS is 2.0.5 or later.
+2. In HACS, open the menu (⋮) in the top right and choose
+   **Custom repositories**. Press the trash can icon on the
+   **bharvey88/apollo-mmwave (integration)** row. This only takes it off the
+   HACS list; the files stay and Apollo mmWave keeps running.
+3. Add this repository and download it with steps 2 and 3 of
+   [Install with HACS](#install-with-hacs), then restart Home Assistant.
 
-- **Do not delete Apollo mmWave in Home Assistant**
-  (**Settings → Devices & services → Apollo mmWave**, the ⋮ menu on the
-  entry, then **Delete**). The confirm box reads **Delete Apollo mmWave?** and
-  "Its devices and entities will be permanently deleted." Deleting the entry
-  also deletes the Apollo mmWave dashboard, every zone and the saved
-  calibration values that **Undo** uses. Setting it up again starts from
-  nothing.
-- **Do not press Remove on either Apollo mmWave entry in HACS** (from the ⋮
-  menu on its row or on its page). HACS first shows **Integration is
-  configured**, which tells you to delete the configuration before removing
-  it. Do not do that. Its **Navigate** button leads to the **Delete** above.
-  **Ignore**, or closing the box, opens a **Remove** box, and its **Remove**
-  button deletes the `custom_components/apollo_mmwave` folder. Both entries
-  use that one folder, so this deletes the new download too, and Apollo
-  mmWave will not load after the next restart.
-- **Do not press Redownload on the old entry.** The original repository is
-  gone, so the download fails, and the folder can end up missing.
-
-Then:
-
-1. Before you start, check two versions. Home Assistant must be 2026.8.1 or
-   later. HACS must be 2.0.5 or later: in HACS, open the menu (⋮) in the top
-   right, choose **About HACS** and read **Integration version**. The new
-   repository will not download on older versions. Make a full Home
-   Assistant backup.
-2. Open **HACS** in the sidebar. Open the menu (⋮) in the top right and
-   choose **Custom repositories**.
-3. Find the row whose second line reads
-   **bharvey88/apollo-mmwave (integration)**. Press the trash can icon on that
-   row. There is no confirmation box, so read the second line first. This
-   only takes the old entry off the HACS list. The files in
-   `custom_components/apollo_mmwave` stay where they are, and Apollo mmWave
-   keeps running. If you already added the new repository, you will see two
-   rows. Remove only the bharvey88/apollo-mmwave one. Removing the wrong row
-   deletes no files, but you have to add that repository again. If there is
-   no such row, skip this step.
-4. In **Repository**, paste
-   `https://github.com/ApolloAutomation/apollo-mmwave-main` (if the window
-   closed, open **Custom repositories** again first). Set **Type** to
-   **Integration**, press **Add**, then close the window. Or use the button
-   under [Install with HACS](#install-with-hacs) instead. It shows an
-   **Add custom repository** box. Press **Add** there and HACS opens the
-   repository page for you.
-5. Search HACS for **Apollo mmWave**. Only one entry is left. Open it, or stay
-   on its page if the button opened it. Press **Download** in the bottom
-   right, then press **Download** again in the window. The window says the
-   files will go to `/config/custom_components/apollo_mmwave`, which is the
-   same folder as before. Wait for it to finish. If it shows an error, do not
-   restart. Fix the cause and press **Download** again.
-6. Look at the HACS list. **Apollo mmWave** now shows **Pending restart**, and
-   the old entry is gone.
-7. Restart Home Assistant. Go to **Settings → System**, press the power icon
-   in the top right, choose **Restart Home Assistant**, then press
-   **Restart**. The **Restart required** repair that HACS adds does the same
-   thing when you press **Submit**.
-8. After the restart, HACS shows one **Apollo mmWave** entry with the status
-   **Downloaded**. **Settings → Devices & services → Apollo mmWave** still has
-   your same entry. The Apollo mmWave dashboard is still in the sidebar, your
-   zones are still on the zone map, **Undo** still has your previous
-   calibration values, and your entity ids are the same. If a card looks old
-   or does not load, do a hard refresh (Ctrl/Cmd+Shift+R).
+Keep your Apollo mmWave entry in **Settings → Devices & services**: deleting
+it also deletes the dashboard, your zones and the values **Undo** uses. In
+HACS, leave **Remove** and **Redownload** alone on both Apollo mmWave
+entries, because they can delete the `custom_components/apollo_mmwave` folder
+the two entries share. The
+[wiki has every step](https://wiki.apolloautomation.com/products/general/setup/apollo-mmwave-dashboard-setup/#from-the-original-apollo-mmwave-repository),
+including what each HACS box says.
 
 ## First steps
 
