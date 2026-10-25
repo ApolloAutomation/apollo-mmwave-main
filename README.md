@@ -112,15 +112,19 @@ Avoid these while you switch:
 
 - **Do not delete Apollo mmWave in Home Assistant**
   (**Settings → Devices & services → Apollo mmWave**, the ⋮ menu on the
-  entry, then **Delete**). Deleting the entry also deletes the Apollo mmWave
-  dashboard, every zone and the saved calibration values that **Undo** uses.
-  Setting it up again starts from nothing.
-- **Do not press Remove on either Apollo mmWave entry in HACS.** HACS first
-  shows **Integration is configured**. Its **Navigate** button leads to the
-  **Delete** above. **Ignore**, or closing the box, opens a **Remove** box,
-  and its **Remove** button deletes the `custom_components/apollo_mmwave`
-  folder. Both entries use that one folder, so this deletes the new download
-  too, and Apollo mmWave will not load after the next restart.
+  entry, then **Delete**). The confirm box reads **Delete Apollo mmWave?** and
+  "Its devices and entities will be permanently deleted." Deleting the entry
+  also deletes the Apollo mmWave dashboard, every zone and the saved
+  calibration values that **Undo** uses. Setting it up again starts from
+  nothing.
+- **Do not press Remove on either Apollo mmWave entry in HACS** (from the ⋮
+  menu on its row or on its page). HACS first shows **Integration is
+  configured**, which tells you to delete the configuration before removing
+  it. Do not do that. Its **Navigate** button leads to the **Delete** above.
+  **Ignore**, or closing the box, opens a **Remove** box, and its **Remove**
+  button deletes the `custom_components/apollo_mmwave` folder. Both entries
+  use that one folder, so this deletes the new download too, and Apollo
+  mmWave will not load after the next restart.
 - **Do not press Redownload on the old entry.** The original repository is
   gone, so the download fails, and the folder can end up missing.
 
@@ -139,8 +143,9 @@ Then:
    only takes the old entry off the HACS list. The files in
    `custom_components/apollo_mmwave` stay where they are, and Apollo mmWave
    keeps running. If you already added the new repository, you will see two
-   rows. Remove only the bharvey88/apollo-mmwave one. If there is no such
-   row, skip this step.
+   rows. Remove only the bharvey88/apollo-mmwave one. Removing the wrong row
+   deletes no files, but you have to add that repository again. If there is
+   no such row, skip this step.
 4. In **Repository**, paste
    `https://github.com/ApolloAutomation/apollo-mmwave-main` (if the window
    closed, open **Custom repositories** again first). Set **Type** to
