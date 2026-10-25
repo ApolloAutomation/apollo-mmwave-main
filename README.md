@@ -65,7 +65,7 @@ You need:
 
 This button adds the repository to HACS and opens Apollo mmWave there, so it
 does steps 1 and 2 for you. If it shows an **Add custom repository** box,
-press **Add**. Then go on at step 3.
+press **Add**. Then skip to step 3.
 
 [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=ApolloAutomation&repository=apollo-mmwave-main&category=integration)
 
