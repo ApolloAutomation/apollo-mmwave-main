@@ -230,7 +230,7 @@ Settings → Tools → Actions.
 | Service | What it does |
 |---|---|
 | `apollo_mmwave.calibrate_gates` | The run described above for one radar (`device_id`). Optional `duration_s` (15 to 600, default 60), `settle_s` (0 to 120, default 15), `margin` (0 to 50 points, default 15), `margin_pct` (0 to 100 percent, default 35; the larger headroom wins per gate, and both cannot be 0), `kind` (`both`, `move` or `still`), `apply` (`false` previews without writing) and `wait` (`true` blocks until the job ends and returns the full result). |
-| `apollo_mmwave.cancel_calibration` | Stops the running job for one radar. Nothing is written if it had not started writing; values already written stay until you restore. |
+| `apollo_mmwave.cancel_calibration` | Stops the running job for one radar. Nothing is written if it had not started writing; values already written stay until you restore. A user who may not control the radar's entities, such as a read-only user, cannot stop it. |
 | `apollo_mmwave.restore_gate_thresholds` | Writes the thresholds saved before the last calibration back (or a chosen `snapshot_id`). The current values are saved first, so a restore can itself be undone. |
 
 The card offers only the newest saved snapshot as Undo. Restore an older one

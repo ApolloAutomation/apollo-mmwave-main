@@ -1807,11 +1807,20 @@ async def handle_calibrate_gates(
     return await _launch(hass, entry, spec, call)
 
 
+def _job_entities(spec: JobSpec) -> list[str]:
+    """Return the entities a job writes: the ones its pre-flight checked."""
+    if spec.kind == KIND_RESTORE:
+        return list(spec.restore_targets or {})
+    switch = spec.entities.engineering_mode
+    return [*([switch] if switch else []), *_planned_thresholds(spec)]
+
+
 async def handle_cancel_calibration(
     hass: HomeAssistant, call: ServiceCall
 ) -> ServiceResponse:
     """Ask the running job for one radar to stop; a no-op without one."""
     device_id = _single_device_id(hass, call)
+    user = await _user_for_call(hass, call)
     jobs = _runtime(hass, starting=False)[1]
     job = jobs.get(device_id)
     if job is None:
@@ -1819,6 +1828,8 @@ async def handle_cancel_calibration(
             "Apollo mmWave: cancel_calibration for %s found no running job", device_id
         )
     else:
+        # Only a user who could have started the job may stop it.
+        _check_permissions(user, _job_entities(job.spec))
         job.cancel_requested.set()
         job.push()
     return {"cancelled": job is not None} if call.return_response else None
@@ -1850,6 +1861,9 @@ async def async_setup_calibration(
     jobs: dict[str, CalibrationJob] = {}
     data[DATA_CALIBRATION_JOBS] = jobs
 
+    # Plain services, not admin ones: each checks that the calling user may
+    # control every entity the job writes (_check_permissions), so a user can
+    # do no more through them than with those entities directly.
     hass.services.async_register(
         DOMAIN,
         SERVICE_CALIBRATE_GATES,

@@ -1096,6 +1096,62 @@ async def test_cancel_during_apply_stops_after_in_flight_write(harness, msr) -> 
     assert result["changed"] == 3
 
 
+async def test_cancel_refuses_a_user_who_may_not_control_the_radar(
+    harness, msr, hass_read_only_user
+) -> None:
+    """A read-only user cannot stop a calibration someone else started."""
+    task = harness.start(msr, duration_s=60)
+    harness.feed.set_all(QUIET, QUIET, msr)
+    await harness.advance(3)
+
+    with pytest.raises(ServiceValidationError) as info:
+        await harness.hass.services.async_call(
+            DOMAIN,
+            SERVICE_CANCEL_CALIBRATION,
+            {"device_id": msr.device_id},
+            blocking=True,
+            context=Context(user_id=hass_read_only_user.id),
+        )
+    assert info.value.translation_key == "not_allowed"
+    assert not _jobs(harness.hass)[msr.device_id].cancel_requested.is_set()
+
+    assert await harness.cancel(msr) == {"cancelled": True}
+    await harness.advance(1)
+    result = await finish_job(task)
+    assert result["status"] == "cancelled"
+
+
+async def test_cancel_of_a_restore_checks_the_values_it_writes(
+    harness, msr, hass_read_only_user
+) -> None:
+    """A restore can be stopped only by a user who may write its values back."""
+    await harness.run(msr, move=ALL_CHANGE, still=ALL_CHANGE)
+    harness.services.calls.clear()
+    refused: list[str | None] = []
+
+    async def _on_set_value(index: int, _entity_id: str, _value: float) -> None:
+        if index != 2:
+            return
+        try:
+            await harness.hass.services.async_call(
+                DOMAIN,
+                SERVICE_CANCEL_CALIBRATION,
+                {"device_id": msr.device_id},
+                blocking=True,
+                context=Context(user_id=hass_read_only_user.id),
+            )
+        except ServiceValidationError as err:
+            refused.append(err.translation_key)
+        await harness.cancel(msr)
+
+    harness.services.on_set_value = _on_set_value
+    result = await harness.restore(msr)
+
+    assert refused == ["not_allowed"]
+    assert result["status"] == "cancelled"
+    assert len(harness.services.writes()) == 2
+
+
 async def test_cancel_without_job_is_a_noop(harness, msr, caplog) -> None:
     """A double tap must not throw."""
     caplog.set_level(
