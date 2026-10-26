@@ -5,6 +5,7 @@ install the integration and run your first calibration.
 
 ## Contents
 
+- [The Apollo mmWave dashboard](#the-apollo-mmwave-dashboard)
 - [Lovelace resources](#lovelace-resources)
 - [Choosing which devices appear](#choosing-which-devices-appear)
 - [Auto-calibration](#auto-calibration)
@@ -16,6 +17,57 @@ install the integration and run your first calibration.
   - [Card options](#card-options)
 - [Removing Apollo mmWave](#removing-apollo-mmwave)
 - [Troubleshooting](#troubleshooting)
+
+## The Apollo mmWave dashboard
+
+When you add the integration, the setup window offers to add a dashboard for
+you: **Apollo mmWave** in the sidebar, at `/apollo-mmwave`, with a tab for
+each Apollo mmWave sensor. Both boxes start ticked:
+
+- **Add the Apollo mmWave dashboard to the sidebar** creates it once, when you
+  press **Submit**.
+- **Only administrators can see it** keeps it out of other users' sidebars.
+  To change that later, open the dashboard's settings in Settings →
+  Dashboards.
+
+Apollo mmWave never recreates, rewrites or deletes the dashboard on its own:
+not when Home Assistant restarts, and not when the integration reloads or
+updates. It is an ordinary dashboard, so you can rename it, change its icon,
+hide it, take control of it or delete it like any other. The integration
+records which dashboard it created and changes only that one: when you remove
+the integration (see [Removing Apollo mmWave](#removing-apollo-mmwave)), and
+when you ask in its options (Settings → Devices & services → Apollo mmWave →
+**Configure**):
+
+- **Add the Apollo mmWave dashboard** shows up while the integration has no
+  dashboard, for example after you unticked the box during setup or deleted
+  the dashboard. It says what it will create and asks the admin-only question
+  again.
+- **Remove the Apollo mmWave dashboard** shows up while it has one. It says
+  what will be deleted and deletes it when you press **Submit**.
+- **Choose the dashboard's devices** sets which sensors the dashboard shows;
+  see [Choosing which devices appear](#choosing-which-devices-appear).
+
+[![Open your Home Assistant instance and show an integration.](https://my.home-assistant.io/badges/integration.svg)](https://my.home-assistant.io/redirect/integration/?domain=apollo_mmwave)
+
+Once you take control of the dashboard it is yours: the integration stops
+offering to remove it, writes no device selection into it, and leaves it in
+place when you remove the integration. A dashboard you made yourself is never
+changed (one catch on `/apollo-mmwave` is under
+[Use your own dashboards instead](#use-your-own-dashboards-instead)). To add
+more dashboards like this one, use the Community dashboards picker described
+there.
+
+If the dashboard cannot be created, for example because another dashboard
+already uses `/apollo-mmwave`, setup still finishes and the log says why.
+
+**Upgrading from 2.2.5 or earlier.** The dashboard you already have is kept as
+it is, including who can see it: dashboards made before 2.2.6 are visible to
+every user until you change that in their settings. If it still uses the
+strategy, the integration records it as the one it created, so the options
+above work on it. If you had turned the dashboard option off, the integration
+records none, and a strategy dashboard you made on `/apollo-mmwave` is no
+longer deleted at every restart.
 
 ## Lovelace resources
 
@@ -64,16 +116,19 @@ reflashed hardware shows the same way until you delete the old device in
 Settings → Devices & services. A device without an Apollo model in the
 registry (DIY builds) is only picked up while one of its radar entities is
 live. To control the list yourself, open the integration's options (Settings
-→ Devices & services → Apollo mmWave → Configure) and pick **Dashboard
-devices**: the dashboard then shows exactly those devices and hides the rest.
-Leave the selection empty to go back to automatic detection. Changes apply
-immediately.
+→ Devices & services → Apollo mmWave → Configure), pick **Choose the
+dashboard's devices** and select devices under **Dashboard devices**: the
+dashboard then shows exactly those devices and hides the rest. Leave the
+selection empty to go back to automatic detection. Changes apply immediately.
 
 [![Open your Home Assistant instance and show an integration.](https://my.home-assistant.io/badges/integration.svg)](https://my.home-assistant.io/redirect/integration/?domain=apollo_mmwave)
 
-The selection applies only while the Apollo mmWave dashboard is still generated
-automatically. Once you take control of it, the integration no longer writes to
-it, so add or remove devices in the dashboard itself.
+The selection is written only into the Apollo mmWave dashboard the integration
+created, and only while it still uses the strategy. Without that dashboard the
+selection is kept and used if you add the dashboard from the options later.
+Once you take control of it, the integration no longer writes to it, so add or
+remove devices in the dashboard itself. A dashboard you added yourself takes
+its own `devices` list (below).
 
 A selected device that Home Assistant reports nothing for (for example one
 whose ESPHome entities are disabled) keeps a tab saying no radar data is
@@ -96,8 +151,9 @@ strategy:
 A strategy can also take a single `device_id`, which takes precedence: when
 both are set, only `device_id` is shown and `devices` is ignored. The
 integration's own Apollo mmWave dashboard keeps any strategy option you type
-into its raw configuration editor (it rewrites only `type` and `devices`), so a
-`device_id` added there overrides the **Dashboard devices** option. See
+into its raw configuration editor (saving **Dashboard devices** rewrites only
+`type` and `devices`), so a `device_id` added there overrides the **Dashboard
+devices** option. See
 [Strategy options](#strategy-options) for the full list.
 
 ## Auto-calibration
@@ -313,28 +369,33 @@ is inside the zone.
 
 ## Use your own dashboards instead
 
-Prefer to lay things out yourself? Turn off the dashboard during setup (or any
-time in the integration's options; it takes effect immediately). The cards and
-strategies stay available:
+Prefer to lay things out yourself? Untick **Add the Apollo mmWave dashboard to
+the sidebar** during setup, or remove the dashboard later from the
+integration's options (**Remove the Apollo mmWave dashboard**) or in Settings →
+Dashboards. The cards and strategies stay available:
 
 - **Dashboard strategy**: a whole dashboard with one tab per device, like the
-  integration's own. Create a dashboard in Settings → Dashboards.
+  integration's own. In Settings → Dashboards, press **Add dashboard** and pick
+  **Apollo Radar Tuning** under **Community dashboards**.
 
   [![Open your Home Assistant instance and show your dashboards.](https://my.home-assistant.io/badges/lovelace_dashboards.svg)](https://my.home-assistant.io/redirect/lovelace_dashboards/)
 
-  Then open its raw configuration editor and replace everything with:
+  Or create an empty dashboard, open its raw configuration editor and replace
+  everything with:
 
   ```yaml
   strategy:
     type: custom:apollo-radar-tuning
   ```
 
-  Give it a URL other than `apollo-mmwave`, which belongs to the integration:
-  while the auto-create option is off, every Home Assistant restart and
-  integration reload deletes a dashboard on that path whose configuration is
-  this strategy. A YAML dashboard on `apollo-mmwave` is left alone, and so is a
-  dashboard row the integration created there earlier while that YAML
-  dashboard holds the path. To get rid of that old one, take the YAML
+  The integration never writes to or deletes a dashboard you made, with one
+  catch: give yours a URL other than `apollo-mmwave`. If you delete the
+  integration's own dashboard and make one on that URL whose configuration is
+  exactly the strategy above, the integration may take it for its own. While
+  a dashboard of yours holds `apollo-mmwave`, the integration cannot add its
+  own there and says so. A YAML dashboard on `apollo-mmwave` is left alone,
+  and so is a dashboard row the integration created there earlier while that
+  YAML dashboard holds the path. To get rid of that old one, take the YAML
   dashboard off the path first and then delete it in Settings → Dashboards;
   deleting it while the YAML dashboard is there takes the YAML dashboard's
   panel down with it.
@@ -436,8 +497,9 @@ slider (or with `update_zone`'s `rotation_deg`).
 ## Removing Apollo mmWave
 
 Deleting Apollo mmWave in Settings → Devices & services (the ⋮ menu on the
-entry, then **Delete**) removes what it made: the Apollo mmWave dashboard
-(unless you took control of it), every zone and its two entities, and the
+entry, then **Delete**) removes what it made: the Apollo mmWave dashboard it
+created (unless you took control of it; dashboards you made yourself are never
+touched), every zone and its two entities, and the
 saved calibration values that **Undo** uses. From 2.2.5 it also removes its
 two Lovelace resources, so dashboards stop asking for files that are gone.
 The thresholds a calibration wrote stay on the radars. Setting Apollo mmWave
@@ -457,6 +519,11 @@ the two rows yourself under Settings → Dashboards → ⋮ → **Resources**.
   module resources from the log warning (see
   [Lovelace resources](#lovelace-resources)). A resource row you deleted comes
   back at the next Home Assistant restart, not on an integration reload.
+- **There is no Apollo mmWave dashboard in the sidebar.** It is only for
+  administrators unless you unticked that box, so sign in as one. If you
+  unticked **Add the Apollo mmWave dashboard to the sidebar**, or setup could
+  not create it (the log says why), add it from the integration's options; see
+  [The Apollo mmWave dashboard](#the-apollo-mmwave-dashboard).
 - **The Gate Energy chart says "Radar unavailable".** The radar is offline; the
   chart fills in once it reconnects. "Turn on Radar Engineering Mode" means the
   radar is online and the mode is off.
