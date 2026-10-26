@@ -7,6 +7,7 @@ import {
   generateCards,
   generateSections,
   generateViews,
+  markdownText,
   type RadarDevice,
 } from "../src/strategy-core";
 import { LD2410_PROFILE, LD2412_PROFILE } from "../src/profiles";
@@ -413,6 +414,33 @@ describe("buildDeviceSections column layout", () => {
     expect(help.type).toBe("markdown");
     expect(help.content).toContain("**Offline right now.**");
     expect(help.content).toContain(LD2410_PROFILE.wikiUrl);
+  });
+});
+
+describe("device names in the help card", () => {
+  const NAME = "Office {{ states('x') }} {#c#} {%d%} *1* _2_ [a](b) `c`";
+
+  it("shows every character as typed and starts no template tag", () => {
+    const escaped = markdownText(NAME);
+    expect(escaped).not.toMatch(/\{[{%#]/);
+    expect(escaped.replace(/\\(.)/g, "$1")).toBe(NAME);
+    expect(markdownText("Living Room 2")).toBe("Living Room 2");
+    expect(markdownText("MSR-2")).toBe("MSR\\-2");
+  });
+
+  it("escapes the name on every kind of help card", () => {
+    const devs: RadarDevice[] = [
+      { ...ld2410Dev, name: NAME },
+      { ...ld2410Dev, name: NAME, profile: undefined, ld2450: true },
+      { ...ld2410Dev, name: NAME, profile: undefined, ld2450: false, online: false },
+    ];
+    for (const dev of devs) {
+      const help = buildDeviceCards(deviceHass(), dev).find(
+        (c: any) => c.type === "markdown"
+      ) as any;
+      expect(help.content.startsWith(`**${markdownText(NAME)}**`)).toBe(true);
+      expect(help.content).not.toMatch(/\{[{%#]/);
+    }
   });
 });
 
