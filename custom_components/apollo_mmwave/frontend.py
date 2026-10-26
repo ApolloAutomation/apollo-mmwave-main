@@ -676,6 +676,12 @@ async def async_set_dashboard_devices(
     try:
         collection = _dashboards_collection(hass)
         if collection is None:
+            _LOGGER.warning(
+                "Apollo mmWave: could not reach Lovelace's dashboards collection,"
+                " so the device selection was not written into the '%s'"
+                " dashboard.",
+                DASHBOARD_TITLE,
+            )
             return False
         found = await _async_our_row(hass, collection, dashboard_id, url_path)
         if found is None:

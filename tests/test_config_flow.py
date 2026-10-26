@@ -467,8 +467,14 @@ async def test_a_dashboard_the_user_took_control_of_is_left_alone(hass) -> None:
     assert entry.options[CONF_DASHBOARD_ID] is None
 
 
-async def test_unreadable_dashboards_offer_only_the_selection(hass) -> None:
-    """With nothing known, the flow skips the menu and keeps the record."""
+async def test_unreadable_dashboards_still_need_the_write(hass, caplog) -> None:
+    """
+    With nothing known, the flow skips the menu but still writes the selection.
+
+    The selection is stored only once our dashboard has it: while the
+    dashboards cannot be read the form says so, the log says why, and no
+    option changes.
+    """
     entry = await async_owned_entry(hass)
     await setup_integration(hass, entry)
     before = dict(entry.options)
@@ -479,9 +485,18 @@ async def test_unreadable_dashboards_offer_only_the_selection(hass) -> None:
         assert result["step_id"] == "dashboard_devices"
         result = await _submit(hass, result, {CONF_DASHBOARD_DEVICES: ["devid1"]})
 
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "dashboard_not_updated"}
+    assert dict(entry.options) == before
+    assert await async_dashboard_config(hass) == OUR_CONFIG
+    [warning] = apollo_warnings(caplog)
+    assert "device selection was not written" in warning
+
+    # Once the dashboards can be read again, the same form writes and saves.
+    result = await _submit(hass, result, {CONF_DASHBOARD_DEVICES: ["devid1"]})
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert entry.options == {**before, CONF_DASHBOARD_DEVICES: ["devid1"]}
-    assert await async_dashboard_config(hass) == OUR_CONFIG
+    assert (await async_dashboard_config(hass))["strategy"]["devices"] == ["devid1"]
 
 
 async def test_a_failed_device_write_keeps_the_form_open(hass) -> None:

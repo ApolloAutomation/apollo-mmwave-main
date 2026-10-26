@@ -764,10 +764,13 @@ async def test_unreachable_dashboards_collection_is_warned_about(hass, caplog) -
         assert (
             await async_dashboard_owned(hass, "apollo_mmwave", "apollo-mmwave") is None
         )
+        assert apollo_warnings(caplog) == []
         assert not await async_set_dashboard_devices(
             hass, "apollo_mmwave", DASHBOARD_URL_PATH, ["dev1"]
         )
-        assert apollo_warnings(caplog) == []
+        [devices] = apollo_warnings(caplog)
+        assert "device selection was not written" in devices
+        caplog.clear()
 
         assert not await async_remove_dashboard(
             hass, "apollo_mmwave", DASHBOARD_URL_PATH

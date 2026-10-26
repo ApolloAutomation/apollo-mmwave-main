@@ -230,8 +230,10 @@ class ApolloMmwaveOptionsFlow(config_entries.OptionsFlow):
             devices = list(user_input.get(CONF_DASHBOARD_DEVICES, []))
             # Only the dashboard this entry created, and only while it is
             # still our strategy; with none, the selection is just stored and
-            # used if the dashboard is added here later.
-            if self._owned and not await async_set_dashboard_devices(
+            # used if the dashboard is added here later. When the dashboards
+            # could not be read (None), the entry may still own one, so the
+            # write is tried too, and the selection is stored only if it lands.
+            if self._owned is not False and not await async_set_dashboard_devices(
                 self.hass, *self._recorded(), devices
             ):
                 errors["base"] = "dashboard_not_updated"
