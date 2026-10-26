@@ -801,7 +801,7 @@ async def async_find_legacy_dashboard(hass: HomeAssistant) -> str | None:
         )
         raise DashboardsUnreadableError from err
     _LOGGER.warning(
-        "Apollo mmWave: could not reach Lovelace's dashboards collection, so a"
+        "Apollo mmWave: could not reach Lovelace's dashboards collection, so the"
         " '%s' dashboard from an earlier release is not tracked yet. %s",
         DASHBOARD_TITLE,
         _LEGACY_RETRY_HINT,
