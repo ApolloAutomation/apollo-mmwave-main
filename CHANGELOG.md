@@ -14,15 +14,15 @@ Lovelace resources are managed in YAML (replace both `?v=` URLs; see
 [Lovelace resources](docs/configuration.md#lovelace-resources)).
 
 - **The dashboard is created once.** Adding Apollo mmWave creates the
-  dashboard right then, and Home Assistant no longer recreates, rewrites or
-  deletes it at restart or when the integration reloads. New dashboards are
-  for administrators only unless you untick **Only administrators can see
-  it**; change that later in the dashboard's settings under Settings →
-  Dashboards. A dashboard you already have is left as it is, including who
-  can see it. With the dashboard turned off, setup no longer deletes a
-  dashboard you made yourself on `/apollo-mmwave`. To add or remove the
-  dashboard, or choose its devices, open the integration's options
-  (Settings → Devices & services → Apollo mmWave → **Configure**); see
+  dashboard right then, if you leave its box ticked, and Home Assistant no
+  longer recreates, rewrites or deletes it at restart or when the integration
+  reloads. New dashboards are for administrators only unless you untick
+  **Only administrators can see it**; change that later in the dashboard's
+  settings under Settings → Dashboards. A dashboard you already have is left
+  as it is, including who can see it. With the dashboard turned off, setup
+  no longer deletes a dashboard you made yourself on `/apollo-mmwave`. To add
+  or remove the dashboard, or choose its devices, open the integration's
+  options (Settings → Devices & services → Apollo mmWave → **Configure**); see
   [The Apollo mmWave dashboard](docs/configuration.md#the-apollo-mmwave-dashboard).
 - **Only administrators can change zones.** The `apollo_mmwave.update_zone`
   action, which the zone map card uses to save, now refuses users who are not
