@@ -78,7 +78,7 @@ git grep -n "TODO(REVIEW_REPORT.md" -- ':!custom_components/apollo_mmwave/www'
 
 | Piece | Role |
 | --- | --- |
-| `custom_components/apollo_mmwave` | The integration: zone backend (occupancy sensors + `apollo_mmwave.update_zone` service), gate auto-calibration (`apollo_mmwave.calibrate_gates` and its companion services), serves the bundled JS, and registers the dashboard. |
+| `custom_components/apollo_mmwave` | The integration: zone backend (occupancy sensors + `apollo_mmwave.update_zone` service), gate auto-calibration (`apollo_mmwave.calibrate_gates` and its companion services), serves the bundled JS, and creates the dashboard when an administrator asks for it. |
 | `…/www/apollo-radar-tuning.js` | Tuning cards (including the Auto-calibrate card) + the `custom:apollo-radar-tuning` dashboard strategy (built from `frontend-src/`). |
 | `…/www/apollo-radar-zone-map-card.js` | The 2D zone-drawing card, forked from [zone-mapper-card](https://github.com/ApolloAutomation/zone-mapper-card) (also built from `frontend-src/`). |
 

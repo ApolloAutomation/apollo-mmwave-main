@@ -221,14 +221,27 @@ function helpCard(dev: RadarDevice): Record<string, any> {
   return card;
 }
 
+/**
+ * Text, such as a device name, to show as typed inside a markdown card.
+ * Home Assistant renders a markdown card's content as a template first, so
+ * `{{`, `{%` or `{#` in a name would be evaluated, and `*`, `_`, `[` or a
+ * backtick would change the formatting. A backslash before every ASCII
+ * punctuation character covers both: markdown shows each one as typed, and
+ * no `{` is followed by a template delimiter any more.
+ */
+export function markdownText(text: string): string {
+  return text.replace(/[!-\/:-@\[-`{-~]/g, "\\$&");
+}
+
 function helpCardBody(dev: RadarDevice): Record<string, any> {
+  const name = markdownText(dev.name);
   if (!dev.profile && !dev.ld2450) {
     // Forced (explicitly selected) device with nothing detectable — offline
     // and no registry model to go by.
     return {
       type: "markdown",
       content:
-        `**${dev.name}**: no radar data available right now.\n\n` +
+        `**${name}**: no radar data available right now.\n\n` +
         `The device looks offline (or exposes no recognizable radar ` +
         `entities). Its cards will appear here once it reports in.`,
     };
@@ -237,7 +250,7 @@ function helpCardBody(dev: RadarDevice): Record<string, any> {
     return {
       type: "markdown",
       content:
-        `**${dev.name}**, Apollo mmWave (LD2450 tracking radar).\n\n` +
+        `**${name}**, Apollo mmWave (LD2450 tracking radar).\n\n` +
         `Draw occupancy zones over the live target positions below.`,
     };
   }
@@ -245,7 +258,7 @@ function helpCardBody(dev: RadarDevice): Record<string, any> {
   return {
     type: "markdown",
     content:
-      `**${dev.name}**, Apollo ${p.label} radar.\n\n` +
+      `**${name}**, Apollo ${p.label} radar.\n\n` +
       `**Start here**\n` +
       `1. Press **Calibrate with empty room** on the Auto-calibrate card and leave the room.\n` +
       `2. Set how far it should look: **${p.rangeLabels[0]} / ${p.rangeLabels[1]}** on the` +

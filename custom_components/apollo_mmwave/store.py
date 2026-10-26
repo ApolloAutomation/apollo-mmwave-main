@@ -101,11 +101,19 @@ def resolve_device_id(hass: HomeAssistant, location: str, entities: Any) -> str 
     # TODO(REVIEW_REPORT.md X25): devices whose names slugify  # noqa: FIX002, TD003
     # alike resolve by registry order with no log; at least warn and name the
     # candidates (refusing to home the location is a product decision).
+    # Only ESPHome devices are matched: every Apollo radar is one, and a router
+    # integration that tracks the radar by MAC can have its own device with
+    # the same name. Reading the registry through its config entries also
+    # avoids `registry.devices` as a mapping, which Home Assistant deprecates.
     wanted = slugify(location)
-    for device in dr.async_get(hass).devices.values():
-        name = device.name_by_user or device.name or ""
-        if slugify(name) == wanted:
-            return device.id
+    device_registry = dr.async_get(hass)
+    for esphome_entry in hass.config_entries.async_entries("esphome"):
+        for device in dr.async_entries_for_config_entry(
+            device_registry, esphome_entry.entry_id
+        ):
+            name = device.name_by_user or device.name or ""
+            if slugify(name) == wanted:
+                return device.id
     return None
 
 

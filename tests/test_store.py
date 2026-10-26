@@ -193,6 +193,44 @@ async def test_v1_resolves_by_device_name_when_no_entities(
     assert store.devices[device.id]["zones"][1]["shape"] == "rect"
 
 
+async def test_v1_name_match_skips_a_same_named_device_of_another_integration(
+    hass, hass_storage, device_registry, caplog
+) -> None:
+    """
+    Only the radar's own ESPHome device answers a v1 name.
+
+    A router integration that tracks the radar by MAC can hold a device with
+    the same name. Registered first, it used to win the name match. Reading
+    the registry as a mapping also logged Home Assistant's deprecation warning.
+    """
+    router_entry = MockConfigEntry(domain="unifi", title="Router")
+    router_entry.add_to_hass(hass)
+    router_device = device_registry.async_get_or_create(
+        config_entry_id=router_entry.entry_id,
+        identifiers={("unifi", "aa:bb:cc:dd:ee:ff")},
+        name="Apollo R_PRO-1 abc123",
+    )
+    device = _make_radar(hass, device_registry, "Apollo R_PRO-1 abc123")
+    assert router_device.id != device.id
+    hass_storage["apollo_mmwave.zones"] = {
+        "version": 1,
+        "data": {
+            "locations": {
+                "Apollo R_PRO-1 abc123": {
+                    "zones": {"1": {"shape": "rect", "data": {}}},
+                    "entities": [],
+                }
+            }
+        },
+    }
+
+    store = ZoneStore(hass)
+    assert await store.async_load() is True
+
+    assert list(store.devices) == [device.id]
+    assert "device_registry.devices" not in caplog.text
+
+
 async def test_v1_resolves_by_the_user_given_device_name(
     hass, hass_storage, device_registry
 ) -> None:

@@ -3,18 +3,24 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import timedelta
 from functools import partial
 from typing import TYPE_CHECKING, Any
+from unittest.mock import patch
 
 import pytest
 import voluptuous as vol
 from homeassistant.auth.permissions.const import POLICY_CONTROL
+from homeassistant.components.lovelace.const import LOVELACE_DATA, ConfigNotFound
+from homeassistant.components.lovelace.dashboard import LovelaceStorage
 from homeassistant.exceptions import HomeAssistantError, Unauthorized
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.entity_registry import RegistryEntryDisabler
+from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
     async_fire_time_changed,
@@ -22,17 +28,26 @@ from pytest_homeassistant_custom_component.common import (
 
 from custom_components.apollo_mmwave import calibration, get_store
 from custom_components.apollo_mmwave.const import (
+    CONF_DASHBOARD_ID,
+    CONF_DASHBOARD_URL_PATH,
+    DASHBOARD_STRATEGY_TYPE,
+    DASHBOARD_URL_PATH,
     DATA_CALIBRATION_JOBS,
     DOMAIN,
+    ENTRY_MINOR_VERSION,
     SERVICE_CALIBRATE_GATES,
     SERVICE_CANCEL_CALIBRATION,
     SERVICE_RESTORE_GATE_THRESHOLDS,
     SIGNAL_ZONES_UPDATED,
     STORE_ZONES,
 )
+from custom_components.apollo_mmwave.frontend import (
+    _dashboards_collection,
+    async_create_dashboard,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Iterator
 
     from homeassistant.core import Context
     from homeassistant.helpers.device_registry import DeviceEntry
@@ -52,21 +67,165 @@ def auto_enable_custom_integrations(enable_custom_integrations):
     return
 
 
-@pytest.fixture
-def config_entry() -> MockConfigEntry:
+def make_entry(dashboard_id: str | None = None, **options: Any) -> MockConfigEntry:
     """
-    Return a plain Apollo mmWave entry with the dashboard turned off.
+    Return an Apollo mmWave entry as the config flow makes it.
 
-    The dashboard/panel path pokes Lovelace internals that aren't interesting
-    to most tests; individual tests opt back in via options.
+    With ``dashboard_id`` it records that row on our url path as the dashboard
+    it owns; without, it owns none. Extra keyword arguments become options.
     """
     return MockConfigEntry(
         domain=DOMAIN,
         title="Apollo mmWave",
         data={},
-        options={"auto_create_view": False},
+        options={
+            CONF_DASHBOARD_ID: dashboard_id,
+            CONF_DASHBOARD_URL_PATH: DASHBOARD_URL_PATH if dashboard_id else None,
+            **options,
+        },
         unique_id=DOMAIN,
+        minor_version=ENTRY_MINOR_VERSION,
     )
+
+
+@pytest.fixture
+def config_entry() -> MockConfigEntry:
+    """
+    Return a plain Apollo mmWave entry that owns no dashboard.
+
+    The dashboard path pokes Lovelace internals that aren't interesting to
+    most tests; the dashboard tests create one and record it themselves.
+    """
+    return make_entry()
+
+
+async def async_owned_entry(
+    hass, *, require_admin: bool = True, **options: Any
+) -> MockConfigEntry:
+    """
+    Create the Apollo mmWave dashboard and return an entry that owns it.
+
+    The dashboard is made the way the config flow makes it. The entry is not
+    added to hass yet.
+    """
+    assert await async_setup_component(hass, "lovelace", {})
+    dashboard_id = await async_create_dashboard(hass, require_admin=require_admin)
+    assert dashboard_id is not None
+    return make_entry(dashboard_id, **options)
+
+
+# A dashboard the user built themselves with our strategy, on their own path.
+USER_DASHBOARD_PATH = "my-radar"
+USER_DASHBOARD_CONFIG: dict[str, Any] = {
+    "strategy": {"type": DASHBOARD_STRATEGY_TYPE, "distance_unit": "ft"}
+}
+
+
+async def async_user_dashboard(
+    hass,
+    url_path: str = USER_DASHBOARD_PATH,
+    config: dict[str, Any] | None = USER_DASHBOARD_CONFIG,
+) -> dict[str, Any]:
+    """
+    Make a dashboard the way a user does in Settings > Dashboards.
+
+    With ``config`` None it is left as a new dashboard nobody opened yet,
+    with no stored config at all.
+    """
+    assert await async_setup_component(hass, "lovelace", {})
+    item = await _dashboards_collection(hass).async_create_item(
+        {"url_path": url_path, "title": "My Radar Room"}
+    )
+    if config is not None:
+        await hass.data[LOVELACE_DATA].dashboards[url_path].async_save(config)
+    return item
+
+
+def rows_on_url_path(hass, url_path: str = DASHBOARD_URL_PATH) -> list[dict[str, Any]]:
+    """Return every dashboards collection row on the url path."""
+    return [
+        item
+        for item in _dashboards_collection(hass).async_items()
+        if item["url_path"] == url_path
+    ]
+
+
+async def async_dashboard_config(
+    hass, url_path: str = DASHBOARD_URL_PATH
+) -> dict[str, Any] | None:
+    """Return the stored Lovelace config of the dashboard on the url path."""
+    config = hass.data[LOVELACE_DATA].dashboards.get(url_path)
+    if config is None:
+        return None
+    try:
+        return await config.async_load(force=False)
+    except ConfigNotFound:
+        return None
+
+
+def apollo_warning_records(caplog) -> list[logging.LogRecord]:
+    """Return every warning-or-worse record this integration logged."""
+    return [
+        r
+        for r in caplog.records
+        if r.name.startswith("custom_components.apollo_mmwave")
+        and r.levelno >= logging.WARNING
+    ]
+
+
+def apollo_warnings(caplog) -> list[str]:
+    """Return every warning or worse this integration logged."""
+    return [r.getMessage() for r in apollo_warning_records(caplog)]
+
+
+@contextmanager
+def record_dashboard_writes(hass) -> Iterator[list[str]]:
+    """
+    Record every write to Lovelace's dashboards while the block runs.
+
+    Covers the dashboards collection (rows created, updated or deleted) and
+    every storage dashboard's config (saved or deleted). The writes still
+    happen; the list names each one that ran. Lovelace must be set up.
+    """
+    collection = _dashboards_collection(hass)
+    assert collection is not None
+    writes: list[str] = []
+
+    def spy(name: str, real: Callable[..., Awaitable[Any]]) -> Callable:
+        async def recorded(*args: Any, **kwargs: Any) -> Any:
+            writes.append(name)
+            return await real(*args, **kwargs)
+
+        return recorded
+
+    with (
+        patch.object(
+            collection,
+            "async_create_item",
+            spy("create_item", collection.async_create_item),
+        ),
+        patch.object(
+            collection,
+            "async_update_item",
+            spy("update_item", collection.async_update_item),
+        ),
+        patch.object(
+            collection,
+            "async_delete_item",
+            spy("delete_item", collection.async_delete_item),
+        ),
+        patch.object(
+            LovelaceStorage,
+            "async_save",
+            spy("save_config", LovelaceStorage.async_save),
+        ),
+        patch.object(
+            LovelaceStorage,
+            "async_delete",
+            spy("delete_config", LovelaceStorage.async_delete),
+        ),
+    ):
+        yield writes
 
 
 @pytest.fixture

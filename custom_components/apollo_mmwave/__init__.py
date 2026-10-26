@@ -12,6 +12,7 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.dispatcher import async_dispatcher_send
+from homeassistant.helpers.service import async_register_admin_service
 from homeassistant.util import slugify
 
 if TYPE_CHECKING:
@@ -21,8 +22,8 @@ if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant, ServiceCall
     from homeassistant.helpers.typing import ConfigType
 
-    from .store import ZoneStore
-
+from .calibration import async_setup_calibration
+from .calibration_store import CalibrationStore
 from .const import (
     ATTR_CX,
     ATTR_CY,
@@ -38,10 +39,12 @@ from .const import (
     ATTR_Y_MAX,
     ATTR_Y_MIN,
     CONF_AUTO_CREATE_VIEW,
-    CONF_DASHBOARD_DEVICES,
+    CONF_DASHBOARD_ID,
+    CONF_DASHBOARD_URL_PATH,
+    DASHBOARD_URL_PATH,
     DATA_STORE,
-    DEFAULT_AUTO_CREATE_VIEW,
     DOMAIN,
+    ENTRY_MINOR_VERSION,
     EVENT_ZONE_UPDATED,
     INPUT_UNIT_FACTORS,
     POLYGON_MAX_POINTS,
@@ -67,10 +70,25 @@ from .const import (
     WARN_RECT_NON_NUM,
     WARN_ZONE_NO_GEOMETRY,
 )
+from .frontend import (
+    DashboardsUnreadableError,
+    async_find_legacy_dashboard,
+    async_register_frontend_assets,
+    async_remove_dashboard,
+    async_remove_lovelace_resources,
+)
+from .ld2450 import async_track_target_pairs
+from .migration import (
+    async_import_zone_mapper,
+    async_migrate_legacy,
+    async_migrate_unique_ids,
+)
+from .store import ZoneStore
+from .websocket import async_register as async_register_websocket
 
-# NOTE: `.frontend` is imported lazily inside the setup path (not here) so that
-# importing this package for the config flow doesn't pull in Lovelace internals
-# in the event loop (avoids the blocking-import warning).
+# Every module setup uses is imported here, at module level. Home Assistant
+# imports this package in its import executor, so the files are read off the
+# event loop; an import inside an async function would read them on it.
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -666,33 +684,46 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     return True
 
 
-def _auto_create_dashboard_enabled(entry: ConfigEntry) -> bool:
-    value = entry.options.get(CONF_AUTO_CREATE_VIEW, DEFAULT_AUTO_CREATE_VIEW)
-    return bool(value)
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """
+    Record which dashboard an entry from 2.2.5 or earlier owns. Read only.
 
+    Those releases kept the Apollo mmWave dashboard in place on every setup
+    while the "auto-create dashboard" option was on, and identified it by its
+    url path. From minor version 2 the entry records the row it owns instead,
+    by id and url path, and setup never writes a dashboard. With the option on,
+    a row on our url path whose config is still our strategy is recorded as
+    ours, without writing to it. With the option off, or with no such row,
+    the entry owns none, and nothing is ever recreated. The option itself is
+    dropped. ``dashboard_devices`` is kept as it is.
 
-async def _async_apply_dashboard_option(
-    hass: HomeAssistant, entry: ConfigEntry
-) -> None:
-    """Register or remove the sidebar dashboard to match the current options."""
-    # Lazy import: keeps Lovelace internals out of the config-flow import path.
-    from .frontend import (  # noqa: PLC0415
-        async_register_dashboard,
-        async_remove_dashboard,
-    )
+    When the dashboards cannot be read, whether such a row exists is unknown,
+    so nothing is recorded: the entry stays on minor version 1 with the old
+    option, and the next start looks again.
 
-    if _auto_create_dashboard_enabled(entry):
-        devices = entry.options.get(CONF_DASHBOARD_DEVICES, [])
-        await async_register_dashboard(
-            hass, list(devices) if isinstance(devices, list) else []
+    Never fails: a migration error would keep the zones and the services from
+    loading, and until the row is recorded nothing writes to or deletes it.
+    """
+    if entry.version == 1 and entry.minor_version < ENTRY_MINOR_VERSION:
+        options = dict(entry.options)
+        keep_dashboard = bool(options.pop(CONF_AUTO_CREATE_VIEW, True))
+        if CONF_DASHBOARD_ID not in options:
+            try:
+                dashboard_id = (
+                    await async_find_legacy_dashboard(hass) if keep_dashboard else None
+                )
+            except DashboardsUnreadableError:
+                # Unknown is not none. Setup goes ahead with the entry owning
+                # no dashboard for now, and nothing is written.
+                return True
+            options[CONF_DASHBOARD_ID] = dashboard_id
+            options[CONF_DASHBOARD_URL_PATH] = (
+                DASHBOARD_URL_PATH if dashboard_id else None
+            )
+        hass.config_entries.async_update_entry(
+            entry, options=options, minor_version=ENTRY_MINOR_VERSION
         )
-    else:
-        await async_remove_dashboard(hass)
-
-
-async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Apply option changes immediately (no restart needed)."""
-    await _async_apply_dashboard_option(hass, entry)
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -700,20 +731,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     Set up Apollo mmWave from a config entry.
 
     Loads (or migrates) the zone store, registers the update service, forwards
-    the sensor/binary_sensor platforms, serves the bundled frontend, and
-    registers the dedicated Apollo mmWave dashboard.
+    the sensor/binary_sensor platforms and serves the bundled frontend.
 
-    The frontend assets are registered unconditionally — the cards and strategy
-    must work even when the auto-dashboard is turned off (users laying out the
-    cards themselves). Only the sidebar dashboard is gated by the option.
+    Setup never creates, rewrites or deletes a dashboard. The Apollo mmWave
+    dashboard is created once, when an administrator asks for it in the config
+    or options flow, and later changes to it come only from options flow
+    actions on the row the entry recorded (``config_flow.py``). The frontend
+    assets are registered whether or not that dashboard exists: the cards and
+    strategy work on any dashboard.
     """
-    from .migration import (  # noqa: PLC0415
-        async_import_zone_mapper,
-        async_migrate_legacy,
-        async_migrate_unique_ids,
-    )
-    from .store import ZoneStore  # noqa: PLC0415
-
     store = ZoneStore(hass)
     if not await store.async_load():
         await async_migrate_legacy(hass, store)
@@ -728,11 +754,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Before the platforms, so no entity can resolve pairs without the cache in
     # place and then hold a stale answer.
-    from .ld2450 import async_track_target_pairs  # noqa: PLC0415
-
     entry.async_on_unload(async_track_target_pairs(hass))
 
-    hass.services.async_register(
+    # Admin only: a call rewrites the zone configuration and creates, renames
+    # and removes zone entities. Automations carry no user and still run; a
+    # non-admin user gets Unauthorized, which the card shows as its "Could not
+    # save" toast. Reading zones stays open to every user (websocket.py).
+    async_register_admin_service(
+        hass,
         DOMAIN,
         SERVICE_UPDATE_ZONE,
         _build_update_zone_handler(hass),
@@ -753,15 +782,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # How the card reads its configuration. Registering the commands is
     # idempotent and they are never unregistered (Home Assistant has no API for
     # it), so the teardown only closes the subscriptions this entry owns.
-    from .websocket import async_register as async_register_websocket  # noqa: PLC0415
-
     entry.async_on_unload(async_register_websocket(hass))
 
     # The gate calibration services and their store. The teardown is an
     # `async def`: it asks running jobs to stop and waits for their bounded
     # finally before the services and the store go away.
-    from .calibration import async_setup_calibration  # noqa: PLC0415
-
     entry.async_on_unload(await async_setup_calibration(hass, entry))
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -770,12 +795,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # ready by now — register immediately. Waiting for EVENT_HOMEASSISTANT_STARTED
     # (the old behavior) left a window where a page load during startup missed
     # the extra JS module and the dashboard timed out waiting for the strategy.
-    from .frontend import async_register_frontend_assets  # noqa: PLC0415
-
     await async_register_frontend_assets(hass)
-    await _async_apply_dashboard_option(hass, entry)
-
-    entry.async_on_unload(entry.add_update_listener(_async_options_updated))
 
     return True
 
@@ -788,25 +808,21 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     `async_setup_entry` registered, which Home Assistant runs only when this
     returns True.
 
-    The dashboard deliberately survives an unload. It is a real storage
-    dashboard now, so removing it here would delete whatever the user renamed,
-    re-iconed, or hid on the dashboards settings page every time the
-    integration reloaded (which HACS does on every update). The "auto-create
-    dashboard" option owns its lifetime instead.
+    An unload, like a reload, never writes a dashboard.
     """
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Delete the dashboard, resources and both stores when the entry is removed."""
-    from .calibration_store import CalibrationStore  # noqa: PLC0415
-    from .frontend import (  # noqa: PLC0415
-        async_remove_dashboard,
-        async_remove_lovelace_resources,
+    """Delete our dashboard, resources and both stores when the entry is removed."""
+    # Only the row this entry recorded, and only while its config is still our
+    # strategy (frontend.async_remove_dashboard). An entry that owns none
+    # leaves every dashboard alone.
+    await async_remove_dashboard(
+        hass,
+        entry.options.get(CONF_DASHBOARD_ID),
+        entry.options.get(CONF_DASHBOARD_URL_PATH),
     )
-    from .store import ZoneStore  # noqa: PLC0415
-
-    await async_remove_dashboard(hass)
     # The resource rows load the cards for every entry. The config flow allows
     # only one, so this keeps them for a second entry made some other way.
     # Home Assistant drops the removed entry from the list before calling this;

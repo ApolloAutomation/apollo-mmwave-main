@@ -87,8 +87,11 @@ press **Add**. Then skip to step 3.
 
    [![Open your Home Assistant instance and start setting up a new integration.](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=apollo_mmwave)
 
-   Leave **Add an 'Apollo mmWave' dashboard to the sidebar** turned on and
-   press **Submit**.
+   Leave **Add the Apollo mmWave dashboard to the sidebar** and **Only
+   administrators can see it** ticked and press **Submit**. The dashboard is
+   created once, now. Apollo mmWave does not recreate or change it later, and
+   you can edit or delete it like any other dashboard; see
+   [The Apollo mmWave dashboard](docs/configuration.md#the-apollo-mmwave-dashboard).
 
 To update later, make a full Home Assistant backup first. After HACS
 updates Apollo mmWave, restart Home Assistant, then refresh your browser
@@ -128,7 +131,9 @@ including what each HACS box says.
 ## First steps
 
 1. Open the **Apollo mmWave** dashboard in the sidebar. Each sensor has its own
-   tab.
+   tab. Only administrators see it, unless you unticked that box. No
+   dashboard? Add it from the integration's options
+   (**Settings → Devices & services → Apollo mmWave → Configure**).
 2. On an MSR-1 or MSR-2 tab, or an R PRO-1 tab if the sensor has the
    optional LD2412, find the **Auto-calibrate** card. On an R PRO-1 without
    it, skip to step 6. Before you start:
@@ -169,7 +174,7 @@ including what each HACS box says.
 - **The zone map says Apollo mmWave is not loaded:** wait a moment after a
   restart, then reload the page.
 - **A sensor has no tab:** check that it is added through ESPHome, and that
-  **Dashboard devices** in the integration's options
+  **Choose the dashboard's devices** in the integration's options
   (**Settings → Devices & services → Apollo mmWave → Configure**) is empty or
   lists it.
 
@@ -184,9 +189,10 @@ more.
   [setup](https://wiki.apolloautomation.com/products/general/setup/apollo-mmwave-dashboard-setup/)
   and
   [radar tuning](https://wiki.apolloautomation.com/products/general/setup/apollo-mmwave-dashboard/).
-- [docs/configuration.md](docs/configuration.md): which devices appear,
-  auto-calibration and its services, zones in automations, your own dashboards,
-  card options and the full troubleshooting list.
+- [docs/configuration.md](docs/configuration.md): the Apollo mmWave
+  dashboard, which devices appear, auto-calibration and its services, zones in
+  automations, your own dashboards, card options and the full troubleshooting
+  list.
 - [CHANGELOG.md](CHANGELOG.md): what changed in each release, with upgrade
   notes.
 - [CONTRIBUTING.md](CONTRIBUTING.md): how to build, test and send a change.
