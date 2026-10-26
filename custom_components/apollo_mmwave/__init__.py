@@ -21,8 +21,8 @@ if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant, ServiceCall
     from homeassistant.helpers.typing import ConfigType
 
-    from .store import ZoneStore
-
+from .calibration import async_setup_calibration
+from .calibration_store import CalibrationStore
 from .const import (
     ATTR_CX,
     ATTR_CY,
@@ -67,10 +67,24 @@ from .const import (
     WARN_RECT_NON_NUM,
     WARN_ZONE_NO_GEOMETRY,
 )
+from .frontend import (
+    async_register_dashboard,
+    async_register_frontend_assets,
+    async_remove_dashboard,
+    async_remove_lovelace_resources,
+)
+from .ld2450 import async_track_target_pairs
+from .migration import (
+    async_import_zone_mapper,
+    async_migrate_legacy,
+    async_migrate_unique_ids,
+)
+from .store import ZoneStore
+from .websocket import async_register as async_register_websocket
 
-# NOTE: `.frontend` is imported lazily inside the setup path (not here) so that
-# importing this package for the config flow doesn't pull in Lovelace internals
-# in the event loop (avoids the blocking-import warning).
+# Every module setup uses is imported here, at module level. Home Assistant
+# imports this package in its import executor, so the files are read off the
+# event loop; an import inside an async function would read them on it.
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -675,12 +689,6 @@ async def _async_apply_dashboard_option(
     hass: HomeAssistant, entry: ConfigEntry
 ) -> None:
     """Register or remove the sidebar dashboard to match the current options."""
-    # Lazy import: keeps Lovelace internals out of the config-flow import path.
-    from .frontend import (  # noqa: PLC0415
-        async_register_dashboard,
-        async_remove_dashboard,
-    )
-
     if _auto_create_dashboard_enabled(entry):
         devices = entry.options.get(CONF_DASHBOARD_DEVICES, [])
         await async_register_dashboard(
@@ -707,13 +715,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     must work even when the auto-dashboard is turned off (users laying out the
     cards themselves). Only the sidebar dashboard is gated by the option.
     """
-    from .migration import (  # noqa: PLC0415
-        async_import_zone_mapper,
-        async_migrate_legacy,
-        async_migrate_unique_ids,
-    )
-    from .store import ZoneStore  # noqa: PLC0415
-
     store = ZoneStore(hass)
     if not await store.async_load():
         await async_migrate_legacy(hass, store)
@@ -728,8 +729,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Before the platforms, so no entity can resolve pairs without the cache in
     # place and then hold a stale answer.
-    from .ld2450 import async_track_target_pairs  # noqa: PLC0415
-
     entry.async_on_unload(async_track_target_pairs(hass))
 
     hass.services.async_register(
@@ -753,15 +752,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # How the card reads its configuration. Registering the commands is
     # idempotent and they are never unregistered (Home Assistant has no API for
     # it), so the teardown only closes the subscriptions this entry owns.
-    from .websocket import async_register as async_register_websocket  # noqa: PLC0415
-
     entry.async_on_unload(async_register_websocket(hass))
 
     # The gate calibration services and their store. The teardown is an
     # `async def`: it asks running jobs to stop and waits for their bounded
     # finally before the services and the store go away.
-    from .calibration import async_setup_calibration  # noqa: PLC0415
-
     entry.async_on_unload(await async_setup_calibration(hass, entry))
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -770,8 +765,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # ready by now — register immediately. Waiting for EVENT_HOMEASSISTANT_STARTED
     # (the old behavior) left a window where a page load during startup missed
     # the extra JS module and the dashboard timed out waiting for the strategy.
-    from .frontend import async_register_frontend_assets  # noqa: PLC0415
-
     await async_register_frontend_assets(hass)
     await _async_apply_dashboard_option(hass, entry)
 
@@ -799,13 +792,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Delete the dashboard, resources and both stores when the entry is removed."""
-    from .calibration_store import CalibrationStore  # noqa: PLC0415
-    from .frontend import (  # noqa: PLC0415
-        async_remove_dashboard,
-        async_remove_lovelace_resources,
-    )
-    from .store import ZoneStore  # noqa: PLC0415
-
     await async_remove_dashboard(hass)
     # The resource rows load the cards for every entry. The config flow allows
     # only one, so this keeps them for a second entry made some other way.
