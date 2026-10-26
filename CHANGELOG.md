@@ -24,6 +24,11 @@ Lovelace resources are managed in YAML (replace both `?v=` URLs; see
   dashboard, or choose its devices, open the integration's options
   (Settings → Devices & services → Apollo mmWave → **Configure**); see
   [The Apollo mmWave dashboard](docs/configuration.md#the-apollo-mmwave-dashboard).
+- **Only administrators can change zones.** The `apollo_mmwave.update_zone`
+  action, which the zone map card uses to save, now refuses users who are not
+  administrators, so they can no longer change zones or create and remove zone
+  entities. They still see the zones and their presence sensors, and the card
+  answers a change with "Could not save". Automations are not affected.
 - **Startup stays off the event loop.** The startup check for the bundled
   card files no longer touches the disk on Home Assistant's event loop, and
   the integration now loads all of its own code when Home Assistant imports

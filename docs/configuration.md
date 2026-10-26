@@ -308,10 +308,11 @@ recorder:
 ## Drawing zones
 
 The zone map card on R PRO-1 and MTR-1 tabs draws occupancy zones over the
-LD2450's live targets. A new radar has no zones yet, so open
-**Configure → Zones** on the card and press **Add Zone** first. Then pick a
-zone with its button, choose Rectangle, Ellipse or Polygon from the
-drawing-mode menu (✎), and draw on the grid:
+LD2450's live targets. Only administrators can draw or change zones; other
+users see them, and the card answers a change with "Could not save". A new
+radar has no zones yet, so open **Configure → Zones** on the card and press
+**Add Zone** first. Then pick a zone with its button, choose Rectangle,
+Ellipse or Polygon from the drawing-mode menu (✎), and draw on the grid:
 
 - **Rectangle:** drag out a box. A click, a tap or a perfectly straight drag
   draws and saves nothing.
@@ -363,7 +364,9 @@ is inside the zone.
   send `shape: none`, and to remove it and its entities send `delete: true`. A
   call that changes nothing, such as a `zone_id` alone or `data` without a
   `shape`, is refused with a warning in the log. An accepted call fires
-  `apollo_mmwave_zone_updated` with the radar's `device_id`.
+  `apollo_mmwave_zone_updated` with the radar's `device_id`. Only
+  administrators can call it. Automations still can, and a call made by
+  another user, from a script they run for example, is refused.
 
   [![Open your Home Assistant instance and show your action tools with a specific action selected.](https://my.home-assistant.io/badges/tools_perform_action.svg)](https://my.home-assistant.io/redirect/tools_perform_action/?service=apollo_mmwave.update_zone)
 

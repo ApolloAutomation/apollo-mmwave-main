@@ -12,6 +12,7 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.dispatcher import async_dispatcher_send
+from homeassistant.helpers.service import async_register_admin_service
 from homeassistant.util import slugify
 
 if TYPE_CHECKING:
@@ -755,7 +756,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # place and then hold a stale answer.
     entry.async_on_unload(async_track_target_pairs(hass))
 
-    hass.services.async_register(
+    # Admin only: a call rewrites the zone configuration and creates, renames
+    # and removes zone entities. Automations carry no user and still run; a
+    # non-admin user gets Unauthorized, which the card shows as its "Could not
+    # save" toast. Reading zones stays open to every user (websocket.py).
+    async_register_admin_service(
+        hass,
         DOMAIN,
         SERVICE_UPDATE_ZONE,
         _build_update_zone_handler(hass),

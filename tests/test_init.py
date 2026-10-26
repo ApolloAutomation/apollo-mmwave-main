@@ -9,6 +9,8 @@ from unittest.mock import patch
 import pytest
 import voluptuous as vol
 from homeassistant.config_entries import SOURCE_USER, ConfigEntryState
+from homeassistant.core import Context
+from homeassistant.exceptions import Unauthorized
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.json import json_bytes
 from homeassistant.helpers.storage import Store
@@ -548,6 +550,57 @@ async def test_update_zone_requires_a_target(hass, init_integration) -> None:
             {ATTR_ROTATION_DEG: 90},
             blocking=True,
         )
+
+
+async def test_update_zone_is_admin_only(
+    hass, init_integration, device_id, hass_read_only_user, hass_admin_user
+) -> None:
+    """
+    Only administrators, and automations, can change zones.
+
+    A call rewrites the zone configuration and creates, renames and removes
+    zone entities, so a user who is not an administrator is refused before
+    anything is written. Automations carry no user and still run.
+    """
+    _ = init_integration
+    rect = {
+        "device_id": device_id,
+        "zone_id": 1,
+        "shape": "rect",
+        "data": {"x_min": -1000, "x_max": 1000, "y_min": 0, "y_max": 2000},
+    }
+    read_only = Context(user_id=hass_read_only_user.id)
+
+    with pytest.raises(Unauthorized):
+        await hass.services.async_call(
+            DOMAIN, SERVICE_UPDATE_ZONE, rect, blocking=True, context=read_only
+        )
+    await hass.async_block_till_done()
+    assert get_store(hass).zone(device_id, 1) is None
+    assert _zone_entity_ids(hass, device_id) == (None, None)
+
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_UPDATE_ZONE,
+        rect,
+        blocking=True,
+        context=Context(user_id=hass_admin_user.id),
+    )
+    await hass.async_block_till_done()
+    assert all(_zone_entity_ids(hass, device_id))
+
+    # Nor can that user delete the zone and its entities.
+    with pytest.raises(Unauthorized):
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_UPDATE_ZONE,
+            {"device_id": device_id, "zone_id": 1, "delete": True},
+            blocking=True,
+            context=read_only,
+        )
+    await hass.async_block_till_done()
+    assert get_store(hass).zone(device_id, 1) is not None
+    assert all(_zone_entity_ids(hass, device_id))
 
 
 async def test_unload_removes_service(
