@@ -38,10 +38,12 @@ from .const import (
     ATTR_Y_MAX,
     ATTR_Y_MIN,
     CONF_AUTO_CREATE_VIEW,
-    CONF_DASHBOARD_DEVICES,
+    CONF_DASHBOARD_ID,
+    CONF_DASHBOARD_URL_PATH,
+    DASHBOARD_URL_PATH,
     DATA_STORE,
-    DEFAULT_AUTO_CREATE_VIEW,
     DOMAIN,
+    ENTRY_MINOR_VERSION,
     EVENT_ZONE_UPDATED,
     INPUT_UNIT_FACTORS,
     POLYGON_MAX_POINTS,
@@ -68,7 +70,7 @@ from .const import (
     WARN_ZONE_NO_GEOMETRY,
 )
 from .frontend import (
-    async_register_dashboard,
+    async_find_legacy_dashboard,
     async_register_frontend_assets,
     async_remove_dashboard,
     async_remove_lovelace_resources,
@@ -680,27 +682,38 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     return True
 
 
-def _auto_create_dashboard_enabled(entry: ConfigEntry) -> bool:
-    value = entry.options.get(CONF_AUTO_CREATE_VIEW, DEFAULT_AUTO_CREATE_VIEW)
-    return bool(value)
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """
+    Record which dashboard an entry from 2.2.5 or earlier owns. Read only.
 
+    Those releases kept the Apollo mmWave dashboard in place on every setup
+    while the "auto-create dashboard" option was on, and identified it by its
+    url path. From minor version 2 the entry records the row it owns instead,
+    by id and url path, and setup never writes a dashboard. With the option on,
+    a row on our url path whose config is still our strategy is recorded as
+    ours, without writing to it. With the option off, or with no such row,
+    the entry owns none, and nothing is ever recreated. The option itself is
+    dropped. ``dashboard_devices`` is kept as it is.
 
-async def _async_apply_dashboard_option(
-    hass: HomeAssistant, entry: ConfigEntry
-) -> None:
-    """Register or remove the sidebar dashboard to match the current options."""
-    if _auto_create_dashboard_enabled(entry):
-        devices = entry.options.get(CONF_DASHBOARD_DEVICES, [])
-        await async_register_dashboard(
-            hass, list(devices) if isinstance(devices, list) else []
+    Never fails: a migration error would keep the zones and the services from
+    loading, and the worst a failed lookup can do is leave an old dashboard
+    untracked, which nothing then writes to or deletes.
+    """
+    if entry.version == 1 and entry.minor_version < ENTRY_MINOR_VERSION:
+        options = dict(entry.options)
+        keep_dashboard = bool(options.pop(CONF_AUTO_CREATE_VIEW, True))
+        if CONF_DASHBOARD_ID not in options:
+            dashboard_id = (
+                await async_find_legacy_dashboard(hass) if keep_dashboard else None
+            )
+            options[CONF_DASHBOARD_ID] = dashboard_id
+            options[CONF_DASHBOARD_URL_PATH] = (
+                DASHBOARD_URL_PATH if dashboard_id else None
+            )
+        hass.config_entries.async_update_entry(
+            entry, options=options, minor_version=ENTRY_MINOR_VERSION
         )
-    else:
-        await async_remove_dashboard(hass)
-
-
-async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Apply option changes immediately (no restart needed)."""
-    await _async_apply_dashboard_option(hass, entry)
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -708,12 +721,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     Set up Apollo mmWave from a config entry.
 
     Loads (or migrates) the zone store, registers the update service, forwards
-    the sensor/binary_sensor platforms, serves the bundled frontend, and
-    registers the dedicated Apollo mmWave dashboard.
+    the sensor/binary_sensor platforms and serves the bundled frontend.
 
-    The frontend assets are registered unconditionally — the cards and strategy
-    must work even when the auto-dashboard is turned off (users laying out the
-    cards themselves). Only the sidebar dashboard is gated by the option.
+    Setup never creates, rewrites or deletes a dashboard. The Apollo mmWave
+    dashboard is created once, when an administrator asks for it in the config
+    flow, and later changes to it come only from the options flow's device
+    selection on the row the entry recorded (``config_flow.py``). The frontend
+    assets are registered whether or not that dashboard exists: the cards and
+    strategy work on any dashboard.
     """
     store = ZoneStore(hass)
     if not await store.async_load():
@@ -766,9 +781,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # (the old behavior) left a window where a page load during startup missed
     # the extra JS module and the dashboard timed out waiting for the strategy.
     await async_register_frontend_assets(hass)
-    await _async_apply_dashboard_option(hass, entry)
-
-    entry.async_on_unload(entry.add_update_listener(_async_options_updated))
 
     return True
 
@@ -781,18 +793,21 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     `async_setup_entry` registered, which Home Assistant runs only when this
     returns True.
 
-    The dashboard deliberately survives an unload. It is a real storage
-    dashboard now, so removing it here would delete whatever the user renamed,
-    re-iconed, or hid on the dashboards settings page every time the
-    integration reloaded (which HACS does on every update). The "auto-create
-    dashboard" option owns its lifetime instead.
+    An unload, like a reload, never writes a dashboard.
     """
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Delete the dashboard, resources and both stores when the entry is removed."""
-    await async_remove_dashboard(hass)
+    """Delete our dashboard, resources and both stores when the entry is removed."""
+    # Only the row this entry recorded, and only while its config is still our
+    # strategy (frontend.async_remove_dashboard). An entry that owns none
+    # leaves every dashboard alone.
+    await async_remove_dashboard(
+        hass,
+        entry.options.get(CONF_DASHBOARD_ID),
+        entry.options.get(CONF_DASHBOARD_URL_PATH),
+    )
     # The resource rows load the cards for every entry. The config flow allows
     # only one, so this keeps them for a second entry made some other way.
     # Home Assistant drops the removed entry from the list before calling this;

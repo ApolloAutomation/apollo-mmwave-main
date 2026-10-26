@@ -93,17 +93,35 @@ POLYGON_MIN_POINTS = 3
 # backend. Nothing aliases the old name.
 CARD_TYPE = "custom:apollo-radar-zone-map-card"
 
-# Options flow: opt out of the auto-created dashboard.
+# Config flow: create the Apollo mmWave dashboard once, when the
+# administrator submits the form, and whether only administrators can see it.
+# Neither choice is stored on the entry.
+CONF_CREATE_DASHBOARD = "create_dashboard"
+DEFAULT_CREATE_DASHBOARD = True
+CONF_DASHBOARD_ADMIN_ONLY = "dashboard_admin_only"
+DEFAULT_DASHBOARD_ADMIN_ONLY = True
+
+# Entry options: the dashboard this integration created, by its dashboards
+# collection id and url path, or None for both when it owns none. Only that row
+# is ever written to or deleted, and only while its config is still our
+# strategy. Setup never writes a dashboard.
+CONF_DASHBOARD_ID = "dashboard_id"
+CONF_DASHBOARD_URL_PATH = "dashboard_url_path"
+
+# Entries from 2.2.5 and earlier: whether setup kept the dashboard in place.
+# async_migrate_entry reads it once to record ownership, then drops it.
 CONF_AUTO_CREATE_VIEW = "auto_create_view"
-DEFAULT_AUTO_CREATE_VIEW = True
+# The config entry minor version that records dashboard ownership. Entries on
+# minor version 1 come from 2.2.5 or earlier.
+ENTRY_MINOR_VERSION = 2
 
 # Options flow: explicit device selection for the dashboard. Empty means
 # automatic detection (live Apollo mmWave devices); a non-empty list means
 # exactly these devices, shown even while offline/unplugged.
 CONF_DASHBOARD_DEVICES = "dashboard_devices"
 
-# Dedicated, strategy-backed dashboard this integration registers in the sidebar.
-# The dashboard config is just `{"strategy": {"type": DASHBOARD_STRATEGY_TYPE}}`;
+# Strategy-backed dashboard this integration can create in the sidebar. The
+# dashboard config is just `{"strategy": {"type": DASHBOARD_STRATEGY_TYPE}}`;
 # the frontend strategy detects every Apollo mmWave device and builds one tab each.
 DASHBOARD_URL_PATH = "apollo-mmwave"
 DASHBOARD_TITLE = "Apollo mmWave"

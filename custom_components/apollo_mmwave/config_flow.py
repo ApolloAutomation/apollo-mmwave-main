@@ -1,10 +1,13 @@
 """
 Config and options flow for Apollo mmWave.
 
-The integration is UI-configurable and has a single setup step that just
-creates the singleton entry. The options flow exposes the toggle for the
-auto-created dashboard and an optional explicit selection of the radars it
-shows (empty means automatic detection).
+The integration is UI-configurable and has a single setup step that creates
+the singleton entry. On that step the administrator chooses whether to add
+the Apollo mmWave dashboard and whether only administrators can see it. The
+dashboard is created right there, once, and the entry records its id and url
+path; nothing creates or rewrites it later. The options flow sets an optional
+explicit selection of the radars it shows (empty means automatic detection)
+and writes it into that recorded dashboard only.
 """
 
 from __future__ import annotations
@@ -17,10 +20,21 @@ from homeassistant.core import callback
 from homeassistant.helpers import selector
 
 from .const import (
-    CONF_AUTO_CREATE_VIEW,
+    CONF_CREATE_DASHBOARD,
+    CONF_DASHBOARD_ADMIN_ONLY,
     CONF_DASHBOARD_DEVICES,
-    DEFAULT_AUTO_CREATE_VIEW,
+    CONF_DASHBOARD_ID,
+    CONF_DASHBOARD_URL_PATH,
+    DASHBOARD_URL_PATH,
+    DEFAULT_CREATE_DASHBOARD,
+    DEFAULT_DASHBOARD_ADMIN_ONLY,
     DOMAIN,
+    ENTRY_MINOR_VERSION,
+)
+from .frontend import (
+    async_create_dashboard,
+    async_dashboard_owned,
+    async_set_dashboard_devices,
 )
 
 if TYPE_CHECKING:
@@ -46,15 +60,25 @@ MMWAVE_MODELS = (
 )
 
 
+def _ownership(dashboard_id: str | None) -> dict[str, str | None]:
+    """Return the entry options that record which dashboard the entry owns."""
+    return {
+        CONF_DASHBOARD_ID: dashboard_id,
+        CONF_DASHBOARD_URL_PATH: DASHBOARD_URL_PATH if dashboard_id else None,
+    }
+
+
 class ApolloMmwaveConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Config flow to create a single Apollo mmWave entry."""
 
     VERSION = 1
+    # 2 records the dashboard the entry owns; see async_migrate_entry.
+    MINOR_VERSION = ENTRY_MINOR_VERSION
 
     async def async_step_user(
         self, user_input: dict | None = None
     ) -> config_entries.ConfigFlowResult:
-        """Ask about the auto-dashboard and create the entry when submitted."""
+        """Offer the dashboard, create it if asked, and create the entry."""
         # TODO(REVIEW_REPORT.md X18): not via the manifest.  # noqa: FIX002, TD003
         # Optionally add "single_config_entry": true to manifest.json; the abort
         # reason becomes single_instance_allowed (update test_single_instance).
@@ -65,20 +89,31 @@ class ApolloMmwaveConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             await self.async_set_unique_id(DOMAIN)
             self._abort_if_unique_id_configured()
-            return self.async_create_entry(
-                title="Apollo mmWave",
-                data={},
-                options={
-                    CONF_AUTO_CREATE_VIEW: user_input.get(
-                        CONF_AUTO_CREATE_VIEW, DEFAULT_AUTO_CREATE_VIEW
+            dashboard_id = None
+            if user_input.get(CONF_CREATE_DASHBOARD, DEFAULT_CREATE_DASHBOARD):
+                # The administrator asked for it on this form, which says what
+                # it creates. A failure is logged with a pointer to the
+                # Community dashboards picker and never blocks the setup: the
+                # entry then simply owns no dashboard.
+                dashboard_id = await async_create_dashboard(
+                    self.hass,
+                    require_admin=bool(
+                        user_input.get(
+                            CONF_DASHBOARD_ADMIN_ONLY, DEFAULT_DASHBOARD_ADMIN_ONLY
+                        )
                     ),
-                },
+                )
+            return self.async_create_entry(
+                title="Apollo mmWave", data={}, options=_ownership(dashboard_id)
             )
 
         schema = vol.Schema(
             {
                 vol.Required(
-                    CONF_AUTO_CREATE_VIEW, default=DEFAULT_AUTO_CREATE_VIEW
+                    CONF_CREATE_DASHBOARD, default=DEFAULT_CREATE_DASHBOARD
+                ): bool,
+                vol.Required(
+                    CONF_DASHBOARD_ADMIN_ONLY, default=DEFAULT_DASHBOARD_ADMIN_ONLY
                 ): bool,
             }
         )
@@ -94,23 +129,35 @@ class ApolloMmwaveConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class ApolloMmwaveOptionsFlow(config_entries.OptionsFlow):
-    """Options flow for the auto-created dashboard toggle and device selection."""
+    """Options flow for the device selection of the dashboard the entry owns."""
 
     async def async_step_init(
         self, user_input: dict | None = None
     ) -> config_entries.ConfigFlowResult:
-        """Prompt for the dashboard toggle and device selection, and save."""
+        """Prompt for the device selection, write it into our dashboard, save."""
+        options = self.config_entry.options
+        dashboard_id = options.get(CONF_DASHBOARD_ID)
+        url_path = options.get(CONF_DASHBOARD_URL_PATH)
+        errors: dict[str, str] = {}
         if user_input is not None:
-            user_input.setdefault(CONF_DASHBOARD_DEVICES, [])
-            return self.async_create_entry(title="", data=user_input)
+            devices = list(user_input.get(CONF_DASHBOARD_DEVICES, []))
+            new_options = {**options, CONF_DASHBOARD_DEVICES: devices}
+            owned = await async_dashboard_owned(self.hass, dashboard_id, url_path)
+            if owned is False:
+                # Deleted, or taken over: it is not ours any more, so forget it.
+                new_options.update(_ownership(None))
+            # Only the dashboard this entry created, and only while it is
+            # still our strategy; with none, the selection is just stored.
+            if owned and not await async_set_dashboard_devices(
+                self.hass, dashboard_id, url_path, devices
+            ):
+                errors["base"] = "dashboard_not_updated"
+            else:
+                return self.async_create_entry(title="", data=new_options)
 
-        current_auto = self.config_entry.options.get(
-            CONF_AUTO_CREATE_VIEW, DEFAULT_AUTO_CREATE_VIEW
-        )
-        current_devices = self.config_entry.options.get(CONF_DASHBOARD_DEVICES, [])
+        current_devices = options.get(CONF_DASHBOARD_DEVICES, [])
         schema = vol.Schema(
             {
-                vol.Required(CONF_AUTO_CREATE_VIEW, default=current_auto): bool,
                 vol.Optional(
                     CONF_DASHBOARD_DEVICES,
                     default=list(current_devices),
@@ -137,4 +184,4 @@ class ApolloMmwaveOptionsFlow(config_entries.OptionsFlow):
                 ),
             }
         )
-        return self.async_show_form(step_id="init", data_schema=schema)
+        return self.async_show_form(step_id="init", data_schema=schema, errors=errors)

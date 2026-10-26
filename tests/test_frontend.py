@@ -11,7 +11,6 @@ element with no way to recover short of a hard refresh.
 from __future__ import annotations
 
 import asyncio
-import logging
 from http import HTTPStatus
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -23,7 +22,6 @@ from homeassistant.components.lovelace import LovelaceData
 from homeassistant.components.lovelace.const import (
     LOVELACE_DATA,
     MODE_STORAGE,
-    ConfigNotFound,
 )
 from homeassistant.components.lovelace.dashboard import LovelaceStorage, LovelaceYAML
 from homeassistant.exceptions import HomeAssistantError
@@ -33,8 +31,8 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.apollo_mmwave import frontend as apollo_frontend
 from custom_components.apollo_mmwave.const import (
-    CONF_AUTO_CREATE_VIEW,
-    CONF_DASHBOARD_DEVICES,
+    CONF_DASHBOARD_ID,
+    CONF_DASHBOARD_URL_PATH,
     DASHBOARD_ICON,
     DASHBOARD_STRATEGY_TYPE,
     DASHBOARD_TITLE,
@@ -46,12 +44,27 @@ from custom_components.apollo_mmwave.const import (
 from custom_components.apollo_mmwave.frontend import (
     _async_register_lovelace_resources,
     _dashboards_collection,
-    async_register_dashboard,
+    async_create_dashboard,
+    async_dashboard_owned,
+    async_find_legacy_dashboard,
     async_register_frontend_assets,
     async_remove_dashboard,
+    async_set_dashboard_devices,
 )
 
-from .conftest import setup_integration
+from .conftest import (
+    USER_DASHBOARD_CONFIG,
+    USER_DASHBOARD_PATH,
+    apollo_warning_records,
+    apollo_warnings,
+    async_dashboard_config,
+    async_owned_entry,
+    async_user_dashboard,
+    make_entry,
+    record_dashboard_writes,
+    rows_on_url_path,
+    setup_integration,
+)
 
 if TYPE_CHECKING:
     from homeassistant.components.lovelace.resources import ResourceStorageCollection
@@ -283,7 +296,7 @@ async def test_missing_bundle_is_warned_about_and_never_registered(
     with patch.object(apollo_frontend, "_frontend_path", return_value=tmp_path):
         await setup_integration(hass, config_entry)
 
-    warnings = _apollo_warnings(caplog)
+    warnings = apollo_warnings(caplog)
     assert len(warnings) == len(JS_BUNDLES)
     for name, warning in zip(JS_BUNDLES, warnings, strict=True):
         assert f"bundled frontend asset {name} is missing" in warning
@@ -305,7 +318,7 @@ async def test_one_missing_bundle_leaves_the_other_registered(
     with patch.object(apollo_frontend, "_frontend_path", return_value=tmp_path):
         await setup_integration(hass, config_entry)
 
-    warnings = _apollo_warnings(caplog)
+    warnings = apollo_warnings(caplog)
     assert len(warnings) == 1
     assert f"bundled frontend asset {missing} is missing" in warnings[0]
     assert {url.partition("?")[0] for url in _our_extra_module_urls(hass)} == {
@@ -368,7 +381,7 @@ async def test_yaml_resource_mode_logs_manual_instructions(
     await setup_integration(hass, config_entry)
 
     urls = await _current_urls(hass)
-    records = _apollo_warning_records(caplog)
+    records = apollo_warning_records(caplog)
     assert len(records) == 1
     assert records[0].exc_info is None
     message = records[0].getMessage()
@@ -403,50 +416,22 @@ async def test_unavailable_resource_collection_is_warned_about(
 
     await _async_register_lovelace_resources(hass, await _current_urls(hass))
 
-    warnings = _apollo_warnings(caplog)
+    warnings = apollo_warnings(caplog)
     assert len(warnings) == 1
     assert "Lovelace resource collection unavailable" in warnings[0]
     expected_type = "LovelaceData" if has_lovelace_data else "NoneType"
     assert f"(lovelace data: {expected_type})" in warnings[0]
 
 
-@pytest.fixture
-def dashboard_entry() -> MockConfigEntry:
-    """Return an entry with the sidebar dashboard turned ON."""
-    return MockConfigEntry(
-        domain=DOMAIN,
-        title="Apollo mmWave",
-        data={},
-        options={CONF_AUTO_CREATE_VIEW: True},
-        unique_id=DOMAIN,
-    )
-
-
-def _our_rows(hass) -> list[dict[str, Any]]:
-    """Return every dashboards collection row on our url path."""
-    return [
-        i
-        for i in _dashboards_collection(hass).async_items()
-        if i["url_path"] == DASHBOARD_URL_PATH
-    ]
-
-
-async def _dashboard_config(hass) -> dict | None:
-    """Return the stored Lovelace config for our url path, or None."""
-    config = hass.data[LOVELACE_DATA].dashboards.get(DASHBOARD_URL_PATH)
-    if config is None:
-        return None
-    try:
-        return await config.async_load(force=False)
-    except ConfigNotFound:
-        return None
+OUR_CONFIG: dict[str, Any] = {"strategy": {"type": DASHBOARD_STRATEGY_TYPE}}
 
 
 async def test_dashboard_appears_with_a_title_and_can_be_taken_over(
-    hass, hass_ws_client, dashboard_entry
+    hass, hass_ws_client
 ) -> None:
     """The row on the dashboards page has our title, and "take control" saves."""
-    await setup_integration(hass, dashboard_entry)
+    entry = await async_owned_entry(hass)
+    await setup_integration(hass, entry)
     client = await hass_ws_client(hass)
 
     await client.send_json_auto_id({"type": "lovelace/dashboards/list"})
@@ -458,7 +443,7 @@ async def test_dashboard_appears_with_a_title_and_can_be_taken_over(
     # dict, so it alone would not have caught that.
     assert DASHBOARD_URL_PATH in hass.data[DATA_PANELS]
 
-    stored = await _dashboard_config(hass)
+    stored = await async_dashboard_config(hass)
     assert stored["strategy"]["type"] == DASHBOARD_STRATEGY_TYPE
 
     await client.send_json_auto_id(
@@ -471,16 +456,65 @@ async def test_dashboard_appears_with_a_title_and_can_be_taken_over(
     assert (await client.receive_json())["success"] is True
 
 
-async def test_removing_the_entry_removes_the_dashboard(hass, dashboard_entry) -> None:
-    """Deleting the config entry takes the collection item and panel with it."""
-    await setup_integration(hass, dashboard_entry)
-    assert DASHBOARD_URL_PATH in hass.data[LOVELACE_DATA].dashboards
+async def test_removing_the_entry_removes_only_our_dashboard(hass) -> None:
+    """Deleting the entry takes our row and panel, and leaves the user's own."""
+    entry = await async_owned_entry(hass)
+    theirs = await async_user_dashboard(hass)
+    await setup_integration(hass, entry)
 
-    await hass.config_entries.async_remove(dashboard_entry.entry_id)
+    await hass.config_entries.async_remove(entry.entry_id)
     await hass.async_block_till_done()
 
+    assert rows_on_url_path(hass) == []
     assert DASHBOARD_URL_PATH not in hass.data[LOVELACE_DATA].dashboards
     assert DASHBOARD_URL_PATH not in hass.data[DATA_PANELS]
+    assert rows_on_url_path(hass, USER_DASHBOARD_PATH) == [theirs]
+    assert (
+        await async_dashboard_config(hass, USER_DASHBOARD_PATH) == USER_DASHBOARD_CONFIG
+    )
+
+
+async def test_removing_the_entry_leaves_a_dashboard_the_user_took_over(
+    hass,
+) -> None:
+    """After "take control" the dashboard is the user's and survives removal."""
+    entry = await async_owned_entry(hass)
+    await setup_integration(hass, entry)
+    mine = {"views": [{"title": "Mine", "cards": [{"type": "markdown"}]}]}
+    await hass.data[LOVELACE_DATA].dashboards[DASHBOARD_URL_PATH].async_save(mine)
+
+    await hass.config_entries.async_remove(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert len(rows_on_url_path(hass)) == 1
+    assert DASHBOARD_URL_PATH in hass.data[DATA_PANELS]
+    assert await async_dashboard_config(hass) == mine
+
+
+async def test_an_entry_that_owns_no_dashboard_never_touches_one(
+    hass, config_entry
+) -> None:
+    """
+    A strategy dashboard the user made on our url path survives everything.
+
+    Up to 2.2.5, with the dashboard option off, every setup and reload deleted
+    any dashboard on /apollo-mmwave whose config was our strategy, including
+    one the user built by hand (X03). Setup, reload and removal now write no
+    dashboard at all for an entry that owns none.
+    """
+    theirs = await async_user_dashboard(hass, DASHBOARD_URL_PATH, OUR_CONFIG)
+
+    with record_dashboard_writes(hass) as writes:
+        await setup_integration(hass, config_entry)
+        assert await hass.config_entries.async_reload(config_entry.entry_id)
+        await hass.async_block_till_done()
+        await hass.config_entries.async_remove(config_entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert writes == []
+    assert rows_on_url_path(hass) == [theirs]
+    assert await async_dashboard_config(hass) == OUR_CONFIG
+    assert DASHBOARD_URL_PATH in hass.data[DATA_PANELS]
 
 
 def _our_resource_urls(hass) -> list[str]:
@@ -513,7 +547,7 @@ async def test_removing_the_entry_removes_its_resource_rows(
     foreign = [i for i in resources.async_items() if i["url"] == FOREIGN_URL]
     assert len(foreign) == 1
     assert foreign[0]["type"] == "js"
-    assert _apollo_warnings(caplog) == []
+    assert apollo_warnings(caplog) == []
 
 
 async def test_rows_from_an_earlier_run_are_removed_without_a_setup(
@@ -557,13 +591,7 @@ async def test_adding_the_entry_again_puts_the_rows_back(hass, config_entry) -> 
     await hass.async_block_till_done()
     assert _our_resource_urls(hass) == []
 
-    again = MockConfigEntry(
-        domain=DOMAIN,
-        title="Apollo mmWave",
-        data={},
-        options={CONF_AUTO_CREATE_VIEW: False},
-        unique_id=DOMAIN,
-    )
+    again = make_entry()
     await setup_integration(hass, again)
 
     assert sorted(_our_resource_urls(hass)) == sorted(await _current_urls(hass))
@@ -604,7 +632,7 @@ async def test_removal_with_yaml_resources_names_the_rows_to_delete(
     assert hass.config_entries.async_get_entry(config_entry.entry_id) is None
     assert f"{DOMAIN}.zones" not in hass_storage
     assert hass.data[LOVELACE_DATA].resources.async_items() == listed
-    warnings = _apollo_warning_records(caplog)
+    warnings = apollo_warning_records(caplog)
     if not ours_listed:
         assert warnings == []
         return
@@ -635,7 +663,7 @@ async def test_another_entry_keeps_the_resource_rows(
         domain=DOMAIN,
         title="Apollo mmWave",
         data={},
-        options={CONF_AUTO_CREATE_VIEW: False},
+        options={CONF_DASHBOARD_ID: None, CONF_DASHBOARD_URL_PATH: None},
         unique_id=f"{DOMAIN}_other",
         source=source,
     )
@@ -671,7 +699,7 @@ async def test_a_failed_resource_removal_is_logged_and_the_removal_goes_on(
         await hass.async_block_till_done()
 
     assert f"{DOMAIN}.zones" not in hass_storage
-    records = _apollo_warning_records(caplog)
+    records = apollo_warning_records(caplog)
     assert len(records) == 1
     assert "could not remove the Lovelace resources" in records[0].getMessage()
     assert records[0].exc_info is not None
@@ -708,160 +736,153 @@ async def test_an_entry_added_after_a_partial_removal_gets_every_row_back(
     assert calls == len(JS_BUNDLES)
     assert len(_our_resource_urls(hass)) == len(JS_BUNDLES) - 1
 
-    again = MockConfigEntry(
-        domain=DOMAIN,
-        title="Apollo mmWave",
-        data={},
-        options={CONF_AUTO_CREATE_VIEW: False},
-        unique_id=DOMAIN,
-    )
+    again = make_entry()
     await setup_integration(hass, again)
 
     assert sorted(_our_resource_urls(hass)) == sorted(await _current_urls(hass))
 
 
-async def test_the_auto_create_option_removes_and_recreates_the_dashboard(
-    hass, dashboard_entry, caplog
-) -> None:
+async def test_unreachable_dashboards_collection_is_warned_about(hass, caplog) -> None:
     """
-    Changing the option on the entry removes the dashboard, then brings it back.
-
-    The update listener is the one production path that deletes the
-    dashboard, so the options are changed on the entry the way a saved
-    options form arrives, not by calling the helpers.
-    """
-    await setup_integration(hass, dashboard_entry)
-    assert len(_our_rows(hass)) == 1
-    assert DASHBOARD_URL_PATH in hass.data[DATA_PANELS]
-
-    hass.config_entries.async_update_entry(
-        dashboard_entry, options={CONF_AUTO_CREATE_VIEW: False}
-    )
-    await hass.async_block_till_done()
-
-    assert _our_rows(hass) == []
-    assert DASHBOARD_URL_PATH not in hass.data[LOVELACE_DATA].dashboards
-    assert DASHBOARD_URL_PATH not in hass.data[DATA_PANELS]
-
-    hass.config_entries.async_update_entry(
-        dashboard_entry, options={CONF_AUTO_CREATE_VIEW: True}
-    )
-    await hass.async_block_till_done()
-
-    assert len(_our_rows(hass)) == 1
-    assert DASHBOARD_URL_PATH in hass.data[DATA_PANELS]
-    assert await _dashboard_config(hass) == {
-        "strategy": {"type": DASHBOARD_STRATEGY_TYPE}
-    }
-    assert _apollo_warnings(caplog) == []
-
-
-async def test_unreachable_dashboards_collection_is_warned_about(
-    hass, dashboard_entry, caplog
-) -> None:
-    """
-    Without the dashboards collection, setup goes on and says how to recover.
+    Without the dashboards collection, nothing is written and nothing raises.
 
     The collection is borrowed from a websocket handler rather than a public
-    API, so if Lovelace moves it the warning names the strategy to add by hand.
+    API, so if Lovelace moves it the create warning names the Community
+    dashboards picker and the strategy to add by hand.
     """
+    assert await async_setup_component(hass, "lovelace", {})
     with patch.object(apollo_frontend, "_dashboards_collection", return_value=None):
-        await setup_integration(hass, dashboard_entry)
+        assert await async_create_dashboard(hass, require_admin=True) is None
+        [created] = apollo_warnings(caplog)
+        assert "could not reach Lovelace's dashboards collection" in created
+        assert "Add dashboard > Apollo Radar Tuning" in created
+        assert DASHBOARD_STRATEGY_TYPE in created
+        caplog.clear()
 
-    warnings = _apollo_warnings(caplog)
-    assert len(warnings) == 1
-    assert "could not reach Lovelace's dashboards collection" in warnings[0]
-    assert DASHBOARD_STRATEGY_TYPE in warnings[0]
+        # Nothing is known, so the options flow keeps what the entry recorded.
+        assert (
+            await async_dashboard_owned(hass, "apollo_mmwave", "apollo-mmwave") is None
+        )
+        assert not await async_set_dashboard_devices(
+            hass, "apollo_mmwave", DASHBOARD_URL_PATH, ["dev1"]
+        )
+        assert apollo_warnings(caplog) == []
+
+        assert not await async_remove_dashboard(
+            hass, "apollo_mmwave", DASHBOARD_URL_PATH
+        )
+        [removed] = apollo_warnings(caplog)
+        assert "was not removed" in removed
+        caplog.clear()
+
+        assert await async_find_legacy_dashboard(hass) is None
+        [legacy] = apollo_warnings(caplog)
+        assert "is not tracked" in legacy
+
     assert DASHBOARD_URL_PATH not in hass.data[LOVELACE_DATA].dashboards
     assert DASHBOARD_URL_PATH not in hass.data[DATA_PANELS]
 
 
-async def test_reloading_the_entry_keeps_the_users_dashboard_edits(
-    hass, dashboard_entry
-) -> None:
+async def test_reloading_the_entry_keeps_the_users_dashboard_edits(hass) -> None:
     """A reload must not delete and recreate the row, wiping renames and icons."""
-    await setup_integration(hass, dashboard_entry)
+    entry = await async_owned_entry(hass)
+    await setup_integration(hass, entry)
     collection = _dashboards_collection(hass)
-    item = next(
-        i for i in collection.async_items() if i["url_path"] == DASHBOARD_URL_PATH
-    )
+    [item] = rows_on_url_path(hass)
     await collection.async_update_item(
         item["id"], {"title": "Radar", "icon": "mdi:home", "show_in_sidebar": False}
     )
 
-    await hass.config_entries.async_reload(dashboard_entry.entry_id)
+    await hass.config_entries.async_reload(entry.entry_id)
     await hass.async_block_till_done()
 
-    item = next(
-        i for i in collection.async_items() if i["url_path"] == DASHBOARD_URL_PATH
-    )
+    [item] = rows_on_url_path(hass)
     assert item["title"] == "Radar"
     assert item["icon"] == "mdi:home"
     assert item["show_in_sidebar"] is False
 
 
-async def test_a_foreign_dashboard_on_our_url_path_is_never_written_to(
-    hass, dashboard_entry
+async def test_a_new_dashboard_on_our_url_path_is_never_written_to(
+    hass, caplog
 ) -> None:
     """A user's own dashboard here has no config yet; that is not a free space."""
-    dashboard_entry.add_to_hass(hass)
-    # The integration is not up yet, so this row is unmistakably not ours. It
-    # has no stored Lovelace config, exactly like one made in the UI and not
-    # yet opened.
-    assert await async_setup_component(hass, "lovelace", {})
-    collection = _dashboards_collection(hass)
-    await collection.async_create_item(
-        {"url_path": DASHBOARD_URL_PATH, "title": "My Radar Room"}
-    )
+    # No stored Lovelace config, exactly like one made in the UI and not yet
+    # opened.
+    theirs = await async_user_dashboard(hass, DASHBOARD_URL_PATH, config=None)
 
-    assert await hass.config_entries.async_setup(dashboard_entry.entry_id)
+    assert await async_create_dashboard(hass, require_admin=True) is None
+    [warning] = apollo_warnings(caplog)
+    assert f"another dashboard already uses /{DASHBOARD_URL_PATH}" in warning
+
+    # Even with its id recorded, nothing of ours is there to write or delete.
+    assert await async_dashboard_owned(hass, theirs["id"], DASHBOARD_URL_PATH) is False
+    assert not await async_set_dashboard_devices(
+        hass, theirs["id"], DASHBOARD_URL_PATH, ["dev1"]
+    )
+    assert await async_remove_dashboard(hass, theirs["id"], DASHBOARD_URL_PATH)
     await hass.async_block_till_done()
 
-    assert await _dashboard_config(hass) is None
-
-    # And turning the option off must not delete what we never created.
-    await async_remove_dashboard(hass)
-    await hass.async_block_till_done()
-    item = next(
-        i for i in collection.async_items() if i["url_path"] == DASHBOARD_URL_PATH
-    )
-    assert item["title"] == "My Radar Room"
+    assert rows_on_url_path(hass) == [theirs]
+    assert await async_dashboard_config(hass) is None
 
 
-async def test_taken_over_dashboard_is_never_overwritten_or_deleted(
-    hass, dashboard_entry
-) -> None:
+async def test_taken_over_dashboard_is_never_overwritten_or_deleted(hass) -> None:
     """Once the strategy key is gone the config is the user's, not ours."""
-    await setup_integration(hass, dashboard_entry)
+    entry = await async_owned_entry(hass)
+    await setup_integration(hass, entry)
+    dashboard_id = entry.options[CONF_DASHBOARD_ID]
     mine = {"views": [{"title": "Mine", "cards": [{"type": "markdown"}]}]}
     await hass.data[LOVELACE_DATA].dashboards[DASHBOARD_URL_PATH].async_save(mine)
 
-    # Re-registering (a restart, or an options change) must not reseed it.
-    await async_register_dashboard(hass, [])
-    await hass.async_block_till_done()
-    assert await _dashboard_config(hass) == mine
+    assert await async_dashboard_owned(hass, dashboard_id, DASHBOARD_URL_PATH) is False
+    assert not await async_set_dashboard_devices(
+        hass, dashboard_id, DASHBOARD_URL_PATH, ["dev1"]
+    )
+    assert await async_dashboard_config(hass) == mine
 
-    # Nor may unloading delete a dashboard the user now owns.
-    await async_remove_dashboard(hass)
+    # Removing reports nothing of ours left, and deletes nothing.
+    assert await async_remove_dashboard(hass, dashboard_id, DASHBOARD_URL_PATH)
     await hass.async_block_till_done()
     assert DASHBOARD_URL_PATH in hass.data[LOVELACE_DATA].dashboards
-    assert await _dashboard_config(hass) == mine
+    assert await async_dashboard_config(hass) == mine
 
 
-async def test_user_added_strategy_options_survive_a_re_register(
-    hass, dashboard_entry
-) -> None:
+async def test_only_the_recorded_row_is_ours(hass) -> None:
+    """Another id or url path than the entry recorded is never ours."""
+    entry = await async_owned_entry(hass)
+    await async_user_dashboard(hass)
+    dashboard_id = entry.options[CONF_DASHBOARD_ID]
+
+    assert await async_dashboard_owned(hass, dashboard_id, DASHBOARD_URL_PATH)
+    assert not await async_dashboard_owned(hass, None, None)
+    assert not await async_dashboard_owned(hass, "gone", DASHBOARD_URL_PATH)
+    assert not await async_dashboard_owned(hass, dashboard_id, USER_DASHBOARD_PATH)
+    assert not await async_set_dashboard_devices(
+        hass, dashboard_id, USER_DASHBOARD_PATH, ["dev1"]
+    )
+    assert await async_remove_dashboard(hass, dashboard_id, USER_DASHBOARD_PATH)
+    await hass.async_block_till_done()
+
+    assert await async_dashboard_config(hass) == OUR_CONFIG
+    assert (
+        await async_dashboard_config(hass, USER_DASHBOARD_PATH) == USER_DASHBOARD_CONFIG
+    )
+
+
+async def test_user_added_strategy_options_survive_a_device_write(hass) -> None:
     """`distance_unit` typed into the raw editor is not ours to erase."""
-    await setup_integration(hass, dashboard_entry)
+    entry = await async_owned_entry(hass)
+    await setup_integration(hass, entry)
+    dashboard_id = entry.options[CONF_DASHBOARD_ID]
     dashboard = hass.data[LOVELACE_DATA].dashboards[DASHBOARD_URL_PATH]
     await dashboard.async_save(
         {"strategy": {"type": DASHBOARD_STRATEGY_TYPE, "distance_unit": "ft"}}
     )
 
-    # A restart or an options change re-registers with a device selection.
-    await async_register_dashboard(hass, ["dev1"])
-    await hass.async_block_till_done()
-    stored = await _dashboard_config(hass)
+    assert await async_set_dashboard_devices(
+        hass, dashboard_id, DASHBOARD_URL_PATH, ["dev1"]
+    )
+    stored = await async_dashboard_config(hass)
     assert stored["strategy"] == {
         "type": DASHBOARD_STRATEGY_TYPE,
         "distance_unit": "ft",
@@ -869,9 +890,8 @@ async def test_user_added_strategy_options_survive_a_re_register(
     }
 
     # Clearing the selection drops `devices` and keeps the user's key.
-    await async_register_dashboard(hass, [])
-    await hass.async_block_till_done()
-    stored = await _dashboard_config(hass)
+    assert await async_set_dashboard_devices(hass, dashboard_id, DASHBOARD_URL_PATH, [])
+    stored = await async_dashboard_config(hass)
     assert stored["strategy"] == {
         "type": DASHBOARD_STRATEGY_TYPE,
         "distance_unit": "ft",
@@ -926,78 +946,50 @@ def _assert_yaml_dashboard_untouched(hass) -> None:
     assert DASHBOARD_URL_PATH in hass.data[DATA_PANELS]
     dashboard = hass.data[LOVELACE_DATA].dashboards.get(DASHBOARD_URL_PATH)
     assert isinstance(dashboard, LovelaceYAML)
-    rows = [
-        i
-        for i in _dashboards_collection(hass).async_items()
-        if i["url_path"] == DASHBOARD_URL_PATH
-    ]
-    assert [i["id"] for i in rows] == [STALE_ROW["id"]]
+    assert [i["id"] for i in rows_on_url_path(hass)] == [STALE_ROW["id"]]
 
 
-def _apollo_warning_records(caplog) -> list[logging.LogRecord]:
-    """Return every warning-or-worse record this integration logged."""
-    return [
-        r
-        for r in caplog.records
-        if r.name.startswith("custom_components.apollo_mmwave")
-        and r.levelno >= logging.WARNING
-    ]
-
-
-def _apollo_warnings(caplog) -> list[str]:
-    """Return every warning or worse this integration logged."""
-    return [r.getMessage() for r in _apollo_warning_records(caplog)]
-
-
-async def test_a_yaml_dashboard_on_our_url_path_is_left_alone(
-    hass, dashboard_entry, caplog
-) -> None:
+async def test_a_yaml_dashboard_on_our_url_path_is_left_alone(hass, caplog) -> None:
     """
     A YAML dashboard already on our url path gets no row, now or on removal.
 
     Lovelace refuses a second panel on a path a YAML dashboard holds, so
-    creating one anyway would log a traceback on every start; and the
-    dashboard is the user's, so removing the integration leaves it standing.
+    creating one anyway would log a traceback; and the dashboard is the
+    user's, so removing the integration leaves it standing.
     """
-    caplog.set_level(logging.DEBUG, logger=apollo_frontend.__name__)
     assert await async_setup_component(
         hass, "lovelace", {"lovelace": {"dashboards": YAML_DASHBOARDS}}
     )
 
-    await setup_integration(hass, dashboard_entry)
+    assert await async_create_dashboard(hass, require_admin=True) is None
 
-    assert _our_rows(hass) == []
+    assert rows_on_url_path(hass) == []
     assert isinstance(
         hass.data[LOVELACE_DATA].dashboards[DASHBOARD_URL_PATH], LovelaceYAML
     )
     assert DASHBOARD_URL_PATH in hass.data[DATA_PANELS]
-    owned = [
-        r
-        for r in caplog.records
-        if r.name == apollo_frontend.__name__ and "already owns" in r.getMessage()
-    ]
-    assert len(owned) == 1
-    assert owned[0].levelno == logging.DEBUG
-    assert f"'{DASHBOARD_URL_PATH}'" in owned[0].getMessage()
+    [warning] = apollo_warning_records(caplog)
+    assert warning.exc_info is None
+    assert f"another dashboard already uses /{DASHBOARD_URL_PATH}" in (
+        warning.getMessage()
+    )
+    caplog.clear()
 
-    # A device selection makes no difference: still no row, nothing raised.
-    await async_register_dashboard(hass, ["dev1"])
-    await hass.async_block_till_done()
-    assert _our_rows(hass) == []
-
-    await hass.config_entries.async_remove(dashboard_entry.entry_id)
+    entry = make_entry()
+    await setup_integration(hass, entry)
+    await hass.config_entries.async_remove(entry.entry_id)
     await hass.async_block_till_done()
 
     assert isinstance(
         hass.data[LOVELACE_DATA].dashboards.get(DASHBOARD_URL_PATH), LovelaceYAML
     )
     assert DASHBOARD_URL_PATH in hass.data[DATA_PANELS]
-    assert _our_rows(hass) == []
-    assert _apollo_warnings(caplog) == []
+    assert rows_on_url_path(hass) == []
+    assert apollo_warnings(caplog) == []
 
 
 async def test_yaml_dashboard_on_our_path_is_never_removed(
-    hass, hass_storage, config_entry, caplog
+    hass, hass_storage, caplog
 ) -> None:
     """
     A stale row is not judged by the YAML dashboard shadowing it.
@@ -1010,34 +1002,27 @@ async def test_yaml_dashboard_on_our_path_is_never_removed(
     yaml_config = {"strategy": {"type": DASHBOARD_STRATEGY_TYPE}}
     with patch.object(LovelaceYAML, "async_load", AsyncMock(return_value=yaml_config)):
         await _yaml_dashboard_over_a_stale_row(hass, hass_storage)
-        # Auto-create is off, so setup itself runs the removal.
-        await setup_integration(hass, config_entry)
+        # The entry even records the stale row as its own.
+        entry = make_entry(STALE_ROW["id"])
+        await setup_integration(hass, entry)
         _assert_yaml_dashboard_untouched(hass)
 
-        await async_remove_dashboard(hass)
+        await hass.config_entries.async_remove(entry.entry_id)
         await hass.async_block_till_done()
         _assert_yaml_dashboard_untouched(hass)
 
-    assert _apollo_warnings(caplog) == []
+    assert apollo_warnings(caplog) == []
 
 
 async def test_yaml_dashboard_on_our_path_is_not_written_to(
     hass, hass_storage, caplog
 ) -> None:
     """
-    With auto-create on, a stale row never makes us save onto a YAML dashboard.
+    A stale row never makes us save a device selection onto a YAML dashboard.
 
     A device selection makes the wanted config differ from the YAML one, and
-    saving it onto the YAML dashboard raised and logged a traceback on every
-    start.
+    saving it onto the YAML dashboard raised and logged a traceback.
     """
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        title="Apollo mmWave",
-        data={},
-        options={CONF_AUTO_CREATE_VIEW: True, CONF_DASHBOARD_DEVICES: ["dev1"]},
-        unique_id=DOMAIN,
-    )
     yaml_config = {"strategy": {"type": DASHBOARD_STRATEGY_TYPE}}
     load = AsyncMock(return_value=yaml_config)
     save = AsyncMock()
@@ -1046,27 +1031,25 @@ async def test_yaml_dashboard_on_our_path_is_not_written_to(
         patch.object(LovelaceYAML, "async_save", save),
     ):
         await _yaml_dashboard_over_a_stale_row(hass, hass_storage)
-        await setup_integration(hass, entry)
-        _assert_yaml_dashboard_untouched(hass)
 
-        await async_register_dashboard(hass, ["dev1"])
+        assert not await async_set_dashboard_devices(
+            hass, STALE_ROW["id"], DASHBOARD_URL_PATH, ["dev1"]
+        )
         await hass.async_block_till_done()
         _assert_yaml_dashboard_untouched(hass)
 
     save.assert_not_awaited()
-    assert _apollo_warnings(caplog) == []
+    assert apollo_warnings(caplog) == []
 
 
-async def test_failed_first_config_save_does_not_strand_the_row(
-    hass, dashboard_entry, caplog
-) -> None:
+async def test_failed_first_config_save_does_not_strand_the_row(hass, caplog) -> None:
     """
-    A row whose first config save fails is rolled back, and the next setup works.
+    A row whose first config save fails is rolled back, so a retry works.
 
     Left behind with no config it read as not ours forever: Lovelace showed it
-    as an auto-generated dashboard, reloads never seeded it, and turning the
-    option off never removed it.
+    as an auto-generated dashboard, and nothing here could fill or remove it.
     """
+    assert await async_setup_component(hass, "lovelace", {})
     real_save = LovelaceStorage.async_save
     failures: list[str] = []
 
@@ -1078,22 +1061,17 @@ async def test_failed_first_config_save_does_not_strand_the_row(
         await real_save(self, config)
 
     with patch.object(LovelaceStorage, "async_save", save_failing_once):
-        await setup_integration(hass, dashboard_entry)
+        assert await async_create_dashboard(hass, require_admin=True) is None
 
         assert failures == [DASHBOARD_URL_PATH]
-        collection = _dashboards_collection(hass)
-        assert not [
-            i for i in collection.async_items() if i["url_path"] == DASHBOARD_URL_PATH
-        ]
+        assert rows_on_url_path(hass) == []
         assert DASHBOARD_URL_PATH not in hass.data[LOVELACE_DATA].dashboards
         assert DASHBOARD_URL_PATH not in hass.data[DATA_PANELS]
-        warnings = _apollo_warnings(caplog)
-        assert len(warnings) == 1
-        assert "could not register the dashboard" in warnings[0]
+        [warning] = apollo_warnings(caplog)
+        assert "could not create the 'Apollo mmWave' dashboard" in warning
+        assert "Add dashboard > Apollo Radar Tuning" in warning
 
-        await hass.config_entries.async_reload(dashboard_entry.entry_id)
-        await hass.async_block_till_done()
+        assert await async_create_dashboard(hass, require_admin=True)
 
     assert DASHBOARD_URL_PATH in hass.data[DATA_PANELS]
-    stored = await _dashboard_config(hass)
-    assert stored["strategy"]["type"] == DASHBOARD_STRATEGY_TYPE
+    assert await async_dashboard_config(hass) == OUR_CONFIG

@@ -12,19 +12,33 @@ from homeassistant.config_entries import SOURCE_USER, ConfigEntryState
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.json import json_bytes
 from homeassistant.helpers.storage import Store
+from homeassistant.setup import async_setup_component
 from homeassistant.util import dt as dt_util
-from pytest_homeassistant_custom_component.common import async_fire_time_changed
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    async_fire_time_changed,
+)
 
 from custom_components.apollo_mmwave import (
     UPDATE_ZONE_SERVICE_SCHEMA,
     async_remove_entry,
     get_store,
 )
+from custom_components.apollo_mmwave import frontend as apollo_frontend
 from custom_components.apollo_mmwave.const import (
     ATTR_ROTATION_DEG,
     CONF_AUTO_CREATE_VIEW,
+    CONF_CREATE_DASHBOARD,
+    CONF_DASHBOARD_DEVICES,
+    CONF_DASHBOARD_ID,
+    CONF_DASHBOARD_URL_PATH,
+    DASHBOARD_ICON,
+    DASHBOARD_STRATEGY_TYPE,
+    DASHBOARD_TITLE,
+    DASHBOARD_URL_PATH,
     DATA_STORE,
     DOMAIN,
+    ENTRY_MINOR_VERSION,
     EVENT_ZONE_UPDATED,
     INPUT_UNIT_FACTORS,
     POLYGON_MAX_POINTS,
@@ -48,8 +62,16 @@ from custom_components.apollo_mmwave.const import (
     WARN_RECT_NON_NUM,
     WARN_ZONE_NO_GEOMETRY,
 )
+from custom_components.apollo_mmwave.frontend import _dashboards_collection
 
-from .conftest import setup_integration
+from .conftest import (
+    apollo_warnings,
+    async_dashboard_config,
+    async_owned_entry,
+    record_dashboard_writes,
+    rows_on_url_path,
+    setup_integration,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -221,7 +243,7 @@ async def test_removing_the_entry_deletes_the_zone_store(
         DOMAIN, context={"source": SOURCE_USER}
     )
     await hass.config_entries.flow.async_configure(
-        result["flow_id"], {CONF_AUTO_CREATE_VIEW: False}
+        result["flow_id"], {CONF_CREATE_DASHBOARD: False}
     )
     await hass.async_block_till_done()
     assert get_store(hass).devices == {}
@@ -627,6 +649,189 @@ async def test_failed_platform_unload_keeps_the_service_and_store(
     # Home Assistant skips the entry's on_unload hooks after a failed unload,
     # and the calibration services are torn down by one of them.
     assert hass.services.has_service(DOMAIN, SERVICE_CALIBRATE_GATES)
+
+
+# ---------------------------------------------------------------------------
+# The dashboard at setup: never written. Entries from 2.2.5 and earlier.
+# ---------------------------------------------------------------------------
+
+OUR_CONFIG: dict[str, Any] = {"strategy": {"type": DASHBOARD_STRATEGY_TYPE}}
+
+# The dashboard 2.2.5 kept on our url path, exactly as Lovelace stores it.
+LEGACY_ROW: dict[str, Any] = {
+    "id": "apollo_mmwave",
+    "url_path": DASHBOARD_URL_PATH,
+    "title": DASHBOARD_TITLE,
+    "icon": DASHBOARD_ICON,
+    "show_in_sidebar": True,
+    "require_admin": False,
+    "mode": "storage",
+}
+
+
+async def _boot_lovelace_with_a_dashboard(
+    hass, hass_storage, config: dict[str, Any] | None
+) -> None:
+    """Start Lovelace with LEGACY_ROW stored, holding ``config`` if not None."""
+    hass_storage["lovelace_dashboards"] = {
+        "version": 1,
+        "minor_version": 1,
+        "key": "lovelace_dashboards",
+        "data": {"items": [dict(LEGACY_ROW)]},
+    }
+    if config is not None:
+        key = f"lovelace.{LEGACY_ROW['id']}"
+        hass_storage[key] = {"version": 1, "key": key, "data": {"config": config}}
+    assert await async_setup_component(hass, "lovelace", {})
+
+
+def _legacy_entry(**options: Any) -> MockConfigEntry:
+    """Return an entry as 2.2.5 left it: minor version 1, the old options."""
+    return MockConfigEntry(
+        domain=DOMAIN,
+        title="Apollo mmWave",
+        data={},
+        options=options,
+        unique_id=DOMAIN,
+    )
+
+
+async def _setup_and_reload(hass, entry: MockConfigEntry) -> None:
+    await setup_integration(hass, entry)
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+async def test_setup_and_reload_never_write_our_dashboard(hass) -> None:
+    """
+    Setup, reload and an options change leave our dashboard exactly as it is.
+
+    Nothing listens for option changes, so recording ownership, or any other
+    options update outside the options flow, cannot set off dashboard work.
+    """
+    entry = await async_owned_entry(hass, **{CONF_DASHBOARD_DEVICES: ["dev1"]})
+
+    with record_dashboard_writes(hass) as writes:
+        await _setup_and_reload(hass, entry)
+        hass.config_entries.async_update_entry(
+            entry, options={**entry.options, CONF_DASHBOARD_DEVICES: ["dev2"]}
+        )
+        await hass.async_block_till_done()
+
+    assert writes == []
+    assert await async_dashboard_config(hass) == OUR_CONFIG
+
+
+async def test_setup_never_recreates_a_dashboard_the_user_deleted(hass) -> None:
+    """Deleting our dashboard keeps it deleted through restarts and reloads."""
+    entry = await async_owned_entry(hass)
+    await _dashboards_collection(hass).async_delete_item(
+        entry.options[CONF_DASHBOARD_ID]
+    )
+    await hass.async_block_till_done()
+
+    with record_dashboard_writes(hass) as writes:
+        await _setup_and_reload(hass, entry)
+
+    assert writes == []
+    assert rows_on_url_path(hass) == []
+
+
+async def test_migration_adopts_a_2_2_5_dashboard_without_writing(
+    hass, hass_storage
+) -> None:
+    """An auto-created dashboard from 2.2.5 is recorded as ours and untouched."""
+    config = {
+        "strategy": {
+            "type": DASHBOARD_STRATEGY_TYPE,
+            "devices": ["dev1"],
+            "distance_unit": "ft",
+        }
+    }
+    await _boot_lovelace_with_a_dashboard(hass, hass_storage, config)
+    entry = _legacy_entry(
+        **{CONF_AUTO_CREATE_VIEW: True, CONF_DASHBOARD_DEVICES: ["dev1"]}
+    )
+
+    with record_dashboard_writes(hass) as writes:
+        await _setup_and_reload(hass, entry)
+
+    assert writes == []
+    assert entry.minor_version == ENTRY_MINOR_VERSION
+    assert entry.options == {
+        CONF_DASHBOARD_DEVICES: ["dev1"],
+        CONF_DASHBOARD_ID: LEGACY_ROW["id"],
+        CONF_DASHBOARD_URL_PATH: DASHBOARD_URL_PATH,
+    }
+    # Left as it is: still visible to every user, config unchanged.
+    assert rows_on_url_path(hass) == [LEGACY_ROW]
+    assert await async_dashboard_config(hass) == config
+
+
+async def test_migration_with_no_dashboard_records_none(hass) -> None:
+    """With nothing on our url path the entry owns none, and none is made."""
+    assert await async_setup_component(hass, "lovelace", {})
+    entry = _legacy_entry(**{CONF_AUTO_CREATE_VIEW: True})
+
+    with record_dashboard_writes(hass) as writes:
+        await _setup_and_reload(hass, entry)
+
+    assert writes == []
+    assert entry.minor_version == ENTRY_MINOR_VERSION
+    assert entry.options == {CONF_DASHBOARD_ID: None, CONF_DASHBOARD_URL_PATH: None}
+    assert rows_on_url_path(hass) == []
+
+
+@pytest.mark.parametrize(
+    ("auto_create_view", "config"),
+    [
+        pytest.param(False, OUR_CONFIG, id="option-off-user-strategy-dashboard"),
+        pytest.param(True, {"views": [{"title": "Mine"}]}, id="taken-over"),
+        pytest.param(True, {**OUR_CONFIG, "title": "Mine"}, id="more-than-strategy"),
+        pytest.param(True, None, id="no-config-yet"),
+    ],
+)
+async def test_migration_leaves_a_dashboard_that_is_not_ours(
+    hass, hass_storage, auto_create_view, config
+) -> None:
+    """
+    Only our own unchanged strategy dashboard is adopted; others survive as is.
+
+    With the option off, 2.2.5 deleted a strategy dashboard on our url path
+    at every start, even one the user built by hand (X03). Now it is neither
+    adopted nor deleted, and setup writes nothing.
+    """
+    await _boot_lovelace_with_a_dashboard(hass, hass_storage, config)
+    entry = _legacy_entry(**{CONF_AUTO_CREATE_VIEW: auto_create_view})
+
+    with record_dashboard_writes(hass) as writes:
+        await _setup_and_reload(hass, entry)
+        await hass.config_entries.async_remove(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert writes == []
+    assert entry.options == {CONF_DASHBOARD_ID: None, CONF_DASHBOARD_URL_PATH: None}
+    assert rows_on_url_path(hass) == [LEGACY_ROW]
+    assert await async_dashboard_config(hass) == config
+
+
+async def test_migration_without_the_dashboards_collection_still_sets_up(
+    hass, hass_storage, caplog
+) -> None:
+    """An unreachable collection leaves the old dashboard untracked, not broken."""
+    await _boot_lovelace_with_a_dashboard(hass, hass_storage, OUR_CONFIG)
+    entry = _legacy_entry(**{CONF_AUTO_CREATE_VIEW: True})
+
+    with patch.object(apollo_frontend, "_dashboards_collection", return_value=None):
+        await setup_integration(hass, entry)
+
+    assert entry.state is ConfigEntryState.LOADED
+    assert entry.minor_version == ENTRY_MINOR_VERSION
+    assert entry.options[CONF_DASHBOARD_ID] is None
+    [warning] = apollo_warnings(caplog)
+    assert "is not tracked" in warning
+    assert rows_on_url_path(hass) == [LEGACY_ROW]
+    assert await async_dashboard_config(hass) == OUR_CONFIG
 
 
 async def test_call_with_nothing_to_change_mints_no_store_entry(
