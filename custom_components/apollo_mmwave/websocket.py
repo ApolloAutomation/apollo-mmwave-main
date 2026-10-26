@@ -147,13 +147,15 @@ def _answerable(
     return True
 
 
-# Neither zone command is admin-only, and that is deliberate. The auto-created
-# dashboard is written with `require_admin` False, so non-admin users open the
-# card, and the card draws nothing without these two commands. Nor do they
-# open much up: every user can already read the zone geometry, rotation and
-# tracked pairs from the zone sensors' state attributes. `update_zone` is
-# likewise a plain service, not an admin one. Adding `require_admin` here would
-# quietly break the dashboard for every non-admin user.
+# Neither zone command is admin-only, and that is deliberate. The Apollo
+# mmWave dashboard is admin-only only when the administrator leaves that box
+# ticked (the ones made before 2.2.6 are not), and the card can sit on any
+# dashboard, so non-admin users open the card, and the card draws nothing
+# without these two commands. Nor do they open much up: every user can already
+# read the zone geometry, rotation and tracked pairs from the zone sensors'
+# state attributes. `update_zone` is likewise a plain service, not an admin
+# one. Adding `require_admin` here would quietly break the card for every
+# non-admin user.
 # TODO(REVIEW_REPORT.md X52): device_id "" is not_found.  # noqa: FIX002, TD003
 # Both zone schemas accept an empty device_id, which _answerable answers
 # not_found. Keep as is; optionally pin it in tests (missing gives

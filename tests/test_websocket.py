@@ -316,7 +316,7 @@ async def test_one_zone_edit_pushes_exactly_once(
 async def test_non_admin_users_can_read_and_subscribe(
     hass, hass_ws_client, hass_read_only_access_token, init_integration, device_id
 ) -> None:
-    """The dashboard is not admin-only, so neither are the commands its card needs."""
+    """The card can be shown to any user, so its commands are not admin-only."""
     _ = init_integration
     token = hass.auth.async_validate_access_token(hass_read_only_access_token)
     assert not token.user.is_admin
