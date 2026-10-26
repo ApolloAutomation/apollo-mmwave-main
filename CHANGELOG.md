@@ -6,11 +6,24 @@ everyday use are in [README.md](README.md) and
 
 ## What changed in 2.2.6
 
-Startup no longer does disk work on Home Assistant's event loop, and old zone
-locations no longer bring a deprecation warning. Nothing needs changing by
-hand unless your Lovelace resources are managed in YAML (replace both `?v=`
-URLs; see [Lovelace resources](docs/configuration.md#lovelace-resources)).
+The Apollo mmWave dashboard is created once, when you add the integration,
+and is no longer recreated or rewritten at every start. Startup no longer does
+disk work on Home Assistant's event loop, and old zone locations no longer
+bring a deprecation warning. Nothing needs changing by hand unless your
+Lovelace resources are managed in YAML (replace both `?v=` URLs; see
+[Lovelace resources](docs/configuration.md#lovelace-resources)).
 
+- **The dashboard is created once.** Adding Apollo mmWave creates the
+  dashboard right then, and Home Assistant no longer recreates, rewrites or
+  deletes it at restart or when the integration reloads. New dashboards are
+  for administrators only unless you untick **Only administrators can see
+  it**; change that later in the dashboard's settings under Settings →
+  Dashboards. A dashboard you already have is left as it is, including who
+  can see it. With the dashboard turned off, setup no longer deletes a
+  dashboard you made yourself on `/apollo-mmwave`. To add or remove the
+  dashboard, or choose its devices, open the integration's options
+  (Settings → Devices & services → Apollo mmWave → **Configure**); see
+  [The Apollo mmWave dashboard](docs/configuration.md#the-apollo-mmwave-dashboard).
 - **Startup stays off the event loop.** The startup check for the bundled
   card files no longer touches the disk on Home Assistant's event loop, and
   the integration now loads all of its own code when Home Assistant imports
