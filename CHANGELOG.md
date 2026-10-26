@@ -4,6 +4,28 @@ What changed in each release of Apollo mmWave, newest first. Setup and
 everyday use are in [README.md](README.md) and
 [docs/configuration.md](docs/configuration.md).
 
+## What changed in 2.2.6
+
+Startup no longer does disk work on Home Assistant's event loop, and old zone
+locations no longer bring a deprecation warning. Nothing needs changing by
+hand unless your Lovelace resources are managed in YAML (replace both `?v=`
+URLs; see [Lovelace resources](docs/configuration.md#lovelace-resources)).
+
+- **Startup stays off the event loop.** The startup check for the bundled
+  card files no longer touches the disk on Home Assistant's event loop, and
+  the integration now loads all of its own code when Home Assistant imports
+  it, instead of importing modules on the event loop partway through setup.
+- **No deprecation warning for old zone locations.** Matching a 1.x zone
+  location to its radar by name no longer uses a device registry call that
+  Home Assistant is retiring (2026.10 warns about it in the log). It also
+  matches only ESPHome devices, so a router integration's device with the
+  same name cannot take the zones.
+
+If HACS shows Apollo mmWave installed as 4263323, 5299868 or 96245a2, open it
+in HACS, choose **Redownload**, pick 2.2.6, then restart. Those commit codes
+read as very high version numbers, so HACS would not offer releases
+otherwise.
+
 ## What changed in 2.2.5
 
 Removing Apollo mmWave now also removes its dashboard resources, and the

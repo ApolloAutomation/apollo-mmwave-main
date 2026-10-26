@@ -11,5 +11,5 @@
   "integration_type": "service",
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/ApolloAutomation/apollo-mmwave-main/issues",
-  "version": "2.2.5"
+  "version": "2.2.6"
 }

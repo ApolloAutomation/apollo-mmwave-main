@@ -40,9 +40,9 @@ Copy the URLs from the warning exactly and add each one once, as a module:
 lovelace:
   resource_mode: yaml
   resources:
-    - url: /apollo_mmwave/apollo-radar-tuning.js?v=2.2.5
+    - url: /apollo_mmwave/apollo-radar-tuning.js?v=2.2.6
       type: module
-    - url: /apollo_mmwave/apollo-radar-zone-map-card.js?v=2.2.5
+    - url: /apollo_mmwave/apollo-radar-zone-map-card.js?v=2.2.6
       type: module
 ```
 
