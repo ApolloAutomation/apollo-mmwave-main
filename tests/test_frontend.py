@@ -10,8 +10,10 @@ element with no way to recover short of a hard refresh.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from http import HTTPStatus
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, patch
 
@@ -292,6 +294,59 @@ async def test_missing_bundle_is_warned_about_and_never_registered(
     for name in JS_BUNDLES:
         response = await client.get(f"/apollo_mmwave/{name}")
         assert response.status == HTTPStatus.NOT_FOUND
+
+
+async def test_one_missing_bundle_leaves_the_other_registered(
+    hass, hass_client, config_entry, tmp_path, caplog
+) -> None:
+    """Only the missing bundle is warned about; the one on disk is still served."""
+    present, missing = JS_BUNDLES
+    (tmp_path / present).write_text("export {};\n")
+    with patch.object(apollo_frontend, "_frontend_path", return_value=tmp_path):
+        await setup_integration(hass, config_entry)
+
+    warnings = _apollo_warnings(caplog)
+    assert len(warnings) == 1
+    assert f"bundled frontend asset {missing} is missing" in warnings[0]
+    assert {url.partition("?")[0] for url in _our_extra_module_urls(hass)} == {
+        f"/apollo_mmwave/{present}"
+    }
+    client = await hass_client()
+    assert (await client.get(f"/apollo_mmwave/{present}")).status == HTTPStatus.OK
+    assert (
+        await client.get(f"/apollo_mmwave/{missing}")
+    ).status == HTTPStatus.NOT_FOUND
+
+
+def _on_event_loop() -> bool:
+    """Report whether the calling thread is running an event loop."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
+async def test_bundle_check_runs_off_the_event_loop(hass, config_entry) -> None:
+    """
+    The bundle files are checked in the executor, never on the event loop.
+
+    `Path.is_file` is a stat on the disk. Home Assistant's loop protection does
+    not catch it, so this test does.
+    """
+    real_is_file = Path.is_file
+    on_loop: list[bool] = []
+
+    def spy(self: Path) -> bool:
+        if self.name in JS_BUNDLES:
+            on_loop.append(_on_event_loop())
+        return real_is_file(self)
+
+    with patch.object(Path, "is_file", spy):
+        await setup_integration(hass, config_entry)
+
+    assert on_loop == [False] * len(JS_BUNDLES)
+    assert _our_extra_module_urls(hass) == set(await _current_urls(hass))
 
 
 async def test_yaml_resource_mode_logs_manual_instructions(

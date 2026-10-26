@@ -94,6 +94,12 @@ def _frontend_path() -> Path:
     return Path(__file__).parent / FRONTEND_DIR
 
 
+def _existing_bundles(base: Path) -> list[str]:
+    """Return the names in ``JS_BUNDLES`` that have a file under ``base``."""
+    # Each check is a stat on the disk, so callers run this in the executor.
+    return [name for name in JS_BUNDLES if (base / name).is_file()]
+
+
 def _base_url(item: dict[str, Any]) -> str:
     """Return a resource row's url with the ``?v=`` cache-buster stripped."""
     return str(item.get("url", "")).partition("?")[0]
@@ -122,11 +128,11 @@ async def async_register_frontend_assets(hass: HomeAssistant) -> None:
     except Exception:  # noqa: BLE001 - version is only used for cache-busting
         version = "0"
 
+    present = await hass.async_add_executor_job(_existing_bundles, base)
     static_paths: list[StaticPathConfig] = []
     js_urls: list[str] = []
     for name in JS_BUNDLES:
-        file_path = base / name
-        if not file_path.is_file():
+        if name not in present:
             _LOGGER.warning(
                 "Apollo mmWave: bundled frontend asset %s is missing; the"
                 " dashboard may not render until the integration is rebuilt.",
@@ -134,7 +140,7 @@ async def async_register_frontend_assets(hass: HomeAssistant) -> None:
             )
             continue
         static_paths.append(
-            StaticPathConfig(f"{STATIC_URL_BASE}/{name}", str(file_path), True)  # noqa: FBT003
+            StaticPathConfig(f"{STATIC_URL_BASE}/{name}", str(base / name), True)  # noqa: FBT003
         )
         js_urls.append(f"{STATIC_URL_BASE}/{name}?v={version}")
 
