@@ -266,13 +266,11 @@ async def _async_our_resource_rows(resources: Any) -> list[dict[str, Any]]:
     reach another integration's or the user's own resources.
     """
     # The storage collection loads lazily: async_items() reads [] until it
-    # has loaded, and only HA's own create/update/delete load it first
-    # (through the private _async_ensure_loaded). This does the same by
-    # hand, so it depends on HA internals; recheck it on HA upgrades. The
-    # YAML collection has no async_load and reports itself loaded.
+    # has loaded. async_get_info() loads it first, the way Home Assistant's
+    # own resource count does, without setting the private flag by hand. The
+    # YAML collection reports itself loaded.
     if not getattr(resources, "loaded", True):
-        await resources.async_load()
-        resources.loaded = True
+        await resources.async_get_info()
     prefix = f"{STATIC_URL_BASE}/"
     return [
         item
