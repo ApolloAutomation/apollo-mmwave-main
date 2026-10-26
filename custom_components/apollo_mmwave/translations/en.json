@@ -8,7 +8,7 @@
                     "dashboard_admin_only": "Only administrators can see it"
                 },
                 "data_description": {
-                    "create_dashboard": "Creates the dashboard once, when you press Submit. Turn this off to place the cards on your own dashboards instead.",
+                    "create_dashboard": "Creates the dashboard once, when you press Submit. Turn this off to place the cards on your own dashboards instead; you can still add it later from the integration's options.",
                     "dashboard_admin_only": "Other users do not see the dashboard. You can change this later in the dashboard's settings under Settings > Dashboards."
                 }
             }
@@ -21,7 +21,30 @@
         "step": {
             "init": {
                 "title": "Apollo mmWave options",
-                "description": "Choose which sensors the Apollo mmWave dashboard shows. The choice is written into the dashboard this integration created, if there is one. A dashboard you made yourself is never changed: set `devices` in its raw configuration instead.",
+                "description": "These actions change only the Apollo mmWave dashboard this integration created. Dashboards you made yourself are never changed.",
+                "menu_options": {
+                    "add_dashboard": "Add the Apollo mmWave dashboard",
+                    "remove_dashboard": "Remove the Apollo mmWave dashboard",
+                    "dashboard_devices": "Choose the dashboard's devices"
+                }
+            },
+            "add_dashboard": {
+                "title": "Add the Apollo mmWave dashboard",
+                "description": "This adds a dashboard named **Apollo mmWave** to the sidebar, at /apollo-mmwave, with a tab for each Apollo mmWave sensor. It is created once, when you press Submit. Apollo mmWave will not recreate it or change it on its own later, and you can edit or delete it like any other dashboard.",
+                "data": {
+                    "dashboard_admin_only": "Only administrators can see it"
+                },
+                "data_description": {
+                    "dashboard_admin_only": "Other users do not see the dashboard. You can change this later in the dashboard's settings under Settings > Dashboards."
+                }
+            },
+            "remove_dashboard": {
+                "title": "Remove the Apollo mmWave dashboard",
+                "description": "This deletes the **Apollo mmWave** dashboard at /apollo-mmwave that this integration created, along with any title, icon or strategy options you changed on it. Your sensors, zones and calibration values stay, and the cards still work on your own dashboards. You can add the dashboard again from these options.\n\nPress Submit to delete it."
+            },
+            "dashboard_devices": {
+                "title": "Dashboard devices",
+                "description": "Choose which sensors the Apollo mmWave dashboard shows. The choice is written into the dashboard this integration created, if there is one, and is used if you add it from these options later. A dashboard you made yourself is never changed: set `devices` in its raw configuration instead.",
                 "data": {
                     "dashboard_devices": "Dashboard devices"
                 },
@@ -31,6 +54,8 @@
             }
         },
         "error": {
+            "dashboard_not_created": "The dashboard could not be created. Another dashboard may already use /apollo-mmwave; the Home Assistant log says why. You can add one from Settings > Dashboards > Add dashboard > Apollo Radar Tuning instead.",
+            "dashboard_not_removed": "The dashboard could not be removed. The Home Assistant log says why. You can delete it in Settings > Dashboards.",
             "dashboard_not_updated": "The dashboard could not be updated. The Home Assistant log says why."
         }
     },

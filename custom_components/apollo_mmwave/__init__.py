@@ -725,8 +725,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     Setup never creates, rewrites or deletes a dashboard. The Apollo mmWave
     dashboard is created once, when an administrator asks for it in the config
-    flow, and later changes to it come only from the options flow's device
-    selection on the row the entry recorded (``config_flow.py``). The frontend
+    or options flow, and later changes to it come only from options flow
+    actions on the row the entry recorded (``config_flow.py``). The frontend
     assets are registered whether or not that dashboard exists: the cards and
     strategy work on any dashboard.
     """

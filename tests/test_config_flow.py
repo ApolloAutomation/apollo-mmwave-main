@@ -39,6 +39,7 @@ from .conftest import (
     async_dashboard_config,
     async_owned_entry,
     async_user_dashboard,
+    make_entry,
     record_dashboard_writes,
     rows_on_url_path,
     setup_integration,
@@ -186,14 +187,182 @@ async def test_single_instance(hass, config_entry) -> None:
     assert result["reason"] == "already_configured"
 
 
-async def _submit_devices(hass, entry, devices: list[str]) -> dict:
+async def _open_options(hass, entry, expected_menu: list[str] | None) -> dict:
+    """Open the options flow; with ``expected_menu``, check the menu it shows."""
     result = await hass.config_entries.options.async_init(entry.entry_id)
-    assert result["type"] is FlowResultType.FORM
+    if expected_menu is not None:
+        assert result["type"] is FlowResultType.MENU
+        assert result["step_id"] == "init"
+        assert result["menu_options"] == expected_menu
+    return result
+
+
+async def _choose(hass, result: dict, step: str) -> dict:
+    """Pick a menu entry and return the step's form."""
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {CONF_DASHBOARD_DEVICES: devices}
+        result["flow_id"], {"next_step_id": step}
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == step
+    return result
+
+
+async def _submit(hass, result: dict, user_input: dict) -> dict:
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input
     )
     await hass.async_block_till_done()
     return result
+
+
+OWNS_NONE_MENU = ["add_dashboard", "dashboard_devices"]
+OWNS_ONE_MENU = ["dashboard_devices", "remove_dashboard"]
+
+
+async def _submit_devices(
+    hass, entry, devices: list[str], menu: list[str] | None = OWNS_ONE_MENU
+) -> dict:
+    result = await _open_options(hass, entry, menu)
+    if menu is not None:
+        result = await _choose(hass, result, "dashboard_devices")
+    return await _submit(hass, result, {CONF_DASHBOARD_DEVICES: devices})
+
+
+async def test_options_menu_fits_the_dashboard_the_entry_owns(
+    hass, config_entry
+) -> None:
+    """Add is offered while the entry owns none; remove once it owns one."""
+    await setup_integration(hass, config_entry)
+    await _open_options(hass, config_entry, OWNS_NONE_MENU)
+
+    result = await _choose(
+        hass, await _open_options(hass, config_entry, None), "add_dashboard"
+    )
+    await _submit(hass, result, {CONF_DASHBOARD_ADMIN_ONLY: True})
+    await _open_options(hass, config_entry, OWNS_ONE_MENU)
+
+
+async def test_add_dashboard_says_what_it_creates_and_asks_admin_only(
+    hass, config_entry
+) -> None:
+    """The add step is a confirmation form with the admin-only box ticked."""
+    await setup_integration(hass, config_entry)
+
+    with record_dashboard_writes(hass) as writes:
+        result = await _choose(
+            hass,
+            await _open_options(hass, config_entry, OWNS_NONE_MENU),
+            "add_dashboard",
+        )
+    defaults = {str(key): key.default() for key in result["data_schema"].schema}
+    assert defaults == {CONF_DASHBOARD_ADMIN_ONLY: True}
+    # Nothing is created before Submit.
+    assert writes == []
+    assert rows_on_url_path(hass) == []
+
+
+@pytest.mark.parametrize("admin_only", [True, False])
+async def test_add_dashboard_creates_it_once_and_records_it(hass, admin_only) -> None:
+    """Submitting creates our dashboard with the stored selection, nothing else."""
+    theirs = await async_user_dashboard(hass)
+    config_entry = make_entry(**{CONF_DASHBOARD_DEVICES: ["devid1"]})
+    await setup_integration(hass, config_entry)
+    result = await _choose(
+        hass, await _open_options(hass, config_entry, OWNS_NONE_MENU), "add_dashboard"
+    )
+
+    with record_dashboard_writes(hass) as writes:
+        result = await _submit(hass, result, {CONF_DASHBOARD_ADMIN_ONLY: admin_only})
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert writes == ["create_item", "save_config"]
+    [row] = rows_on_url_path(hass)
+    assert row["require_admin"] is admin_only
+    assert hass.data[DATA_PANELS][DASHBOARD_URL_PATH].require_admin is admin_only
+    assert await async_dashboard_config(hass) == {
+        "strategy": {"type": DASHBOARD_STRATEGY_TYPE, "devices": ["devid1"]}
+    }
+    assert config_entry.options == {
+        CONF_DASHBOARD_ID: row["id"],
+        CONF_DASHBOARD_URL_PATH: DASHBOARD_URL_PATH,
+        CONF_DASHBOARD_DEVICES: ["devid1"],
+    }
+    assert rows_on_url_path(hass, USER_DASHBOARD_PATH) == [theirs]
+    assert (
+        await async_dashboard_config(hass, USER_DASHBOARD_PATH) == USER_DASHBOARD_CONFIG
+    )
+
+
+async def test_add_dashboard_on_a_taken_path_shows_an_error(
+    hass, config_entry, caplog
+) -> None:
+    """A dashboard someone made on /apollo-mmwave stays; the form says why not."""
+    theirs = await async_user_dashboard(hass, DASHBOARD_URL_PATH, OUR_CONFIG)
+    await setup_integration(hass, config_entry)
+    before = dict(config_entry.options)
+    result = await _choose(
+        hass, await _open_options(hass, config_entry, OWNS_NONE_MENU), "add_dashboard"
+    )
+
+    result = await _submit(hass, result, {CONF_DASHBOARD_ADMIN_ONLY: True})
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "dashboard_not_created"}
+    assert dict(config_entry.options) == before
+    assert rows_on_url_path(hass) == [theirs]
+    assert await async_dashboard_config(hass) == OUR_CONFIG
+    [warning] = apollo_warnings(caplog)
+    assert f"another dashboard already uses /{DASHBOARD_URL_PATH}" in warning
+
+
+async def test_remove_dashboard_deletes_only_ours_and_forgets_it(hass) -> None:
+    """Remove is a confirmation form; Submit deletes our row and nothing else."""
+    entry = await async_owned_entry(hass)
+    theirs = await async_user_dashboard(hass)
+    await setup_integration(hass, entry)
+    result = await _choose(
+        hass, await _open_options(hass, entry, OWNS_ONE_MENU), "remove_dashboard"
+    )
+    assert result["data_schema"].schema == {}
+    assert rows_on_url_path(hass) != []
+
+    result = await _submit(hass, result, {})
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert rows_on_url_path(hass) == []
+    assert DASHBOARD_URL_PATH not in hass.data[DATA_PANELS]
+    assert entry.options == {CONF_DASHBOARD_ID: None, CONF_DASHBOARD_URL_PATH: None}
+    assert rows_on_url_path(hass, USER_DASHBOARD_PATH) == [theirs]
+    assert (
+        await async_dashboard_config(hass, USER_DASHBOARD_PATH) == USER_DASHBOARD_CONFIG
+    )
+    # And it stays removed: a reload brings nothing back.
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert rows_on_url_path(hass) == []
+    await _open_options(hass, entry, OWNS_NONE_MENU)
+
+
+async def test_a_failed_removal_keeps_the_dashboard_recorded(hass) -> None:
+    """A delete that fails says so on the form and keeps ownership."""
+    entry = await async_owned_entry(hass)
+    await setup_integration(hass, entry)
+    before = dict(entry.options)
+    result = await _choose(
+        hass, await _open_options(hass, entry, OWNS_ONE_MENU), "remove_dashboard"
+    )
+
+    with patch.object(
+        _dashboards_collection(hass),
+        "async_delete_item",
+        side_effect=HomeAssistantError("storage is read-only"),
+    ):
+        result = await _submit(hass, result, {})
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "dashboard_not_removed"}
+    assert dict(entry.options) == before
+    assert len(rows_on_url_path(hass)) == 1
 
 
 async def test_options_form_prefills_current_options(hass, config_entry) -> None:
@@ -205,8 +374,11 @@ async def test_options_form_prefills_current_options(hass, config_entry) -> None
     )
     await hass.async_block_till_done()
 
-    result = await hass.config_entries.options.async_init(config_entry.entry_id)
-    assert result["type"] is FlowResultType.FORM
+    result = await _choose(
+        hass,
+        await _open_options(hass, config_entry, OWNS_NONE_MENU),
+        "dashboard_devices",
+    )
     defaults = {str(key): key.default() for key in result["data_schema"].schema}
     assert defaults == {CONF_DASHBOARD_DEVICES: ["devid1"]}
 
@@ -246,7 +418,9 @@ async def test_device_selection_without_a_dashboard_is_only_stored(
     await setup_integration(hass, config_entry)
 
     with record_dashboard_writes(hass) as writes:
-        result = await _submit_devices(hass, config_entry, ["devid1"])
+        result = await _submit_devices(
+            hass, config_entry, ["devid1"], menu=OWNS_NONE_MENU
+        )
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert writes == []
@@ -266,7 +440,7 @@ async def test_a_dashboard_the_user_deleted_is_forgotten_not_recreated(
     await hass.async_block_till_done()
 
     with record_dashboard_writes(hass) as writes:
-        result = await _submit_devices(hass, entry, ["devid1"])
+        result = await _submit_devices(hass, entry, ["devid1"], menu=OWNS_NONE_MENU)
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert writes == []
@@ -285,11 +459,29 @@ async def test_a_dashboard_the_user_took_control_of_is_left_alone(hass) -> None:
     mine = {"views": [{"title": "Mine", "cards": []}]}
     await hass.data[LOVELACE_DATA].dashboards[DASHBOARD_URL_PATH].async_save(mine)
 
-    result = await _submit_devices(hass, entry, ["devid1"])
+    # It is not offered for removal, and the selection is not written into it.
+    result = await _submit_devices(hass, entry, ["devid1"], menu=OWNS_NONE_MENU)
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert await async_dashboard_config(hass) == mine
     assert entry.options[CONF_DASHBOARD_ID] is None
+
+
+async def test_unreadable_dashboards_offer_only_the_selection(hass) -> None:
+    """With nothing known, the flow skips the menu and keeps the record."""
+    entry = await async_owned_entry(hass)
+    await setup_integration(hass, entry)
+    before = dict(entry.options)
+
+    with patch.object(apollo_frontend, "_dashboards_collection", return_value=None):
+        result = await _open_options(hass, entry, None)
+        assert result["type"] is FlowResultType.FORM
+        assert result["step_id"] == "dashboard_devices"
+        result = await _submit(hass, result, {CONF_DASHBOARD_DEVICES: ["devid1"]})
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.options == {**before, CONF_DASHBOARD_DEVICES: ["devid1"]}
+    assert await async_dashboard_config(hass) == OUR_CONFIG
 
 
 async def test_a_failed_device_write_keeps_the_form_open(hass) -> None:
@@ -317,8 +509,11 @@ async def test_options_form_filters_the_device_picker_to_apollo_mmwave_models(
     """The radar picker offers only Apollo mmWave models that ESPHome provides."""
     await setup_integration(hass, config_entry)
 
-    result = await hass.config_entries.options.async_init(config_entry.entry_id)
-    assert result["type"] is FlowResultType.FORM
+    result = await _choose(
+        hass,
+        await _open_options(hass, config_entry, OWNS_NONE_MENU),
+        "dashboard_devices",
+    )
     fields = {str(key): value for key, value in result["data_schema"].schema.items()}
     assert set(fields) == {CONF_DASHBOARD_DEVICES}
 

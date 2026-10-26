@@ -25,11 +25,11 @@ This integration ships its own Lovelace frontend so users install ONE thing:
    and building one tab per device, so the dashboard self-updates as devices
    come and go (no stored card layout to drift).
 
-   It runs only when an administrator asks for the dashboard in the config
-   flow, and the entry records the new row's id and url path. Setup and
-   reloads never write a dashboard. The only later writes are the device
-   selection an administrator saves in the options flow, written into that
-   recorded row, and its deletion when the entry is removed. Each one first
+   It runs only when an administrator asks for the dashboard, in the config
+   flow or the options flow, and the entry records the new row's id and url
+   path. Setup and reloads never write a dashboard. The only later writes are
+   explicit options flow actions on that recorded row (the device selection,
+   and removal), plus its deletion when the entry is removed. Each one first
    checks that the row still exists and that its own config is still our
    strategy, so a dashboard the user took control of, or made themselves, is
    never written to or deleted. Title, icon, sidebar visibility and admin-only
@@ -543,12 +543,13 @@ async def async_create_dashboard(
     Create the Apollo mmWave dashboard and return its collection id.
 
     Runs only when an administrator asks for the dashboard: when the config
-    flow is submitted with the box ticked. Setup never calls it. Returns None,
-    with a warning that points at the Community dashboards picker, when
-    nothing was created: the dashboards collection is out of reach, another
-    dashboard already holds the url path (it is left as it is), or a write
-    failed. A row this call created is deleted again if its config could not
-    be saved, so a failure never leaves a half-made dashboard behind.
+    flow is submitted with the box ticked, or on the options flow's "add"
+    step. Setup never calls it. Returns None, with a warning that points at
+    the Community dashboards picker, when nothing was created: the dashboards
+    collection is out of reach, another dashboard already holds the url path
+    (it is left as it is), or a write failed. A row this call created is
+    deleted again if its config could not be saved, so a failure never leaves
+    a half-made dashboard behind.
     """
     collection: Any = None
     created: dict[str, Any] | None = None
@@ -703,11 +704,12 @@ async def async_remove_dashboard(
     """
     Delete the dashboard this entry created, and nothing else.
 
-    Runs only when the entry is removed. The row is found by its recorded id
-    and deleted only while its own config is still our strategy, so a
-    dashboard the user took control of or built themselves is never deleted.
-    Deleting the row is what removes the sidebar panel and the stored config;
-    Lovelace does both from its own collection listener.
+    Runs only on the options flow's "remove" step and when the entry is
+    removed. The row is found by its recorded id and deleted only while its
+    own config is still our strategy, so a dashboard the user took control of
+    or built themselves is never deleted. Deleting the row is what removes
+    the sidebar panel and the stored config; Lovelace does both from its own
+    collection listener.
 
     Returns True when nothing of ours is left: it was deleted, nothing was
     recorded, or the row is gone or no longer ours. Returns False when the

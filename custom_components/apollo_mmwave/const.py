@@ -93,9 +93,9 @@ POLYGON_MIN_POINTS = 3
 # backend. Nothing aliases the old name.
 CARD_TYPE = "custom:apollo-radar-zone-map-card"
 
-# Config flow: create the Apollo mmWave dashboard once, when the
-# administrator submits the form, and whether only administrators can see it.
-# Neither choice is stored on the entry.
+# Config flow and the options flow's "add" step: create the Apollo mmWave
+# dashboard once, when the administrator submits the form, and whether only
+# administrators can see it. Neither choice is stored on the entry.
 CONF_CREATE_DASHBOARD = "create_dashboard"
 DEFAULT_CREATE_DASHBOARD = True
 CONF_DASHBOARD_ADMIN_ONLY = "dashboard_admin_only"
