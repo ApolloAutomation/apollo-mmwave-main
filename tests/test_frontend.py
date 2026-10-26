@@ -42,6 +42,7 @@ from custom_components.apollo_mmwave.const import (
     JS_BUNDLES,
 )
 from custom_components.apollo_mmwave.frontend import (
+    DashboardsUnreadableError,
     _async_register_lovelace_resources,
     _dashboards_collection,
     async_create_dashboard,
@@ -775,9 +776,11 @@ async def test_unreachable_dashboards_collection_is_warned_about(hass, caplog) -
         assert "was not removed" in removed
         caplog.clear()
 
-        assert await async_find_legacy_dashboard(hass) is None
+        # Unknown, not none: the migration records nothing and looks again.
+        with pytest.raises(DashboardsUnreadableError):
+            await async_find_legacy_dashboard(hass)
         [legacy] = apollo_warnings(caplog)
-        assert "is not tracked" in legacy
+        assert "is not tracked yet" in legacy
 
     assert DASHBOARD_URL_PATH not in hass.data[LOVELACE_DATA].dashboards
     assert DASHBOARD_URL_PATH not in hass.data[DATA_PANELS]

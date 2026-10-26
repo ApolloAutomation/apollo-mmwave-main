@@ -70,6 +70,7 @@ from .const import (
     WARN_ZONE_NO_GEOMETRY,
 )
 from .frontend import (
+    DashboardsUnreadableError,
     async_find_legacy_dashboard,
     async_register_frontend_assets,
     async_remove_dashboard,
@@ -695,17 +696,25 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     the entry owns none, and nothing is ever recreated. The option itself is
     dropped. ``dashboard_devices`` is kept as it is.
 
+    When the dashboards cannot be read, whether such a row exists is unknown,
+    so nothing is recorded: the entry stays on minor version 1 with the old
+    option, and the next start looks again.
+
     Never fails: a migration error would keep the zones and the services from
-    loading, and the worst a failed lookup can do is leave an old dashboard
-    untracked, which nothing then writes to or deletes.
+    loading, and until the row is recorded nothing writes to or deletes it.
     """
     if entry.version == 1 and entry.minor_version < ENTRY_MINOR_VERSION:
         options = dict(entry.options)
         keep_dashboard = bool(options.pop(CONF_AUTO_CREATE_VIEW, True))
         if CONF_DASHBOARD_ID not in options:
-            dashboard_id = (
-                await async_find_legacy_dashboard(hass) if keep_dashboard else None
-            )
+            try:
+                dashboard_id = (
+                    await async_find_legacy_dashboard(hass) if keep_dashboard else None
+                )
+            except DashboardsUnreadableError:
+                # Unknown is not none. Setup goes ahead with the entry owning
+                # no dashboard for now, and nothing is written.
+                return True
             options[CONF_DASHBOARD_ID] = dashboard_id
             options[CONF_DASHBOARD_URL_PATH] = (
                 DASHBOARD_URL_PATH if dashboard_id else None

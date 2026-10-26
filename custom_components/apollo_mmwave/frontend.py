@@ -743,6 +743,17 @@ async def async_remove_dashboard(
     return True
 
 
+class DashboardsUnreadableError(Exception):
+    """The dashboards could not be read, so what they hold is unknown."""
+
+
+# The end of every warning about an earlier release's dashboard that could not
+# be looked up.
+_LEGACY_RETRY_HINT = (
+    "It is left as it is, and Apollo mmWave looks for it again at the next start."
+)
+
+
 async def async_find_legacy_dashboard(hass: HomeAssistant) -> str | None:
     """
     Return the id of the dashboard 2.2.5 and earlier kept on our url path.
@@ -754,31 +765,40 @@ async def async_find_legacy_dashboard(hass: HomeAssistant) -> str | None:
     ``strategy`` key with our type, which is what those releases saved (keys
     the user typed under ``strategy`` included). A dashboard the user took
     control of, and a YAML dashboard on the path, are not adopted. Returns
-    None when there is no such row or the dashboards cannot be read.
+    None when there is no such row.
+
+    Raises ``DashboardsUnreadableError`` when the dashboards cannot be read.
+    That means "unknown", not "none": the migration then records nothing and
+    tries again at the next start.
     """
     try:
         collection = _dashboards_collection(hass)
-        if collection is None:
-            _LOGGER.warning(
-                "Apollo mmWave: could not reach Lovelace's dashboards collection,"
-                " so a '%s' dashboard from an earlier release is not tracked."
-                " It is left as it is; you can delete it in Settings >"
-                " Dashboards.",
-                DASHBOARD_TITLE,
-            )
-            return None
-        item = _row_on_url_path(collection, DASHBOARD_URL_PATH)
-        if item is None:
-            return None
-        stored = await _async_stored_config(hass, item)
-        if not _is_ours(stored) or set(stored) != {"strategy"}:  # type: ignore[arg-type]
-            return None
-        return str(item["id"])
-    except Exception:
+        if collection is not None:
+            return await _async_legacy_row_id(hass, collection)
+    except Exception as err:
         _LOGGER.warning(
             "Apollo mmWave: could not read the dashboards to find the '%s'"
-            " dashboard from an earlier release. It is left as it is.",
+            " dashboard from an earlier release. %s",
             DASHBOARD_TITLE,
+            _LEGACY_RETRY_HINT,
             exc_info=True,
         )
+        raise DashboardsUnreadableError from err
+    _LOGGER.warning(
+        "Apollo mmWave: could not reach Lovelace's dashboards collection, so a"
+        " '%s' dashboard from an earlier release is not tracked yet. %s",
+        DASHBOARD_TITLE,
+        _LEGACY_RETRY_HINT,
+    )
+    raise DashboardsUnreadableError
+
+
+async def _async_legacy_row_id(hass: HomeAssistant, collection: Any) -> str | None:
+    """Return the id of the row on our url path holding only our strategy."""
+    item = _row_on_url_path(collection, DASHBOARD_URL_PATH)
+    if item is None:
         return None
+    stored = await _async_stored_config(hass, item)
+    if not _is_ours(stored) or set(stored) != {"strategy"}:  # type: ignore[arg-type]
+        return None
+    return str(item["id"])

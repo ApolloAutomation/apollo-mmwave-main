@@ -152,8 +152,11 @@ class ApolloMmwaveOptionsFlow(config_entries.OptionsFlow):
     def _save(self, **changes: Any) -> config_entries.ConfigFlowResult:
         """Finish with the entry's options plus ``changes``."""
         options = dict(self.config_entry.options)
-        if self._owned is False:
-            # Gone, or taken over: it is not ours any more, so forget it.
+        if self._owned is False and options.get(CONF_DASHBOARD_ID):
+            # Gone, or taken over: it is not ours any more, so forget it. An
+            # entry with no record keeps none: one from 2.2.5 whose migration
+            # could not read the dashboards yet must still adopt its old
+            # dashboard at the next start.
             options.update(_ownership(None))
         options.update(changes)
         return self.async_create_entry(title="", data=options)

@@ -815,10 +815,16 @@ async def test_migration_leaves_a_dashboard_that_is_not_ours(
     assert await async_dashboard_config(hass) == config
 
 
-async def test_migration_without_the_dashboards_collection_still_sets_up(
+async def test_migration_without_the_dashboards_collection_tries_again(
     hass, hass_storage, caplog
 ) -> None:
-    """An unreachable collection leaves the old dashboard untracked, not broken."""
+    """
+    An unreachable collection records nothing, and a later start adopts.
+
+    Not being able to read the dashboards is not the same as there being no
+    dashboard, so the entry keeps minor version 1 and the old option, and
+    still sets up.
+    """
     await _boot_lovelace_with_a_dashboard(hass, hass_storage, OUR_CONFIG)
     entry = _legacy_entry(**{CONF_AUTO_CREATE_VIEW: True})
 
@@ -826,11 +832,81 @@ async def test_migration_without_the_dashboards_collection_still_sets_up(
         await setup_integration(hass, entry)
 
     assert entry.state is ConfigEntryState.LOADED
-    assert entry.minor_version == ENTRY_MINOR_VERSION
-    assert entry.options[CONF_DASHBOARD_ID] is None
+    assert entry.minor_version == 1
+    assert entry.options == {CONF_AUTO_CREATE_VIEW: True}
     [warning] = apollo_warnings(caplog)
-    assert "is not tracked" in warning
+    assert "is not tracked yet" in warning
+    assert "looks for it again at the next start" in warning
+
+    with record_dashboard_writes(hass) as writes:
+        assert await hass.config_entries.async_reload(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert writes == []
+    assert entry.minor_version == ENTRY_MINOR_VERSION
+    assert entry.options == {
+        CONF_DASHBOARD_ID: LEGACY_ROW["id"],
+        CONF_DASHBOARD_URL_PATH: DASHBOARD_URL_PATH,
+    }
     assert rows_on_url_path(hass) == [LEGACY_ROW]
+    assert await async_dashboard_config(hass) == OUR_CONFIG
+
+
+async def test_migration_that_raises_records_nothing(
+    hass, hass_storage, caplog
+) -> None:
+    """A lookup that fails is unknown too: no record, and setup goes ahead."""
+    await _boot_lovelace_with_a_dashboard(hass, hass_storage, OUR_CONFIG)
+    entry = _legacy_entry(**{CONF_AUTO_CREATE_VIEW: True})
+
+    with patch.object(
+        apollo_frontend, "_row_on_url_path", side_effect=RuntimeError("boom")
+    ):
+        await setup_integration(hass, entry)
+
+    assert entry.state is ConfigEntryState.LOADED
+    assert entry.minor_version == 1
+    assert entry.options == {CONF_AUTO_CREATE_VIEW: True}
+    [warning] = apollo_warnings(caplog)
+    assert "could not read the dashboards" in warning
+
+
+async def test_options_saved_before_adoption_keep_the_entry_unrecorded(
+    hass, hass_storage
+) -> None:
+    """
+    Saving options before the migration could read the dashboards records none.
+
+    The options flow forgets only a dashboard the entry recorded. Writing
+    "none" for an entry with no record would stop the next start adopting
+    the old dashboard.
+    """
+    await _boot_lovelace_with_a_dashboard(hass, hass_storage, OUR_CONFIG)
+    entry = _legacy_entry(**{CONF_AUTO_CREATE_VIEW: True})
+    with patch.object(apollo_frontend, "_dashboards_collection", return_value=None):
+        await setup_integration(hass, entry)
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "dashboard_devices"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {CONF_DASHBOARD_DEVICES: ["dev1"]}
+    )
+    assert entry.options == {
+        CONF_AUTO_CREATE_VIEW: True,
+        CONF_DASHBOARD_DEVICES: ["dev1"],
+    }
+
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert entry.minor_version == ENTRY_MINOR_VERSION
+    assert entry.options == {
+        CONF_DASHBOARD_DEVICES: ["dev1"],
+        CONF_DASHBOARD_ID: LEGACY_ROW["id"],
+        CONF_DASHBOARD_URL_PATH: DASHBOARD_URL_PATH,
+    }
     assert await async_dashboard_config(hass) == OUR_CONFIG
 
 
