@@ -42,8 +42,12 @@ This integration ships its own Lovelace frontend so users install ONE thing:
 
 Lovelace internals (``hass.data[LOVELACE_DATA]`` and the dashboards collection
 behind the ``lovelace/dashboards`` websocket API) are not a public contract, so
-every touch is wrapped defensively: if the shape ever changes we log and
-continue without the dashboard rather than breaking setup or a flow.
+every runtime touch is wrapped defensively: if the shape ever changes we log
+and continue without the dashboard rather than breaking setup or a flow. The
+``lovelace.const`` and ``websocket_api.const`` names below are imported when
+the module loads, so one that moved upstream would fail the integration's
+load instead. They have been stable for many releases, and ``LOVELACE_DATA``
+is needed for the resource registration anyway.
 """
 
 from __future__ import annotations
@@ -387,6 +391,12 @@ def _dashboards_collection(hass: HomeAssistant) -> Any | None:
     ``DashboardsCollection`` is not an alternative: each instance rewrites the
     whole item list into the shared store, so two of them delete each other's
     dashboards.
+
+    The likeliest way this breaks: since 2026.10 the CRUD object can register
+    ``/list`` with ``admin_only``, which wraps the handler in
+    ``require_admin``. The wrapper has no ``__self__``, so this would return
+    None, and every caller falls back as it does for any unreachable
+    collection.
     """
     lovelace_data = hass.data.get(LOVELACE_DATA)
     if lovelace_data is None:
