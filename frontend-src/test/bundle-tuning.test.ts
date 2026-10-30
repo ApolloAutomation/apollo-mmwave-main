@@ -147,6 +147,8 @@ describe("tuning bundle registration", () => {
       "apollo-radar-distance-card",
       "apollo-radar-gate-energy-card",
       "apollo-radar-setup-card",
+      "apollo-radar-slider-lock-row",
+      "apollo-radar-slider-row",
       "ll-strategy-dashboard-apollo-radar-tuning",
       "ll-strategy-section-apollo-radar-tuning",
       "ll-strategy-view-apollo-radar-tuning",
@@ -183,6 +185,8 @@ describe("tuning bundle Lit cards", () => {
     "apollo-radar-distance-card",
     "apollo-radar-gate-energy-card",
     "apollo-radar-setup-card",
+    "apollo-radar-slider-lock-row",
+    "apollo-radar-slider-row",
   ];
 
   it.each(LIT_CARDS)("%s keeps its reactive properties on Lit's accessors", (tag) => {
@@ -310,6 +314,50 @@ describe("tuning bundle Lit cards", () => {
     card.hass = withStates(hass, { [zoneType]: "Disabled" });
     await settle(card);
     expect(text(card)).toContain("Radar settings look good.");
+  });
+
+  it("slider row locks HA's row until the lock row unlocks it, and hands it every hass", async () => {
+    const THRESHOLD = `number.${BASE}_g0_move_threshold`;
+    const states = msr2States();
+    states[THRESHOLD].attributes = { mode: "auto", min: 0, max: 100, step: 1 };
+    const hass = fakeHass(states);
+    const made: any[] = [];
+    (window as any).loadCardHelpers = async () => ({
+      createRowElement: (config: Record<string, unknown>) => {
+        const row: any = document.createElement("div");
+        row.config = config;
+        made.push(row);
+        return row;
+      },
+    });
+    try {
+      const row = await mount(
+        "apollo-radar-slider-row",
+        { entity: THRESHOLD, name: "G0", device_id: "dev1" },
+        hass
+      );
+      const lock = await mount("apollo-radar-slider-lock-row", { device_id: "dev1" }, hass);
+      expect(made).toHaveLength(1);
+      expect(made[0].config).toEqual({ color: "state", entity: THRESHOLD, name: "G0" });
+      expect(made[0].hass).toBe(hass);
+      expect(row.shadowRoot.querySelector(".shield")).not.toBeNull();
+      expect(text(lock)).toContain("Sliders locked");
+
+      // `_config` and the lock (@state, requestUpdate): Unlock lifts the shield.
+      lock.shadowRoot.querySelector("button").click();
+      await settle(row);
+      await settle(lock);
+      expect(row.shadowRoot.querySelector(".shield")).toBeNull();
+      expect(text(lock)).toContain("Sliders unlocked");
+
+      // `hass` (@property): a new hass reaches HA's row.
+      const next = withStates(hass, { [THRESHOLD]: "30" });
+      row.hass = next;
+      await settle(row);
+      expect(made[0].hass).toBe(next);
+    } finally {
+      delete (window as any).loadCardHelpers;
+    }
   });
 
   it("distance card swaps device not found for its chart once the entities arrive", async () => {
