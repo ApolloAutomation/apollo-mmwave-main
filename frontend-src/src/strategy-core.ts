@@ -3,9 +3,17 @@ import {
   baseNameFromDevice,
   detectProfileFromEntities,
   entityMapFromDevice,
+  exists,
 } from "./entities";
 import { entitiesForDevice } from "./entity-index";
 import { hasLd2450Device, ld2450EntityIds, zoneMapCard } from "./ld2450";
+import {
+  LD2450_ZONES,
+  ld2450Entities,
+  zonePresenceSensors,
+  type Ld2450Entities,
+} from "./ld2450-entities";
+import { builtInZoneRows, ld2450ControlRows, ld2450LiveRows } from "./panels/ld2450-rows";
 import { apolloModelInfo, isEsphomeDevice, type RadarProfile } from "./profiles";
 import {
   controlRows,
@@ -274,6 +282,80 @@ function noteCard(text: string): Record<string, any> {
   return { type: "markdown", content: text };
 }
 
+export const ZONE_PRESENCE_TITLE = "Zone presence";
+export const ZONE_PRESENCE_HINT =
+  "Draw a zone on the map to get a presence sensor for it. Reload this page to see it here.";
+export const BUILT_IN_ZONES_TITLE = "Radar's built-in zones";
+export const BUILT_IN_ZONES_NOTE =
+  "These are the radar chip's own zones, not the ones on the zone map." +
+  " Zone Type Disabled is recommended, because the zone map replaces them.";
+
+/**
+ * This integration's zone presence sensors for the radar, one per drawn zone,
+ * so a user can walk into a zone and watch it turn on. The rows carry no
+ * name: HA shows each sensor's own name, which follows a zone rename.
+ *
+ * Drawing a zone does not regenerate the dashboard (that would rebuild the
+ * zone map mid-edit, see `shouldRegenerate`), so a new zone's sensor shows
+ * after the next page load. Only the empty card says so; with zones listed
+ * the extra line is noise.
+ */
+function zonePresenceCard(hass: HomeAssistant, deviceId: string): Record<string, any> {
+  const ids = zonePresenceSensors(hass, deviceId).filter((id) => exists(hass, id));
+  if (ids.length === 0) {
+    return { type: "markdown", title: ZONE_PRESENCE_TITLE, content: ZONE_PRESENCE_HINT };
+  }
+  return {
+    type: "entities",
+    title: ZONE_PRESENCE_TITLE,
+    show_header_toggle: false,
+    // Colored while occupied, so a zone turning on is easy to spot.
+    state_color: true,
+    entities: ids.map((entity) => ({ entity })),
+  };
+}
+
+/**
+ * The radar chip's own built-in zones, shown only while Zone Type is not
+ * Disabled. A native conditional card reads the live state, so the card
+ * appears the moment someone picks Detection or Filter and goes away again
+ * on Disabled, without a dashboard regeneration. Offline ("unavailable") and
+ * unreported ("unknown") hide it too: there is nothing to act on then.
+ */
+function builtInZonesCard(
+  hass: HomeAssistant,
+  l: Ld2450Entities
+): Record<string, any> | undefined {
+  if (!exists(hass, l.zone_type)) return undefined;
+  const entities: Record<string, any>[] = [];
+  for (let i = 0; i < LD2450_ZONES; i++) {
+    const rows = presentRows(hass, builtInZoneRows(l, i));
+    if (rows.length === 0) continue;
+    entities.push(
+      { type: "section", label: `Zone ${i + 1}` },
+      ...rows.map((r) => ({ entity: r.entity, name: r.name }))
+    );
+  }
+  if (entities.length === 0) return undefined;
+  return {
+    type: "conditional",
+    conditions: [
+      {
+        condition: "state",
+        entity: l.zone_type,
+        state_not: ["Disabled", "unavailable", "unknown"],
+      },
+    ],
+    card: {
+      type: "vertical-stack",
+      cards: [
+        { type: "markdown", title: BUILT_IN_ZONES_TITLE, content: BUILT_IN_ZONES_NOTE },
+        { type: "entities", show_header_toggle: false, entities },
+      ],
+    },
+  };
+}
+
 interface DeviceCards {
   help: Record<string, any>;
   /** The auto-calibrate card, first on every gate-radar tab. */
@@ -291,7 +373,14 @@ interface DeviceCards {
   history?: Record<string, any>;
   // LD2450 zone-mapping (R-PRO-1 / MTR-1).
   zoneHeader?: Record<string, any>;
+  /** The "Radar setup" card, right above the zone map. */
+  ld2450Setup?: Record<string, any>;
   zoneMap?: Record<string, any>;
+  zonePresence?: Record<string, any>;
+  ld2450Live?: Record<string, any>;
+  ld2450Controls?: Record<string, any>;
+  /** Shown only while Zone Type is not Disabled (a conditional card). */
+  builtInZones?: Record<string, any>;
 }
 
 function cardMap(
@@ -377,14 +466,32 @@ function cardMap(
   }
 
   // LD2450 zone map (R-PRO-1 / MTR-1). Only labelled when it shares a tab with
-  // tuning cards (R-PRO-1) — a thin native section heading, so it's clear the
-  // LD2450 is a separate radar. Zone-only devices (MTR-1) get no header: the
-  // card is the whole tab.
+  // tuning cards (R-PRO-1): a thin native section heading, so it's clear the
+  // LD2450 is a separate radar. Zone-only devices (MTR-1) get no header: every
+  // card on the tab is the LD2450's.
   if (dev.ld2450) {
     cards.zoneHeader = dev.profile
       ? { type: "heading", heading: "Zone Map" }
       : undefined;
+    // Everything a user needs to get a dot on the map sits beside it. The
+    // ids come from this device's own entities only: the MTR-1's bare names
+    // ("Timeout", "Zone Type") would match any device's.
+    const l = ld2450Entities(hass, dev.deviceId);
+    // Online or not, like the calibrate card: it renders its own offline
+    // line. Left out when neither setting it checks exists on the device.
+    cards.ld2450Setup =
+      exists(hass, l.zone_type) || exists(hass, l.multi_target_tracking)
+        ? { type: "custom:apollo-radar-setup-card", device_id: dev.deviceId }
+        : undefined;
     cards.zoneMap = zoneMapCard(dev.deviceId, dev.name);
+    cards.zonePresence = zonePresenceCard(hass, dev.deviceId);
+    const live = entitiesCard("LD2450 Live", presentRows(hass, ld2450LiveRows(l)));
+    cards.ld2450Live = live ? { ...live, state_color: true } : undefined;
+    cards.ld2450Controls = entitiesCard(
+      "LD2450 Controls",
+      presentRows(hass, ld2450ControlRows(l))
+    );
+    cards.builtInZones = builtInZonesCard(hass, l);
   }
 
   return cards;
@@ -413,7 +520,12 @@ export function buildDeviceCards(
     c.occupancy,
     c.history,
     c.zoneHeader,
+    c.ld2450Setup,
     c.zoneMap,
+    c.zonePresence,
+    c.ld2450Live,
+    c.ld2450Controls,
+    c.builtInZones,
   ].filter(Boolean) as Record<string, any>[];
 }
 
@@ -449,17 +561,25 @@ export function buildDeviceSections(
 
   // A zone-only or undetectable device has no tuning column to carry the help
   // card, so it gets its own section only when it has something to say (the
-  // offline note, or that nothing is detectable). A live MTR-1 stays just the
-  // zone map.
+  // offline note, or that nothing is detectable). A live MTR-1 starts with
+  // its setup card and zone map instead.
   if (!dev.profile && (!dev.online || !c.zoneMap)) {
     columns.push([c.help]);
   }
 
-  // LD2450 zone map gets its own column. On a shared tab (R-PRO-1) a thin
-  // heading precedes it; on a zone-only device (MTR-1) it's just the card —
-  // the tab title already names the device.
+  // LD2450 zone map gets its own column, the setup card right above it. On a
+  // shared tab (R-PRO-1) a thin heading precedes them and the LD2450's status
+  // and settings fill one more column next to the map; on a zone-only device
+  // (MTR-1) the tab title already names the device, and those cards split
+  // into two columns so each reads at a glance. Section order is also the
+  // phone's reading order, so the setup card and the map come first.
   if (c.zoneMap) {
-    columns.push([c.zoneHeader, c.zoneMap]);
+    columns.push([c.zoneHeader, c.ld2450Setup, c.zoneMap]);
+    if (dev.profile) {
+      columns.push([c.zonePresence, c.ld2450Live, c.ld2450Controls, c.builtInZones]);
+    } else {
+      columns.push([c.zonePresence, c.ld2450Live], [c.ld2450Controls, c.builtInZones]);
+    }
   }
 
   return columns

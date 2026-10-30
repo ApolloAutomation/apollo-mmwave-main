@@ -8,6 +8,10 @@ import {
   generateSections,
   generateViews,
   markdownText,
+  BUILT_IN_ZONES_NOTE,
+  BUILT_IN_ZONES_TITLE,
+  ZONE_PRESENCE_HINT,
+  ZONE_PRESENCE_TITLE,
   type RadarDevice,
 } from "../src/strategy-core";
 import { LD2410_PROFILE, LD2412_PROFILE } from "../src/profiles";
@@ -375,7 +379,7 @@ describe("buildDeviceSections column layout", () => {
     expect(layout(sections)).toEqual(LD2412_COLUMNS);
   });
 
-  it("adds a fifth Zone Map section after the tuning columns on an R-PRO-1", () => {
+  it("adds the Zone Map sections after the tuning columns on an R-PRO-1", () => {
     const hass = ld2412Hass(
       { name: "Office R-PRO-1", manufacturer: "ApolloAutomation", model: "R-PRO-1-W" },
       true
@@ -383,7 +387,10 @@ describe("buildDeviceSections column layout", () => {
     const [dev] = detectRadarDevices(hass);
     expect(dev.ld2450).toBe(true);
     const sections = buildDeviceSections(hass, dev);
-    expect(sections).toHaveLength(5);
+    // The tuning columns are unchanged; the zone map gets the fifth section
+    // and its LD2450 cards a sixth. This fixture has only a target sensor,
+    // so there is no setup card and only the zone presence hint.
+    expect(sections).toHaveLength(6);
     expect(layout(sections.slice(0, 4))).toEqual(LD2412_COLUMNS);
     expect(sections[4].type).toBe("grid");
     expect(sections[4].cards).toHaveLength(2);
@@ -392,6 +399,10 @@ describe("buildDeviceSections column layout", () => {
       type: "custom:apollo-radar-zone-map-card",
       device_id: "rpro",
     });
+    expect(sections[5].type).toBe("grid");
+    expect(sections[5].cards).toEqual([
+      { type: "markdown", title: ZONE_PRESENCE_TITLE, content: ZONE_PRESENCE_HINT },
+    ]);
   });
 
   it("puts the offline note and the wiki link on an offline MSR-2's help card", () => {
@@ -757,4 +768,318 @@ describe("LD2450 detection across same-named radars", () => {
       });
     }
   }
+});
+
+describe("LD2450 cards beside the zone map", () => {
+  const RPRO = "apollo_r_pro_1_7a711c";
+  const MTR = "apollo_mtr_1_cbbdb4";
+  const SETUP = "custom:apollo-radar-setup-card";
+  const ZONE_MAP = "custom:apollo-radar-zone-map-card";
+
+  type Entities = HomeAssistant["entities"];
+
+  /** `deviceId` owning `ids` (id to state), ESPHome entities unless the id is
+   *  listed in `own`, which this integration owns. */
+  function hassOf(
+    deviceId: string,
+    device: HomeAssistant["devices"][string],
+    ids: Record<string, string>,
+    own: string[] = []
+  ): HomeAssistant {
+    const states: Record<string, HassEntity> = {};
+    const entities: Entities = {};
+    for (const [id, value] of Object.entries(ids)) {
+      const attributes = id.startsWith("select.")
+        ? { options: ["Disabled", "Detection", "Filter"] }
+        : {};
+      states[id] = { entity_id: id, state: value, attributes };
+      entities[id] = {
+        device_id: deviceId,
+        platform: own.includes(id) ? "apollo_mmwave" : "esphome",
+      };
+    }
+    return { states, entities, devices: { [deviceId]: device } };
+  }
+
+  /** Targets 1 to 3 and the built-in zones in a firmware's spelling. */
+  function radarIds(d: string, chip: "ld2450_" | ""): Record<string, string> {
+    const ids: Record<string, string> = {};
+    for (let n = 1; n <= 3; n++) {
+      ids[`sensor.${d}_${chip}target_${n}_x`] = "0";
+      ids[`sensor.${d}_${chip}target_${n}_y`] = "0";
+      ids[`sensor.${d}_${chip}target_${n}_speed`] = "0";
+      ids[`sensor.${d}_${chip}target_${n}_distance`] = "0";
+      ids[`sensor.${d}_${chip}target_${n}_direction`] = "NA";
+      for (const f of ["x1", "y1", "x2", "y2"]) ids[`number.${d}_${chip}zone_${n}_${f}`] = "0";
+      for (const f of ["all", "still", "moving"]) {
+        ids[`sensor.${d}_${chip}zone_${n}_${f}_target_count`] = "0";
+      }
+    }
+    return ids;
+  }
+
+  /** A live R PRO-1 as it ships: Multi Target Tracking and the LD2450
+   *  firmware sensor are disabled by default, so HA has neither. */
+  function rproHass(extra: Record<string, string> = {}, own: string[] = []): HomeAssistant {
+    const m = LD2412_PROFILE.entityMap(RPRO);
+    return hassOf(
+      "rpro",
+      { name: "Office R PRO-1", manufacturer: "ApolloAutomation", model: "R-PRO-1-W" },
+      {
+        [m.engineering_mode!]: "off",
+        [m.radar_timeout!]: "5",
+        [m.max_move_distance!]: "12",
+        [m.move_threshold[0]]: "30",
+        [m.radar_target!]: "off",
+        [m.bluetooth!]: "on",
+        [m.restart_radar!]: "unknown",
+        [m.factory_reset_radar!]: "unknown",
+        [`select.${RPRO}_ld2450_zone_type`]: "Disabled",
+        [`switch.${RPRO}_ld2450_bluetooth`]: "on",
+        [`number.${RPRO}_ld2450_timeout`]: "5",
+        [`button.${RPRO}_ld2450_restart`]: "unknown",
+        [`button.${RPRO}_ld2450_factory_reset`]: "unknown",
+        [`binary_sensor.${RPRO}_ld2450_presence`]: "off",
+        [`binary_sensor.${RPRO}_ld2450_moving_target`]: "off",
+        [`binary_sensor.${RPRO}_ld2450_still_target`]: "off",
+        [`sensor.${RPRO}_ld2450_presence_target_count`]: "0",
+        ...radarIds(RPRO, "ld2450_"),
+        ...extra,
+      },
+      own
+    );
+  }
+
+  /** A live MTR-1: bare names, Multi Target Tracking present. */
+  function mtrHass(drop: string[] = [], state = (_id: string, v: string) => v): HomeAssistant {
+    const ids: Record<string, string> = {
+      [`select.${MTR}_zone_type`]: "Disabled",
+      [`switch.${MTR}_multi_target_tracking`]: "on",
+      [`switch.${MTR}_ld2450_bluetooth`]: "on",
+      [`number.${MTR}_timeout`]: "5",
+      [`button.${MTR}_factory_reset_ld2450`]: "unknown",
+      [`sensor.${MTR}_ld2450_firmware`]: "2.04",
+      [`binary_sensor.${MTR}_ld2450_presence`]: "off",
+      [`binary_sensor.${MTR}_ld2450_moving_target`]: "off",
+      [`binary_sensor.${MTR}_ld2450_still_target`]: "off",
+      [`sensor.${MTR}_presence_target_count`]: "0",
+      [`button.${MTR}_esp_reboot`]: "unknown",
+      [`button.${MTR}_factory_reset_esp`]: "unknown",
+      ...radarIds(MTR, ""),
+    };
+    for (const id of drop) delete ids[id];
+    for (const id of Object.keys(ids)) ids[id] = state(id, ids[id]);
+    return hassOf(
+      "mtr",
+      { name: "Hall MTR-1", manufacturer: "ApolloAutomation", model: "MTR-1" },
+      ids
+    );
+  }
+
+  const deviceOf = (hass: HomeAssistant) => detectRadarDevices(hass)[0];
+  const byTitle = (cards: Record<string, any>[], title: string): Record<string, any> =>
+    cards.find((c) => c.title === title)!;
+
+  it("puts the setup card above the zone map and the LD2450 cards beside it on an R PRO-1", () => {
+    const hass = rproHass();
+    const dev = deviceOf(hass);
+    expect(dev.profile?.key).toBe("ld2412");
+    const sections = buildDeviceSections(hass, dev);
+    expect(sections).toHaveLength(6);
+    expect(layout(sections.slice(0, 4))[0][0]).toBe("Auto-calibrate");
+    expect(sections[4].cards.map((c: any) => c.type)).toEqual(["heading", SETUP, ZONE_MAP]);
+    expect(sections[4].cards[1]).toEqual({ type: SETUP, device_id: "rpro" });
+    expect(layout([sections[5]])).toEqual([
+      [ZONE_PRESENCE_TITLE, "LD2450 Live", "LD2450 Controls", "conditional"],
+    ]);
+  });
+
+  it("lists the R PRO-1's LD2450 controls, skipping what HA does not have", () => {
+    const cards = buildDeviceCards(rproHass(), deviceOf(rproHass()));
+    expect(byTitle(cards, "LD2450 Controls")).toEqual({
+      type: "entities",
+      title: "LD2450 Controls",
+      show_header_toggle: false,
+      entities: [
+        { entity: `select.${RPRO}_ld2450_zone_type`, name: "Zone Type" },
+        { entity: `number.${RPRO}_ld2450_timeout`, name: "Radar Timeout" },
+        { entity: `switch.${RPRO}_ld2450_bluetooth`, name: "Bluetooth" },
+        { entity: `button.${RPRO}_ld2450_restart`, name: "Restart Radar" },
+        { entity: `button.${RPRO}_ld2450_factory_reset`, name: "Factory Reset Radar" },
+      ],
+    });
+    // The LD2412's own Controls card keeps only LD2412 entities.
+    const ld2412 = byTitle(cards, "LD2412 Controls");
+    expect(ld2412.entities.every((r: any) => !r.entity.includes("ld2450"))).toBe(true);
+  });
+
+  it("adds Multi Target Tracking and Firmware once the user enables them", () => {
+    const hass = rproHass({
+      [`switch.${RPRO}_ld2450_multi_target_tracking`]: "on",
+      [`sensor.${RPRO}_ld2450_firmware`]: "2.04",
+    });
+    const names = byTitle(buildDeviceCards(hass, deviceOf(hass)), "LD2450 Controls").entities.map(
+      (r: any) => r.name
+    );
+    expect(names).toEqual([
+      "Zone Type",
+      "Multi Target Tracking",
+      "Radar Timeout",
+      "Bluetooth",
+      "Restart Radar",
+      "Factory Reset Radar",
+      "Firmware",
+    ]);
+  });
+
+  it("shows what the radar sees in the LD2450 Live card", () => {
+    const cards = buildDeviceCards(rproHass(), deviceOf(rproHass()));
+    const live = byTitle(cards, "LD2450 Live");
+    expect(live.state_color).toBe(true);
+    expect(live.entities.slice(0, 6)).toEqual([
+      { entity: `binary_sensor.${RPRO}_ld2450_presence`, name: "Presence" },
+      { entity: `binary_sensor.${RPRO}_ld2450_moving_target`, name: "Moving Target" },
+      { entity: `binary_sensor.${RPRO}_ld2450_still_target`, name: "Still Target" },
+      { entity: `sensor.${RPRO}_ld2450_presence_target_count`, name: "Target Count" },
+      { entity: `sensor.${RPRO}_ld2450_target_1_distance`, name: "Target 1 Distance" },
+      { entity: `sensor.${RPRO}_ld2450_target_1_direction`, name: "Target 1 Direction" },
+    ]);
+    expect(live.entities.map((r: any) => r.name).slice(6)).toEqual([
+      "Target 2 Distance",
+      "Target 2 Direction",
+      "Target 3 Distance",
+      "Target 3 Direction",
+    ]);
+  });
+
+  it("shows the built-in zones only while Zone Type is not Disabled", () => {
+    const cards = buildDeviceCards(rproHass(), deviceOf(rproHass()));
+    const conditional = cards.find((c) => c.type === "conditional")!;
+    expect(conditional.conditions).toEqual([
+      {
+        condition: "state",
+        entity: `select.${RPRO}_ld2450_zone_type`,
+        state_not: ["Disabled", "unavailable", "unknown"],
+      },
+    ]);
+    expect(conditional.card.type).toBe("vertical-stack");
+    const [note, rows] = conditional.card.cards;
+    expect(note).toEqual({
+      type: "markdown",
+      title: BUILT_IN_ZONES_TITLE,
+      content: BUILT_IN_ZONES_NOTE,
+    });
+    expect(rows.type).toBe("entities");
+    expect(rows.entities.slice(0, 8)).toEqual([
+      { type: "section", label: "Zone 1" },
+      { entity: `number.${RPRO}_ld2450_zone_1_x1`, name: "X1" },
+      { entity: `number.${RPRO}_ld2450_zone_1_y1`, name: "Y1" },
+      { entity: `number.${RPRO}_ld2450_zone_1_x2`, name: "X2" },
+      { entity: `number.${RPRO}_ld2450_zone_1_y2`, name: "Y2" },
+      { entity: `sensor.${RPRO}_ld2450_zone_1_all_target_count`, name: "Target Count" },
+      { entity: `sensor.${RPRO}_ld2450_zone_1_still_target_count`, name: "Still Target Count" },
+      { entity: `sensor.${RPRO}_ld2450_zone_1_moving_target_count`, name: "Moving Target Count" },
+    ]);
+    expect(rows.entities).toHaveLength(24);
+  });
+
+  it("lists the zone presence sensors this integration made for the radar", () => {
+    const zone2 = "binary_sensor.office_r_pro_1_zone_2_presence";
+    const zone1 = "binary_sensor.office_r_pro_1_zone_1_presence";
+    const hass = rproHass(
+      { [zone2]: "off", [zone1]: "on", "sensor.office_r_pro_1_zone_1": "rect" },
+      [zone2, zone1, "sensor.office_r_pro_1_zone_1"]
+    );
+    const card = byTitle(buildDeviceCards(hass, deviceOf(hass)), ZONE_PRESENCE_TITLE);
+    expect(card).toEqual({
+      type: "entities",
+      title: ZONE_PRESENCE_TITLE,
+      show_header_toggle: false,
+      state_color: true,
+      // No name: HA shows each sensor's own, which follows a zone rename.
+      entities: [{ entity: zone1 }, { entity: zone2 }],
+    });
+  });
+
+  it("explains how to get zone presence sensors before any zone is drawn", () => {
+    const card = byTitle(buildDeviceCards(rproHass(), deviceOf(rproHass())), ZONE_PRESENCE_TITLE);
+    expect(card).toEqual({ type: "markdown", title: ZONE_PRESENCE_TITLE, content: ZONE_PRESENCE_HINT });
+  });
+
+  it("lays an MTR-1 out as setup and map, then status, then settings", () => {
+    const hass = mtrHass();
+    const dev = deviceOf(hass);
+    expect(dev.profile).toBeUndefined();
+    const sections = buildDeviceSections(hass, dev);
+    expect(sections.map((s) => s.cards.map((c: any) => c.title ?? c.type))).toEqual([
+      [SETUP, "Hall MTR-1"],
+      [ZONE_PRESENCE_TITLE, "LD2450 Live"],
+      ["LD2450 Controls", "conditional"],
+    ]);
+    expect(sections[0].cards[0]).toEqual({ type: SETUP, device_id: "mtr" });
+    expect(sections[0].cards[1].type).toBe(ZONE_MAP);
+    expect(buildDeviceCards(hass, dev).map((c) => c.title ?? c.type)).toEqual([
+      "markdown",
+      SETUP,
+      "Hall MTR-1",
+      ZONE_PRESENCE_TITLE,
+      "LD2450 Live",
+      "LD2450 Controls",
+      "conditional",
+    ]);
+  });
+
+  it("lists the MTR-1's controls in its own spelling and leaves the ESP buttons out", () => {
+    const hass = mtrHass();
+    const controls = byTitle(buildDeviceCards(hass, deviceOf(hass)), "LD2450 Controls");
+    expect(controls.entities).toEqual([
+      { entity: `select.${MTR}_zone_type`, name: "Zone Type" },
+      { entity: `switch.${MTR}_multi_target_tracking`, name: "Multi Target Tracking" },
+      { entity: `number.${MTR}_timeout`, name: "Radar Timeout" },
+      { entity: `switch.${MTR}_ld2450_bluetooth`, name: "Bluetooth" },
+      { entity: `button.${MTR}_factory_reset_ld2450`, name: "Factory Reset Radar" },
+      { entity: `sensor.${MTR}_ld2450_firmware`, name: "Firmware" },
+    ]);
+  });
+
+  it("leaves out the setup and built-in zone cards without a Zone Type or Multi Target Tracking", () => {
+    const hass = mtrHass([`select.${MTR}_zone_type`, `switch.${MTR}_multi_target_tracking`]);
+    const types = buildDeviceCards(hass, deviceOf(hass)).map((c) => c.type);
+    expect(types).not.toContain(SETUP);
+    expect(types).not.toContain("conditional");
+    expect(types).toContain(ZONE_MAP);
+  });
+
+  it("keeps the setup card for Multi Target Tracking alone", () => {
+    const hass = mtrHass([`select.${MTR}_zone_type`]);
+    const types = buildDeviceCards(hass, deviceOf(hass)).map((c) => c.type);
+    expect(types).toContain(SETUP);
+    expect(types).not.toContain("conditional");
+  });
+
+  it("drops a built-in zone with no rows and the card with none at all", () => {
+    const zone2 = Object.keys(radarIds(MTR, "")).filter((id) => /_zone_2_/.test(id));
+    const partial = mtrHass(zone2);
+    const conditional = buildDeviceCards(partial, deviceOf(partial)).find(
+      (c) => c.type === "conditional"
+    )!;
+    const labels = conditional.card.cards[1].entities
+      .filter((r: any) => r.type === "section")
+      .map((r: any) => r.label);
+    expect(labels).toEqual(["Zone 1", "Zone 3"]);
+
+    const allZones = Object.keys(radarIds(MTR, "")).filter((id) => /_zone_\d_/.test(id));
+    const none = mtrHass(allZones);
+    expect(buildDeviceCards(none, deviceOf(none)).some((c) => c.type === "conditional")).toBe(false);
+  });
+
+  it("keeps the offline note first on an offline MTR-1, then the setup card and map", () => {
+    const hass = mtrHass([], () => "unavailable");
+    const dev = deviceOf(hass);
+    expect(dev.online).toBe(false);
+    const sections = buildDeviceSections(hass, dev);
+    expect(sections[0].cards).toHaveLength(1);
+    expect(sections[0].cards[0].content).toContain("Offline right now");
+    expect(sections[1].cards.map((c: any) => c.type)).toEqual([SETUP, ZONE_MAP]);
+  });
 });
