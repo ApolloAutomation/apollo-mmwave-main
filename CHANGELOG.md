@@ -35,7 +35,8 @@ a zone map card from the card picker before 2.3.0 (see the last item).
   **Apollo Radar Setup**; see
   [Radar setup](docs/configuration.md#radar-setup).
 - **Setup checks on MSR-1, MSR-2 and R PRO-1 tabs.** A second kind of Radar
-  setup card now tops every tab with an LD2410 or LD2412. It flags:
+  setup card now sits right under **Start here** on every tab with an LD2410
+  or LD2412. It flags:
   - **Radar Engineering Mode left on**, which saves every gate's energy to
     the database about once a second. **Turn off Radar Engineering Mode**
     fixes it. The card says nothing about it while a calibration runs, since
@@ -64,7 +65,7 @@ a zone map card from the card picker before 2.3.0 (see the last item).
   radars on an R PRO-1, so it left the radar's Controls card. It is now
   **Restart device** on the MSR-1 and MSR-2, **Restart device (both radars)**
   on the R PRO-1 and **Restart device (also restarts the radar)** on the
-  MTR-1.
+  MTR-1 and on an R PRO-1 without the optional LD2412.
 - **New Device card** at the bottom of every tab: the Apollo firmware
   version, the radar chip's firmware version (the R PRO-1 hides both of its
   chips' versions until you enable them), the firmware update (tap it for
@@ -76,7 +77,8 @@ a zone map card from the card picker before 2.3.0 (see the last item).
   page. The R PRO-1 help covers both radars and says which presence sensor to
   use in automations. The help no longer tells you to change Gate Size, which
   is hidden on every model. Threshold rows say how far out their gate reaches,
-  such as "G4 (about 3 m)", in feet on a US customary system. **Bluetooth** is
+  such as "G4 (about 3 m)", in feet on a US customary system, and the
+  Detection Range tip gives each gate's depth the same way. **Bluetooth** is
   now **Radar Bluetooth (HLK app)**. The LD2410 Zone Config card says its
   boxes are in cm and how the three zones sit back to back, and each Radar
   Timeout says what it holds.
@@ -96,8 +98,9 @@ a zone map card from the card picker before 2.3.0 (see the last item).
 - **New tab layout.** An MTR-1 tab is no longer just the zone map: its help,
   Radar setup and the map come first, then the cards above. On an R PRO-1
   they sit after the LD2412's first column, under the Zone Map heading. MSR-1,
-  MSR-2 and R PRO-1 tabs start with the gate radar's Radar setup card, and
-  every tab ends with the Device card.
+  MSR-2 and R PRO-1 tabs start with **Start here**, then the gate radar's
+  Radar setup card and Auto-calibrate, and every tab ends with the Device
+  card.
 - **The zone map in feet or meters.** The map follows Home Assistant's unit
   system: feet for US customary, meters otherwise. The new **m / ft** switch
   on the map changes it. An administrator's choice is saved for that radar,

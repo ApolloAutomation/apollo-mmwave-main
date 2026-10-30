@@ -142,8 +142,8 @@ including what each HACS box says.
    dashboard? Add it from the integration's options
    (**Settings → Devices & services → Apollo mmWave → Configure**).
 2. On an MSR-1 or MSR-2 tab, or an R PRO-1 tab if the sensor has the
-   optional LD2412, look at the **Radar setup** card at the top first and fix
-   anything it flags (see
+   optional LD2412, look at the **Radar setup** card under Start here first
+   and fix anything it flags (see
    [Gate radar setup checks](docs/configuration.md#gate-radar-setup-checks)).
    Then find the **Auto-calibrate** card below it. On an R PRO-1 without the
    LD2412, skip to step 6. Before you start:
@@ -189,7 +189,7 @@ including what each HACS box says.
   has more.
 - **Calibration says the radar has not reported its threshold values:** press
   **Read settings from the radar** on the card, or on the **Radar setup**
-  card at the top of the tab.
+  card near the top of the tab.
 - **The zone map says Apollo mmWave is not loaded:** wait a moment after a
   restart, then reload the page.
 - **The zone map stays empty, with no dot for you:** look at the **Radar
