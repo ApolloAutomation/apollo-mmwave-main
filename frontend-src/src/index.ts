@@ -4,6 +4,7 @@ export const CARD_VERSION = "2.2.7";
 import "./cards/distance-card";
 import "./cards/gate-energy-card";
 import "./cards/calibrate-card";
+import "./cards/setup-card";
 import "./strategy";
 
 // TODO(REVIEW_REPORT.md X51): no ESLint is installed or run, so the directive below is inert;

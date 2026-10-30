@@ -10,7 +10,9 @@ import { describe, it, expect } from "vitest";
 import "../src/cards/distance-card";
 import "../src/cards/gate-energy-card";
 import "../src/cards/calibrate-card";
+import "../src/cards/setup-card";
 import "../src/strategy";
+import * as setupChecks from "../src/cards/setup-checks";
 import { LD2410_PROFILE, LD2412_PROFILE, PROFILES, rangeLimitTip } from "../src/profiles";
 import { buildDeviceCards, type RadarDevice, type StrategyConfig } from "../src/strategy-core";
 import type { HomeAssistant } from "../src/types";
@@ -144,15 +146,50 @@ describe("dashboard empty states and picker entries", () => {
         "apollo-radar-distance-card",
         "apollo-radar-gate-energy-card",
         "apollo-radar-calibrate-card",
+        "apollo-radar-setup-card",
       ].includes(c.type ?? "")
     );
     expect(strategies).toHaveLength(1);
-    expect(cards).toHaveLength(3);
+    expect(cards).toHaveLength(4);
     const texts = [...strategies, ...cards].flatMap((e: { name: string; description: string }) => [
       e.name,
       e.description,
     ]);
     expect(copyProblems(texts)).toEqual([]);
     for (const e of [...strategies, ...cards]) expect(e.description).toContain("R PRO");
+  });
+});
+
+describe("setup card copy", () => {
+  const hass = (zoneType: string, multi: string): HomeAssistant => {
+    const zone = "select.hall_zone_type";
+    const sw = "switch.hall_multi_target_tracking";
+    return {
+      states: {
+        [zone]: { entity_id: zone, state: zoneType, attributes: {} },
+        [sw]: { entity_id: sw, state: multi, attributes: {} },
+      },
+      entities: { [zone]: { device_id: "mtr" }, [sw]: { device_id: "mtr" } },
+      devices: { mtr: { name: "Hall" } },
+    };
+  };
+
+  it("writes every line and button without em dashes", () => {
+    const texts: string[] = Object.values(setupChecks as Record<string, unknown>).filter(
+      (v): v is string => typeof v === "string"
+    );
+    expect(texts.length).toBeGreaterThan(5);
+    for (const [zoneType, multi] of [
+      ["Detection", "off"],
+      ["Filter", "off"],
+      ["Something new", "on"],
+    ]) {
+      const status = setupChecks.setupStatus(hass(zoneType, multi), "mtr");
+      expect(status.kind).toBe("checked");
+      if (status.kind !== "checked") continue;
+      const fixes = status.problems.flatMap((p) => (p.fix ? [p.fix] : []));
+      texts.push(...strings(status.problems), setupChecks.recommendedLine(fixes));
+    }
+    expect(copyProblems(texts)).toEqual([]);
   });
 });

@@ -24,6 +24,7 @@ const SHIMMED = [
   "cards/calibrate-card",
   "cards/distance-card",
   "cards/gate-energy-card",
+  "cards/setup-card",
   "strategy",
   "zone-map/card",
   "zone-map/editor",

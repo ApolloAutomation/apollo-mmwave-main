@@ -146,6 +146,7 @@ describe("tuning bundle registration", () => {
       "apollo-radar-calibrate-card",
       "apollo-radar-distance-card",
       "apollo-radar-gate-energy-card",
+      "apollo-radar-setup-card",
       "ll-strategy-dashboard-apollo-radar-tuning",
       "ll-strategy-section-apollo-radar-tuning",
       "ll-strategy-view-apollo-radar-tuning",
@@ -159,12 +160,13 @@ describe("tuning bundle registration", () => {
     }
   });
 
-  it("lists each of its three cards in the card picker once", () => {
+  it("lists each of its four cards in the card picker once", () => {
     const cards = (window as any).customCards as { type: string; name: string }[];
     expect(cards.map((c) => [c.type, c.name])).toEqual([
       ["apollo-radar-distance-card", "Apollo Radar Distance Chart"],
       ["apollo-radar-gate-energy-card", "Apollo Radar Gate Energy Chart"],
       ["apollo-radar-calibrate-card", "Apollo Radar Auto-Calibrate"],
+      ["apollo-radar-setup-card", "Apollo Radar Setup"],
     ]);
   });
 
@@ -180,6 +182,7 @@ describe("tuning bundle Lit cards", () => {
     "apollo-radar-calibrate-card",
     "apollo-radar-distance-card",
     "apollo-radar-gate-energy-card",
+    "apollo-radar-setup-card",
   ];
 
   it.each(LIT_CARDS)("%s keeps its reactive properties on Lit's accessors", (tag) => {
@@ -276,6 +279,39 @@ describe("tuning bundle Lit cards", () => {
     expect(text(card)).not.toBe(before);
   });
 
+  it("setup card renders, then re-renders for a new hass and after a click", async () => {
+    const zoneType = "select.apollo_mtr_1_abc123_zone_type";
+    const hass = fakeHass({
+      [zoneType]: { entity_id: zoneType, state: "Detection", attributes: {} },
+    });
+    const card = await mount("apollo-radar-setup-card", { device_id: "dev1" }, hass);
+    expect(text(card)).toContain("Zone Type is Detection.");
+    const fix = card.shadowRoot.querySelector("button") as HTMLButtonElement;
+    expect(fix.textContent.trim()).toBe("Set Zone Type to Disabled");
+
+    // `_busy` (@state): the click disables the button until the call settles.
+    let finish!: () => void;
+    hass.callService.mockImplementationOnce(() => new Promise<undefined>((r) => (finish = () => r(undefined))));
+    fix.click();
+    await card.updateComplete;
+    expect(fix.disabled).toBe(true);
+    expect(hass.callService).toHaveBeenCalledWith(
+      "select",
+      "select_option",
+      { entity_id: zoneType, option: "Disabled" },
+      undefined,
+      false
+    );
+    finish();
+    await settle(card);
+    expect(fix.disabled).toBe(false);
+
+    // `hass` (@property): the radar took the change.
+    card.hass = withStates(hass, { [zoneType]: "Disabled" });
+    await settle(card);
+    expect(text(card)).toContain("Radar settings look good.");
+  });
+
   it("distance card swaps device not found for its chart once the entities arrive", async () => {
     const bare = fakeHass({});
     const card = await mount("apollo-radar-distance-card", { device_id: "dev1" }, bare);
@@ -335,6 +371,7 @@ describe("tuning bundle evaluated a second time", () => {
       "apollo-radar-distance-card",
       "apollo-radar-gate-energy-card",
       "apollo-radar-calibrate-card",
+      "apollo-radar-setup-card",
     ]);
     expect((window as any).customStrategies).toHaveLength(1);
   });
