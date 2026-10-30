@@ -109,7 +109,8 @@ def _payload(hass: HomeAssistant, device_id: str) -> dict[str, Any]:
         # goes stale after a rename. Send the registry name_by_user or name,
         # falling back to the label, and fix 'display only' in store and const.
         STORE_LABEL: entry.get(STORE_LABEL),
-        # What the presence sensor scales target readings by; null means mm.
+        # What the presence sensor scales a target reading by when its sensor
+        # has no length unit of its own; null means mm.
         STORE_INPUT_UNITS: entry.get(STORE_INPUT_UNITS),
         # TODO(REVIEW_REPORT.md X53): resolved per subscriber.  # noqa: FIX002, TD003
         # Every subscriber re-resolves on every signal (about 66 us each). Low

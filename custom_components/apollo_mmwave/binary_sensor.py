@@ -2,7 +2,8 @@
 Presence binary sensor platform for Apollo mmWave.
 
 One occupancy sensor per zone: on when any tracked LD2450 target's (x, y),
-rotated by the device's configured rotation, falls inside the zone's shape.
+converted to millimeters by each sensor's unit and rotated by the device's
+configured rotation, falls inside the zone's shape.
 Identity is the radar's Home Assistant device id plus the zone id, and the
 entity is registered against that device, so zone presence shows up on the
 radar's device page where automations are built from, and renaming it is safe.
@@ -18,7 +19,11 @@ from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
     BinarySensorEntity,
 )
-from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
+from homeassistant.const import (
+    ATTR_UNIT_OF_MEASUREMENT,
+    STATE_UNAVAILABLE,
+    STATE_UNKNOWN,
+)
 from homeassistant.core import callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
@@ -39,6 +44,7 @@ from .const import (
     ATTR_Y_MIN,
     INPUT_UNIT_FACTORS,
     POLYGON_MIN_POINTS,
+    SENSOR_UNIT_FACTORS,
     SIGNAL_ZONES_UPDATED,
     STORE_INPUT_UNITS,
 )
@@ -76,6 +82,24 @@ def _coerce_float(value: Any) -> float | None:
         return float(value)
     except TypeError, ValueError:
         return None
+
+
+def _reading_unit_factor(state: State, fallback: float) -> float:
+    """
+    Return the millimeters per unit of one target reading.
+
+    Home Assistant hands over the state in the entity's display unit, not the
+    millimeters ESPHome reports: inches when the system is set to US customary
+    units, or whatever the user picked in the entity's settings. X and Y are
+    separate entities, so each is read by its own unit. A sensor with no
+    length unit, such as a DIY template sensor, is scaled by `fallback`, the
+    device's input unit. Must match `_readingUnitFactor` in
+    frontend-src/src/zone-map/card.ts.
+    """
+    unit = state.attributes.get(ATTR_UNIT_OF_MEASUREMENT)
+    if isinstance(unit, str) and unit in SENSOR_UNIT_FACTORS:
+        return SENSOR_UNIT_FACTORS[unit]
+    return fallback
 
 
 def _build_point_rotator(
@@ -368,13 +392,17 @@ class ZonePresenceBinarySensor(ZoneEntityMixin, BinarySensorEntity):
         # Ignore origin (0,0) so default or uninitialized readings are skipped.
         if x_val == 0.0 and y_val == 0.0:
             return None
-        # Zone geometry is millimetres. The card scales readings by the
-        # device's configured input unit before drawing them, so this has to
-        # scale the same way or a target the card shows inside a zone reads
-        # "off" here. Absent means millimetres, which Apollo firmware reports.
+        # Zone geometry is millimeters, so each reading is converted by its
+        # own unit (see `_reading_unit_factor`). The device's input unit is
+        # only the fallback for a sensor with no length unit; absent means
+        # millimeters. The card converts the same way before drawing, or a
+        # target it shows inside a zone would read "off" here.
         units = (self._store.devices.get(self._device_id) or {}).get(STORE_INPUT_UNITS)
-        factor = INPUT_UNIT_FACTORS.get(units, 1.0) if isinstance(units, str) else 1.0
-        return x_val * factor, y_val * factor
+        fallback = INPUT_UNIT_FACTORS.get(units, 1.0) if isinstance(units, str) else 1.0
+        return (
+            x_val * _reading_unit_factor(x_state, fallback),  # type: ignore[arg-type]
+            y_val * _reading_unit_factor(y_state, fallback),  # type: ignore[arg-type]
+        )
 
     @staticmethod
     def _states_are_valid(x_state: State | None, y_state: State | None) -> bool:

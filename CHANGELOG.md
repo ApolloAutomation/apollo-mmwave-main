@@ -4,6 +4,27 @@ What changed in each release of Apollo mmWave, newest first. Setup and
 everyday use are in [README.md](README.md) and
 [docs/configuration.md](docs/configuration.md).
 
+## What changed in 2.2.7
+
+The zone map card and zone presence sensors now work when Home Assistant
+shows the radar's targets in inches or any other unit. Nothing needs changing
+by hand unless your Lovelace resources are managed in YAML (replace both
+`?v=` URLs; see
+[Lovelace resources](docs/configuration.md#lovelace-resources)).
+
+- **Zone map dots and zone presence follow each sensor's unit.** If Home
+  Assistant is set to US customary units, or you changed a Target X or Y
+  sensor's unit in its settings, the zone map card's dots stayed at or right
+  around the sensor and zone presence sensors did not turn on for people in
+  the zone. Home Assistant shows those sensors in inches on a US customary
+  system, and Apollo mmWave read every number as millimeters. 2.2.7 reads
+  each sensor's unit, so nothing needs changing by hand. If you set the
+  card's `input_units` to work around this, it no longer matters for these
+  sensors and can stay.
+- **Check zones drawn while the dots were wrong.** A zone drawn around where
+  the dots used to sit may not cover where people actually show up now. Walk
+  through the room, watch the dots, and redraw any zone that is off.
+
 ## What changed in 2.2.6
 
 The Apollo mmWave dashboard is created once, when you add the integration,
