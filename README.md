@@ -39,6 +39,9 @@ draw presence zones.
   rest, and an occupancy history shows the last 24 hours. A **Device** card
   at the bottom shows the firmware versions, restarts the device (it asks
   first) and says how to get a support file for Apollo.
+- **Sliders that stay put.** Threshold and range sliders start locked, so
+  scrolling on a phone cannot move them. Press **Unlock** above them to make
+  a change.
 - **No YAML** and no separate card downloads. The integration serves its own
   cards.
 
@@ -158,7 +161,8 @@ including what each HACS box says.
 4. If the sensor now misses you, or turns on with nobody there, press
    **Undo (restore your previous values)** to put your old thresholds back.
 5. The **Start here** list on the tab covers the next settings: how far the
-   radar looks and how long presence stays on. More about calibration:
+   radar looks and how long presence stays on. The sliders start locked, so
+   press **Unlock** above them first. More about calibration:
    [Auto-calibration](docs/configuration.md#auto-calibration).
 6. On an R PRO-1 or MTR-1 tab, look at the **Radar setup** card above the
    zone map. If it shows a warning, press its button. Zone Type should be

@@ -11,6 +11,7 @@ install the integration and run your first calibration.
 - [What each tab shows](#what-each-tab-shows)
   - [Start here](#start-here)
   - [Gate radar cards](#gate-radar-cards)
+  - [Locked sliders](#locked-sliders)
   - [Gate radar setup checks](#gate-radar-setup-checks)
   - [Device card](#device-card)
 - [Auto-calibration](#auto-calibration)
@@ -235,7 +236,8 @@ chip: LD2410 on an MSR, LD2412 on an R PRO-1.
   gives each gate's depth in your units, as Start here does ("about 0.75 m",
   or "about 2.5 ft" on a US customary system), and says that Radar Timeout
   is how long **Radar Target** (on the R PRO-1, **LD2412 Presence**) stays
-  on after the radar last detects someone.
+  on after the radar last detects someone. Its gate sliders start locked;
+  see [Locked sliders](#locked-sliders).
 - **LD2410 Zone Config** (MSR only): Start Zone 1 and End Zone 1 to 3. The
   note under it says the boxes are in cm, also on a US customary system
   ("100 cm is about 3.3 ft"), and that the zones sit back to back: Zone 1
@@ -245,7 +247,8 @@ chip: LD2410 on an MSR, LD2412 on an R PRO-1.
   how far out the gate reaches: "G0 (at the sensor)", "G1 (about 0.75 m)" up
   to "G8 (about 6 m)" on the LD2410, in feet ("G4 (about 10 ft)") on a US
   customary system. The distances use 0.75 m gates, or the radar's own gate
-  size when that hidden setting is enabled.
+  size when that hidden setting is enabled. The sliders start locked; see
+  [Locked sliders](#locked-sliders).
 - **Target / Occupancy:** Radar Target, Radar Moving Target, Radar Still
   Target and, on an MSR, Radar Zone 1 to 3 Occupancy and **Any zone**. Any
   zone is on while someone is in any of the three zones, so it ignores
@@ -255,6 +258,38 @@ chip: LD2410 on an MSR, LD2412 on an R PRO-1.
   an R PRO-1: LD2412 Presence, LD2412 Moving, LD2412 Still, LD2450 Presence
   and each zone you drew. A zone you just drew joins the history after a
   page reload.
+
+### Locked sliders
+
+On MSR-1, MSR-2 and R PRO-1 tabs the sliders start locked, so a finger that
+lands on one while you scroll a phone cannot move it. That covers every
+threshold on **Move Thresholds** and **Still Thresholds** and the two gate
+sliders on **Detection Range** (Max Move Gate and Max Still Gate on the
+LD2410, Max Gate and Min Gate on the LD2412).
+
+- A locked slider is gray and still shows its value. A scroll that starts on
+  it scrolls the page.
+- Each of those cards has a **Sliders locked** row above its sliders. Press
+  **Unlock** there to unlock all of that sensor's sliders on all three
+  cards. The row then reads **Sliders unlocked**, and **Lock** locks them
+  again.
+- They lock again by themselves after 5 minutes without a change, when you
+  leave the tab or the dashboard, and whenever the page loads. They never
+  lock while you are dragging one.
+- Touch a locked slider and it turns orange for a moment while **Unlock**
+  flashes. Try again within 10 seconds and Home Assistant shows "These
+  sliders are locked. Press Unlock above them to change one." with an
+  **Unlock** button. With a keyboard, an arrow key on a locked slider shows
+  that reminder at once.
+- Not locked: number boxes such as Radar Timeout and the LD2410 Zone Config
+  boxes, the LD2450's settings, a row's name (a tap opens its details, where
+  you can still change the value), **Calibrate with empty room** and
+  **Undo**.
+- The lock lives in the browser page: another phone or browser tab has its
+  own, and nothing is saved on the sensor. It is separate from the zone
+  map's **Locked** button, which the browser remembers.
+- A dashboard you took control of before 2.3.0 keeps plain slider rows with
+  no lock. [Card options](#card-options) shows how to add it.
 
 ### Gate radar setup checks
 
@@ -735,7 +770,10 @@ Dashboards. The cards and strategies stay available:
   `custom:apollo-radar-gate-energy-card`,
   `custom:apollo-radar-setup-card`, and
   `custom:apollo-radar-zone-map-card` can be placed individually (they're in
-  the card picker). See [Card options](#card-options).
+  the card picker). See [Card options](#card-options). The rows
+  `custom:apollo-radar-slider-row` and `custom:apollo-radar-slider-lock-row`
+  lock sliders inside your own entities cards (YAML only, see
+  [Card options](#card-options)).
 
 > **Already using the standalone Zone Mapper card?** Both can be installed side
 > by side. Up to 2.0.0 they fought over the same element name,
@@ -800,6 +838,27 @@ stretched; give both the same span for a true-to-scale map.
 to: the cone, the live targets and the presence sensors all use the radar's
 stored rotation, which is 0 until you set it with the slider (or with
 `update_zone`'s `rotation_deg`).
+
+**Locked slider rows.** Two entities card rows put sliders behind the same
+lock the dashboard uses (see [Locked sliders](#locked-sliders)). Both take
+`device_id`: the radar's device id, or any text, as long as a lock row and
+its slider rows share it. Put the lock row above the sliders it locks:
+
+```yaml
+type: entities
+title: Move Thresholds
+entities:
+  - type: custom:apollo-radar-slider-lock-row
+    device_id: <device id>
+  - type: custom:apollo-radar-slider-row
+    entity: number.apollo_msr_2_abc123_g0_move_threshold
+    name: G0 (at the sensor)
+    device_id: <device id>
+```
+
+A slider row is Home Assistant's own number row behind the lock and takes the
+same `name` and `icon`. A number Home Assistant shows as a box is never
+locked. Neither row is in the card picker.
 
 ## Support file
 
