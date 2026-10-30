@@ -1,4 +1,5 @@
 import type { HomeAssistant } from "./types";
+import { baseNameFromDevice } from "./entities";
 import { entitiesForDevice } from "./entity-index";
 
 /**
@@ -13,15 +14,21 @@ import { entitiesForDevice } from "./entity-index";
  * LD2450"). Either spelling may carry HA's `_2` dedup tail, and an entity
  * that is disabled by default keeps the id it was registered with
  * (`switch.apollo_r_pro_1_7a711c_ld2450_multi_target_tracking`) after the
- * user renames the device, so only the suffix counts, never the base.
+ * user renames the device, so the base cannot be required.
  *
  * The MTR-1's bare names ("timeout", "zone_type") are generic, so every
- * lookup is scoped to the radar's own device (`entitiesForDevice`), a bare
+ * lookup is scoped to the radar's own device (`entitiesForDevice`), and this
+ * integration's own zone entities are skipped. An id that starts with the
+ * device's base name (`baseNameFromDevice`) is read whole after it: the name
+ * must start right there, so nothing in the base can be taken for part of
+ * the name. Only an id that matches nothing that way (one registered under
+ * another base, like that switch) is matched by its suffix, where a bare
  * name must not follow another chip's token (`ld2412_timeout` is the R
- * PRO-1's other radar) or a zone token (`zone_1_still_target_count` is not
- * the radar-wide count), and this integration's own zone entities are
- * skipped. The whole-device ESP Reboot and Factory Reset ESP buttons match
- * no spelling here.
+ * PRO-1's other radar) and the radar-wide still and moving counts must not
+ * follow a zone token (`zone_1_still_target_count` is built-in zone 1's).
+ * Matching every id by suffix read a device named "Garage Zone 2" as having
+ * zone tokens before every bare name. The whole-device ESP Reboot and
+ * Factory Reset ESP buttons match no spelling here.
  */
 
 /** One LD2450 target's live readings. */
@@ -74,32 +81,35 @@ const OWN_PLATFORM = "apollo_mmwave";
 
 const DEDUP = "(?:_\\d+)?$";
 
-/** A bare (unprefixed) name must not follow these tokens: another chip's
- *  entity, or a built-in zone's own count. */
-const FOREIGN_BEFORE = /(?:^|_)(?:ld2410|ld2412|zone_\d+)$/;
+/** Matched by suffix, a bare (unprefixed) name must not follow another
+ *  chip's token: `ld2412_timeout` is the R PRO-1's other radar. */
+const OTHER_CHIP_BEFORE = /(?:^|_)(?:ld2410|ld2412)$/;
+/** Nor may a radar-wide still or moving count follow a built-in zone's
+ *  token: `zone_1_still_target_count` is zone 1's count. */
+const ZONE_BEFORE = /(?:^|_)zone_\d+$/;
 
 interface Spelling {
   re: RegExp;
-  /** Bare names are checked against `FOREIGN_BEFORE`. */
-  bare: boolean;
+  /** Matched by suffix, the text before the match must end in none of these. */
+  notAfter: RegExp[];
 }
 
 /** "LD2450 <name>": the R PRO-1 spelling, also used by a few MTR-1 names. */
 const chip = (suffix: string): Spelling => ({
   re: new RegExp(`(?:^|_)ld2450_${suffix}${DEDUP}`),
-  bare: false,
+  notAfter: [],
 });
 
 /** "<name>" with no chip prefix: the MTR-1 spelling. */
-const bare = (suffix: string): Spelling => ({
+const bare = (suffix: string, notAfter: RegExp[] = [OTHER_CHIP_BEFORE]): Spelling => ({
   re: new RegExp(`(?:^|_)${suffix}${DEDUP}`),
-  bare: true,
+  notAfter,
 });
 
 /** A spelling that carries the chip token somewhere else in the name. */
 const exact = (suffix: string): Spelling => ({
   re: new RegExp(`(?:^|_)${suffix}${DEDUP}`),
-  bare: false,
+  notAfter: [],
 });
 
 type ScalarSlot = Exclude<keyof Ld2450Entities, "targets" | "zones">;
@@ -128,6 +138,12 @@ const scalar = (key: ScalarSlot, domain: string, spellings: Spelling[]): Pattern
 /** Both spellings of a name the MTR-1 firmware leaves unprefixed. */
 const either = (suffix: string): Spelling[] => [chip(suffix), bare(suffix)];
 
+/** A radar-wide count, which ends the same way as each built-in zone's. */
+const radarCount = (suffix: string): Spelling[] => [
+  chip(suffix),
+  bare(suffix, [OTHER_CHIP_BEFORE, ZONE_BEFORE]),
+];
+
 const PATTERNS: Pattern[] = [
   scalar("zone_type", "select", either("zone_type")),
   scalar("multi_target_tracking", "switch", either("multi_target_tracking")),
@@ -140,8 +156,8 @@ const PATTERNS: Pattern[] = [
   scalar("moving_target", "binary_sensor", [chip("moving_target")]),
   scalar("still_target", "binary_sensor", [chip("still_target")]),
   scalar("presence_target_count", "sensor", either("presence_target_count")),
-  scalar("still_target_count", "sensor", either("still_target_count")),
-  scalar("moving_target_count", "sensor", either("moving_target_count")),
+  scalar("still_target_count", "sensor", radarCount("still_target_count")),
+  scalar("moving_target_count", "sensor", radarCount("moving_target_count")),
 ];
 for (let n = 1; n <= LD2450_TARGETS; n++) {
   for (const key of ["distance", "direction", "speed"] as TargetField[]) {
@@ -169,16 +185,38 @@ for (let n = 1; n <= LD2450_ZONES; n++) {
   }
 }
 
-/** The preference rank of the first spelling `objectId` matches, or -1. */
-function rank(objectId: string, spellings: Spelling[]): number {
+/**
+ * The preference rank of the first spelling `text` matches, or -1. `whole`
+ * is for the name after the device's base: the spelling must match from its
+ * first character. Otherwise `text` is a whole object id matched by its
+ * suffix, and the text before the match is checked against `notAfter`.
+ */
+function rank(text: string, spellings: Spelling[], whole: boolean): number {
   for (let i = 0; i < spellings.length; i++) {
-    const { re, bare: isBare } = spellings[i];
-    const m = re.exec(objectId);
+    const { re, notAfter } = spellings[i];
+    const m = re.exec(text);
     if (!m) continue;
-    if (isBare && FOREIGN_BEFORE.test(objectId.slice(0, m.index))) continue;
+    if (whole) {
+      // The leftmost match, so a name that starts with the spelling gives 0.
+      if (m.index !== 0) continue;
+    } else {
+      const before = text.slice(0, m.index);
+      if (notAfter.some((token) => token.test(before))) continue;
+    }
     return i;
   }
   return -1;
+}
+
+/** Every pattern of `domain` that `text` matches, with its rank. */
+function matches(domain: string, text: string, whole: boolean): [Pattern, number][] {
+  const found: [Pattern, number][] = [];
+  for (const pattern of PATTERNS) {
+    if (pattern.domain !== domain) continue;
+    const r = rank(text, pattern.spellings, whole);
+    if (r >= 0) found.push([pattern, r]);
+  }
+  return found;
 }
 
 function emptyEntities(): Ld2450Entities {
@@ -214,15 +252,21 @@ export function ld2450Entities(hass: HomeAssistant, deviceId: string): Ld2450Ent
 
   const out = emptyEntities();
   const best = new Map<Pattern, number>();
+  const base = baseNameFromDevice(hass, deviceId);
   for (const [id, entry] of entitiesForDevice(hass.entities, deviceId)) {
     if (entry.platform === OWN_PLATFORM) continue;
     const dot = id.indexOf(".");
     const domain = id.slice(0, dot);
     const objectId = id.slice(dot + 1);
-    for (const pattern of PATTERNS) {
-      if (pattern.domain !== domain) continue;
-      const r = rank(objectId, pattern.spellings);
-      if (r < 0) continue;
+    const name =
+      base !== undefined && objectId.startsWith(`${base}_`)
+        ? objectId.slice(base.length + 1)
+        : undefined;
+    let found = name !== undefined ? matches(domain, name, true) : [];
+    // A base read from too few entities can be wrong; such an id still gets
+    // the suffix match.
+    if (found.length === 0) found = matches(domain, objectId, false);
+    for (const [pattern, r] of found) {
       const previous = best.get(pattern);
       if (previous !== undefined && previous <= r) continue;
       best.set(pattern, r);

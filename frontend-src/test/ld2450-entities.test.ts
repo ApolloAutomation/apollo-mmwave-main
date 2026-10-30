@@ -240,6 +240,54 @@ describe("ld2450Entities on an MTR-1", () => {
   });
 });
 
+describe("ld2450Entities on a device named like a built-in zone", () => {
+  // An MTR-1 renamed "Garage Zone 2", entity ids renamed with it, so the
+  // base itself ends in a zone token.
+  const d = "garage_zone_2";
+  const ids = [
+    ...mtrIds(d),
+    `sensor.${d}_target_1_x`,
+    `sensor.${d}_target_1_y`,
+    `sensor.${d}_target_2_x`,
+    `sensor.${d}_target_2_y`,
+  ];
+  const l = ld2450Entities(hassWith(ids), "dev1");
+
+  it("still finds its bare settings, targets and built-in zone corners", () => {
+    expect(l).toMatchObject({
+      zone_type: `select.${d}_zone_type`,
+      multi_target_tracking: `switch.${d}_multi_target_tracking`,
+      timeout: `number.${d}_timeout`,
+      presence_target_count: `sensor.${d}_presence_target_count`,
+    });
+    expect(l.targets[0].distance).toBe(`sensor.${d}_target_1_distance`);
+    expect(l.zones[0].x1).toBe(`number.${d}_zone_1_x1`);
+    expect(l.zones[2].y2).toBe(`number.${d}_zone_3_y2`);
+  });
+
+  it("files the radar-wide counts as the radar's, not as built-in zone 2's", () => {
+    expect(l.still_target_count).toBe(`sensor.${d}_still_target_count`);
+    expect(l.moving_target_count).toBe(`sensor.${d}_moving_target_count`);
+    expect(l.zones[1]).toEqual({
+      x1: `number.${d}_zone_2_x1`,
+      y1: `number.${d}_zone_2_y1`,
+      x2: `number.${d}_zone_2_x2`,
+      y2: `number.${d}_zone_2_y2`,
+      all_target_count: `sensor.${d}_zone_2_all_target_count`,
+      still_target_count: `sensor.${d}_zone_2_still_target_count`,
+      moving_target_count: `sensor.${d}_zone_2_moving_target_count`,
+    });
+  });
+
+  it("matches an id registered under another base by its suffix", () => {
+    // A disabled-by-default entity keeps the id it was registered with.
+    const generic = "switch.apollo_mtr_1_cbbdb4_multi_target_tracking";
+    const others = ids.filter((id) => !id.endsWith("_multi_target_tracking"));
+    const found = ld2450Entities(hassWith([...others, generic]), "dev1");
+    expect(found.multi_target_tracking).toBe(generic);
+  });
+});
+
 describe("ld2450Entities scoping", () => {
   it("only looks at the asked device", () => {
     const hass = hassWith(["select.hall_zone_type"], "other");

@@ -1,5 +1,5 @@
 import type { Ld2450Entities } from "../ld2450-entities";
-import { row, type Row } from "./entity-rows";
+import { factoryResetRow, row, type Row } from "./entity-rows";
 
 /** The LD2450's own settings. The row names match the gate radars' Controls
  *  card, so the same button reads the same on every tab. */
@@ -11,7 +11,7 @@ export function ld2450ControlRows(l: Ld2450Entities): Row[] {
     ...row(l.timeout, "Radar Timeout"),
     ...row(l.bluetooth, "Bluetooth"),
     ...row(l.restart, "Restart Radar"),
-    ...row(l.factory_reset, "Factory Reset Radar"),
+    ...factoryResetRow(l.factory_reset, "LD2450"),
     ...row(l.firmware, "Firmware"),
   ];
 }

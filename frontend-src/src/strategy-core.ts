@@ -211,7 +211,28 @@ function entitiesCard(title: string, rows: Row[]): Record<string, any> | undefin
     type: "entities",
     title,
     show_header_toggle: false,
-    entities: rows.map((r) => ({ entity: r.entity, name: r.name })),
+    entities: rows.map(entityRow),
+  };
+}
+
+/**
+ * One entities card row. A row with `confirm` becomes HA's special button row,
+ * whose tap action carries a confirmation, so Home Assistant asks the question
+ * before it presses the button; a plain button entity row presses at once.
+ */
+function entityRow(r: Row): Record<string, any> {
+  if (!r.confirm) return { entity: r.entity, name: r.name };
+  return {
+    type: "button",
+    entity: r.entity,
+    name: r.name,
+    action_name: r.confirm.action,
+    tap_action: {
+      action: "perform-action",
+      perform_action: "button.press",
+      target: { entity_id: r.entity },
+      confirmation: { text: r.confirm.text },
+    },
   };
 }
 
@@ -295,10 +316,15 @@ export const BUILT_IN_ZONES_NOTE =
  * so a user can walk into a zone and watch it turn on. The rows carry no
  * name: HA shows each sensor's own name, which follows a zone rename.
  *
- * Drawing a zone does not regenerate the dashboard (that would rebuild the
- * zone map mid-edit, see `shouldRegenerate`), so a new zone's sensor shows
- * after the next page load. Only the empty card says so; with zones listed
- * the extra line is noise.
+ * Drawing or deleting a zone does not regenerate the dashboard (that would
+ * rebuild the zone map mid-edit, see `shouldRegenerate`), so the rows are the
+ * zones there were when the page loaded. A new zone's sensor shows after the
+ * next page load; only the empty card says so, since with zones listed the
+ * extra line is noise. A deleted zone's sensor leaves `hass.states`, and HA
+ * draws a row for a missing entity as an "Entity not available" warning, right
+ * beside the map the zone was just deleted on. So each row is a conditional
+ * row that hides itself once its sensor is gone: a condition reads a missing
+ * entity as "unavailable", and these sensors never are otherwise.
  */
 function zonePresenceCard(hass: HomeAssistant, deviceId: string): Record<string, any> {
   const ids = zonePresenceSensors(hass, deviceId).filter((id) => exists(hass, id));
@@ -309,9 +335,15 @@ function zonePresenceCard(hass: HomeAssistant, deviceId: string): Record<string,
     type: "entities",
     title: ZONE_PRESENCE_TITLE,
     show_header_toggle: false,
-    // Colored while occupied, so a zone turning on is easy to spot.
+    // Colored while occupied, so a zone turning on is easy to spot. The
+    // conditional row builds its row from `row` alone, so the row carries it
+    // too.
     state_color: true,
-    entities: ids.map((entity) => ({ entity })),
+    entities: ids.map((entity) => ({
+      type: "conditional",
+      conditions: [{ condition: "state", entity, state_not: "unavailable" }],
+      row: { entity, state_color: true },
+    })),
   };
 }
 
@@ -423,7 +455,7 @@ function cardMap(
     );
     cards.controls = entitiesCard(
       `${label} Controls`,
-      presentRows(hass, controlRows(m))
+      presentRows(hass, controlRows(m, label))
     );
     cards.range = range;
     cards.rangeNote = range ? noteCard(profile.rangeTip) : undefined;

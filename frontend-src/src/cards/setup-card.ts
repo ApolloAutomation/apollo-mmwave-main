@@ -29,6 +29,7 @@ import {
   RECOMMENDED_PROGRESS,
   SETTING_NOT_FOUND,
   WAITING_LINE,
+  ZONE_TYPE_WAITING_LINE,
   recommendedLine,
   setupStatus,
   watchedSetupIds,
@@ -169,12 +170,12 @@ export class ApolloRadarSetupCard extends LitElement {
         return html`<p class="hint">${WAITING_LINE}</p>`;
       case "checked":
         return status.problems.length
-          ? this._renderProblems(status.problems)
+          ? this._renderProblems(status.problems, !!status.zoneTypeUnread)
           : html`<p class="ok">${ALL_GOOD_LINE}</p>`;
     }
   }
 
-  private _renderProblems(problems: SetupProblem[]): TemplateResult {
+  private _renderProblems(problems: SetupProblem[], zoneTypeUnread: boolean): TemplateResult {
     const fixable = problems.filter((p) => p.fix);
     // More than one fix: one button for all of them instead of one each.
     const combined = fixable.length > 1;
@@ -216,6 +217,7 @@ export class ApolloRadarSetupCard extends LitElement {
               <p class="hint">${recommendedLine(fixable.map((p) => p.fix!))}</p>
             </div>`
           : nothing}
+        ${zoneTypeUnread ? html`<p class="hint">${ZONE_TYPE_WAITING_LINE}</p>` : nothing}
         <div class="status" aria-live="polite">
           ${this._busy ? html`<p class="hint">${this._busy}</p>` : nothing}
           ${this._error ? html`<p class="error">${this._error}</p>` : nothing}

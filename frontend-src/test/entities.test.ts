@@ -217,7 +217,7 @@ describe("resolveEntities", () => {
     });
     expect(resolved.bluetooth).toBeDefined();
     expect(map.bluetooth).toBeNull();
-    expect(controlRows(map).map((r) => r.entity)).not.toContain(resolved.bluetooth);
+    expect(controlRows(map, "LD2410").map((r) => r.entity)).not.toContain(resolved.bluetooth);
   });
 });
 

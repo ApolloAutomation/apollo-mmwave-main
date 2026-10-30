@@ -879,6 +879,21 @@ describe("LD2450 cards beside the zone map", () => {
   const deviceOf = (hass: HomeAssistant) => detectRadarDevices(hass)[0];
   const byTitle = (cards: Record<string, any>[], title: string): Record<string, any> =>
     cards.find((c) => c.title === title)!;
+  /** The Factory Reset Radar row, which asks before it presses. */
+  const factoryReset = (entity: string, chip: string) => ({
+    type: "button",
+    entity,
+    name: "Factory Reset Radar",
+    action_name: "Reset",
+    tap_action: {
+      action: "perform-action",
+      perform_action: "button.press",
+      target: { entity_id: entity },
+      confirmation: {
+        text: `Reset the ${chip} radar to its factory settings? It restarts and forgets its own settings.`,
+      },
+    },
+  });
 
   it("puts the setup card above the zone map and the LD2450 cards beside it on an R PRO-1", () => {
     const hass = rproHass();
@@ -905,12 +920,34 @@ describe("LD2450 cards beside the zone map", () => {
         { entity: `number.${RPRO}_ld2450_timeout`, name: "Radar Timeout" },
         { entity: `switch.${RPRO}_ld2450_bluetooth`, name: "Bluetooth" },
         { entity: `button.${RPRO}_ld2450_restart`, name: "Restart Radar" },
-        { entity: `button.${RPRO}_ld2450_factory_reset`, name: "Factory Reset Radar" },
+        factoryReset(`button.${RPRO}_ld2450_factory_reset`, "LD2450"),
       ],
     });
     // The LD2412's own Controls card keeps only LD2412 entities.
     const ld2412 = byTitle(cards, "LD2412 Controls");
     expect(ld2412.entities.every((r: any) => !r.entity.includes("ld2450"))).toBe(true);
+  });
+
+  it("asks before a factory reset on both radars' Controls cards", () => {
+    const cards = buildDeviceCards(rproHass(), deviceOf(rproHass()));
+    const m = LD2412_PROFILE.entityMap(RPRO);
+    const resetRow = (title: string) =>
+      byTitle(cards, title).entities.find((r: any) => r.name === "Factory Reset Radar");
+
+    // HA's button row with a confirmation in its tap action asks first; a
+    // plain button entity row presses on one tap.
+    expect(resetRow("LD2412 Controls")).toEqual(factoryReset(m.factory_reset_radar!, "LD2412"));
+    expect(resetRow("LD2450 Controls")).toEqual(
+      factoryReset(`button.${RPRO}_ld2450_factory_reset`, "LD2450")
+    );
+    expect(resetRow("LD2450 Controls").tap_action.confirmation.text).toBe(
+      "Reset the LD2450 radar to its factory settings? It restarts and forgets its own settings."
+    );
+    // Restart only restarts, and keeps its plain row.
+    expect(byTitle(cards, "LD2450 Controls").entities).toContainEqual({
+      entity: `button.${RPRO}_ld2450_restart`,
+      name: "Restart Radar",
+    });
   });
 
   it("adds Multi Target Tracking and Firmware once the user enables them", () => {
@@ -991,14 +1028,43 @@ describe("LD2450 cards beside the zone map", () => {
       [zone2, zone1, "sensor.office_r_pro_1_zone_1"]
     );
     const card = byTitle(buildDeviceCards(hass, deviceOf(hass)), ZONE_PRESENCE_TITLE);
+    const presenceRow = (entity: string) => ({
+      type: "conditional",
+      conditions: [{ condition: "state", entity, state_not: "unavailable" }],
+      // No name: HA shows each sensor's own, which follows a zone rename.
+      row: { entity, state_color: true },
+    });
     expect(card).toEqual({
       type: "entities",
       title: ZONE_PRESENCE_TITLE,
       show_header_toggle: false,
       state_color: true,
-      // No name: HA shows each sensor's own, which follows a zone rename.
-      entities: [{ entity: zone1 }, { entity: zone2 }],
+      entities: [presenceRow(zone1), presenceRow(zone2)],
     });
+  });
+
+  it("hides a zone presence row once its zone is deleted, without a reload", () => {
+    // HA's conditional row, as hui-conditional-row checks a state condition:
+    // a missing entity reads as "unavailable".
+    const shown = (row: any, hass: HomeAssistant) =>
+      row.conditions.every((c: any) => {
+        const state = hass.states[c.entity]?.state ?? "unavailable";
+        return c.state_not !== undefined ? state !== c.state_not : state === c.state;
+      });
+    const zone2 = "binary_sensor.office_r_pro_1_zone_2_presence";
+    const zone1 = "binary_sensor.office_r_pro_1_zone_1_presence";
+    const hass = rproHass({ [zone2]: "off", [zone1]: "on" }, [zone2, zone1]);
+    const rows = byTitle(buildDeviceCards(hass, deviceOf(hass)), ZONE_PRESENCE_TITLE).entities;
+    expect(rows.map((row: any) => shown(row, hass))).toEqual([true, true]);
+
+    // update_zone delete removes both registry entries, so the sensor leaves
+    // hass.states while the generated card still lists it.
+    const { [zone2]: _deleted, ...states } = hass.states;
+    const after = { ...hass, states };
+
+    expect(rows.map((row: any) => shown(row, after))).toEqual([true, false]);
+    // "off" is a reading, not a missing sensor: an empty zone stays listed.
+    expect(shown(rows[1], hass)).toBe(true);
   });
 
   it("explains how to get zone presence sensors before any zone is drawn", () => {
@@ -1037,7 +1103,7 @@ describe("LD2450 cards beside the zone map", () => {
       { entity: `switch.${MTR}_multi_target_tracking`, name: "Multi Target Tracking" },
       { entity: `number.${MTR}_timeout`, name: "Radar Timeout" },
       { entity: `switch.${MTR}_ld2450_bluetooth`, name: "Bluetooth" },
-      { entity: `button.${MTR}_factory_reset_ld2450`, name: "Factory Reset Radar" },
+      factoryReset(`button.${MTR}_factory_reset_ld2450`, "LD2450"),
       { entity: `sensor.${MTR}_ld2450_firmware`, name: "Firmware" },
     ]);
   });

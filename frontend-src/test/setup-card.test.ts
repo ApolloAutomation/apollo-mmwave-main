@@ -16,6 +16,7 @@ import {
   RECOMMENDED_PROGRESS,
   SETTING_NOT_FOUND,
   WAITING_LINE,
+  ZONE_TYPE_WAITING_LINE,
 } from "../src/cards/setup-checks";
 import type { HassEntity } from "../src/types";
 
@@ -110,7 +111,7 @@ describe("setup card states", () => {
     const el = await mount(fakeHass());
     expect(text(el)).toContain(ALL_GOOD_LINE);
     expect(text(el)).toContain("LD2450 · Office R PRO-1");
-    expect(text(el)).not.toContain("should stay Disabled");
+    expect(text(el)).not.toContain("should be Disabled");
     expect(buttons(el)).toHaveLength(0);
   });
 
@@ -121,7 +122,10 @@ describe("setup card states", () => {
       "Zone Type is Detection. This radar only reports people inside its built-in zones." +
         " None are set, so it reports nobody and the zone map stays empty."
     );
-    expect(shown).toContain("Zone Type should stay Disabled.");
+    // "Should be", not "should stay": it is Detection right now.
+    expect(shown).toContain(
+      "Zone Type should be Disabled. The zone map replaces the radar's built-in zones."
+    );
     expect(el.shadowRoot!.querySelector("p.warning")).not.toBeNull();
     expect(buttons(el).map((b) => b.textContent!.trim())).toEqual(["Set Zone Type to Disabled"]);
   });
@@ -184,6 +188,33 @@ describe("setup card states", () => {
     const el = await mount(fakeHass({ zoneType: "unknown" }));
     expect(text(el)).toContain(WAITING_LINE);
     expect(text(el)).not.toContain(ALL_GOOD_LINE);
+  });
+
+  it.each([["unknown"], ["unavailable"]])(
+    "does not say the settings look good with Zone Type %s and Multi Target Tracking on",
+    async (zoneType) => {
+      const el = await mount(fakeHass({ zoneType, multi: "on" }));
+      expect(text(el)).toContain(WAITING_LINE);
+      expect(text(el)).not.toContain(ALL_GOOD_LINE);
+    }
+  );
+
+  it("shows a Multi Target Tracking warning and still waits for Zone Type", async () => {
+    const el = await mount(fakeHass({ zoneType: "unknown", multi: "off" }));
+    expect(text(el)).toContain("Multi Target Tracking is off.");
+    expect(text(el)).toContain(ZONE_TYPE_WAITING_LINE);
+    expect(buttons(el).map((b) => b.textContent!.trim())).toEqual([
+      "Turn on Multi Target Tracking",
+    ]);
+  });
+
+  it("says the settings look good once Zone Type reads Disabled", async () => {
+    const hass = fakeHass({ zoneType: "unknown", multi: "on" });
+    const el = await mount(hass);
+    el.hass = withStates(hass, { [ZONE_TYPE]: "Disabled" }) as any;
+    await el.updateComplete;
+    expect(text(el)).toContain(ALL_GOOD_LINE);
+    expect(text(el)).not.toContain(WAITING_LINE);
   });
 
   it("explains the explanation-only case when the select has no Disabled option", async () => {

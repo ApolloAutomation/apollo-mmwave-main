@@ -22,6 +22,8 @@ export const ZONE_TYPE_DISABLED = "Disabled";
 export const ALL_GOOD_LINE = "Radar settings look good.";
 export const OFFLINE_LINE = "Radar is offline. Its settings are checked once it reconnects.";
 export const WAITING_LINE = "Waiting for the radar to report its settings.";
+/** Under a Multi Target Tracking warning while Zone Type is still unread. */
+export const ZONE_TYPE_WAITING_LINE = "Waiting for the radar to report its Zone Type.";
 export const NO_DEVICE_LINE =
   "Add device_id to this card's configuration to check the radar's settings.";
 export const NOTHING_TO_CHECK_LINE =
@@ -35,8 +37,8 @@ const DETECTION_LINE =
   "Zone Type is Detection. This radar only reports people inside its built-in zones.";
 const DETECTION_EMPTY = "None are set, so it reports nobody and the zone map stays empty.";
 const DETECTION_SET = "Anyone outside them is missing from the zone map.";
-const STAY_DISABLED_HINT =
-  "Zone Type should stay Disabled. The zone map replaces the radar's built-in zones.";
+const DISABLED_HINT =
+  "Zone Type should be Disabled. The zone map replaces the radar's built-in zones.";
 const FILTER_LINE =
   "Zone Type is Filter. This radar ignores people inside its built-in zones." +
   " Disabled is recommended because the zone map replaces them.";
@@ -75,13 +77,21 @@ export type SetupStatus =
   | { kind: "no_device" }
   | { kind: "nothing_to_check" }
   | { kind: "offline" }
-  /** Online, but no checked setting has a value yet ("unknown"). */
+  /** Online, but no checked setting has a value yet ("unknown"), or Zone
+   *  Type has none and nothing else needs fixing. */
   | { kind: "waiting" }
-  | { kind: "checked"; problems: SetupProblem[] };
+  /** `zoneTypeUnread`: the problems are all Multi Target Tracking's, and
+   *  Zone Type, which can empty the map, has not been read yet. */
+  | { kind: "checked"; problems: SetupProblem[]; zoneTypeUnread?: boolean };
 
 /** Only "unavailable" or no state at all is offline, as in strategy-core. */
 function isLive(state: HassEntity | undefined): state is HassEntity {
   return state !== undefined && state.state !== "unavailable";
+}
+
+/** Whether the radar has reported a value: live, and not "unknown". */
+function isRead(state: HassEntity | undefined): state is HassEntity {
+  return isLive(state) && state.state !== "unknown";
 }
 
 /** Whether every built-in zone corner reads 0, which with Zone Type Detection
@@ -123,7 +133,7 @@ function zoneTypeProblem(hass: HomeAssistant, l: Ld2450Entities): SetupProblem |
       ...base,
       level: "warning",
       text: `${DETECTION_LINE} ${second}`,
-      hint: STAY_DISABLED_HINT,
+      hint: DISABLED_HINT,
     };
   }
   if (value === "Filter") return { ...base, level: "note", text: FILTER_LINE };
@@ -170,10 +180,17 @@ export function setupStatus(hass: HomeAssistant, deviceId: string | undefined): 
   const states = checked.map((id) => hass.states[id]);
   if (!states.some(isLive)) return { kind: "offline" };
   // "Radar settings look good" must mean a value was read, not that none was.
-  if (!states.some((s) => isLive(s) && s.state !== "unknown")) return { kind: "waiting" };
+  if (!states.some(isRead)) return { kind: "waiting" };
   const problems = [zoneTypeProblem(hass, l), multiTargetProblem(hass, l)].filter(
     (p): p is SetupProblem => p !== undefined
   );
+  // Nor may it stand on Multi Target Tracking alone: Zone Type is the
+  // setting that empties the map, and until the chip answers its query it
+  // reads "unknown". With a Multi Target Tracking warning to show, the card
+  // shows it and says it still waits for Zone Type.
+  if (l.zone_type !== undefined && !isRead(hass.states[l.zone_type])) {
+    return problems.length ? { kind: "checked", problems, zoneTypeUnread: true } : { kind: "waiting" };
+  }
   return { kind: "checked", problems };
 }
 

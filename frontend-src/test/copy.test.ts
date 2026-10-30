@@ -15,6 +15,8 @@ import "../src/strategy";
 import * as setupChecks from "../src/cards/setup-checks";
 import { LD2410_PROFILE, LD2412_PROFILE, PROFILES, rangeLimitTip } from "../src/profiles";
 import { buildDeviceCards, type RadarDevice, type StrategyConfig } from "../src/strategy-core";
+import { factoryResetRow } from "../src/panels/entity-rows";
+import { ZoneMapCard } from "../src/zone-map/card";
 import type { HomeAssistant } from "../src/types";
 
 const EM_DASH = "\u2014";
@@ -190,6 +192,36 @@ describe("setup card copy", () => {
       const fixes = status.problems.flatMap((p) => (p.fix ? [p.fix] : []));
       texts.push(...strings(status.problems), setupChecks.recommendedLine(fixes));
     }
+    expect(copyProblems(texts)).toEqual([]);
+  });
+});
+
+describe("controls and zone map copy", () => {
+  it("asks before a factory reset without em dashes", () => {
+    const texts = ["LD2410", "LD2412", "LD2450"].flatMap((chip) =>
+      strings(factoryResetRow("button.hall_factory_reset", chip))
+    );
+    expect(texts).toContain(
+      "Reset the LD2450 radar to its factory settings? It restarts and forgets its own settings."
+    );
+    expect(copyProblems(texts)).toEqual([]);
+  });
+
+  it("titles the m / ft switch without em dashes, for administrators and others", () => {
+    const card: any = new ZoneMapCard();
+    card.setConfig({ device_id: "hall" });
+    const titles = (isAdmin: boolean): string[] => {
+      card._hass = { user: { is_admin: isAdmin }, states: {} };
+      card._renderUnitSwitch();
+      return ["btnUnitM", "btnUnitFt"].map((id) => card.shadowRoot.getElementById(id).title);
+    };
+    const texts = [...titles(true), ...titles(false)];
+    expect(texts).toEqual([
+      "Show this radar's map in meters for everyone",
+      "Show this radar's map in feet for everyone",
+      "Show the map in meters",
+      "Show the map in feet",
+    ]);
     expect(copyProblems(texts)).toEqual([]);
   });
 });

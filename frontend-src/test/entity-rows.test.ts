@@ -17,14 +17,14 @@ const m = entityMapFromBaseName(base);
 
 describe("row builders", () => {
   it("controls include engineering mode and reboot", () => {
-    const ids = controlRows(m).map((r) => r.entity);
+    const ids = controlRows(m, "LD2410").map((r) => r.entity);
     expect(ids).toContain(`switch.${base}_radar_engineering_mode`);
     expect(ids).toContain(`button.${base}_esp_reboot`);
   });
 
   it("adds the two LD2412 background-correction rows right after engineering mode", () => {
     const b = "apollo_r_pro_1_abcd";
-    const rows = controlRows(LD2412_PROFILE.entityMap(b));
+    const rows = controlRows(LD2412_PROFILE.entityMap(b), "LD2412");
     expect(rows.slice(0, 3)).toEqual([
       { entity: `switch.${b}_ld2412_engineering_mode`, name: "Radar Engineering Mode" },
       {
@@ -39,7 +39,7 @@ describe("row builders", () => {
   });
 
   it("omits the background-correction rows when the slots are unset (LD2410)", () => {
-    const names = controlRows(m).map((r) => r.name);
+    const names = controlRows(m, "LD2410").map((r) => r.name);
     expect(names).not.toContain("Start Dynamic Background Correction");
     expect(names).not.toContain("Background Correction Running");
     expect(names[0]).toBe("Radar Engineering Mode");
@@ -120,7 +120,7 @@ describe("presentRows", () => {
       entities: {},
       devices: {},
     };
-    const filtered = presentRows(hass, controlRows(m));
+    const filtered = presentRows(hass, controlRows(m, "LD2410"));
     expect(filtered.every((r) => r.entity === present)).toBe(true);
     expect(filtered).toHaveLength(1);
   });
