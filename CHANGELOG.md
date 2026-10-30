@@ -4,6 +4,59 @@ What changed in each release of Apollo mmWave, newest first. Setup and
 everyday use are in [README.md](README.md) and
 [docs/configuration.md](docs/configuration.md).
 
+## What changed in 2.3.0
+
+R PRO-1 and MTR-1 tabs now have everything for the zone map in one place: a
+Radar setup card that finds the settings that hide people from the map and
+fixes them with one tap, and the radar's live status and controls next to the
+map, so there is no need to open the device page. The zone map is in feet or
+meters to match Home Assistant and fills the card with what the radar can
+see. Nothing needs changing by hand unless your Lovelace resources are
+managed in YAML (replace both `?v=` URLs; see
+[Lovelace resources](docs/configuration.md#lovelace-resources)).
+
+- **New Radar setup card.** It sits above the zone map and checks two radar
+  settings. Apollo firmware never sets them, so they are whatever the radar
+  chip holds:
+  - **Zone Type** should be **Disabled**, because the zone map replaces the
+    radar chip's own built-in zones. On Detection the radar reports only
+    people inside those built-in zones, and with none set it reports nobody,
+    so the map stays empty. On Filter it hides people inside them. **Set Zone
+    Type to Disabled** fixes it.
+  - **Multi Target Tracking** off means only one person is tracked. **Turn on
+    Multi Target Tracking** fixes it.
+
+  When both need fixing, **Use recommended settings** does both. The card
+  changes nothing until you press a button. It is also in the card picker as
+  **Apollo Radar Setup**; see
+  [Radar setup](docs/configuration.md#radar-setup).
+- **The radar's status and controls next to the map.** R PRO-1 and MTR-1
+  tabs gain **Zone presence** (each zone's presence sensor, lit while someone
+  is in it; a zone you just drew shows after a page reload), **LD2450 Live**
+  (whether the radar sees anyone, how many, and each target's distance and
+  direction) and **LD2450 Controls** (Zone Type, Multi Target Tracking, Radar
+  Timeout, Bluetooth, Restart Radar, Factory Reset Radar and Firmware). A
+  **Radar's built-in zones** card shows the chip's own zones only while Zone
+  Type is not Disabled.
+- **New tab layout.** An MTR-1 tab is no longer just the zone map: Radar
+  setup and the map come first, then the cards above. On an R PRO-1 they sit
+  after the LD2412 tuning cards, under the Zone Map heading.
+- **The zone map in feet or meters.** The map follows Home Assistant's unit
+  system: feet for US customary, meters otherwise. The new **m / ft** switch
+  on the map changes it. An administrator's choice is saved for that radar,
+  so everyone sees it; anyone else only changes their own view. Labels in
+  feet now read "4 ft". Automations can set it with `apollo_mmwave.update_zone`
+  and its new `display_units` (`m`, `ft`, or `auto` to follow Home Assistant
+  again).
+- **The map fits what the radar sees.** The radar sees 120 degrees wide and
+  about 6 m (20 ft) out. The map now fits that area, turned the way the radar
+  is rotated, plus any zone you drew, instead of a fixed 10 m square where the
+  radar's view filled only the top half. A caption at its edge reads "Radar
+  range 6 m (20 ft), 120°". A card with its own `grid` in YAML keeps it.
+  Zone map cards added from the card picker before 2.3.0 carry a `grid` and
+  `grid_units: mm` in their YAML; delete those two keys to get the fitted map
+  in your units.
+
 ## What changed in 2.2.7
 
 The zone map card and zone presence sensors now work when Home Assistant
