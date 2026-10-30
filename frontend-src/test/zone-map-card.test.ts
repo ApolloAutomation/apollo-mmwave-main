@@ -62,6 +62,11 @@ function fakeHass(payload: any = ZONE_PAYLOAD, error?: any) {
   return hass;
 }
 
+/** A target sensor's state object, carrying a unit_of_measurement when one is given. */
+function targetState(state: string, unit?: unknown) {
+  return unit === undefined ? { state } : { state, attributes: { unit_of_measurement: unit } };
+}
+
 /** A fakeHass with hass.themes.darkMode set, for the theme-follow tests. */
 function themedHass(darkMode: boolean) {
   const hass = fakeHass();
@@ -1211,20 +1216,23 @@ describe("zone map card target pairs", () => {
     expect(types).not.toContain("config/entity_registry/list");
   });
 
-  // The presence sensor (binary_sensor.py `_build_point_rotator` and its unit
-  // scaling) applies the same rotation and multiplier before its zone test,
-  // and test_binary_sensor.py pins the same results there. A slip on either
-  // side draws a target inside a zone whose presence sensor reads off.
-  /** Mount on the suggested pair, set its reading, and return what is drawn. */
+  // The presence sensor (binary_sensor.py `_build_point_rotator` and
+  // `_reading_unit_factor`) applies the same rotation and unit conversion
+  // before its zone test, and test_binary_sensor.py pins the same results
+  // there. A slip on either side draws a target inside a zone whose presence
+  // sensor reads off.
+  /** Mount on the suggested pair, set its reading, and return what is drawn.
+   *  `xUnit` and `yUnit` become each sensor's unit_of_measurement; left out,
+   *  the sensor has no attributes at all. */
   async function drawnTargets(
     payload: any,
-    reading: { x: string; y: string },
+    reading: { x: string; y: string; xUnit?: unknown; yUnit?: unknown },
     config: Record<string, any> = {}
   ) {
     const hass = fakeHass(payload);
     const card = await mountCard(hass, config);
-    hass.states["sensor.a_x"] = { state: reading.x };
-    hass.states["sensor.a_y"] = { state: reading.y };
+    hass.states["sensor.a_x"] = targetState(reading.x, reading.xUnit);
+    hass.states["sensor.a_y"] = targetState(reading.y, reading.yUnit);
     card.drawCurrentPosition = vi.fn();
 
     card._drawTrackedTargets();
@@ -1271,6 +1279,120 @@ describe("zone map card target pairs", () => {
       { ...ZONE_PAYLOAD, rotation_deg: 90 },
       { x: "0", y: "0" },
       { input_units: "cm" }
+    );
+
+    expect(drawn).toEqual([]);
+  });
+
+  it("draws a reading in inches at its millimeter position", async () => {
+    // Home Assistant set to US customary units shows ESPHome's millimeters in
+    // inches. These are a report's live readings of a target at (194, 691) mm,
+    // which the card used to draw at (7.6, 27.2) mm, on top of the sensor.
+    const drawn = await drawnTargets(
+      { ...ZONE_PAYLOAD, rotation_deg: 0 },
+      { x: "7.63779527559055", y: "27.2047244094488", xUnit: "in", yUnit: "in" }
+    );
+
+    expect(drawn).toHaveLength(1);
+    expect(drawn[0][0]).toBeCloseTo(194);
+    expect(drawn[0][1]).toBeCloseTo(691);
+  });
+
+  it.each([
+    ["mm", "1500", 1500],
+    ["cm", "150", 1500],
+    ["m", "1.5", 1500],
+    ["km", "0.0015", 1500],
+    ["in", "60", 1524],
+    ["ft", "5", 1524],
+    ["yd", "2", 1828.8],
+    ["mi", "0.001", 1609.344],
+    ["nmi", "0.001", 1852],
+  ])("converts a reading in %s by its sensor's unit", async (unit, reading, mm) => {
+    const drawn = await drawnTargets(
+      { ...ZONE_PAYLOAD, rotation_deg: 0 },
+      { x: "0", y: reading, xUnit: unit, yUnit: unit }
+    );
+
+    expect(drawn).toHaveLength(1);
+    expect(drawn[0][1]).toBeCloseTo(mm);
+  });
+
+  it("prefers the sensor's own unit to the card's input units", async () => {
+    // input_units is only the fallback for a sensor with no length unit.
+    const drawn = await drawnTargets(
+      { ...ZONE_PAYLOAD, rotation_deg: 0 },
+      { x: "10", y: "60", xUnit: "in", yUnit: "in" },
+      { input_units: "cm" }
+    );
+
+    expect(drawn).toHaveLength(1);
+    expect(drawn[0][0]).toBeCloseTo(254);
+    expect(drawn[0][1]).toBeCloseTo(1524);
+  });
+
+  it("converts X and Y each by its own unit", async () => {
+    // Two separate entities, so a user can change one and not the other.
+    const drawn = await drawnTargets(
+      { ...ZONE_PAYLOAD, rotation_deg: 0 },
+      { x: "0.5", y: "60", xUnit: "m", yUnit: "in" }
+    );
+
+    expect(drawn).toHaveLength(1);
+    expect(drawn[0][0]).toBeCloseTo(500);
+    expect(drawn[0][1]).toBeCloseTo(1524);
+  });
+
+  it("converts each axis before rotating", async () => {
+    // (254, 1000) mm rotated by 90 degrees lands at (1000, -254). Rotating
+    // the raw numbers first would mix inches into the meter axis.
+    const drawn = await drawnTargets(
+      { ...ZONE_PAYLOAD, rotation_deg: 90 },
+      { x: "10", y: "1", xUnit: "in", yUnit: "m" }
+    );
+
+    expect(drawn).toHaveLength(1);
+    expect(drawn[0][0]).toBeCloseTo(1000);
+    expect(drawn[0][1]).toBeCloseTo(-254);
+  });
+
+  it("scales a sensor without a length unit by the card's input units", async () => {
+    // A DIY template sensor may carry no unit; the other axis still uses its own.
+    const drawn = await drawnTargets(
+      { ...ZONE_PAYLOAD, rotation_deg: 0 },
+      { x: "10", y: "25", xUnit: "in" },
+      { input_units: "cm" }
+    );
+
+    expect(drawn).toHaveLength(1);
+    expect(drawn[0][0]).toBeCloseTo(254);
+    expect(drawn[0][1]).toBeCloseTo(250);
+  });
+
+  it.each([
+    ["no unit", null],
+    ["an empty unit", ""],
+    ["a unit that is not a length", "%"],
+    ["a spelled-out unit", "inches"],
+    ["a unit in the wrong case", "IN"],
+    ["an inherited object key", "constructor"],
+    ["a unit that is not a string", ["in"]],
+  ])("falls back to the card's input units for %s", async (_label, unit) => {
+    const drawn = await drawnTargets(
+      { ...ZONE_PAYLOAD, rotation_deg: 0 },
+      { x: "100", y: "25", xUnit: unit, yUnit: unit },
+      { input_units: "cm" }
+    );
+
+    expect(drawn).toHaveLength(1);
+    expect(drawn[0][0]).toBeCloseTo(1000);
+    expect(drawn[0][1]).toBeCloseTo(250);
+  });
+
+  it("still skips the (0, 0) no-target reading when it carries a unit", async () => {
+    const drawn = await drawnTargets(
+      { ...ZONE_PAYLOAD, rotation_deg: 0 },
+      { x: "0", y: "0", xUnit: "in", yUnit: "cm" }
     );
 
     expect(drawn).toEqual([]);
@@ -2863,6 +2985,53 @@ describe("zone map card repaints on hass pushes", () => {
 
     expect(clears(calls)).toBe(1);
     expect(targets(calls)).toEqual([]);
+  });
+
+  it("repaints when only a tracked sensor's unit changes", async () => {
+    // Changing a sensor's unit in its entity settings rewrites the state too,
+    // but the state string and the unit can arrive as separate pushes. Same
+    // number, new unit, new place.
+    const { card, hass, calls } = await trackingCard();
+    const withReading = (x: any, y: any) => ({
+      ...hass,
+      states: { ...hass.states, "sensor.a_x": x, "sensor.a_y": y },
+    });
+    // Where (2540, 5080) mm is drawn, rotation included.
+    card.hass = withReading(targetState("2540"), targetState("5080"));
+    const [inMillimeters] = targets(calls);
+    card.hass = withReading(targetState("100"), targetState("200"));
+    calls.length = 0;
+
+    card.hass = withReading(targetState("100", "in"), targetState("200", "in"));
+
+    expect(clears(calls)).toBe(1);
+    const painted = targets(calls);
+    expect(painted).toHaveLength(1);
+    expect(painted[0][0]).toBeCloseTo(inMillimeters[0]);
+    expect(painted[0][1]).toBeCloseTo(inMillimeters[1]);
+  });
+
+  it("does not repaint for a new hass whose tracked units are unchanged", async () => {
+    const { card, hass, calls } = await trackingCard();
+    const inInches = {
+      ...hass.states,
+      "sensor.a_x": targetState("100", "in"),
+      "sensor.a_y": targetState("200", "in"),
+    };
+    card.hass = { ...hass, states: inInches };
+    calls.length = 0;
+
+    // Fresh objects with equal states and units, as HA hands over on every push.
+    card.hass = {
+      ...hass,
+      states: {
+        ...inInches,
+        "sensor.a_x": targetState("100", "in"),
+        "sensor.kitchen_light": targetState("on"),
+      },
+    };
+
+    expect(clears(calls)).toBe(0);
   });
 });
 

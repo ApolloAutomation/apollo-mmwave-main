@@ -44,10 +44,13 @@ STORE_LABEL = "label"
 # built from either name and a deprecated `location` call can use either, so
 # both have to keep resolving. Like `label`, never used to build an identifier.
 STORE_ALIASES = "aliases"
-# Unit the device's target sensors report in. The card scales readings by
-# this before drawing them over millimetre zone geometry; the presence sensor
-# has to scale the same way or the two disagree about who is inside a zone.
-# Absent means millimetres, which is what every Apollo firmware reports.
+# Unit for target readings whose sensor carries no length unit of its own, a
+# DIY template sensor for example. A reading whose unit_of_measurement is a
+# Home Assistant length unit is converted by that instead (see
+# SENSOR_UNIT_FACTORS), so for an Apollo radar, whose target sensors always
+# carry one, this decides nothing. The card and the presence sensor apply the
+# same rule before testing readings against millimeter zone geometry, or the
+# two would disagree about who is inside a zone. Absent means millimeters.
 STORE_INPUT_UNITS = "input_units"
 # TODO(REVIEW_REPORT.md X04): card lacks yd; decide unit owner.  # noqa: FIX002, TD003
 # The zone card maps yd to mm and rewrites input_units from its YAML on every
@@ -59,6 +62,30 @@ INPUT_UNIT_FACTORS = {
     "in": 25.4,
     "ft": 304.8,
     "yd": 914.4,
+}
+# Millimeters per Home Assistant length unit, keyed by the UnitOfLength
+# symbols exactly as Home Assistant writes them. ESPHome reports LD2450
+# targets in mm, but Home Assistant set to US customary units shows every new
+# distance sensor in inches, and anyone can pick another unit in an entity's
+# settings, so a target's state is in whatever its unit_of_measurement says.
+# Not INPUT_UNIT_FACTORS, which is what the service accepts. Not Home
+# Assistant's DistanceConverter either: it converts through meters, which
+# ends one bit away from a single multiplication for about a quarter of
+# readings, and the zone card has to compute exactly the same number or a
+# target on a zone's edge is drawn inside while presence reads off. The
+# card's SENSOR_LENGTH_UNITS is this table. tests/test_contracts.py keeps
+# the two equal, and tests/test_binary_sensor.py checks this one against
+# DistanceConverter.
+SENSOR_UNIT_FACTORS = {
+    "mm": 1.0,
+    "cm": 10.0,
+    "m": 1000.0,
+    "km": 1_000_000.0,
+    "in": 25.4,
+    "ft": 304.8,
+    "yd": 914.4,
+    "mi": 1_609_344.0,
+    "nmi": 1_852_000.0,
 }
 
 # Attribute / data keys. Persisted coordinates are rounded to whole mm

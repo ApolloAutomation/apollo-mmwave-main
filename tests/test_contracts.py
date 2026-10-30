@@ -9,6 +9,7 @@ in sync with a fresh build, so the element names are checked there.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from custom_components.apollo_mmwave import ld2450
@@ -17,6 +18,7 @@ from custom_components.apollo_mmwave.const import (
     DASHBOARD_STRATEGY_TYPE,
     DOMAIN,
     FRONTEND_DIR,
+    SENSOR_UNIT_FACTORS,
 )
 
 REPO_ROOT = Path(__file__).parents[1]
@@ -69,3 +71,21 @@ def test_zone_map_editor_card_type_matches_card_type() -> None:
     source = _read(FRONTEND_SRC / "zone-map" / "editor.ts")
 
     assert f'export const ZONE_MAP_CARD_TYPE = "{CARD_TYPE}";' in source
+
+
+def test_sensor_unit_factors_match_the_zone_card() -> None:
+    """The card draws each target with the factor presence tests it with."""
+    # Both sides multiply a reading by its unit's factor, so equal tables mean
+    # the dot on the card and the zone's presence sensor never disagree about
+    # a reading, not even at a zone's edge.
+    source = _read(FRONTEND_SRC / "zone-map" / "card.ts")
+    table = re.search(
+        r"^const SENSOR_LENGTH_UNITS = Object\.freeze\(\{\n(.*?)^\}\);$",
+        source,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert table is not None
+
+    entries = re.findall(r"^  (\w+): ([\d.]+),$", table[1], re.MULTILINE)
+    assert len(entries) == len(table[1].splitlines())
+    assert {unit: float(factor) for unit, factor in entries} == SENSOR_UNIT_FACTORS

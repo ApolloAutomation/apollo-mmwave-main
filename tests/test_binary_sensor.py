@@ -6,9 +6,11 @@ import logging
 import math
 
 import pytest
+from homeassistant.const import ATTR_UNIT_OF_MEASUREMENT, UnitOfLength
 from homeassistant.core import callback
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.util.unit_conversion import DistanceConverter
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.apollo_mmwave import get_store, ld2450
@@ -19,6 +21,7 @@ from custom_components.apollo_mmwave.binary_sensor import (
 from custom_components.apollo_mmwave.const import (
     ATTR_ROTATION_DEG,
     DOMAIN,
+    SENSOR_UNIT_FACTORS,
     SERVICE_UPDATE_ZONE,
     SIGNAL_ZONES_UPDATED,
     STORE_ENTITIES,
@@ -48,9 +51,17 @@ def _presence_id(entity_registry, device_id: str) -> str:
     )
 
 
-def _set_target(hass, pair: dict[str, str], x: float, y: float) -> None:
-    hass.states.async_set(pair["x"], str(x))
-    hass.states.async_set(pair["y"], str(y))
+def _set_target(
+    hass,
+    pair: dict[str, str],
+    x: float,
+    y: float,
+    units: tuple[object, object] = (None, None),
+) -> None:
+    """Set a target's X and Y states, each with its unit when one is given."""
+    for entity_id, value, unit in ((pair["x"], x, units[0]), (pair["y"], y, units[1])):
+        attributes = None if unit is None else {ATTR_UNIT_OF_MEASUREMENT: unit}
+        hass.states.async_set(entity_id, str(value), attributes)
 
 
 async def test_presence_falls_back_to_the_devices_ld2450_targets(
@@ -459,6 +470,238 @@ async def test_unrecognized_stored_input_units_read_as_millimeters(
     _set_target(hass, TARGET_1, 0, 2500)
     await hass.async_block_till_done()
     assert hass.states.get(presence_id).state == "off"
+
+
+def test_sensor_unit_factors_cover_every_home_assistant_length_unit() -> None:
+    """Any unit Home Assistant can show a distance sensor in converts correctly."""
+    # A unit missing here would quietly fall back to input_units, which is the
+    # bug 2.2.7 fixed for inches. A Home Assistant release that adds a length
+    # unit fails this until the table, and the card's copy, learn it.
+    assert set(SENSOR_UNIT_FACTORS) == {str(unit) for unit in UnitOfLength}
+    assert set(SENSOR_UNIT_FACTORS) == {
+        str(unit) for unit in DistanceConverter.VALID_UNITS
+    }
+    for unit, factor in SENSOR_UNIT_FACTORS.items():
+        expected = DistanceConverter.convert(1.0, unit, UnitOfLength.MILLIMETERS)
+        assert factor == pytest.approx(expected, rel=1e-12), unit
+
+
+async def test_presence_reads_targets_reported_in_inches(
+    hass, entity_registry, setup_entry_with_zone
+) -> None:
+    """Home Assistant set to US customary units shows the radar's mm in inches."""
+    device_id, _ = setup_entry_with_zone
+    presence_id = _presence_id(entity_registry, device_id)
+
+    # A report's live readings of a target at (194, 691) mm, inside the zone.
+    _set_target(hass, TARGET_1, 7.63779527559055, 27.2047244094488, ("in", "in"))
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "on"
+
+    # 100 in is 2540 mm, past the zone's far edge at 2000 mm. Read as
+    # millimeters it would be inside.
+    _set_target(hass, TARGET_1, 0, 100, ("in", "in"))
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "off"
+
+    # (0, 0) is still the idle slot, whatever its unit.
+    _set_target(hass, TARGET_1, 0, 50, ("in", "in"))
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "on"
+    _set_target(hass, TARGET_1, 0, 0, ("in", "in"))
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "off"
+
+
+@pytest.mark.parametrize(
+    ("unit", "inside_and_outside_y"),
+    [
+        ("mm", (1500, 2500)),
+        ("cm", (150, 250)),
+        ("m", (1.5, 2.5)),
+        ("km", (0.0015, 0.0025)),
+        ("in", (60, 80)),
+        ("ft", (6, 7)),
+        ("yd", (2, 3)),
+        ("mi", (0.001, 0.0015)),
+        ("nmi", (0.001, 0.0015)),
+    ],
+    ids=["mm", "cm", "m", "km", "in", "ft", "yd", "mi", "nmi"],
+)
+async def test_presence_converts_readings_by_each_sensors_unit(
+    hass, entity_registry, setup_entry_with_zone, unit, inside_and_outside_y
+) -> None:
+    """Every Home Assistant length unit is converted to millimeters first."""
+    # frontend-src/test/zone-map-card.test.ts pins the card drawing the same
+    # readings at the same millimeters.
+    device_id, _ = setup_entry_with_zone
+    inside_y, outside_y = inside_and_outside_y
+    presence_id = _presence_id(entity_registry, device_id)
+
+    # The zone spans y 0..2000 mm and no input_units is stored. Each outside
+    # reading but the millimeter one would be inside if taken as millimeters.
+    _set_target(hass, TARGET_1, 0, inside_y, (unit, unit))
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "on"
+
+    _set_target(hass, TARGET_1, 0, outside_y, (unit, unit))
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "off"
+
+
+async def test_a_sensors_own_unit_wins_over_the_stored_input_units(
+    hass, entity_registry, setup_entry_with_zone
+) -> None:
+    """input_units is only the fallback for a sensor with no length unit."""
+    # A card set to `input_units: in` to work around the inches bug saves "in"
+    # with every zone edit, so this is a store some users already have.
+    device_id, _ = setup_entry_with_zone
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_UPDATE_ZONE,
+        {"device_id": device_id, "input_units": "in"},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+    presence_id = _presence_id(entity_registry, device_id)
+
+    # 1500 mm is inside. Taken as inches it would be 38100 mm.
+    _set_target(hass, TARGET_1, 0, 1500, ("mm", "mm"))
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "on"
+
+    # A sensor in inches is converted once, not twice: 60 in is 1524 mm.
+    _set_target(hass, TARGET_1, 0, 60, ("in", "in"))
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "on"
+
+
+async def test_presence_converts_x_and_y_each_by_its_own_unit(
+    hass, entity_registry, setup_entry_with_zone
+) -> None:
+    """X and Y are separate entities, and a user can change one of them only."""
+    device_id, _ = setup_entry_with_zone
+    presence_id = _presence_id(entity_registry, device_id)
+
+    # (500, 1500) mm, inside. Y read in X's meters would be 1500 m.
+    _set_target(hass, TARGET_1, 0.5, 1500, ("m", "mm"))
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "on"
+
+    # (500, 2500) mm, outside. Y read in X's millimeters would be 2.5 mm.
+    _set_target(hass, TARGET_1, 500, 2.5, ("mm", "m"))
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "off"
+
+    # (914.4, 1524) mm, inside; 4 ft is 1219.2 mm, outside.
+    _set_target(hass, TARGET_1, 3, 60, ("ft", "in"))
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "on"
+    _set_target(hass, TARGET_1, 4, 60, ("ft", "in"))
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "off"
+
+
+async def test_presence_converts_each_axis_before_rotating(
+    hass, entity_registry, setup_entry_with_zone
+) -> None:
+    """Rotating raw numbers in two different units would mix the axes."""
+    device_id, _ = setup_entry_with_zone
+    get_store(hass).device(device_id)[ATTR_ROTATION_DEG] = 90
+    async_dispatcher_send(hass, SIGNAL_ZONES_UPDATED, device_id)
+    await hass.async_block_till_done()
+    presence_id = _presence_id(entity_registry, device_id)
+
+    # (-10 in, 0.5 m) is (-254, 500) mm, which rotates to (500, 254): inside.
+    # Rotating the raw (-10, 0.5) to (0.5, 10) first and converting after
+    # would give (12.7, 10000) mm, outside.
+    _set_target(hass, TARGET_1, -10, 0.5, ("in", "m"))
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "on"
+
+    # (-10 in, 1.5 m) is (-254, 1500) mm and rotates to (1500, 254): outside.
+    # With the units ignored, (-10, 1.5) rotates to (1.5, 10), inside.
+    _set_target(hass, TARGET_1, -10, 1.5, ("in", "m"))
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "off"
+
+
+@pytest.mark.parametrize(
+    "unit",
+    [None, "", "%", "inches", "IN", ["in"]],
+    ids=["no-unit", "empty", "not-a-length", "spelled-out", "wrong-case", "not-a-str"],
+)
+async def test_a_reading_without_a_length_unit_uses_the_stored_input_units(
+    hass, entity_registry, setup_entry_with_zone, unit
+) -> None:
+    """A DIY template sensor with no usable unit is scaled as it was before."""
+    device_id, _ = setup_entry_with_zone
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_UPDATE_ZONE,
+        {"device_id": device_id, "input_units": "cm"},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+    presence_id = _presence_id(entity_registry, device_id)
+
+    # The zone spans y 0..2000 mm: 150 cm is inside, 250 cm is outside.
+    _set_target(hass, TARGET_1, 0, 150, (unit, unit))
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "on"
+
+    _set_target(hass, TARGET_1, 0, 250, (unit, unit))
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "off"
+
+
+async def test_a_reading_without_a_unit_beside_one_with_a_unit(
+    hass, entity_registry, setup_entry_with_zone
+) -> None:
+    """The fallback applies per sensor, not to the whole pair."""
+    device_id, _ = setup_entry_with_zone
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_UPDATE_ZONE,
+        {"device_id": device_id, "input_units": "cm"},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+    presence_id = _presence_id(entity_registry, device_id)
+
+    # Y has no unit, so it is read in centimeters: 250 cm is outside. Read in
+    # X's millimeters it would be inside.
+    _set_target(hass, TARGET_1, 500, 250, ("mm", None))
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "off"
+
+    # 20 in is 508 mm and 150 cm is 1500 mm, inside. Read in X's inches, Y
+    # would be 3810 mm, outside.
+    _set_target(hass, TARGET_1, 20, 150, ("in", None))
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "on"
+
+
+async def test_a_unit_change_alone_re_evaluates_presence(
+    hass, entity_registry, setup_entry_with_zone
+) -> None:
+    """Switching a sensor's unit moves the target even if its number stays."""
+    # Home Assistant fires state_changed for an attribute-only change, so the
+    # presence sensor's subscription sees it without any new number.
+    device_id, _ = setup_entry_with_zone
+    presence_id = _presence_id(entity_registry, device_id)
+    _set_target(hass, TARGET_1, 0, 1500, ("mm", "mm"))
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "on"
+
+    # 1500 in is 38100 mm, far past the zone.
+    hass.states.async_set(TARGET_1["y"], "1500", {ATTR_UNIT_OF_MEASUREMENT: "in"})
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "off"
+
+    hass.states.async_set(TARGET_1["y"], "1500", {ATTR_UNIT_OF_MEASUREMENT: "mm"})
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "on"
 
 
 def _record_state_changes(hass, entity_id: str) -> list[tuple[str | None, str | None]]:

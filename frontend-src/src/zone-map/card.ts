@@ -170,6 +170,26 @@ const LENGTH_UNITS = Object.freeze({
   ft: 304.8,
 });
 
+// Millimeters per Home Assistant length unit, keyed by the UnitOfLength symbols exactly as
+// Home Assistant writes them, for reading a target sensor in the unit its state is in. ESPHome
+// reports LD2450 targets in mm, but Home Assistant set to US customary units shows every new
+// distance sensor in inches, and anyone can pick another unit in an entity's settings. Not
+// LENGTH_UNITS, which holds the grid and YAML units and takes aliases. SENSOR_UNIT_FACTORS in
+// const.py is this table, and the presence sensor also converts with one multiplication, so the
+// dot drawn here and the zone's presence agree on every reading. tests/test_contracts.py keeps
+// the two equal.
+const SENSOR_LENGTH_UNITS = Object.freeze({
+  mm: 1,
+  cm: 10,
+  m: 1000,
+  km: 1000000,
+  in: 25.4,
+  ft: 304.8,
+  yd: 914.4,
+  mi: 1609344,
+  nmi: 1852000,
+});
+
 const GRID_STEP_CANDIDATES = Object.freeze({
   in: Object.freeze([1, 2, 3, 6, 12, 24, 36, 48, 60, 72, 96, 120]),
   ft: Object.freeze([0.25, 0.5, 1, 2, 5, 10, 20, 50, 100]),
@@ -412,9 +432,10 @@ export class ZoneMapCard extends HTMLElement {
    */
   async _saveZoneUpdate(payload, successMessage) {
     if (!this._hass) return false;
-    // The presence sensors scale target readings by the same unit this card
-    // draws them in, so every write carries it. Absent on the backend means
-    // millimeters, which is also this card's default.
+    // A target sensor with no length unit of its own is scaled by this unit,
+    // here and in the presence sensors alike, so every write carries it.
+    // Absent on the backend means millimeters, which is also this card's
+    // default.
     const request = { ...payload, input_units: this.inputUnits };
     try {
       // notifyOnError false: the catch below raises the card's own toast, and
@@ -503,9 +524,10 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   /**
-   * Everything _drawTrackedTargets reads from hass: each pair's entity ids and
-   * the state strings of both. Two hass objects with the same key paint the
-   * same targets.
+   * Everything _drawTrackedTargets reads from hass: each pair's entity ids,
+   * the state strings of both and their units, since the same number in
+   * another unit lands somewhere else. Two hass objects with the same key
+   * paint the same targets.
    */
   _trackedStatesKey() {
     const states = this._hass?.states;
@@ -513,8 +535,10 @@ export class ZoneMapCard extends HTMLElement {
       this.trackedEntities.map((pair) => [
         pair.x,
         states?.[pair.x]?.state,
+        states?.[pair.x]?.attributes?.unit_of_measurement,
         pair.y,
         states?.[pair.y]?.state,
+        states?.[pair.y]?.attributes?.unit_of_measurement,
       ]),
     );
   }
@@ -2545,7 +2569,6 @@ export class ZoneMapCard extends HTMLElement {
       x: x * cosTheta + y * sinTheta,
       y: -x * sinTheta + y * cosTheta,
     });
-    const multiplier = this.inputUnitMultiplier || 1;
     this.trackedEntities.forEach((pair, idx) => {
       if (!pair.x || !pair.y) return;
       const stateX = this._hass.states[pair.x];
@@ -2555,11 +2578,28 @@ export class ZoneMapCard extends HTMLElement {
       const yRaw = parseFloat(stateY.state);
       if (Number.isNaN(xRaw) || Number.isNaN(yRaw)) return;
       if (Math.abs(xRaw) < 1e-6 && Math.abs(yRaw) < 1e-6) return;
-      const xVal = xRaw * multiplier;
-      const yVal = yRaw * multiplier;
+      const xVal = xRaw * this._readingUnitFactor(stateX);
+      const yVal = yRaw * this._readingUnitFactor(stateY);
       const rotated = rotatePoint(xVal, yVal);
       this.drawCurrentPosition(rotated.x, rotated.y, colors[idx % colors.length]);
     });
+  }
+
+  /**
+   * Millimeters per unit of one target reading. Home Assistant hands over the
+   * state in the entity's display unit, not the millimeters ESPHome reports:
+   * inches when the system is set to US customary units, or whatever the user
+   * picked in the entity's settings. X and Y are separate entities, so each is
+   * read by its own unit. A sensor with no length unit, such as a DIY template
+   * sensor, is scaled by the YAML input_units as before. Must match
+   * `_reading_unit_factor` in binary_sensor.py.
+   */
+  _readingUnitFactor(stateObj) {
+    const unit = stateObj?.attributes?.unit_of_measurement;
+    // An own key only, so a unit such as "constructor" is not a length unit.
+    const known =
+      typeof unit === 'string' && Object.prototype.hasOwnProperty.call(SENSOR_LENGTH_UNITS, unit);
+    return known ? SENSOR_LENGTH_UNITS[unit] : this.inputUnitMultiplier || 1;
   }
 
   drawZones() {
