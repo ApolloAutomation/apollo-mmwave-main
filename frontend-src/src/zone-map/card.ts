@@ -93,6 +93,26 @@ const DEFAULT_CONE = Object.freeze({
   angleDeg: 0,
 });
 
+// The canvas backing store is this wide. A YAML grid keeps it square, as it
+// always was; a fitted grid sets its height from the grid's own shape.
+const CANVAS_WIDTH_PX = 800;
+
+// A card whose YAML has no grid shows the radar's field of view as it is
+// currently rotated, instead of the fixed 10 m square DEFAULT_GRID, where the
+// 6 m cone sat in the top half and ran off both sides. The arc gets this share
+// of the cone's range as room past it, so its edge and the range label clear
+// the canvas border. The apex gets none: behind the radar is its wall.
+const FIT_MARGIN_FRACTION = 0.05;
+// The fitted map is never taller than it is wide, and never shorter than this
+// share of its width. Facing ahead, the cone is about 12 m by 6.5 m, which
+// would be shorter still, but the drawing buttons open upward from the bottom
+// edge, five buttons tall in polygon mode, and need the height on a phone.
+const FIT_MIN_ASPECT = 0.75;
+
+// The units the m / ft switch offers, and the ones the zone store saves per
+// radar as display_units. Display only: zone geometry stays millimeters.
+const DISPLAY_UNITS = Object.freeze(['m', 'ft']);
+
 // What a card without show_undo or unit_label_size uses. setConfig assigns
 // them when the key is absent, so removing the key from a live card's config
 // reverts it the same way a freshly created card starts.
@@ -259,11 +279,21 @@ export class ZoneMapCard extends HTMLElement {
     // null entities means the radar's own detected targets are in use. The
     // card has to say which of the two it is showing.
     this._usingSuggestedEntities = false;
-    // Grid defaults (mm)
+    // Grid defaults (mm). setConfig replaces them, with a YAML grid's extents
+    // or with the fit to the radar's field of view (_refitGrid).
     this.xMin = DEFAULT_GRID.xMin;
     this.xMax = DEFAULT_GRID.xMax;
     this.yMin = DEFAULT_GRID.yMin;
     this.yMax = DEFAULT_GRID.yMax;
+    // True when the YAML grid set the extents, which then never move. False
+    // means they are fitted to the cone and the zones.
+    this._gridFromConfig = false;
+    // The map's unit (_displayUnit) comes from, in order: what this page's
+    // viewer picked on the m / ft switch, the unit saved for the radar, the
+    // YAML grid_units of a hand-written card, and Home Assistant's unit system.
+    this._viewDisplayUnits = null;
+    this._storedDisplayUnits = null;
+    this._gridUnitsConfigured = false;
     // Cone defaults
     this.coneYMax = DEFAULT_CONE.yMax;
     this.coneFovDeg = DEFAULT_CONE.fovDeg;
@@ -379,7 +409,11 @@ export class ZoneMapCard extends HTMLElement {
       config.show_undo === undefined ? DEFAULT_SHOW_UNDO : !!config.show_undo;
     
     this.inputUnits = this._normalizeUnit(config.input_units);
+    // gridUnits always reads the YAML grid and cone values. Only a unit the
+    // card knows also picks the map's unit; a misspelled one leaves that to
+    // the saved unit or Home Assistant, as an absent one does.
     this.gridUnits = this._normalizeUnit(config.grid_units);
+    this._gridUnitsConfigured = this._knownUnit(config.grid_units) !== null;
     this.inputUnitMultiplier = this._unitMultiplier(this.inputUnits);
     this.unitDisplay = !!config.unit_display;
     // Starts from the default every time, so a removed (or unusable) key does
@@ -408,6 +442,9 @@ export class ZoneMapCard extends HTMLElement {
 
     this._applyGridConfig(config.grid);
     this._applyConeConfig(config.cone);
+    // After the cone, which a fitted grid is drawn around. render() fits it
+    // again over the zones and rotation of the last payload.
+    this._refitGrid();
 
     this._invalidateGridCache();
     this._invalidateConeCache();
@@ -476,10 +513,17 @@ export class ZoneMapCard extends HTMLElement {
     this._invalidateConeCache();
     this.isLocked = false;
     this._autoLockApplied = false;
+    // The saved unit is the old radar's, and so is the viewer's pick: a
+    // switch flipped on one radar's map says nothing about another's.
+    this._storedDisplayUnits = null;
+    this._viewDisplayUnits = null;
   }
 
   set hass(hass) {
     const firstTime = !this._hass;
+    // The automatic map unit reads Home Assistant's unit system off hass, so
+    // the first hass, or a change of that setting, can change the unit.
+    const unitBefore = this._displayUnit();
     this._hass = hass;
     // hass is set repeatedly, several times a second while the LD2450 pushes
     // coordinates, so this only acts when the card is not overriding the
@@ -504,6 +548,7 @@ export class ZoneMapCard extends HTMLElement {
         }
       }
     }
+    if (this._displayUnit() !== unitBefore) this._displayUnitChanged();
     // Home Assistant assigns a new hass on every state change in the whole
     // instance, and the tracked targets are the only part of the picture drawn
     // from it. Everything else (zones, rotation, mode, lock, theme, config)
@@ -599,13 +644,24 @@ export class ZoneMapCard extends HTMLElement {
     }
     this._applyZones(config);
     this._applyRotation(config);
+    this._applyDisplayUnits(config);
     this._applyTrackedEntities(config);
     this._deviceLabel = typeof config.label === 'string' ? config.label : null;
     this._renderTitle();
     this._applyAutoLock();
     this.renderZoneButtons();
     this._renderZoneManager();
+    // After the zones, rotation and unit a fitted grid is drawn around.
+    this._refitGrid();
+    this._renderUnitSwitch();
+    this._renderInfo();
     this.drawGrid();
+  }
+
+  /** Take the unit saved for the radar's map, or null for none. */
+  _applyDisplayUnits(config) {
+    const saved = config.display_units;
+    this._storedDisplayUnits = DISPLAY_UNITS.includes(saved) ? saved : null;
   }
 
   _applyZones(config) {
@@ -754,13 +810,6 @@ export class ZoneMapCard extends HTMLElement {
     if (this._loadError) {
       return this._errorTemplate();
     }
-    const gridUnitLabel = this._unitLabel(this.gridUnits);
-    const inputUnitLabel = this._unitLabel(this.inputUnits);
-    const displayXMin = this._formatGridValue(this.xMin);
-    const displayXMax = this._formatGridValue(this.xMax);
-    const displayYMin = this._formatGridValue(this.yMin);
-    const displayYMax = this._formatGridValue(this.yMax);
-    const displayConeRange = this._formatGridValue(this.coneYMax);
     return `
       <style>
         :host { display: block; padding: 16px; }
@@ -775,13 +824,18 @@ export class ZoneMapCard extends HTMLElement {
         .container { background: var(--card-background-color); border-radius: var(--ha-card-border-radius, 12px); box-shadow: var(--ha-card-box-shadow); padding: 16px; }
         .container.dark { background: ${COLOR.ui.darkContainerBackground}; color: ${COLOR.ui.darkContainerText}; }
         .container.dark .canvas-container { border-color: ${COLOR.ui.darkCanvasBorder}; background: ${COLOR.ui.darkCanvasBackground}; }
-        .canvas-container { position: relative; width: 100%; aspect-ratio: 1; border: 1px solid var(--divider-color); border-radius: var(--zm-radius); overflow: hidden; background: ${COLOR.ui.lightCanvasBackground}; isolation: isolate; }
+        .canvas-container { position: relative; width: 100%; aspect-ratio: 1; border: 1px solid var(--divider-color); border-radius: var(--zm-radius); overflow: hidden; background: ${COLOR.ui.lightCanvasBackground}; isolation: isolate; container-type: size; }
         canvas { width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
         .overlay-controls { position: absolute; bottom: 4px; display: flex; gap: 4px; z-index: 1; }
         .overlay-controls-left { left: 4px; flex-direction: column; align-items: flex-start; }
         .overlay-controls-right { right: 4px; }
         .overlay-controls button { background: ${COLOR.ui.overlayButtonLightBg}; color: ${COLOR.ui.overlayButtonText}; border: none; border-radius: 6px; font-size: 11px; line-height: 1; cursor: pointer; backdrop-filter: blur(4px); display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 6px; min-height: 32px; }
         #modeGroup button { font-size: 16px; width: 32px; height: 32px; min-width: 32px; min-height: 32px; padding: 0; }
+        /* A fitted map can be shorter than wide, and on a phone shorter than the
+           five polygon buttons. They wrap into a second column rather than run
+           off the top, keeping clear of the menu button below them (32 px, the
+           4 px gaps and the 4 px edge). */
+        #modeGroup { flex-wrap: wrap; align-content: flex-start; max-height: calc(100cqh - 44px); }
         #btnModeMenu { font-size: 16px; width: 32px; height: 32px; min-width: 32px; min-height: 32px; padding: 0; }
         .overlay-controls button span { font-size: 13px; line-height: 1; }
         .overlay-controls button.lock-toggle { padding: 6px; }
@@ -791,6 +845,13 @@ export class ZoneMapCard extends HTMLElement {
         .container.dark .overlay-controls button { background: ${COLOR.ui.overlayButtonDarkBg}; color: ${COLOR.ui.overlayButtonText}; border-color: ${COLOR.ui.overlayButtonDarkBorder}; }
         .overlay-controls button.active { outline: 2px solid ${COLOR.ui.overlayButtonActiveOutline}; }
         .overlay-controls button:disabled { opacity: 0.4; cursor: default; }
+        /* The m / ft switch: two halves of one control, the shown unit filled. */
+        .overlay-controls .unit-switch { display: inline-flex; }
+        .overlay-controls .unit-switch button { min-width: 32px; font-size: 13px; padding: 6px 8px; }
+        .overlay-controls .unit-switch button:first-child { border-radius: 6px 0 0 6px; }
+        .overlay-controls .unit-switch button:last-child { border-radius: 0 6px 6px 0; }
+        .overlay-controls .unit-switch button.active { background: var(--primary-color); outline: none; }
+        .container.dark .overlay-controls .unit-switch button.active { background: ${COLOR.ui.darkPrimaryButton}; }
         .controls { margin: 12px 0; display: flex; gap: var(--zm-gap); flex-wrap: wrap; }
         #cone-controls { align-items: center; padding-top: 8px; }
         #coneAngleSlider { flex: 1; min-width: 160px; }
@@ -857,6 +918,10 @@ export class ZoneMapCard extends HTMLElement {
             <button id="btnModeMenu" title="Drawing modes">✎</button>
           </div>
           <div class="overlay-controls overlay-controls-right" id="overlayControlsRight">
+            <div class="unit-switch" role="group" aria-label="Map units">
+              <button id="btnUnitM" data-unit="m" title="Show the map in meters" aria-pressed="false">m</button>
+              <button id="btnUnitFt" data-unit="ft" title="Show the map in feet" aria-pressed="false">ft</button>
+            </div>
             <button id="btnUndo" class="undo-toggle" title="Undo last zone change" disabled>↶</button>
             <button id="btnLock" class="lock-toggle" title="Lock drawing">🔓</button>
           </div>
@@ -892,9 +957,9 @@ export class ZoneMapCard extends HTMLElement {
                 </div>
               </div>
             </div>
-            <div class="info">
-              Click & drag for Rectangle/Ellipse. Polygon: click points, double-click to finish (max ${this.polyMaxPoints} pts). Grid units: ${gridUnitLabel} (X: ${displayXMin}..${displayXMax}, Y: ${displayYMin}..${displayYMax}). Input units (sensors without a length unit): ${inputUnitLabel}. Cone range: ${displayConeRange} ${gridUnitLabel}
-            </div>
+            <!-- Filled by _renderInfo, which a unit change or a refit calls
+                 again without rebuilding the card. -->
+            <div class="info" id="gridInfo"></div>
           </div>
 
         </div>
@@ -924,6 +989,8 @@ export class ZoneMapCard extends HTMLElement {
     this.attachEventListeners();
     this._renderEntityStatus();
     this._renderZoneManager();
+    this._renderUnitSwitch();
+    this._renderInfo();
     if (this._zoneConfigPayload) {
       // A render throws the old DOM away, so the last payload the store sent
       // has to be laid back over the new one.
@@ -994,7 +1061,104 @@ export class ZoneMapCard extends HTMLElement {
     this._attachCanvasEvents();
     this._attachConeControls();
     this._attachDrawingModeControls();
+    this._attachUnitSwitch();
     this._attachConfigEvents();
+  }
+
+  _attachUnitSwitch() {
+    ['btnUnitM', 'btnUnitFt'].forEach((id) => {
+      const button = this.shadowRoot.getElementById(id);
+      if (!button) return;
+      button.addEventListener('click', () => this._chooseDisplayUnit(button.dataset.unit));
+    });
+  }
+
+  /**
+   * The m / ft switch. The unit is saved per radar, so everyone who opens this
+   * radar's map sees the one an administrator picked. update_zone is
+   * admin-only, so for anyone else the switch changes this page's view and
+   * saves nothing: asking would only earn them a "Could not save" toast for a
+   * switch that visibly did what they asked. The pick stays this page's from
+   * then on, for an administrator too, so a later save from another page does
+   * not flip the map under someone who just chose.
+   */
+  _chooseDisplayUnit(unit) {
+    if (!DISPLAY_UNITS.includes(unit)) return;
+    if (this._unitFamily(this._displayUnit()) === unit) return;
+    this._viewDisplayUnits = unit;
+    this._displayUnitChanged();
+    if (this._hass?.user?.is_admin) {
+      // No toast on success: the map changing is the feedback.
+      this._saveZoneUpdate({ device_id: this.deviceId, display_units: unit }, null);
+    }
+  }
+
+  /** Show the switch half for the map's unit as the pressed one. */
+  _renderUnitSwitch() {
+    const shown = this._unitFamily(this._displayUnit());
+    ['btnUnitM', 'btnUnitFt'].forEach((id) => {
+      const button = this.shadowRoot?.getElementById(id);
+      if (!button) return;
+      const pressed = button.dataset.unit === shown;
+      button.classList.toggle('active', pressed);
+      button.setAttribute('aria-pressed', pressed ? 'true' : 'false');
+    });
+  }
+
+  /** The help line under the map, in the map's unit. */
+  _renderInfo() {
+    const host = this.shadowRoot?.getElementById('gridInfo');
+    if (!host) return;
+    const value = (mm) => this._formatGridValue(mm);
+    host.textContent =
+      'Click & drag for Rectangle/Ellipse. Polygon: click points, double-click to finish' +
+      ` (max ${this.polyMaxPoints} pts). Grid units: ${this._unitLabel(this._displayUnit())}` +
+      ` (X: ${value(this.xMin)}..${value(this.xMax)}, Y: ${value(this.yMin)}..${value(this.yMax)}).` +
+      ` Input units (sensors without a length unit): ${this._unitLabel(this.inputUnits)}.` +
+      ` Radar range: ${this._rangeText()}`;
+  }
+
+  /** Redraw everything that shows the map's unit, after it changed. */
+  _displayUnitChanged() {
+    // A fitted grid's extents are whole steps of the unit, so they move too.
+    this._refitGrid();
+    this._invalidateGridCache();
+    this._invalidateConeCache();
+    this._renderUnitSwitch();
+    this._renderInfo();
+    this.drawGrid();
+  }
+
+  /**
+   * The unit the map is shown in: what this page's viewer picked on the
+   * switch, else the unit saved for the radar, else a hand-written card's
+   * YAML grid_units, else Home Assistant's unit system. The YAML unit is
+   * returned as written (mm, cm, m, in or ft) so such a card draws exactly as
+   * it did before the switch existed; the other three are m or ft.
+   */
+  _displayUnit() {
+    if (this._viewDisplayUnits) return this._viewDisplayUnits;
+    if (this._storedDisplayUnits) return this._storedDisplayUnits;
+    if (this._gridUnitsConfigured) return this.gridUnits;
+    // The same rule the distance card uses: US customary is "mi".
+    return this._hass?.config?.unit_system?.length === 'mi' ? 'ft' : 'm';
+  }
+
+  /** Which half of the m / ft switch a unit belongs to. */
+  _unitFamily(unit) {
+    return unit === 'ft' || unit === 'in' ? 'ft' : 'm';
+  }
+
+  /**
+   * "6 m (20 ft), 120°": the cone's range in the map's unit first and the
+   * other in parentheses, since the spec sheet says 6 m, then its width.
+   */
+  _rangeText() {
+    const meters = `${Number((this.coneYMax / LENGTH_UNITS.m).toFixed(1))} m`;
+    const feet = `${Math.round(this.coneYMax / LENGTH_UNITS.ft)} ft`;
+    const [first, second] =
+      this._unitFamily(this._displayUnit()) === 'ft' ? [feet, meters] : [meters, feet];
+    return `${first} (${second}), ${Math.round(this.coneFovDeg)}°`;
   }
 
   _attachZoneListEvents() {
@@ -1145,6 +1309,9 @@ export class ZoneMapCard extends HTMLElement {
       angleSlider.value = String(this.coneAngleDeg);
     };
 
+    // A fitted grid follows the cone only once the slider is let go. Fitting
+    // on every step would resize the canvas, and the slider below it with it,
+    // under the finger that is dragging it.
     angleSlider.addEventListener('input', () => {
       const value = parseInt(angleSlider.value, 10);
       if (Number.isNaN(value)) return;
@@ -1155,6 +1322,7 @@ export class ZoneMapCard extends HTMLElement {
     });
 
     angleSlider.addEventListener('change', () => {
+      this._refitAndDraw();
       this._persistRotation();
     });
 
@@ -1162,7 +1330,7 @@ export class ZoneMapCard extends HTMLElement {
       this.coneAngleDeg = this.coneAngleDefault;
       this._invalidateConeCache();
       updateDisplay();
-      this.drawGrid();
+      this._refitAndDraw();
       this._persistRotation();
     });
 
@@ -1278,22 +1446,32 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   _applyGridConfig(grid) {
-    // Start from the defaults on every call: setConfig runs again on a live
-    // element, and a removed grid block (or a sub-key dropped from it) has to
-    // land where a freshly created card would, not at the previous extents.
+    this._invalidateGridCache();
+    this._invalidateConeCache();
+    const convert = (value) => this._convertToMm(value, this.gridUnits);
+    const next =
+      grid && typeof grid === 'object'
+        ? {
+            xMin: convert(grid.x_min),
+            xMax: convert(grid.x_max),
+            yMin: convert(grid.y_min),
+            yMax: convert(grid.y_max),
+          }
+        : null;
+    // A grid block with no usable extent is no grid at all, and the extents
+    // are left to _refitGrid, which setConfig calls once the cone is known.
+    // They are not reset here: a same-radar setConfig can land mid-drag, and
+    // the map must not jump under the gesture (see _refitGrid).
+    this._gridFromConfig = !!next && Object.values(next).some((value) => value !== null);
+    if (!this._gridFromConfig) return;
+
+    // A YAML grid starts from DEFAULT_GRID on every call: setConfig runs
+    // again on a live element, and a sub-key dropped from the block has to
+    // land where it always did, not at the previous extents.
     this.xMin = DEFAULT_GRID.xMin;
     this.xMax = DEFAULT_GRID.xMax;
     this.yMin = DEFAULT_GRID.yMin;
     this.yMax = DEFAULT_GRID.yMax;
-    if (!grid || typeof grid !== 'object') return;
-    const convert = (value) => this._convertToMm(value, this.gridUnits);
-
-    const next = {
-      xMin: convert(grid.x_min),
-      xMax: convert(grid.x_max),
-      yMin: convert(grid.y_min),
-      yMax: convert(grid.y_max),
-    };
 
     if (next.xMin !== null) this.xMin = next.xMin;
     if (next.xMax !== null) this.xMax = next.xMax;
@@ -1312,9 +1490,161 @@ export class ZoneMapCard extends HTMLElement {
     if (this.yMin === this.yMax) {
       this.yMax = this.yMin + 1;
     }
+    this._sizeCanvas();
+  }
 
-    this._invalidateGridCache();
-    this._invalidateConeCache();
+  /**
+   * Fit the grid to the radar's field of view, unless the YAML set it.
+   *
+   * Leaves the extents alone while a shape is being drawn: a rect or ellipse
+   * drag holds its start point in canvas pixels, so moving the map under it
+   * would save the zone somewhere the user never pointed. The save that ends
+   * the gesture echoes back as a payload, which fits again. Returns whether
+   * the extents changed; the caller draws.
+   */
+  _refitGrid() {
+    if (this._gridFromConfig || this.isDrawing) return false;
+    const next = this._fittedGrid();
+    const same = ['xMin', 'xMax', 'yMin', 'yMax'].every(
+      (key) => Math.abs(next[key] - this[key]) < 1e-6,
+    );
+    if (same) return false;
+    this.xMin = next.xMin;
+    this.xMax = next.xMax;
+    this.yMin = next.yMin;
+    this.yMax = next.yMax;
+    this._sizeCanvas();
+    return true;
+  }
+
+  /** Fit the grid again and, when that moved it, redraw what shows it. */
+  _refitAndDraw() {
+    if (this._refitGrid()) this._renderInfo();
+    this.drawGrid();
+  }
+
+  /**
+   * The extents of a fitted grid, in mm.
+   *
+   * The box around the cone as it is rotated now (its apex, its two edges and
+   * any point of its arc due ahead, behind or to a side), with the arc pushed
+   * out by FIT_MARGIN_FRACTION, grown to take in every stored zone so none is
+   * cut off, then rounded out to whole grid steps of the map's unit so the
+   * edges land on grid lines. Last, the short side is grown, in whole steps,
+   * to keep the canvas between FIT_MIN_ASPECT and square. It grows on the
+   * side the radar faces, so a wall-mounted radar stays on the edge it is
+   * mounted on, and evenly when the radar faces neither way along that axis.
+   *
+   * The step depends on the span, through the 40 px line spacing, and
+   * rounding out can widen the span past the next step, so the rounding
+   * repeats until the step settles. It does in one or two passes.
+   */
+  _fittedGrid() {
+    // A cone hidden with y_max 0 still leaves the radar's real range to map.
+    const range = this.coneYMax > 0 ? this.coneYMax : DEFAULT_CONE.yMax;
+    const box = this._sectorBox(range * (1 + FIT_MARGIN_FRACTION));
+    this._zonePoints().forEach(({ x, y }) => {
+      box.xMin = Math.min(box.xMin, x);
+      box.xMax = Math.max(box.xMax, x);
+      box.yMin = Math.min(box.yMin, y);
+      box.yMax = Math.max(box.yMax, y);
+    });
+    const unit = this._displayUnit();
+    const facing = (this.coneAngleDeg * Math.PI) / 180;
+    const stepFor = (fitted) => {
+      const spanX = Math.max(1, fitted.xMax - fitted.xMin);
+      return this._chooseGridStep(CANVAS_WIDTH_PX / spanX, spanX, unit);
+    };
+    const fit = (step) =>
+      this._shapeFit(this._roundOut(box, step), step, Math.sin(facing), Math.cos(facing));
+    let step = stepFor(box);
+    let fitted = fit(step);
+    for (let pass = 0; pass < 4; pass += 1) {
+      const next = stepFor(fitted);
+      if (next === step) break;
+      step = next;
+      fitted = fit(step);
+    }
+    return fitted;
+  }
+
+  /** The box around a cone of `radius` mm at the card's width and rotation. */
+  _sectorBox(radius) {
+    const box = { xMin: 0, xMax: 0, yMin: 0, yMax: 0 };
+    const add = (deg) => {
+      const rad = (deg * Math.PI) / 180;
+      const x = radius * Math.sin(rad);
+      const y = radius * Math.cos(rad);
+      box.xMin = Math.min(box.xMin, x);
+      box.xMax = Math.max(box.xMax, x);
+      box.yMin = Math.min(box.yMin, y);
+      box.yMax = Math.max(box.yMax, y);
+    };
+    const half = Math.min(360, this.coneFovDeg) / 2;
+    const start = this.coneAngleDeg - half;
+    const end = this.coneAngleDeg + half;
+    add(start);
+    add(end);
+    // The arc reaches farthest along an axis where it crosses a multiple of 90.
+    for (let deg = Math.ceil(start / 90) * 90; deg <= end; deg += 90) add(deg);
+    return box;
+  }
+
+  /** Every corner, extreme and vertex of the stored zones, in mm. */
+  _zonePoints() {
+    const points = [];
+    (this.zones || []).forEach((zone) => {
+      const data = zone?.data;
+      if (!data) return;
+      if (zone.shape === DRAW_MODES.RECT) {
+        points.push({ x: data.x_min, y: data.y_min }, { x: data.x_max, y: data.y_max });
+      } else if (zone.shape === DRAW_MODES.ELLIPSE) {
+        points.push(
+          { x: data.cx - data.rx, y: data.cy - data.ry },
+          { x: data.cx + data.rx, y: data.cy + data.ry },
+        );
+      } else if (zone.shape === DRAW_MODES.POLYGON && Array.isArray(data.points)) {
+        points.push(...data.points);
+      }
+    });
+    return points
+      .map((point) => ({ x: Number(point?.x), y: Number(point?.y) }))
+      .filter(({ x, y }) => Number.isFinite(x) && Number.isFinite(y));
+  }
+
+  /** `box` grown out to the nearest multiples of `step`. */
+  _roundOut(box, step) {
+    // The tolerance keeps an edge already on a step, give or take float
+    // error, where it is instead of a whole step out.
+    const down = (value) => Math.floor(value / step + 1e-9) * step;
+    const up = (value) => Math.ceil(value / step - 1e-9) * step;
+    return { xMin: down(box.xMin), xMax: up(box.xMax), yMin: down(box.yMin), yMax: up(box.yMax) };
+  }
+
+  /**
+   * `box` with its short side grown so its height is between FIT_MIN_ASPECT
+   * of its width and its width, toward the side the radar faces along that
+   * axis (`facingX`, `facingY`), or evenly when it faces neither way.
+   */
+  _shapeFit(box, step, facingX, facingY) {
+    const grow = (min, max, steps, facing) => {
+      if (Math.abs(facing) < 1e-6) {
+        const before = Math.floor(steps / 2);
+        return [min - before * step, max + (steps - before) * step];
+      }
+      return facing > 0 ? [min, max + steps * step] : [min - steps * step, max];
+    };
+    const width = box.xMax - box.xMin;
+    const height = box.yMax - box.yMin;
+    const fitted = { ...box };
+    if (height > width) {
+      const steps = Math.round((height - width) / step);
+      [fitted.xMin, fitted.xMax] = grow(box.xMin, box.xMax, steps, facingX);
+    } else if (height < FIT_MIN_ASPECT * width) {
+      const steps = Math.ceil((FIT_MIN_ASPECT * width - height) / step - 1e-9);
+      [fitted.yMin, fitted.yMax] = grow(box.yMin, box.yMax, steps, facingY);
+    }
+    return fitted;
   }
 
   _applyConeConfig(cone) {
@@ -1367,11 +1697,15 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   _normalizeUnit(unit) {
-    if (unit === null || unit === undefined) return 'mm';
+    return this._knownUnit(unit) || 'mm';
+  }
+
+  /** The LENGTH_UNITS key a YAML unit or alias names, or null for none. */
+  _knownUnit(unit) {
+    if (unit === null || unit === undefined) return null;
     const key = String(unit).trim().toLowerCase();
-    if (!key) return 'mm';
-    const normalized = UNIT_ALIASES[key] || (LENGTH_UNITS[key] ? key : null);
-    return normalized || 'mm';
+    if (!key) return null;
+    return UNIT_ALIASES[key] || (LENGTH_UNITS[key] ? key : null);
   }
 
   _unitMultiplier(unit) {
@@ -1407,7 +1741,7 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   _formatGridValue(mmValue) {
-    const converted = this._mmToUnit(mmValue, this.gridUnits);
+    const converted = this._mmToUnit(mmValue, this._displayUnit());
     if (converted === null) return '0';
     return this._formatNumber(converted);
   }
@@ -1443,35 +1777,37 @@ export class ZoneMapCard extends HTMLElement {
     this._coneRingsCache = null;
   }
 
-  _computeGridMetrics() {
-    const unit = this.gridUnits;
+  /** The grid step in mm: the smallest of the unit's candidate steps that
+   *  draws lines at least GRID_MIN_SPACING_PX apart at `pxPerMm`. */
+  _chooseGridStep(pxPerMm, spanMm, unit) {
     const unitMm = this._unitMultiplier(unit);
+    const candidates = this._gridStepCandidates(unit);
+    for (let scale = 0; scale < 4; scale++) {
+      for (const stepUnits of candidates) {
+        if (stepUnits <= 0) continue;
+        const stepMm = stepUnits * unitMm * Math.pow(10, scale);
+        if (stepMm * pxPerMm >= ZoneMapCard.GRID_MIN_SPACING_PX) return stepMm;
+      }
+    }
+    return Math.max(unitMm, spanMm / 10);
+  }
+
+  _computeGridMetrics() {
+    const unit = this._displayUnit();
     const pxPerMmX = this.pxPerX || 0;
     const pxPerMmY = this.pxPerY || 0;
     const spanX = Math.max(1, this.xMax - this.xMin);
     const spanY = Math.max(1, this.yMax - this.yMin);
-    const candidates = this._gridStepCandidates(unit);
-    const minPxSpacing = ZoneMapCard.GRID_MIN_SPACING_PX;
 
-    const chooseStep = (pxPerMm, spanMm) => {
-      for (let scale = 0; scale < 4; scale++) {
-        for (const stepUnits of candidates) {
-          if (stepUnits <= 0) continue;
-          const stepMm = stepUnits * unitMm * Math.pow(10, scale);
-          const px = stepMm * pxPerMm;
-          if (px >= minPxSpacing) return stepMm;
-        }
-      }
-      const fallback = Math.max(unitMm, spanMm / 10);
-      return fallback;
-    };
-
-    const stepX = chooseStep(pxPerMmX, spanX);
-    const stepY = chooseStep(pxPerMmY, spanY);
-    const startX = Math.floor(this.xMin / stepX) * stepX;
-    const startY = Math.floor(this.yMin / stepY) * stepY;
-    const endX = Math.ceil(this.xMax / stepX) * stepX;
-    const endY = Math.ceil(this.yMax / stepY) * stepY;
+    const stepX = this._chooseGridStep(pxPerMmX, spanX, unit);
+    const stepY = this._chooseGridStep(pxPerMmY, spanY, unit);
+    // The tolerance keeps an edge that is a whole number of steps, give or
+    // take float error (a fitted grid in feet), from growing a line off the
+    // canvas past it.
+    const startX = Math.floor(this.xMin / stepX + 1e-9) * stepX;
+    const startY = Math.floor(this.yMin / stepY + 1e-9) * stepY;
+    const endX = Math.ceil(this.xMax / stepX - 1e-9) * stepX;
+    const endY = Math.ceil(this.yMax / stepY - 1e-9) * stepY;
     const countX = this._countSteps(endX, startX, stepX);
     const countY = this._countSteps(endY, startY, stepY);
 
@@ -1503,7 +1839,7 @@ export class ZoneMapCard extends HTMLElement {
     // The labels' clear space is set in CSS px, so a resized card lays them out again.
     const labelGap = LABEL_GAP_CSS_PX * this._canvasScale();
     const keyParts = [
-      this._normalizeUnit(this.gridUnits),
+      this._displayUnit(),
       this._roundKeyValue(this.xMin),
       this._roundKeyValue(this.xMax),
       this._roundKeyValue(this.yMin),
@@ -1796,7 +2132,10 @@ export class ZoneMapCard extends HTMLElement {
     else if (stepUnits < 0.5) decimals = 2;
     const valUnits = this._mmToUnit(mmValue, displayUnit) || 0;
     const rounded = Number(valUnits.toFixed(decimals));
-    return `${rounded}${this._unitLabel(displayUnit)}`;
+    // "5 ft" reads as feet; "5ft" reads as a typo. Meters stay "2m", as the
+    // labels always were.
+    const unitLabel = this._unitLabel(displayUnit);
+    return unitLabel === 'ft' ? `${rounded} ft` : `${rounded}${unitLabel}`;
   }
 
   _persistRotation() {
@@ -2465,22 +2804,111 @@ export class ZoneMapCard extends HTMLElement {
       this._drawGridLines(ctx, gridState);
     }
     this._drawAxes(ctx);
-    // A ring label can take a grid label's place, so both are laid out before
-    // either is drawn.
+    // A ring label can take a grid label's place, and the range label can
+    // take either's, so all three are laid out before any is drawn.
     let ringLabels = [];
+    let rangeLabel = null;
     if (this.unitDisplay) {
       const { thetaStart, thetaEnd, radius } = this._coneSector();
       const rings = this._getConeRingsRenderState(thetaStart, thetaEnd, radius, gridMetrics);
-      const labels = this._layOutLabels(rings?.labels, gridState);
+      rangeLabel = this._rangeLabel();
+      const labels = this._clearAround(
+        this._layOutLabels(rings?.labels, gridState),
+        rangeLabel,
+        gridState?.labelGap ?? LABEL_GAP_CSS_PX,
+      );
       if (gridState) this._drawGridLabels(ctx, labels.grid);
       ringLabels = labels.rings;
     }
 
     this.drawDeviceCone(gridMetrics, ringLabels);
+    this._drawRangeLabel(ctx, rangeLabel);
 
     this.drawZones();
     this._drawInProgress();
     this._drawTrackedTargets();
+  }
+
+  /**
+   * Where the "Radar range 6 m (20 ft), 120°" label goes, in canvas px, or
+   * null when the card shows no distance labels or no cone.
+   *
+   * Centered on the line the radar faces along, just past the arc, where it
+   * reads as the arc's caption. When the canvas has no room there it goes
+   * just inside the arc. When it fits in neither place, as on a YAML grid
+   * that cuts the arc off, it is left out: there is no arc on the map for it
+   * to caption, and the help line under the map still gives the range.
+   */
+  _rangeLabel() {
+    if (!this.unitDisplay || !this.canvas || !(this.coneYMax > 0)) return null;
+    const label = {
+      text: `Radar range ${this._rangeText()}`,
+      x: 0,
+      y: 0,
+      align: 'center',
+      baseline: 'middle',
+    };
+    this._measureLabels([label]);
+    const width = this.canvas.width;
+    const height = this.canvas.height;
+    const halfWidth = label.width / 2;
+    const halfHeight = this.unitLabelSize / 2;
+    const facing = (this.coneAngleDeg * Math.PI) / 180;
+    const arcX = this.valueToPixels(this.coneYMax * Math.sin(facing), 'x');
+    const arcY = this.valueToPixels(this.coneYMax * Math.cos(facing), 'y');
+    // The facing direction in canvas px, where a YAML grid can scale X and Y
+    // apart, as a unit vector.
+    let dirX = Math.sin(facing) * (this.pxPerX || 0);
+    let dirY = Math.cos(facing) * (this.pxPerY || 0);
+    const length = Math.hypot(dirX, dirY) || 1;
+    dirX /= length;
+    dirY /= length;
+    // Far enough along that line for the box's near edge to clear the arc by
+    // half a label height and the label gap, so an axis label centered on the
+    // arc (the 6 m one, facing ahead on a 1 m grid) keeps its place. The extra
+    // px absorbs float error in the gap test.
+    const gap = LABEL_GAP_CSS_PX * this._canvasScale();
+    const offset =
+      Math.abs(dirX) * halfWidth + Math.abs(dirY) * halfHeight + halfHeight + gap + 1;
+    const fits = (x, y) =>
+      x - halfWidth >= 0 && x + halfWidth <= width && y - halfHeight >= 0 && y + halfHeight <= height;
+    for (const side of [1, -1]) {
+      const x = arcX + side * dirX * offset;
+      const y = arcY + side * dirY * offset;
+      if (fits(x, y)) return { ...label, x, y };
+    }
+    return null;
+  }
+
+  /** `labels` without the grid and ring labels that would crowd `rangeLabel`.
+   *  The range label is the one that says what the cone is, so it stays. */
+  _clearAround(labels, rangeLabel, gap) {
+    if (!rangeLabel) return labels;
+    const box = this._labelBox(rangeLabel);
+    const clear = (label) => this._boxGap(box, this._labelBox(label)) >= gap;
+    return {
+      grid: { x: labels.grid.x.filter(clear), y: labels.grid.y.filter(clear) },
+      rings: labels.rings.filter(clear),
+    };
+  }
+
+  _drawRangeLabel(ctx, label) {
+    if (!label) return;
+    ctx.save();
+    ctx.font = `${this.unitLabelSize}px sans-serif`;
+    ctx.textAlign = label.align;
+    ctx.textBaseline = label.baseline;
+    // A plate in the canvas color keeps it legible where the Y axis or a grid
+    // line runs through it. It covers the label's box, which _clearAround
+    // already keeps every other label out of.
+    const box = this._labelBox(label);
+    ctx.fillStyle = this.darkMode
+      ? COLOR.ui.darkCanvasBackground
+      : COLOR.ui.lightCanvasBackground;
+    ctx.fillRect(box.left - 2, box.top, box.right - box.left + 4, box.bottom - box.top);
+    ctx.fillStyle = this.darkMode ? COLOR.canvas.axisDark : COLOR.canvas.axisLight;
+    ctx.fillText(label.text, label.x, label.y);
+    ctx.restore();
   }
 
   _drawGridLines(ctx, gridState) {
@@ -2893,7 +3321,7 @@ export class ZoneMapCard extends HTMLElement {
     const angleSpan = thetaEnd - thetaStart;
     if (!Number.isFinite(angleSpan) || Math.abs(angleSpan) < 1e-6) return null;
 
-    const gridUnit = gridMetrics ? gridMetrics.unit : this.gridUnits;
+    const gridUnit = gridMetrics ? gridMetrics.unit : this._displayUnit();
     const imperial = gridUnit === 'in' || gridUnit === 'ft';
     const labelUnit = imperial ? 'ft' : 'm';
     const stepUnits = imperial ? 4 : 1;
@@ -3023,17 +3451,38 @@ export class ZoneMapCard extends HTMLElement {
       return;
     }
     this.ctx = this.canvas.getContext('2d');
-    // TODO(REVIEW_REPORT.md X39): fixed 800 px store with no devicePixelRatio (blurry on HiDPI);
-    // non-square grids draw stretched. DPR sizing must scale the px constants; document stretch.
-    this.canvas.width = 800;
-    this.canvas.height = 800;
-    const safeWidth = Math.max(1, this.xMax - this.xMin);
-    const safeHeight = Math.max(1, this.yMax - this.yMin);
-    this.pxPerX = this.canvas.width / safeWidth;
-    this.pxPerY = this.canvas.height / safeHeight;
+    this._sizeCanvas();
+    this.drawGrid();
+  }
+
+  /**
+   * Size the canvas backing store to the grid and set the px per mm.
+   *
+   * A YAML grid keeps the square 800 px store it always had. A fitted grid
+   * gets a store the grid's own shape (_shapeFit keeps it between
+   * FIT_MIN_ASPECT and square), and the container takes the same aspect
+   * ratio, so a meter is as long across as it is down and the cone is not
+   * stretched.
+   */
+  _sizeCanvas() {
     this._invalidateGridCache();
     this._invalidateConeCache();
-    this.drawGrid();
+    if (!this.canvas) return;
+    // TODO(REVIEW_REPORT.md X39): fixed 800 px store with no devicePixelRatio (blurry on HiDPI);
+    // non-square YAML grids draw stretched. DPR sizing must scale the px constants; document stretch.
+    const safeWidth = Math.max(1, this.xMax - this.xMin);
+    const safeHeight = Math.max(1, this.yMax - this.yMin);
+    const width = CANVAS_WIDTH_PX;
+    const height = this._gridFromConfig
+      ? CANVAS_WIDTH_PX
+      : Math.max(1, Math.round((CANVAS_WIDTH_PX * safeHeight) / safeWidth));
+    // Assigning a size clears the canvas even when it is the same one.
+    if (this.canvas.width !== width) this.canvas.width = width;
+    if (this.canvas.height !== height) this.canvas.height = height;
+    this.pxPerX = width / safeWidth;
+    this.pxPerY = height / safeHeight;
+    const container = this.canvas.parentElement;
+    if (container) container.style.aspectRatio = `${width} / ${height}`;
   }
 
   startDrawing(e) {

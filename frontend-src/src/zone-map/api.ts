@@ -14,6 +14,9 @@ export const ZONES_SUBSCRIBE = `${DOMAIN}/zones/subscribe`;
 /** Home Assistant's own config entry feed, used to notice a reload. */
 export const CONFIG_ENTRIES_SUBSCRIBE = "config_entries/subscribe";
 
+/** The units the zone map card's switch offers and the store saves. */
+export type DisplayUnits = "m" | "ft";
+
 export interface TargetPair {
   x: string;
   y: string;
@@ -45,6 +48,12 @@ export interface ZoneConfig {
    * no length unit of its own; null means mm.
    */
   input_units?: string | null;
+  /**
+   * The unit an administrator saved for this radar's map with the card's
+   * m / ft switch; null means the card follows Home Assistant's unit system.
+   * Display only: zone geometry is millimeters whatever this says.
+   */
+  display_units?: DisplayUnits | null;
   /** What the radar detected, offered regardless of what the user picked. */
   suggested_entities: TargetPair[];
 }
