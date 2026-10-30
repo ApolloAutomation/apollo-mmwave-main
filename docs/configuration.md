@@ -558,9 +558,9 @@ the two rows yourself under Settings → Dashboards → ⋮ → **Resources**.
   older release, open each Target X and Target Y sensor on the radar's device
   page (six of them, for the three targets), open its settings (⚙), set
   **Unit of measurement** to **mm** and select **Update**. Either way, check
-  zones you drew while the dots were in the wrong place. The card's
-  `input_units` only applies to target sensors with no unit, such as DIY
-  template sensors.
+  zones you drew while the dots were in the wrong place. From 2.2.7, the
+  card's `input_units` only applies to target sensors without a length unit,
+  such as DIY template sensors.
 - **Zones are missing after a restart.** If `.storage/apollo_mmwave.zones` was
   edited by hand or partly restored and has the wrong shape, the integration
   logs what it could not read and loads the rest (possibly nothing), and the
