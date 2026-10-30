@@ -315,7 +315,7 @@ Zone manager: `_renderZoneManager` rebuilds every row on each payload, but first
 | `hours_to_show` | `strategy-core.ts` | 1 | Occupancy history window | UI choice |
 | Lock storage key | `card.ts` | `apollo-mmwave.zone-map.lock.<device_id>` | Per-radar remembered lock | UI choice |
 | `zone_id` selector | `services.yaml` | min 1, max 32 | Service UI bound; the schema enforces 1..2**53 - 1 and Add Zone has no cap | UI choice |
-| Manifest version | `manifest.json`, `index.ts` (`CARD_VERSION`), `package.json`, `package-lock.json` (top-level `version` and `packages[""].version`), `pyproject.toml` | 2.2.6 | Integration version and JS `?v=` cache buster | Release process, hand-synced, enforced by `frontend-src/test/build.test.ts` and `tests/test_versions.py` |
+| Manifest version | `manifest.json`, `index.ts` (`CARD_VERSION`), `package.json`, `package-lock.json` (top-level `version` and `packages[""].version`), `pyproject.toml` | 2.2.7 | Integration version and JS `?v=` cache buster | Release process, hand-synced, enforced by `frontend-src/test/build.test.ts` and `tests/test_versions.py` |
 | Minimum HA | `hacs.json` | 2026.8.1 | HACS install floor | Release choice |
 | `requires-python` | `pyproject.toml`, `scripts/bootstrap` | >= 3.14.2 | Interpreter floor; the devcontainer image (`python:3.14`) must satisfy it | HA 2026.8.1 requirement; `tests/test_scripts.py` and `tests/test_devcontainer.py` keep the copies in step |
 | CI Node version | `.github/workflows/test.yml` | 22 | Node major the committed bundles are built and checked with | Matches the committed `www/` output |
