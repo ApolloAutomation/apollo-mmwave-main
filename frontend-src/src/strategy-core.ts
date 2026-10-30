@@ -32,6 +32,7 @@ import {
 } from "./panels/entity-rows";
 import { deviceRows, type DeviceRestart } from "./panels/device-rows";
 import { historyEntities, ld2450HistoryEntities, type HistoryRow } from "./panels/history";
+import { gateCheckedIds } from "./cards/gate-setup-checks";
 
 export interface RadarDevice {
   deviceId: string;
@@ -257,6 +258,8 @@ const OFFLINE_NOTE =
 interface HelpContext {
   /** One gate's depth in the user's unit, such as "about 0.75 m". */
   gateDepth: string;
+  /** Whether the tab has the gate radar's Radar setup card to point at. */
+  gateSetup: boolean;
   /** Whether the tab has the LD2450's Radar setup card to point at. */
   ld2450Setup: boolean;
   /** Whether the gate radar's presence sensor exists. An R PRO-1 built
@@ -304,7 +307,9 @@ const LD2450_AUTOMATIONS =
 function gateSteps(p: RadarProfile, ctx: HelpContext, twoRadars: boolean): string[] {
   const it = twoRadars ? `the ${p.label}` : "it";
   const presence = twoRadars ? `${p.label} presence` : "presence";
+  const setup = twoRadars ? `the ${p.label}'s Radar setup card` : "the Radar setup card";
   return [
+    ...(ctx.gateSetup ? [`Fix anything ${setup} flags.`] : []),
     "Press **Calibrate with empty room** on the Auto-calibrate card and leave the room.",
     `Set how far ${it} should look: **${p.rangeLabels[0]} / ${p.rangeLabels[1]}** on the` +
       ` Detection Range card (each gate is ${ctx.gateDepth}).`,
@@ -572,7 +577,9 @@ function builtInZonesCard(
 
 interface DeviceCards {
   help: Record<string, any>;
-  /** The auto-calibrate card, first on every gate-radar tab. */
+  /** The gate radar's "Radar setup" card, first on every gate-radar tab. */
+  gateSetup?: Record<string, any>;
+  /** The auto-calibrate card, right below it. */
   calibrate?: Record<string, any>;
   controls?: Record<string, any>;
   range?: Record<string, any>;
@@ -641,6 +648,12 @@ function cardMap(
     // ids are only right when nothing was renamed.
     const m = entityMapFromDevice(hass, dev.deviceId) ?? profile.entityMap(dev.base);
     const label = profile.label;
+    // Online or not, like the calibrate card: it renders its own offline
+    // line. Left out when none of the settings it checks exists (an R PRO-1
+    // built without the LD2412).
+    cards.gateSetup = gateCheckedIds(m, profile).some((id) => exists(hass, id))
+      ? { type: "custom:apollo-radar-setup-card", device_id: dev.deviceId, radar: "gate" }
+      : undefined;
     gateSizeM = gateSizeMeters(hass, m);
     gatePresence = exists(hass, m.radar_target);
     // Each threshold row says how far out its gate reaches.
@@ -745,6 +758,7 @@ function cardMap(
   );
   cards.help = helpCard(dev, {
     gateDepth: aboutDistance(gateSizeM, unit),
+    gateSetup: !!cards.gateSetup,
     ld2450Setup: !!cards.ld2450Setup,
     gatePresence,
   });
@@ -762,6 +776,7 @@ export function buildDeviceCards(
   const c = cardMap(hass, dev, distanceUnit, calibration);
   return [
     c.help,
+    c.gateSetup,
     c.calibrate,
     c.controls,
     c.range,
@@ -820,15 +835,16 @@ export function buildDeviceSections(
   }
 
   const columns: Column[] = [];
-  // Gate-radar tuning columns: calibrate+help+controls | distance+config |
-  // gate-energy+move | history+still. LD2412 has no Zone Config, so column 1
-  // is short; put occupancy there instead of column 2 to balance it.
+  // Gate-radar tuning columns: setup+calibrate+help+controls |
+  // distance+config | gate-energy+move | history+still. LD2412 has no Zone
+  // Config, so column 1 is short; put occupancy there instead of column 2 to
+  // balance it.
   //
   // Section order is also the phone's reading order. On a tab with both
   // radars (R-PRO-1) the zone map and the LD2450's cards follow column 1, so
   // a phone reaches them before the 28 LD2412 threshold rows.
   if (dev.profile) {
-    const col1: Column = [c.calibrate, c.help, c.controls, c.zone, c.zoneNote];
+    const col1: Column = [c.gateSetup, c.calibrate, c.help, c.controls, c.zone, c.zoneNote];
     const col2: Column = [c.distance, c.range, c.rangeNote];
     (c.zone ? col2 : col1).push(c.occupancy);
     columns.push(

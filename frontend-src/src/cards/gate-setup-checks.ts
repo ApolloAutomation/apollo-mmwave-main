@@ -75,8 +75,9 @@ function zoneIds(m: EntityMap): (string | undefined)[] {
   return [m.zone_1_start, m.end_zone_1, m.end_zone_2, m.end_zone_3];
 }
 
-/** The entities whose states decide the checks (and "offline"). */
-function checkedIds(m: EntityMap, profile: RadarProfile): string[] {
+/** The entities whose states decide the checks (and "offline"). The strategy
+ *  leaves the card off a tab where none of them exists. */
+export function gateCheckedIds(m: EntityMap, profile: RadarProfile): string[] {
   return [
     m.engineering_mode,
     m.query_params,
@@ -303,7 +304,7 @@ export function gateSetupStatus(
 ): SetupStatus {
   if (!deviceId) return { kind: "no_device" };
   // No gate radar (an MTR-1), or nothing of one resolved.
-  const checked = profile ? checkedIds(map, profile) : [];
+  const checked = profile ? gateCheckedIds(map, profile) : [];
   if (!profile || checked.length === 0) return { kind: "nothing_to_check" };
   const states = checked.map((id) => hass.states[id]);
   if (!states.some(isLive)) return { kind: "offline" };
@@ -326,5 +327,5 @@ export function gateSetupStatus(
 /** The entity ids whose state changes can change `gateSetupStatus`. */
 export function gateWatchedIds(map: EntityMap, profile: RadarProfile | undefined): string[] {
   if (!profile) return [];
-  return [...checkedIds(map, profile), map.gate_size].filter((id): id is string => !!id);
+  return [...gateCheckedIds(map, profile), map.gate_size].filter((id): id is string => !!id);
 }
