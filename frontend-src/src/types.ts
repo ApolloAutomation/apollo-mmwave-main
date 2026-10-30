@@ -102,6 +102,8 @@ export interface EntityMap {
   zone_1_occupancy?: string;
   zone_2_occupancy?: string;
   zone_3_occupancy?: string;
+  // LD2410 only: on while anyone is in zone 1, 2 or 3 ("Radar Zone Occupancy").
+  zone_occupancy?: string;
 }
 
 export interface Ld2410CardConfig {

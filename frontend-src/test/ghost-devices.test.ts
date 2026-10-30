@@ -290,26 +290,34 @@ describe("help card on the sections strategies (dashboard and view)", () => {
     expect(cards.some((c) => c.content?.includes("Offline right now"))).toBe(true);
   });
 
-  it("starts a live MTR-1 tab with the zone map, no help card", () => {
+  it("starts a live MTR-1 tab with its Start here help above the zone map", () => {
     const { states, entities } = mtrFixture("1200");
     const hass = hassWith(states, entities, { mtr: MTR_DEVICE });
     const sections = generateViews(hass, {})[0].sections;
     for (const section of sections) expect(section.type).toBe("grid");
-    expect(sections[0].cards).toHaveLength(1);
-    expect(sections[0].cards[0].type).toBe("custom:apollo-radar-zone-map-card");
+    expect(sections[0].cards.map((c: any) => c.type)).toEqual([
+      "markdown",
+      "custom:apollo-radar-zone-map-card",
+    ]);
+    const help = sections[0].cards[0].content;
+    expect(help).toContain("Apollo mmWave");
+    expect(help).toContain("Start here");
+    expect(help).not.toContain("Offline right now");
     // The rest are the LD2450's own cards; with only target sensors that is
-    // the zone presence hint.
+    // the zone presence hint, then the Device card's support note.
     const rest = sectionCards(sections.slice(1));
-    expect(rest.map((c) => c.title)).toEqual(["Zone presence"]);
-    expect(sectionCards(sections).some((c) => c.content?.includes("Apollo mmWave"))).toBe(false);
+    expect(rest.map((c) => c.title)).toEqual(["Zone presence", "Device"]);
   });
 
   it("explains a forced device with nothing detectable on the dashboard strategy", () => {
     const sections = generateViews(mystery(), { devices: ["mystery"] })[0].sections;
     expect(sections).toHaveLength(1);
-    expect(sections[0].cards).toHaveLength(1);
+    // The help card, then the Device card's link to the device page.
+    expect(sections[0].cards).toHaveLength(2);
     expect(sections[0].cards[0].content).toContain("no radar data");
     expect(sections[0].cards[0].content).not.toContain("Offline right now");
+    expect(sections[0].cards[1]).toMatchObject({ type: "markdown", title: "Device" });
+    expect(sections[0].cards[1].content).toContain("/config/devices/device/mystery");
   });
 
   it("explains a forced device with nothing detectable on the view strategy", () => {

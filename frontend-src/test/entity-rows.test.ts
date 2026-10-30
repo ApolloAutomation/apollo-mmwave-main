@@ -1,13 +1,18 @@
 import { describe, it, expect } from "vitest";
 import {
+  aboutDistance,
   controlRows,
+  gateName,
   zoneConfigRows,
   moveThresholdRows,
   stillThresholdRows,
   rangeRows,
   occupancyRows,
   presentRows,
+  restartRadarRow,
 } from "../src/panels/entity-rows";
+import { deviceRows } from "../src/panels/device-rows";
+import { ld2450ControlRows } from "../src/panels/ld2450-rows";
 import { entityMapFromBaseName, entityMapFromDevice } from "../src/entities";
 import { LD2412_PROFILE } from "../src/profiles";
 import type { HomeAssistant } from "../src/types";
@@ -16,10 +21,38 @@ const base = "apollo_msr_2_m4c4dd";
 const m = entityMapFromBaseName(base);
 
 describe("row builders", () => {
-  it("controls include engineering mode and reboot", () => {
+  it("controls include engineering mode but leave the whole-device reboot to the Device card", () => {
     const ids = controlRows(m, "LD2410").map((r) => r.entity);
     expect(ids).toContain(`switch.${base}_radar_engineering_mode`);
-    expect(ids).toContain(`button.${base}_esp_reboot`);
+    expect(ids).not.toContain(`button.${base}_esp_reboot`);
+  });
+
+  it("names the radar's own Bluetooth so it is not taken for the Bluetooth proxy", () => {
+    expect(controlRows(m, "LD2410")).toContainEqual({
+      entity: `switch.${base}_ld2410_bluetooth`,
+      name: "Radar Bluetooth (HLK app)",
+    });
+  });
+
+  it("asks before Restart Radar and Factory Reset Radar press", () => {
+    const rows = controlRows(m, "LD2410");
+    expect(rows.find((r) => r.name === "Restart Radar")).toEqual({
+      entity: `button.${base}_restart_radar`,
+      name: "Restart Radar",
+      confirm: {
+        text: "Restart the LD2410 radar? It stops detecting for a few seconds while it starts up.",
+        action: "Restart",
+      },
+    });
+    expect(rows.find((r) => r.name === "Factory Reset Radar")?.confirm?.action).toBe("Reset");
+    expect(rows.filter((r) => !r.confirm).map((r) => r.name)).toEqual([
+      "Radar Engineering Mode",
+      "Radar Bluetooth (HLK app)",
+    ]);
+  });
+
+  it("adds no restart row for an unresolved button", () => {
+    expect(restartRadarRow(undefined, "LD2450")).toEqual([]);
   });
 
   it("adds the two LD2412 background-correction rows right after engineering mode", () => {
@@ -66,8 +99,109 @@ describe("row builders", () => {
     ]);
   });
 
-  it("occupancy has target/moving/still + 3 zones = 6 rows", () => {
-    expect(occupancyRows(m)).toHaveLength(6);
+  it("occupancy has target/moving/still + 3 zones + any zone = 7 rows", () => {
+    const rows = occupancyRows(m);
+    expect(rows).toHaveLength(7);
+    expect(rows[6]).toEqual({
+      entity: `binary_sensor.${base}_radar_zone_occupancy`,
+      name: "Any zone",
+    });
+  });
+
+  it("labels thresholds with the name function it is given", () => {
+    const names = moveThresholdRows(m, (n) => gateName(n, 0.75, "m")).map((r) => r.name);
+    expect(names.slice(0, 5)).toEqual([
+      "G0 (at the sensor)",
+      "G1 (about 0.75 m)",
+      "G2 (about 1.5 m)",
+      "G3 (about 2.3 m)",
+      "G4 (about 3 m)",
+    ]);
+    expect(stillThresholdRows(m, (n) => `Gate ${n}`)[8].name).toBe("Gate 8");
+  });
+});
+
+describe("gate distances", () => {
+  it("writes meters with two decimals below 1 m and one above", () => {
+    expect(aboutDistance(0.75, "m")).toBe("about 0.75 m");
+    expect(aboutDistance(0.2 * 3, "m")).toBe("about 0.6 m");
+    expect(aboutDistance(3, "m")).toBe("about 3 m");
+    expect(aboutDistance(9.75, "m")).toBe("about 9.8 m");
+  });
+
+  it("writes feet with one decimal below 3 ft and whole feet above", () => {
+    expect(aboutDistance(0.75, "ft")).toBe("about 2.5 ft");
+    expect(aboutDistance(3, "ft")).toBe("about 10 ft");
+    expect(aboutDistance(6, "ft")).toBe("about 20 ft");
+  });
+
+  it("names each gate by the far end of its band, gate 0 at the sensor", () => {
+    expect(gateName(0, 0.75, "ft")).toBe("G0 (at the sensor)");
+    expect(gateName(4, 0.75, "m")).toBe("G4 (about 3 m)");
+    expect(gateName(4, 0.75, "ft")).toBe("G4 (about 10 ft)");
+    expect(gateName(13, 0.5, "m")).toBe("G13 (about 6.5 m)");
+  });
+});
+
+describe("LD2450 control rows", () => {
+  const l = {
+    zone_type: "select.hall_zone_type",
+    timeout: "number.hall_timeout",
+    bluetooth: "switch.hall_ld2450_bluetooth",
+    restart: "button.hall_ld2450_restart",
+    factory_reset: "button.hall_factory_reset_ld2450",
+    targets: [{}, {}, {}],
+    zones: [{}, {}, {}],
+  };
+
+  it("names the radar's own Bluetooth and asks before both buttons", () => {
+    const rows = ld2450ControlRows(l);
+    expect(rows.map((r) => r.name)).toEqual([
+      "Zone Type",
+      "Radar Timeout",
+      "Radar Bluetooth (HLK app)",
+      "Restart Radar",
+      "Factory Reset Radar",
+    ]);
+    expect(rows.filter((r) => r.confirm).map((r) => r.entity)).toEqual([
+      "button.hall_ld2450_restart",
+      "button.hall_factory_reset_ld2450",
+    ]);
+  });
+});
+
+describe("Device card rows", () => {
+  const restart = { name: "Restart device", text: "Restart the whole device?" };
+
+  it("lists the versions, the update entity and a restart that asks first", () => {
+    const rows = deviceRows(
+      {
+        apollo_firmware: "sensor.den_apollo_firmware_version",
+        ld2410_firmware: "sensor.den_radar_firmware_version",
+        update: "update.den_firmware_update",
+        rssi: "sensor.den_rssi",
+        esp_reboot: "button.den_esp_reboot",
+      },
+      restart
+    );
+    expect(rows).toEqual([
+      { entity: "sensor.den_apollo_firmware_version", name: "Apollo firmware" },
+      { entity: "sensor.den_radar_firmware_version", name: "LD2410 firmware" },
+      { entity: "update.den_firmware_update", name: "Firmware update" },
+      {
+        entity: "button.den_esp_reboot",
+        name: "Restart device",
+        confirm: { text: "Restart the whole device?", action: "Restart" },
+      },
+    ]);
+  });
+
+  it("shows both chip versions on a device with two radars", () => {
+    const names = deviceRows(
+      { ld2412_firmware: "sensor.o_ld2412_firmware", ld2450_firmware: "sensor.o_ld2450_firmware" },
+      restart
+    ).map((r) => r.name);
+    expect(names).toEqual(["LD2412 firmware", "LD2450 firmware"]);
   });
 });
 
