@@ -122,6 +122,13 @@ export interface CalibrationOptions {
   margin_pct?: number;
 }
 
+/** The "Radar setup" card: checks one LD2450 device's settings. */
+export interface SetupCardConfig {
+  type: string;
+  device_id?: string;
+  title?: string;
+}
+
 export interface CalibrateCardConfig {
   type: string;
   device_id?: string;
