@@ -68,7 +68,8 @@ describe("profile tips", () => {
         ...(profile.maxBarTips ?? []),
         ...profile.rangeLabels,
         profile.gateSizeLabel,
-        profile.rangeTip,
+        profile.rangeTip("about 0.75 m"),
+        profile.rangeTip("about 2.5 ft"),
         profile.gateTip,
         rangeLimitTip(profile.label),
       ];
@@ -119,11 +120,30 @@ describe("help card builders", () => {
     ["a selected device with nothing detectable", nothingDetected],
   ];
 
+  /** No entities, except the LD2412's presence on a two-radar device, so its
+   *  tab gets the two-radar help (with no LD2412 entity it gets the LD2450's). */
+  function hassFor(dev: RadarDevice): HomeAssistant {
+    if (!dev.profile || !dev.ld2450) return emptyHass;
+    const id = dev.profile.entityMap(dev.base).radar_target!;
+    const state = dev.online ? "off" : "unavailable";
+    return {
+      states: { [id]: { entity_id: id, state, attributes: {} } },
+      entities: { [id]: { device_id: dev.deviceId } },
+      devices: { [dev.deviceId]: { name: dev.name } },
+    };
+  }
+
   it.each(DEVICES)("writes %s tab without em dashes", (_kind, dev) => {
-    const cards = buildDeviceCards(emptyHass, dev);
+    const cards = buildDeviceCards(hassFor(dev), dev);
     const markdown = cards.filter((c) => c.type === "markdown");
     expect(markdown.length).toBeGreaterThan(0);
     expect(copyProblems(strings(cards))).toEqual([]);
+  });
+
+  it("writes the two-radar help when the LD2412 is there", () => {
+    expect(buildDeviceCards(hassFor(ld2412), ld2412)[0].content).toMatch(
+      /^\*\*Office\*\*, Apollo mmWave with two radars\./
+    );
   });
 
   it("joins the device name to the zone-only and nothing-detected help with punctuation", () => {

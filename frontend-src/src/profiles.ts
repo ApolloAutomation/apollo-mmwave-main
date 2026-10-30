@@ -15,8 +15,10 @@ export interface RadarProfile {
   rangeLabels: [string, string];
   /** Label for the gate-size / distance-resolution select control. */
   gateSizeLabel: string;
-  /** One-line helper note shown under the Detection Range card. */
-  rangeTip: string;
+  /** One-line helper note shown under the Detection Range card.
+   *  `gateDepth` is one gate's depth in the user's unit, such as "about
+   *  0.75 m", so the note matches the help card and the threshold rows. */
+  rangeTip(gateDepth: string): string;
   /** One-line helper note shown under the Gate Config card. */
   gateTip: string;
   /** Apollo wiki page for tuning this radar. */
@@ -71,9 +73,11 @@ function radarTimeoutTip(holds: string): string {
   );
 }
 
-/** How deep one gate is at the stock gate size. The gate size control ships
- *  disabled, so the tips state the size rather than point at the control. */
-const GATE_DEPTH_TIP = "Each gate is about 0.75 m (2.5 ft) deep.";
+/** How deep one gate is. The gate size control ships disabled, so the tips
+ *  state the depth rather than point at the control. */
+function gateDepthTip(gateDepth: string): string {
+  return `Each gate is ${gateDepth} deep.`;
+}
 
 /**
  * HLK-LD2410 factory thresholds per gate (g0..g8). They match the commonly
@@ -95,10 +99,13 @@ export const LD2410_PROFILE: RadarProfile = {
   maxBarLabels: ["Max Move", "Max Still"],
   rangeLabels: ["Max Move Gate", "Max Still Gate"],
   gateSizeLabel: "Gate Size",
-  rangeTip:
-    "💡 **Max Move / Still Gate** cap the farthest gate used to detect moving vs. still targets; lower them to ignore distant motion. " +
-    `${GATE_DEPTH_TIP} ` +
-    radarTimeoutTip("**Radar Target**"),
+  rangeTip(gateDepth: string): string {
+    return (
+      "💡 **Max Move / Still Gate** cap the farthest gate used to detect moving vs. still targets; lower them to ignore distant motion. " +
+      `${gateDepthTip(gateDepth)} ` +
+      radarTimeoutTip("**Radar Target**")
+    );
+  },
   gateTip: GATE_TIP,
   wikiUrl:
     "https://wiki.apolloautomation.com/products/general/setup/apollo-mmwave-dashboard/",
@@ -154,10 +161,13 @@ export const LD2412_PROFILE: RadarProfile = {
   ],
   rangeLabels: ["Max Gate", "Min Gate"],
   gateSizeLabel: "Distance Resolution",
-  rangeTip:
-    "💡 **Max Gate** is the farthest gate the radar uses and **Min Gate** the nearest; raise Min Gate to ignore anything right next to the sensor. " +
-    `${GATE_DEPTH_TIP} ` +
-    radarTimeoutTip("**LD2412 Presence** (Radar Target)"),
+  rangeTip(gateDepth: string): string {
+    return (
+      "💡 **Max Gate** is the farthest gate the radar uses and **Min Gate** the nearest; raise Min Gate to ignore anything right next to the sensor. " +
+      `${gateDepthTip(gateDepth)} ` +
+      radarTimeoutTip("**LD2412 Presence** (Radar Target)")
+    );
+  },
   gateTip: GATE_TIP,
   wikiUrl:
     "https://wiki.apolloautomation.com/products/rpro1/setup/apollo-mmwave-dashboard/#r-pro-1-and-its-ld2412-radar",

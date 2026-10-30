@@ -194,11 +194,11 @@ describe("tuning notes", () => {
 
   it("adds the range tip only under a Detection Range card", () => {
     expect(titles(deviceHass())).toContain("LD2410 Detection Range");
-    expect(notes(deviceHass())).toContain(LD2410_PROFILE.rangeTip);
+    expect(notes(deviceHass())).toContain(LD2410_PROFILE.rangeTip("about 0.75 m"));
 
     const noRange = deviceHassWithout(m410.radar_timeout!, m410.max_move_distance!);
     expect(titles(noRange)).not.toContain("LD2410 Detection Range");
-    expect(notes(noRange)).not.toContain(LD2410_PROFILE.rangeTip);
+    expect(notes(noRange)).not.toContain(LD2410_PROFILE.rangeTip("about 0.75 m"));
   });
 
   it("adds the gate tip only with a threshold card", () => {
@@ -287,14 +287,14 @@ describe("occupancy history card", () => {
 });
 
 describe("calibrate card placement in sections", () => {
-  it("follows the gate setup card at the top of the first section for an LD2410 device", () => {
+  it("follows the help and gate setup cards at the top of the first section for an LD2410 device", () => {
     const sections = buildDeviceSections(deviceHass(), ld2410Dev, "in");
-    expect(sections[0].cards[0]).toEqual({ type: GATE_SETUP, device_id: "dev1", radar: "gate" });
-    expect(sections[0].cards[1].type).toBe("custom:apollo-radar-calibrate-card");
-    expect(sections[0].cards[2].type).toBe("markdown");
+    expect(sections[0].cards[0].type).toBe("markdown");
+    expect(sections[0].cards[1]).toEqual({ type: GATE_SETUP, device_id: "dev1", radar: "gate" });
+    expect(sections[0].cards[2].type).toBe("custom:apollo-radar-calibrate-card");
   });
 
-  it("follows the gate setup card at the top of the first section for an LD2412 device", () => {
+  it("follows the help and gate setup cards at the top of the first section for an LD2412 device", () => {
     const b = "apollo_r_pro_1_abcd";
     const id = `switch.${b}_ld2412_engineering_mode`;
     const hass: HomeAssistant = {
@@ -304,8 +304,9 @@ describe("calibrate card placement in sections", () => {
     };
     const dev = detectRadarDevices(hass)[0];
     const sections = buildDeviceSections(hass, dev);
-    expect(sections[0].cards[0]).toEqual({ type: GATE_SETUP, device_id: "rpro", radar: "gate" });
-    expect(sections[0].cards[1]).toMatchObject({
+    expect(sections[0].cards[0].type).toBe("markdown");
+    expect(sections[0].cards[1]).toEqual({ type: GATE_SETUP, device_id: "rpro", radar: "gate" });
+    expect(sections[0].cards[2]).toMatchObject({
       type: "custom:apollo-radar-calibrate-card",
       device_id: "rpro",
       device_base_name: b,
@@ -332,7 +333,7 @@ describe("calibrate card placement in sections", () => {
   it("keeps the card on an offline gate radar so it can render its own offline state", () => {
     const offline: RadarDevice = { ...ld2410Dev, online: false };
     const sections = buildDeviceSections(deviceHass(), offline, "in");
-    expect(sections[0].cards[1].type).toBe("custom:apollo-radar-calibrate-card");
+    expect(sections[0].cards[2].type).toBe("custom:apollo-radar-calibrate-card");
   });
 });
 
@@ -357,9 +358,9 @@ describe("buildDeviceSections column layout", () => {
   }
 
   const LD2412_COLUMN_1 = [
+    "markdown",
     GATE_SETUP,
     "Auto-calibrate",
-    "markdown",
     "LD2412 Controls",
     "LD2412 Target / Occupancy",
   ];
@@ -373,9 +374,9 @@ describe("buildDeviceSections column layout", () => {
     for (const section of sections) expect(section.type).toBe("grid");
     expect(layout(sections)).toEqual([
       [
+        "markdown",
         GATE_SETUP,
         "Auto-calibrate",
-        "markdown",
         "LD2410 Controls",
         "LD2410 Zone Config",
         "markdown",
@@ -454,7 +455,7 @@ describe("buildDeviceSections column layout", () => {
     const [dev] = detectRadarDevices(hass);
     expect(dev.profile?.key).toBe("ld2410");
     expect(dev.online).toBe(false);
-    const [setup, , help] = buildDeviceSections(hass, dev)[0].cards;
+    const [help, setup] = buildDeviceSections(hass, dev)[0].cards;
     // The setup card stays on an offline radar: it shows its own offline line.
     expect(setup).toEqual({ type: GATE_SETUP, device_id: "dev1", radar: "gate" });
     expect(help.type).toBe("markdown");
@@ -494,19 +495,20 @@ describe("profile tips", () => {
   it("point the gate tip at the calibrate card and say what the timeout holds in the range tip", () => {
     for (const profile of [LD2410_PROFILE, LD2412_PROFILE]) {
       expect(profile.gateTip).toContain("Calibrate with empty room");
-      expect(profile.rangeTip).toContain("Each gate is about 0.75 m (2.5 ft) deep.");
+      expect(profile.rangeTip("about 0.75 m")).toContain("Each gate is about 0.75 m deep.");
+      expect(profile.rangeTip("about 2.5 ft")).toContain("Each gate is about 2.5 ft deep.");
     }
-    expect(LD2410_PROFILE.rangeTip).toContain(
+    expect(LD2410_PROFILE.rangeTip("about 0.75 m")).toContain(
       "**Radar Timeout** is how long **Radar Target** stays on after the radar last detects someone"
     );
-    expect(LD2412_PROFILE.rangeTip).toContain(
+    expect(LD2412_PROFILE.rangeTip("about 0.75 m")).toContain(
       "**Radar Timeout** is how long **LD2412 Presence** (Radar Target) stays on"
     );
   });
 
   it("never send users to the gate size control, which ships hidden", () => {
     for (const profile of [LD2410_PROFILE, LD2412_PROFILE]) {
-      expect(profile.rangeTip).not.toContain(profile.gateSizeLabel);
+      expect(profile.rangeTip("about 0.75 m")).not.toContain(profile.gateSizeLabel);
     }
   });
 
@@ -962,10 +964,10 @@ describe("LD2450 cards beside the zone map", () => {
     expect(dev.profile?.key).toBe("ld2412");
     const sections = buildDeviceSections(hass, dev);
     expect(sections).toHaveLength(6);
-    // One setup card per radar: the LD2412's tops column 1, the LD2450's sits
-    // above the zone map.
-    expect(layout(sections)[0].slice(0, 2)).toEqual([SETUP, "Auto-calibrate"]);
-    expect(sections[0].cards[0]).toEqual({ type: SETUP, device_id: "rpro", radar: "gate" });
+    // One setup card per radar: the LD2412's sits under the help at the top
+    // of column 1, the LD2450's above the zone map.
+    expect(layout(sections)[0].slice(0, 3)).toEqual(["markdown", SETUP, "Auto-calibrate"]);
+    expect(sections[0].cards[1]).toEqual({ type: SETUP, device_id: "rpro", radar: "gate" });
     expect(sections[1].cards.map((c: any) => c.type)).toEqual(["heading", SETUP, ZONE_MAP]);
     expect(sections[1].cards[1]).toEqual({ type: SETUP, device_id: "rpro" });
     expect(layout([sections[2]])).toEqual([
@@ -1393,6 +1395,19 @@ describe("plain help, labels and the Device card", () => {
       (r: any) => r.name
     );
     expect(names[4]).toBe("G4 (about 0.8 m)");
+    // The note under Detection Range gives the same depth.
+    const notes = cardsOf(hass).map((c) => c.content);
+    expect(notes).toContain(LD2410_PROFILE.rangeTip("about 0.2 m"));
+    expect(LD2410_PROFILE.rangeTip("about 0.2 m")).toContain("Each gate is about 0.2 m deep.");
+  });
+
+  it("gives the gate depth under Detection Range in the user's unit", () => {
+    const range = (hass: HomeAssistant) => {
+      const cards = cardsOf(hass);
+      return cards[cards.findIndex((c) => c.title === "LD2410 Detection Range") + 1].content;
+    };
+    expect(range(msrHass())).toContain("Each gate is about 0.75 m deep.");
+    expect(range(msrHass({}, true))).toContain("Each gate is about 2.5 ft deep.");
   });
 
   it("shows how far out each threshold's gate reaches, in the user's unit", () => {
@@ -1483,17 +1498,19 @@ describe("plain help, labels and the Device card", () => {
     expect(steps(help(hassOf("mtr", device, ids)))).toEqual([
       "1. Fix anything the Radar setup card flags.",
       "2. Set **Cone rotation** (under Configure on the zone map) to match how the sensor is mounted.",
-      "3. Draw a zone on the map, then walk into it and watch it turn on under Zone presence.",
+      "3. Draw a zone on the map, reload this page, then walk into the zone and watch it" +
+        " turn on under Zone presence.",
     ]);
     const noSetup = hassOf("mtr", device, { [`sensor.${mtr}_target_1_x`]: "0" });
     expect(steps(help(noSetup))).toHaveLength(2);
     expect(help(noSetup)).toContain("**LD2450 Presence** for anywhere the radar sees");
   });
 
-  it("puts the gate radar's setup card first on an MSR-1 and points step 1 at it", () => {
+  it("puts the gate radar's setup card right under the help on an MSR-1 and points step 1 at it", () => {
     const hass = msrHass();
     const sections = buildDeviceSections(hass, deviceOf(hass));
-    expect(sections[0].cards[0]).toEqual({ type: GATE_SETUP, device_id: "msr", radar: "gate" });
+    expect(sections[0].cards[0].type).toBe("markdown");
+    expect(sections[0].cards[1]).toEqual({ type: GATE_SETUP, device_id: "msr", radar: "gate" });
     const steps = help(hass)
       .split("\n")
       .filter((l) => /^\d\. /.test(l));
@@ -1513,13 +1530,14 @@ describe("plain help, labels and the Device card", () => {
     ]);
   });
 
-  it("leaves the gate setup card and its step off an R PRO-1 built without the LD2412", () => {
+  it("leaves the gate setup card and the LD2412 help off an R PRO-1 built without the LD2412", () => {
     const hass = hassOf(
       "rpro",
       { name: "Office", manufacturer: "ApolloAutomation", model: "R-PRO-1-W" },
       {
         [`sensor.${RPRO}_ld2450_target_1_x`]: "0",
         [`select.${RPRO}_ld2450_zone_type`]: "Disabled",
+        [`button.${RPRO}_esp_reboot`]: "unknown",
       }
     );
     const dev = deviceOf(hass);
@@ -1527,8 +1545,17 @@ describe("plain help, labels and the Device card", () => {
     expect(dev.profile?.key).toBe("ld2412");
     const setups = cardsOf(hass).filter((c) => c.type === GATE_SETUP);
     expect(setups).toEqual([{ type: GATE_SETUP, device_id: "rpro" }]);
-    expect(help(hass)).not.toContain("LD2412's Radar setup card");
-    expect(help(hass)).toContain("1. Press **Calibrate with empty room**");
+    // The help and the restart describe the one radar it has.
+    const content = help(hass);
+    expect(content).toMatch(/^\*\*Office\*\*, Apollo mmWave \(LD2450 tracking radar\)\./);
+    expect(content).not.toContain("two radars");
+    expect(content).not.toContain("LD2412");
+    expect(content).not.toContain("Calibrate with empty room");
+    expect(content).toContain("1. Fix anything the Radar setup card flags.");
+    const cards = cardsOf(hass);
+    const [restart] = cards[cards.length - 1].cards[0].entities;
+    expect(restart.name).toBe("Restart device (also restarts the radar)");
+    expect(restart.tap_action.confirmation.text).not.toContain("Both radars");
   });
 
   it("never gives an MTR-1 a gate setup card", () => {

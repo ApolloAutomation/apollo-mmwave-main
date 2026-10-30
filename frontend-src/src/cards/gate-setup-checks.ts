@@ -11,8 +11,9 @@
  *   turning it off would fail the job. Until the card knows (`JobActivity`
  *   "unknown") the line is held back.
  * - Settings the radar has not reported: a threshold, a range gate or the
- *   timeout reads "unknown", so its row is blank and calibration refuses to
- *   start. The query params button only asks the radar to send them.
+ *   timeout reads "unknown", so its row is blank, and an unread threshold
+ *   stops calibration from starting. The query params button only asks the
+ *   radar to send them.
  * - LD2410 distance zones that can never turn on. The firmware counts Zone 1
  *   from Start Zone 1 up to End Zone 1, and each later zone from past the
  *   previous end up to its own, so an end at or below the one before leaves

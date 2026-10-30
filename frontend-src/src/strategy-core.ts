@@ -265,6 +265,10 @@ interface HelpContext {
   /** Whether the gate radar's presence sensor exists. An R PRO-1 built
    *  without the optional LD2412 has none to recommend. */
   gatePresence: boolean;
+  /** Whether the device has any of the gate radar's entities. An R PRO-1
+   *  built without the optional LD2412 keeps the LD2412 profile from its
+   *  registry model, but has only the LD2450. */
+  gateRadar: boolean;
 }
 
 function helpCard(dev: RadarDevice, ctx: HelpContext): Record<string, any> {
@@ -333,11 +337,14 @@ function helpCardBody(dev: RadarDevice, ctx: HelpContext): Record<string, any> {
         deviceLink(dev),
     };
   }
-  if (!dev.profile) {
+  // An LD2450 alone: an MTR-1, or an R PRO-1 built without the LD2412. A
+  // new zone's sensor joins Zone presence only after a page reload.
+  if (!dev.profile || (dev.ld2450 && !ctx.gateRadar)) {
     const steps = [
       ...(ctx.ld2450Setup ? ["Fix anything the Radar setup card flags."] : []),
       "Set **Cone rotation** (under Configure on the zone map) to match how the sensor is mounted.",
-      "Draw a zone on the map, then walk into it and watch it turn on under Zone presence.",
+      "Draw a zone on the map, reload this page, then walk into the zone and watch it" +
+        " turn on under Zone presence.",
     ];
     return {
       type: "markdown",
@@ -432,9 +439,10 @@ export const SUPPORT_FILE_NOTE =
   " [Apollo mmWave](/config/integrations/integration/apollo_mmwave), then pick" +
   " **Download diagnostics** from the three dots menu.";
 
-/** The whole-device restart, named for what it takes down with it. */
-function deviceRestart(dev: RadarDevice): DeviceRestart {
-  if (dev.profile && dev.ld2450) {
+/** The whole-device restart, named for what it takes down with it.
+ *  `gateRadar` is whether the device has any of the gate radar's entities. */
+function deviceRestart(dev: RadarDevice, gateRadar: boolean): DeviceRestart {
+  if (dev.profile && gateRadar && dev.ld2450) {
     return {
       name: "Restart device (both radars)",
       text:
@@ -464,9 +472,14 @@ function deviceRestart(dev: RadarDevice): DeviceRestart {
  * no dashboard regeneration and stays hidden while the device is offline (an
  * "unavailable" state is not below anything).
  */
-function deviceCard(hass: HomeAssistant, dev: RadarDevice): Record<string, any> {
+function deviceCard(
+  hass: HomeAssistant,
+  dev: RadarDevice,
+  gateRadar: boolean
+): Record<string, any> {
   const d = deviceInfoEntities(hass, dev.deviceId);
-  const rows = entitiesCard(DEVICE_TITLE, presentRows(hass, deviceRows(d, deviceRestart(dev))));
+  const restart = deviceRestart(dev, gateRadar);
+  const rows = entitiesCard(DEVICE_TITLE, presentRows(hass, deviceRows(d, restart)));
   const cards: Record<string, any>[] = rows ? [rows] : [];
   if (exists(hass, d.rssi)) {
     cards.push({
@@ -577,7 +590,8 @@ function builtInZonesCard(
 
 interface DeviceCards {
   help: Record<string, any>;
-  /** The gate radar's "Radar setup" card, first on every gate-radar tab. */
+  /** The gate radar's "Radar setup" card, under the help card on every
+   *  gate-radar tab. */
   gateSetup?: Record<string, any>;
   /** The auto-calibrate card, right below it. */
   calibrate?: Record<string, any>;
@@ -626,6 +640,7 @@ function cardMap(
   const unit = lengthUnit(hass);
   let gateSizeM = DEFAULT_GATE_SIZE_M;
   let gatePresence = false;
+  let gateRadar = false;
   const cards: Partial<DeviceCards> = {};
   // On a tab with two radars (R PRO-1) each history line names its chip.
   const twoRadars = !!dev.profile && dev.ld2450;
@@ -656,6 +671,9 @@ function cardMap(
       : undefined;
     gateSizeM = gateSizeMeters(hass, m);
     gatePresence = exists(hass, m.radar_target);
+    // The help card and the Device card's restart describe the radars the
+    // device has, not the ones its registry model can carry.
+    gateRadar = !!cards.gateSetup || gatePresence;
     // Each threshold row says how far out its gate reaches.
     const gate = (n: number) => gateName(n, gateSizeM, unit);
     historyRows.push(...historyEntities(m, twoRadars ? label : undefined));
@@ -676,7 +694,10 @@ function cardMap(
       presentRows(hass, controlRows(m, label))
     );
     cards.range = range;
-    cards.rangeNote = range ? noteCard(profile.rangeTip) : undefined;
+    // The note gives the same gate depth as the help card and the G rows.
+    cards.rangeNote = range
+      ? noteCard(profile.rangeTip(aboutDistance(gateSizeM, unit)))
+      : undefined;
     cards.zone = entitiesCard(
       `${label} Zone Config`,
       presentRows(hass, zoneConfigRows(m))
@@ -761,8 +782,9 @@ function cardMap(
     gateSetup: !!cards.gateSetup,
     ld2450Setup: !!cards.ld2450Setup,
     gatePresence,
+    gateRadar,
   });
-  cards.device = deviceCard(hass, dev);
+  cards.device = deviceCard(hass, dev, gateRadar);
   return cards as DeviceCards;
 }
 
@@ -816,8 +838,9 @@ export function buildDeviceSections(
   // LD2450 zone map gets its own column, the setup card right above it. On a
   // shared tab (R-PRO-1) a thin heading precedes them and the LD2450's status
   // and settings fill one more column next to the map; on a zone-only device
-  // (MTR-1) the tab title already names the device, the help card leads, and
-  // the LD2450's cards split into two columns so each reads at a glance.
+  // (MTR-1) the tab title already names the device, the help card leads as on
+  // every tab, and the LD2450's cards split into two columns so each reads at
+  // a glance.
   const zoneColumns: Column[] = [];
   if (c.zoneMap) {
     if (dev.profile) {
@@ -835,16 +858,17 @@ export function buildDeviceSections(
   }
 
   const columns: Column[] = [];
-  // Gate-radar tuning columns: setup+calibrate+help+controls |
+  // Gate-radar tuning columns: help+setup+calibrate+controls |
   // distance+config | gate-energy+move | history+still. LD2412 has no Zone
   // Config, so column 1 is short; put occupancy there instead of column 2 to
   // balance it.
   //
-  // Section order is also the phone's reading order. On a tab with both
-  // radars (R-PRO-1) the zone map and the LD2450's cards follow column 1, so
-  // a phone reaches them before the 28 LD2412 threshold rows.
+  // Section order is also the phone's reading order. The help card leads, so
+  // its steps come before the cards they point at. On a tab with both radars
+  // (R-PRO-1) the zone map and the LD2450's cards follow column 1, so a phone
+  // reaches them before the 28 LD2412 threshold rows.
   if (dev.profile) {
-    const col1: Column = [c.gateSetup, c.calibrate, c.help, c.controls, c.zone, c.zoneNote];
+    const col1: Column = [c.help, c.gateSetup, c.calibrate, c.controls, c.zone, c.zoneNote];
     const col2: Column = [c.distance, c.range, c.rangeNote];
     (c.zone ? col2 : col1).push(c.occupancy);
     columns.push(
