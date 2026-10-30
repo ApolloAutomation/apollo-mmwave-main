@@ -1391,9 +1391,9 @@ describe("plain help, labels and the Device card", () => {
   it("follows the gate size control once the user enables it", () => {
     const hass = msrHass({ [`select.${MSR}_radar_distance_resolution`]: "0.2m" });
     expect(help(hass)).toContain("(each gate is about 0.2 m)");
-    const names = byTitle(cardsOf(hass), "LD2410 Move Thresholds").entities.map(
-      (r: any) => r.name
-    );
+    const names = byTitle(cardsOf(hass), "LD2410 Move Thresholds")
+      .entities.filter((r: any) => r.entity)
+      .map((r: any) => r.name);
     expect(names[4]).toBe("G4 (about 0.8 m)");
     // The note under Detection Range gives the same depth.
     const notes = cardsOf(hass).map((c) => c.content);
@@ -1412,7 +1412,9 @@ describe("plain help, labels and the Device card", () => {
 
   it("shows how far out each threshold's gate reaches, in the user's unit", () => {
     const names = (hass: HomeAssistant, title: string) =>
-      byTitle(cardsOf(hass), title).entities.map((r: any) => r.name);
+      byTitle(cardsOf(hass), title)
+        .entities.filter((r: any) => r.entity)
+        .map((r: any) => r.name);
     expect(names(msrHass(), "LD2410 Move Thresholds").slice(0, 5)).toEqual([
       "G0 (at the sensor)",
       "G1 (about 0.75 m)",
@@ -1650,5 +1652,189 @@ describe("plain help, labels and the Device card", () => {
     const cards = cardsOf(rproHass());
     expect(cards.some((c) => c.content === LD2450_TIMEOUT_NOTE)).toBe(false);
     expect(LD2450_TIMEOUT_NOTE).toContain("does not hold the zones you draw");
+  });
+});
+
+describe("slider lock rows", () => {
+  const MSR = "apollo_msr_2_abc123";
+  const RPRO = "apollo_r_pro_1_7a711c";
+  const MTR = "apollo_mtr_1_cbbdb4";
+  const LOCK = "custom:apollo-radar-slider-lock-row";
+  const SLIDER = "custom:apollo-radar-slider-row";
+  /** What the firmware reports for a threshold: Home Assistant draws a slider. */
+  const PERCENT = { mode: "auto", min: 0, max: 100, step: 1, unit_of_measurement: "%" };
+  const GATES = { mode: "auto", min: 1, max: 13, step: 1 };
+  /** Radar Timeout spans 900 steps, so Home Assistant draws a box. */
+  const TIMEOUT = { mode: "auto", min: 0, max: 900, step: 1, unit_of_measurement: "s" };
+
+  /** `deviceId` owning `ids` (id to attributes), every state "20". */
+  function hassOf(
+    deviceId: string,
+    device: HomeAssistant["devices"][string],
+    ids: Record<string, Record<string, any>>
+  ): HomeAssistant {
+    const states: Record<string, HassEntity> = {};
+    const entities: HomeAssistant["entities"] = {};
+    for (const [id, attributes] of Object.entries(ids)) {
+      states[id] = { entity_id: id, state: "20", attributes };
+      entities[id] = { device_id: deviceId, platform: "esphome" };
+    }
+    return { states, entities, devices: { [deviceId]: device } };
+  }
+
+  /** A gate radar's range and threshold numbers, plus `extra`. */
+  function gateIds(
+    m: ReturnType<typeof LD2410_PROFILE.entityMap>,
+    threshold: Record<string, any> = PERCENT
+  ): Record<string, Record<string, any>> {
+    const ids: Record<string, Record<string, any>> = {
+      [m.engineering_mode!]: {},
+      [m.radar_timeout!]: TIMEOUT,
+      [m.max_move_distance!]: GATES,
+      [m.max_still_distance!]: GATES,
+      [m.radar_target!]: {},
+    };
+    for (const id of [...m.move_threshold, ...m.still_threshold]) ids[id] = threshold;
+    return ids;
+  }
+
+  const MSR_DEVICE = { name: "Den MSR-2", manufacturer: "ApolloAutomation", model: "MSR-2" };
+  const RPRO_DEVICE = { name: "Office", manufacturer: "ApolloAutomation", model: "R-PRO-1-W" };
+
+  function msrHass(extra: Record<string, Record<string, any>> = {}): HomeAssistant {
+    return hassOf("msr", MSR_DEVICE, { ...gateIds(LD2410_PROFILE.entityMap(MSR)), ...extra });
+  }
+
+  function rproHass(): HomeAssistant {
+    const r = LD2412_PROFILE.entityMap(RPRO);
+    return hassOf("rpro", RPRO_DEVICE, {
+      ...gateIds(r),
+      [r.gate_size!]: { options: ["0.2m", "0.5m", "0.75m"] },
+      [`select.${RPRO}_ld2450_zone_type`]: { options: ["Disabled", "Detection", "Filter"] },
+      [`number.${RPRO}_ld2450_timeout`]: TIMEOUT,
+      [`number.${RPRO}_ld2450_zone_1_x1`]: { mode: "box", min: -4860, max: 4860, step: 1 },
+      [`sensor.${RPRO}_ld2450_target_1_x`]: {},
+    });
+  }
+
+  const cardsOf = (hass: HomeAssistant) =>
+    buildDeviceCards(hass, detectRadarDevices(hass)[0]);
+  const byTitle = (cards: Record<string, any>[], title: string): Record<string, any> =>
+    cards.find((c) => c.title === title)!;
+  const slider = (entity: string, name: string, device_id: string) => ({
+    type: SLIDER,
+    entity,
+    name,
+    device_id,
+  });
+  const LOCKED = /apollo-radar-slider/;
+
+  it("puts the LD2410 range gates behind the lock and leaves Radar Timeout and Gate Size alone", () => {
+    const m = LD2410_PROFILE.entityMap(MSR);
+    expect(byTitle(cardsOf(msrHass()), "LD2410 Detection Range").entities).toEqual([
+      { entity: m.radar_timeout, name: "Radar Timeout" },
+      { type: LOCK, device_id: "msr" },
+      slider(m.max_move_distance!, "Max Move Gate", "msr"),
+      slider(m.max_still_distance!, "Max Still Gate", "msr"),
+    ]);
+    const withGateSize = msrHass({ [m.gate_size!]: { options: ["0.2m", "0.75m"] } });
+    expect(byTitle(cardsOf(withGateSize), "LD2410 Detection Range").entities).toEqual([
+      { entity: m.radar_timeout, name: "Radar Timeout" },
+      { entity: m.gate_size, name: LD2410_PROFILE.gateSizeLabel },
+      { type: LOCK, device_id: "msr" },
+      slider(m.max_move_distance!, "Max Move Gate", "msr"),
+      slider(m.max_still_distance!, "Max Still Gate", "msr"),
+    ]);
+  });
+
+  it("puts the LD2412 Max Gate and Min Gate behind the lock on an R PRO-1", () => {
+    const r = LD2412_PROFILE.entityMap(RPRO);
+    expect(byTitle(cardsOf(rproHass()), "LD2412 Detection Range").entities).toEqual([
+      { entity: r.radar_timeout, name: "Radar Timeout" },
+      { entity: r.gate_size, name: "Distance Resolution" },
+      { type: LOCK, device_id: "rpro" },
+      slider(r.max_move_distance!, "Max Gate", "rpro"),
+      slider(r.max_still_distance!, "Min Gate", "rpro"),
+    ]);
+  });
+
+  it("starts each threshold card with the lock row, then every gate's slider", () => {
+    for (const [hass, label, id, profile, base, gates] of [
+      [msrHass(), "LD2410", "msr", LD2410_PROFILE, MSR, 9],
+      [rproHass(), "LD2412", "rpro", LD2412_PROFILE, RPRO, 14],
+    ] as const) {
+      const m = profile.entityMap(base);
+      for (const [title, ids] of [
+        [`${label} Move Thresholds`, m.move_threshold],
+        [`${label} Still Thresholds`, m.still_threshold],
+      ] as const) {
+        const rows = byTitle(cardsOf(hass), title).entities;
+        expect(rows[0]).toEqual({ type: LOCK, device_id: id });
+        expect(rows).toHaveLength(gates + 1);
+        rows.slice(1).forEach((r: any, n: number) => {
+          expect(r).toEqual({ type: SLIDER, entity: ids[n], name: expect.any(String), device_id: id });
+        });
+        expect(rows[1].name).toBe("G0 (at the sensor)");
+        expect(rows.filter((r: any) => r.type === LOCK)).toHaveLength(1);
+      }
+    }
+  });
+
+  it("locks nothing on the other cards or on an MTR-1 tab", () => {
+    const gateCards = /(Detection Range|Move Thresholds|Still Thresholds)$/;
+    for (const hass of [msrHass(), rproHass()]) {
+      const cards = cardsOf(hass);
+      expect(cards.filter((c) => LOCKED.test(JSON.stringify(c))).map((c) => c.title)).toEqual(
+        cards.filter((c) => gateCards.test(c.title ?? "")).map((c) => c.title)
+      );
+    }
+    const mtr = hassOf(
+      "mtr",
+      { name: "Hall MTR-1", manufacturer: "ApolloAutomation", model: "MTR-1" },
+      {
+        [`select.${MTR}_zone_type`]: { options: ["Disabled", "Detection", "Filter"] },
+        [`number.${MTR}_timeout`]: TIMEOUT,
+        [`number.${MTR}_zone_1_x1`]: { mode: "box", min: -4860, max: 4860, step: 1 },
+        [`sensor.${MTR}_target_1_x`]: {},
+      }
+    );
+    const sections = buildDeviceSections(mtr, detectRadarDevices(mtr)[0]);
+    expect(JSON.stringify(sections)).toContain("LD2450 Controls");
+    expect(JSON.stringify(sections)).not.toMatch(LOCKED);
+  });
+
+  it("leaves a number Home Assistant draws as a box unlocked, with no lock row for it alone", () => {
+    const m = LD2410_PROFILE.entityMap(MSR);
+    const box = { mode: "box", min: 0, max: 100, step: 1 };
+    const moveBoxes = Object.fromEntries(m.move_threshold.map((id) => [id, box]));
+    const cards = cardsOf(msrHass(moveBoxes));
+    const move = byTitle(cards, "LD2410 Move Thresholds").entities;
+    expect(move).toHaveLength(9);
+    expect(move[0]).toEqual({ entity: m.move_threshold[0], name: "G0 (at the sensor)" });
+    expect(JSON.stringify(move)).not.toMatch(LOCKED);
+    // The still thresholds are sliders still.
+    expect(byTitle(cards, "LD2410 Still Thresholds").entities[0]).toEqual({
+      type: LOCK,
+      device_id: "msr",
+    });
+  });
+
+  it("keeps the lock on a DIY radar whose numbers report no mode", () => {
+    // deviceHass() has no registry model and empty attributes.
+    const move = buildDeviceCards(deviceHass(), ld2410Dev).find(
+      (c: any) => c.title === "LD2410 Move Thresholds"
+    ) as any;
+    expect(move.entities).toEqual([
+      { type: LOCK, device_id: "dev1" },
+      slider(m410.move_threshold[0], "G0 (at the sensor)", "dev1"),
+    ]);
+  });
+
+  it("keeps the three cards as Home Assistant's entities cards, in the same columns", () => {
+    const sections = buildDeviceSections(msrHass(), detectRadarDevices(msrHass())[0]);
+    for (const title of ["LD2410 Detection Range", "LD2410 Move Thresholds", "LD2410 Still Thresholds"]) {
+      const card = sections.flatMap((s) => s.cards).find((c: any) => c.title === title);
+      expect(card).toMatchObject({ type: "entities", show_header_toggle: false });
+    }
   });
 });

@@ -62,6 +62,7 @@ export function rangeLimitTip(label: string): string {
 /** Gate Config note, the same for both chips. */
 const GATE_TIP =
   "💡 Each gate's **move / still threshold** is how strong a signal must be to count as presence at that distance. Lower = more sensitive (more false triggers), higher = less. Turn on **Radar Engineering Mode** and watch the Gate Energy chart while you move around to pick values. " +
+  "The sliders start locked, so a scroll cannot move them. Press **Unlock** above them to change one. " +
   CALIBRATE_TIP;
 
 /** Sentence shared by both chips' range tips: what the timeout holds, and

@@ -12,7 +12,7 @@ import {
   restartRadarRow,
 } from "../src/panels/entity-rows";
 import { deviceRows } from "../src/panels/device-rows";
-import { ld2450ControlRows } from "../src/panels/ld2450-rows";
+import { builtInZoneRows, ld2450ControlRows, ld2450LiveRows } from "../src/panels/ld2450-rows";
 import { entityMapFromBaseName, entityMapFromDevice } from "../src/entities";
 import { LD2412_PROFILE } from "../src/profiles";
 import type { HomeAssistant } from "../src/types";
@@ -97,6 +97,38 @@ describe("row builders", () => {
       "Max Move Gate",
       "Max Still Gate",
     ]);
+  });
+
+  it("marks only the two range gates and every threshold for the slider lock", () => {
+    const range = rangeRows(m, ["Max Move Gate", "Max Still Gate"], "Gate Size");
+    expect(range.filter((r) => r.slider).map((r) => r.name)).toEqual([
+      "Max Move Gate",
+      "Max Still Gate",
+    ]);
+    // Radar Timeout is a box and Gate Size a select: a scroll moves neither.
+    expect(range.slice(0, 2).every((r) => r.slider === undefined)).toBe(true);
+    for (const r of [...moveThresholdRows(m), ...stillThresholdRows(m)]) {
+      expect(r.slider, r.name).toBe(true);
+    }
+    const l = {
+      zone_type: "select.hall_zone_type",
+      timeout: "number.hall_timeout",
+      presence: "binary_sensor.hall_presence",
+      targets: [],
+      zones: [{ x1: "number.hall_zone_1_x1", y1: "number.hall_zone_1_y1" }],
+    };
+    const plain = [
+      ...zoneConfigRows(m),
+      ...controlRows(m, "LD2410"),
+      ...occupancyRows(m),
+      ...ld2450ControlRows(l),
+      ...ld2450LiveRows(l),
+      ...builtInZoneRows(l, 0),
+    ];
+    expect(plain.length).toBeGreaterThan(15);
+    for (const r of plain) {
+      expect(r.slider, r.name).toBeUndefined();
+    }
   });
 
   it("occupancy has target/moving/still + 3 zones + any zone = 7 rows", () => {
@@ -222,8 +254,8 @@ describe("row builders on an LD2412 map", () => {
     expect(rows).toEqual([
       { entity: `number.${b}_ld2412_timeout`, name: "Radar Timeout" },
       { entity: `select.${b}_ld2412_distance_resolution`, name: "Distance Resolution" },
-      { entity: `number.${b}_ld2412_max_distance_gate`, name: "Max Gate" },
-      { entity: `number.${b}_ld2412_min_distance_gate`, name: "Min Gate" },
+      { entity: `number.${b}_ld2412_max_distance_gate`, name: "Max Gate", slider: true },
+      { entity: `number.${b}_ld2412_min_distance_gate`, name: "Min Gate", slider: true },
     ]);
   });
 
@@ -241,7 +273,7 @@ describe("row builders on a sparse registry map", () => {
       devices: { dev1: { name: "Kitchen radar" } },
     };
     const sparse = entityMapFromDevice(hass, "dev1")!;
-    expect(moveThresholdRows(sparse)).toEqual([{ entity: id, name: "G3" }]);
+    expect(moveThresholdRows(sparse)).toEqual([{ entity: id, name: "G3", slider: true }]);
     expect(stillThresholdRows(sparse)).toEqual([]);
   });
 });

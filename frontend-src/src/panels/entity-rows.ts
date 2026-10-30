@@ -7,11 +7,19 @@ export interface Row {
   /** For a button that must not go off on one stray tap: the question Home
    *  Assistant asks before pressing it, and the row's button text. */
   confirm?: { text: string; action: string };
+  /** A slider the slider lock covers (cards/slider-lock-rows.ts). */
+  slider?: true;
 }
 
 /** One row for a resolved entity, none for an unresolved slot. */
 export function row(entity: string | undefined, name: string): Row[] {
   return entity ? [{ entity, name }] : [];
+}
+
+/** A row for a number Home Assistant draws as a slider, which the strategy
+ *  puts behind the radar's slider lock. */
+export function sliderRow(entity: string | undefined, name: string): Row[] {
+  return entity ? [{ entity, name, slider: true }] : [];
 }
 
 /** A button row that asks `text` before it presses, with `action` as its
@@ -80,8 +88,8 @@ export function rangeRows(
   return [
     ...row(m.radar_timeout, "Radar Timeout"),
     ...row(m.gate_size, gateSizeLabel),
-    ...row(m.max_move_distance, rangeLabels[0]),
-    ...row(m.max_still_distance, rangeLabels[1]),
+    ...sliderRow(m.max_move_distance, rangeLabels[0]),
+    ...sliderRow(m.max_still_distance, rangeLabels[1]),
   ];
 }
 
@@ -121,7 +129,7 @@ export function moveThresholdRows(
 ): Row[] {
   const rows: Row[] = [];
   for (let n = 0; n < m.move_threshold.length; n++) {
-    rows.push(...row(m.move_threshold[n], name(n)));
+    rows.push(...sliderRow(m.move_threshold[n], name(n)));
   }
   return rows;
 }
@@ -133,7 +141,7 @@ export function stillThresholdRows(
 ): Row[] {
   const rows: Row[] = [];
   for (let n = 0; n < m.still_threshold.length; n++) {
-    rows.push(...row(m.still_threshold[n], name(n)));
+    rows.push(...sliderRow(m.still_threshold[n], name(n)));
   }
   return rows;
 }

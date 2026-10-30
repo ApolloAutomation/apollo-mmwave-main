@@ -14,6 +14,7 @@ import "../src/cards/setup-card";
 import "../src/strategy";
 import * as setupChecks from "../src/cards/setup-checks";
 import * as gateSetupChecks from "../src/cards/gate-setup-checks";
+import * as sliderLock from "../src/cards/slider-lock";
 import {
   LD2410_PROFILE,
   LD2412_PROFILE,
@@ -368,5 +369,15 @@ describe("controls and zone map copy", () => {
       "Show the map in feet",
     ]);
     expect(copyProblems(texts)).toEqual([]);
+  });
+});
+
+describe("slider lock copy", () => {
+  it("writes the lock row, the toasts and the tip without em dashes", () => {
+    const texts = strings(Object.values(sliderLock));
+    expect(texts).toContain(sliderLock.REMINDER_TOAST);
+    expect(texts).toContain(sliderLock.UNLOCKED_HINT);
+    expect(copyProblems(texts)).toEqual([]);
+    expect(LD2410_PROFILE.gateTip).toContain("The sliders start locked");
   });
 });

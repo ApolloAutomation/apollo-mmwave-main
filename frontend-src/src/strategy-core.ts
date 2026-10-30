@@ -33,6 +33,7 @@ import {
 import { deviceRows, type DeviceRestart } from "./panels/device-rows";
 import { historyEntities, ld2450HistoryEntities, type HistoryRow } from "./panels/history";
 import { gateCheckedIds } from "./cards/gate-setup-checks";
+import { SLIDER_LOCK_ROW_TAG, SLIDER_ROW_TAG, showsSlider } from "./cards/slider-lock";
 
 export interface RadarDevice {
   deviceId: string;
@@ -212,10 +213,13 @@ export function strategyDevices(
   return detectRadarDevices(hass);
 }
 
+/** An entities card of `rows`, none without rows. With `lockDevice`, its
+ *  slider rows go behind that radar's slider lock (`entityRows`). */
 function entitiesCard(
   title: string,
   rows: Row[],
-  options: Record<string, any> = {}
+  options: Record<string, any> = {},
+  lockDevice?: string
 ): Record<string, any> | undefined {
   if (rows.length === 0) return undefined;
   return {
@@ -223,8 +227,46 @@ function entitiesCard(
     title,
     show_header_toggle: false,
     ...options,
-    entities: rows.map(entityRow),
+    entities: entityRows(rows, lockDevice),
   };
+}
+
+/** The card's rows. With a device, each slider row goes behind that radar's
+ *  slider lock (cards/slider-lock-rows.ts), and the lock row sits right above
+ *  the first slider, next to what it locks, so a box above it (Radar Timeout)
+ *  reads as unlocked. */
+function entityRows(rows: Row[], lockDevice?: string): Record<string, any>[] {
+  const out: Record<string, any>[] = [];
+  let lockRow = false;
+  for (const r of rows) {
+    if (!lockDevice || !r.slider) {
+      out.push(entityRow(r));
+      continue;
+    }
+    if (!lockRow) {
+      out.push({ type: `custom:${SLIDER_LOCK_ROW_TAG}`, device_id: lockDevice });
+      lockRow = true;
+    }
+    out.push({
+      type: `custom:${SLIDER_ROW_TAG}`,
+      entity: r.entity,
+      name: r.name,
+      device_id: lockDevice,
+    });
+  }
+  return out;
+}
+
+/** A number Home Assistant draws as a box (a DIY build with mode: box) needs
+ *  no lock: a scroll cannot change a box. A state without a mode keeps the
+ *  lock, the safe side. */
+function unlockBoxes(hass: HomeAssistant, rows: Row[]): Row[] {
+  return rows.map((r) => {
+    const s = hass.states[r.entity];
+    return r.slider && s?.attributes.mode !== undefined && !showsSlider(s)
+      ? { entity: r.entity, name: r.name }
+      : r;
+  });
 }
 
 /**
@@ -677,17 +719,27 @@ function cardMap(
     // Each threshold row says how far out its gate reaches.
     const gate = (n: number) => gateName(n, gateSizeM, unit);
     historyRows.push(...historyEntities(m, twoRadars ? label : undefined));
+    // The three cards with sliders share the radar's slider lock.
     const range = entitiesCard(
       `${label} Detection Range`,
-      presentRows(hass, rangeRows(m, profile.rangeLabels, profile.gateSizeLabel))
+      unlockBoxes(
+        hass,
+        presentRows(hass, rangeRows(m, profile.rangeLabels, profile.gateSizeLabel))
+      ),
+      {},
+      dev.deviceId
     );
     const moveThr = entitiesCard(
       `${label} Move Thresholds`,
-      presentRows(hass, moveThresholdRows(m, gate))
+      unlockBoxes(hass, presentRows(hass, moveThresholdRows(m, gate))),
+      {},
+      dev.deviceId
     );
     const stillThr = entitiesCard(
       `${label} Still Thresholds`,
-      presentRows(hass, stillThresholdRows(m, gate))
+      unlockBoxes(hass, presentRows(hass, stillThresholdRows(m, gate))),
+      {},
+      dev.deviceId
     );
     cards.controls = entitiesCard(
       `${label} Controls`,
