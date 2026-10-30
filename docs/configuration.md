@@ -321,17 +321,18 @@ the **Zone Map** heading. On a phone they read top to bottom in this order:
   [Drawing zones](#drawing-zones).
 - **Zone presence** lists each zone's presence sensor, colored while someone
   is in the zone. A zone you just drew shows up here after you reload the
-  page.
+  page; a zone you delete leaves the list at once.
 - **LD2450 Live** shows what the radar reports right now: Presence, Moving
   Target, Still Target, Target Count, and each target's distance and
-  direction. If Presence turns on but the map shows no dot, see
-  [Troubleshooting](#troubleshooting).
+  direction. If the map shows no dot, check Presence here: off with you in
+  the room means the radar reports nobody (see
+  [Troubleshooting](#troubleshooting)).
 - **LD2450 Controls** holds Zone Type, Multi Target Tracking, Radar Timeout,
   Bluetooth, Restart Radar, Factory Reset Radar and Firmware, whichever your
-  sensor has. **Factory Reset Radar** resets the radar as soon as you tap
-  **Press**, with no question first. On the R PRO-1, Home Assistant hides
-  Multi Target Tracking by default. The radar tracks several people unless
-  that setting was turned off, so most people never need it.
+  sensor has. **Factory Reset Radar** asks before it resets the radar, as it
+  does on the LD2410 and LD2412 **Controls** cards. On the R PRO-1, Home
+  Assistant hides Multi Target Tracking by default. The radar tracks several
+  people unless that setting was turned off, so most people never need it.
 - **Radar's built-in zones** shows the radar chip's own zone corners and
   counts. These are not the zones you draw on the map. The card shows only
   while Zone Type is not Disabled, and goes away when you set it to Disabled.
@@ -355,11 +356,14 @@ firmware never sets these two, so they are whatever the radar chip holds.
 - **Multi Target Tracking** off means the radar tracks only one person.
   **Turn on Multi Target Tracking** changes it.
 
-When both need fixing, one **Use recommended settings** button does both.
-The buttons are greyed out while the change is sent, and if Home Assistant
-refuses it the card says why. "Radar settings look good." means both are as
-recommended. While the radar is offline, or has not reported its settings
-yet, the card says so and waits.
+When both need fixing, one **Use recommended settings** button does both,
+in place of the two buttons. The buttons are greyed out while the change is
+sent, and if Home Assistant refuses it the card says why. "Radar settings
+look good." means the settings the card can read are as recommended. On an
+R PRO-1, Home Assistant hides Multi Target Tracking by default, so until
+that setting is enabled the card checks only Zone Type (see
+[Troubleshooting](#troubleshooting)). While the radar is offline, or has not
+reported Zone Type yet, the card says so and waits.
 
 The card is part of the generated dashboard, and can be placed on your own.
 It is in the card picker as **Apollo Radar Setup**, filled in with your first
@@ -432,9 +436,10 @@ wider than it is tall, and the radar stays at the edge it is mounted on.
 A card with its own `grid` in YAML keeps that grid, on a square map. A card
 with `grid_units` in YAML uses that unit until an administrator saves one
 with the switch. Zone map cards added from the card picker before 2.3.0 have
-both in their YAML (a `grid` from -6000 to 6000 and `grid_units: mm`): open
-the card's code editor and delete those two keys to get the fitted map in
-your units.
+both in their YAML (a `grid` from -6000 to 6000 and `grid_units: mm`), and
+`unit_display: false`, which hides every distance label and the range
+caption. Open the card's code editor, delete `grid` and `grid_units`, and
+set `unit_display: true` to get the fitted map in your units, labeled.
 
 The unit only changes what the card shows. Zones are stored in millimeters,
 and the presence sensors work the same either way. The saved unit is kept
@@ -463,12 +468,12 @@ is inside the zone.
   and a `zone_id` of 1 or more, with geometry in millimeters. To clear a zone
   send `shape: none`, and to remove it and its entities send `delete: true`. A
   call that changes nothing, such as a `zone_id` alone or `data` without a
-  `shape`, is refused with a warning in the log. An accepted call fires
-  `apollo_mmwave_zone_updated` with the radar's `device_id`. Its
-  `display_units` sets the map unit for everyone: `m`, `ft`, or `auto` to
-  follow Home Assistant's unit system again (`auto` with no unit saved
-  changes nothing and is refused like any other empty call). Only
-  administrators can call it. Automations still can, and a call made by
+  `shape`, is refused with a warning in the log. The `display_units` field
+  sets the map unit for everyone: `m`, `ft`, or `auto` to follow Home
+  Assistant's unit system again (`auto` with no unit saved changes nothing
+  and is refused like any other empty call). An accepted call fires
+  `apollo_mmwave_zone_updated` with the radar's `device_id`. Only
+  administrators can call the action. Automations still can, and a call made by
   another user, from a script they run for example, is refused.
 
   [![Open your Home Assistant instance and show your action tools with a specific action selected.](https://my.home-assistant.io/badges/tools_perform_action.svg)](https://my.home-assistant.io/redirect/tools_perform_action/?service=apollo_mmwave.update_zone)
@@ -660,15 +665,23 @@ the two rows yourself under Settings → Dashboards → ⋮ → **Resources**.
   above the map. The usual cause is Zone Type set to **Detection**: the radar
   then reports only people inside its own built-in zones, and with none set
   it reports nobody, so the dots never appear. Press **Set Zone Type to
-  Disabled**. **Filter** works the other way round and hides only people
+  Disabled** (or **Use recommended settings** if the card shows that
+  instead). **Filter** works the other way round and hides only people
   inside those zones, so with none set it acts like Disabled. Disabled is
   still the one to use, because the zone map replaces the radar's built-in
   zones. If Zone Type is already Disabled and the **LD2450 Live** card's
   Presence stays off with you in front of the radar, the radar itself sees
   nobody: check that it is online and facing the room.
 - **The zone map shows only one dot with several people in the room.**
-  Multi Target Tracking is off. Press **Turn on Multi Target Tracking** on the
-  **Radar setup** card.
+  Usually Multi Target Tracking is off. Press **Turn on Multi Target
+  Tracking** (or **Use recommended settings** if the card shows that
+  instead) on the **Radar setup** card. On an R PRO-1, Home Assistant hides
+  that setting by default, so the card cannot check it and shows no button.
+  Enable it once: on the radar's device page, open the entities that are
+  not shown under **Configuration**, select **LD2450 Multi Target
+  Tracking**, turn on **Enabled** in its settings (⚙) and select
+  **Update**. Reload this page after a minute; the card then checks the
+  setting and offers the button when it is off.
 - **The zone map dot stays at the sensor.** Before 2.2.7, the zone map card
   and the zone presence sensors read the radar's Target X and Y sensors as
   millimeters, whatever unit Home Assistant showed them in. Home Assistant set

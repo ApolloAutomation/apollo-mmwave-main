@@ -13,7 +13,8 @@ map, so there is no need to open the device page. The zone map is in feet or
 meters to match Home Assistant and fills the card with what the radar can
 see. Nothing needs changing by hand unless your Lovelace resources are
 managed in YAML (replace both `?v=` URLs; see
-[Lovelace resources](docs/configuration.md#lovelace-resources)).
+[Lovelace resources](docs/configuration.md#lovelace-resources)), or you added
+a zone map card from the card picker before 2.3.0 (see the last item).
 
 - **New Radar setup card.** It sits above the zone map and checks two radar
   settings. Apollo firmware never sets them, so they are whatever the radar
@@ -38,6 +39,9 @@ managed in YAML (replace both `?v=` URLs; see
   Timeout, Bluetooth, Restart Radar, Factory Reset Radar and Firmware). A
   **Radar's built-in zones** card shows the chip's own zones only while Zone
   Type is not Disabled.
+- **Factory Reset Radar asks first.** On every tab's Controls card, LD2410,
+  LD2412 and LD2450 alike, it now asks before it resets the radar instead of
+  resetting on one tap of **Press**.
 - **New tab layout.** An MTR-1 tab is no longer just the zone map: Radar
   setup and the map come first, then the cards above. On an R PRO-1 they sit
   after the LD2412 tuning cards, under the Zone Map heading.
@@ -53,9 +57,10 @@ managed in YAML (replace both `?v=` URLs; see
   is rotated, plus any zone you drew, instead of a fixed 10 m square where the
   radar's view filled only the top half. A caption at its edge reads "Radar
   range 6 m (20 ft), 120°". A card with its own `grid` in YAML keeps it.
-  Zone map cards added from the card picker before 2.3.0 carry a `grid` and
-  `grid_units: mm` in their YAML; delete those two keys to get the fitted map
-  in your units.
+  Zone map cards added from the card picker before 2.3.0 carry a `grid`,
+  `grid_units: mm` and `unit_display: false` in their YAML. Delete `grid` and
+  `grid_units` and set `unit_display: true` to get the fitted map in your
+  units, with its distance labels and range caption.
 
 ## What changed in 2.2.7
 

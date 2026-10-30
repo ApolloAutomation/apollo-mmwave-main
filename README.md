@@ -185,8 +185,9 @@ including what each HACS box says.
   restart, then reload the page.
 - **The zone map stays empty, with no dot for you:** look at the **Radar
   setup** card above the map. Zone Type set to Detection makes the radar
-  report nobody until its own built-in zones are set. Press **Set Zone Type
-  to Disabled**.
+  report only people inside its own built-in zones, and nobody when none are
+  set. Press **Set Zone Type to Disabled** (or **Use recommended settings**
+  if the card shows that instead).
 - **A sensor has no tab:** check that it is added through ESPHome, and that
   **Choose the dashboard's devices** in the integration's options
   (**Settings → Devices & services → Apollo mmWave → Configure**) is empty or
