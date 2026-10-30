@@ -10,7 +10,10 @@ install the integration and run your first calibration.
 - [Choosing which devices appear](#choosing-which-devices-appear)
 - [Auto-calibration](#auto-calibration)
   - [The calibration services](#the-calibration-services)
+- [The zone map and its cards](#the-zone-map-and-its-cards)
+  - [Radar setup](#radar-setup)
 - [Drawing zones](#drawing-zones)
+  - [Map units and size](#map-units-and-size)
   - [Zones in automations](#zones-in-automations)
 - [Use your own dashboards instead](#use-your-own-dashboards-instead)
   - [Strategy options](#strategy-options)
@@ -305,14 +308,79 @@ recorder:
       - sensor.*_g??_still_energy
 ```
 
+## The zone map and its cards
+
+On R PRO-1 and MTR-1 tabs, everything for the LD2450, the radar that tracks
+people for the zone map, sits together. An MTR-1 tab shows these cards in
+three columns. On an R PRO-1 they come after the LD2412 tuning cards, under
+the **Zone Map** heading. On a phone they read top to bottom in this order:
+
+- **Radar setup** checks the radar's settings and fixes them with one tap;
+  see [Radar setup](#radar-setup).
+- **The zone map** shows where the radar sees people. Draw zones on it; see
+  [Drawing zones](#drawing-zones).
+- **Zone presence** lists each zone's presence sensor, colored while someone
+  is in the zone. A zone you just drew shows up here after you reload the
+  page.
+- **LD2450 Live** shows what the radar reports right now: Presence, Moving
+  Target, Still Target, Target Count, and each target's distance and
+  direction. If Presence turns on but the map shows no dot, see
+  [Troubleshooting](#troubleshooting).
+- **LD2450 Controls** holds Zone Type, Multi Target Tracking, Radar Timeout,
+  Bluetooth, Restart Radar, Factory Reset Radar and Firmware, whichever your
+  sensor has. **Factory Reset Radar** resets the radar as soon as you tap
+  **Press**, with no question first. On the R PRO-1, Home Assistant hides
+  Multi Target Tracking by default. The radar tracks several people unless
+  that setting was turned off, so most people never need it.
+- **Radar's built-in zones** shows the radar chip's own zone corners and
+  counts. These are not the zones you draw on the map. The card shows only
+  while Zone Type is not Disabled, and goes away when you set it to Disabled.
+
+### Radar setup
+
+The **Radar setup** card sits right above the zone map. It checks the two
+radar settings that decide whether the zone map can show people, and fixes
+them when you press its button. It changes nothing on its own. Apollo
+firmware never sets these two, so they are whatever the radar chip holds.
+
+- **Zone Type** should be **Disabled**. The radar chip has its own built-in
+  zones, separate from the zones you draw, and the zone map replaces them.
+  - **Detection:** the radar reports only people inside its built-in zones.
+    With none set (all at 0) it reports nobody, so the zone map stays empty.
+    With some set, anyone outside them is missing from the map.
+  - **Filter:** the radar reports everyone except people inside its built-in
+    zones. With none set it works like Disabled.
+
+  **Set Zone Type to Disabled** changes it.
+- **Multi Target Tracking** off means the radar tracks only one person.
+  **Turn on Multi Target Tracking** changes it.
+
+When both need fixing, one **Use recommended settings** button does both.
+The buttons are greyed out while the change is sent, and if Home Assistant
+refuses it the card says why. "Radar settings look good." means both are as
+recommended. While the radar is offline, or has not reported its settings
+yet, the card says so and waits.
+
+The card is part of the generated dashboard, and can be placed on your own.
+It is in the card picker as **Apollo Radar Setup**, filled in with your first
+R PRO-1 or MTR-1, or in YAML:
+
+```yaml
+type: custom:apollo-radar-setup-card
+device_id: your_device_id
+title: Radar setup   # optional
+```
+
 ## Drawing zones
 
 The zone map card on R PRO-1 and MTR-1 tabs draws occupancy zones over the
-LD2450's live targets. Only administrators can draw or change zones; other
-users see them, and the card answers a change with "Could not save". A new
-radar has no zones yet, so open **Configure → Zones** on the card and press
-**Add Zone** first. Then pick a zone with its button, choose Rectangle,
-Ellipse or Polygon from the drawing-mode menu (✎), and draw on the grid:
+LD2450's live targets. If the map shows no dot with someone in the room,
+check the [Radar setup](#radar-setup) card first. Only administrators can
+draw or change zones; other users see them, and the card answers a change
+with "Could not save". A new radar has no zones yet, so open **Configure →
+Zones** on the card and press **Add Zone** first. Then pick a zone with its
+button, choose Rectangle, Ellipse or Polygon from the drawing-mode menu (✎),
+and draw on the grid:
 
 - **Rectangle:** drag out a box. A click, a tap or a perfectly straight drag
   draws and saves nothing.
@@ -341,6 +409,38 @@ or deletes (**Delete**) one. Saving a name for a zone that only the card's YAML
 typing is kept when the card receives an update from elsewhere. **Delete**
 cannot be undone: Undo does not bring a deleted zone back.
 
+### Map units and size
+
+The map is in feet when Home Assistant uses US customary units (Settings →
+System → General), and in meters otherwise. The **m / ft** switch in the
+corner of the map changes it:
+
+- When an administrator presses it, the choice is saved for that radar, so
+  everyone who opens its map, on any dashboard, sees that unit.
+- For anyone else it changes only their own view, until they reload the
+  page, and saves nothing.
+
+Labels in feet read "4 ft". The rings in the radar's view are 1 m apart in
+meters and 4 ft apart in feet.
+
+The map fits the area the radar can see: 120 degrees wide and about 6 m
+(20 ft) out, turned the way you set the rotation slider, plus any zone you
+drew outside it. It fits again when you let go of the slider. A caption at
+the edge of that area reads "Radar range 6 m (20 ft), 120°". The map can be
+wider than it is tall, and the radar stays at the edge it is mounted on.
+
+A card with its own `grid` in YAML keeps that grid, on a square map. A card
+with `grid_units` in YAML uses that unit until an administrator saves one
+with the switch. Zone map cards added from the card picker before 2.3.0 have
+both in their YAML (a `grid` from -6000 to 6000 and `grid_units: mm`): open
+the card's code editor and delete those two keys to get the fitted map in
+your units.
+
+The unit only changes what the card shows. Zones are stored in millimeters,
+and the presence sensors work the same either way. The saved unit is kept
+with the radar's zones (`display_units` in `.storage/apollo_mmwave.zones`),
+and `apollo_mmwave.update_zone` can set it too (see below).
+
 ### Zones in automations
 
 Each zone has two entities on the radar's device: a sensor that holds its
@@ -364,7 +464,10 @@ is inside the zone.
   send `shape: none`, and to remove it and its entities send `delete: true`. A
   call that changes nothing, such as a `zone_id` alone or `data` without a
   `shape`, is refused with a warning in the log. An accepted call fires
-  `apollo_mmwave_zone_updated` with the radar's `device_id`. Only
+  `apollo_mmwave_zone_updated` with the radar's `device_id`. Its
+  `display_units` sets the map unit for everyone: `m`, `ft`, or `auto` to
+  follow Home Assistant's unit system again (`auto` with no unit saved
+  changes nothing and is refused like any other empty call). Only
   administrators can call it. Automations still can, and a call made by
   another user, from a script they run for example, is refused.
 
@@ -434,7 +537,8 @@ Dashboards. The cards and strategies stay available:
 
 - **Cards**: `custom:apollo-radar-calibrate-card`,
   `custom:apollo-radar-distance-card`,
-  `custom:apollo-radar-gate-energy-card`, and
+  `custom:apollo-radar-gate-energy-card`,
+  `custom:apollo-radar-setup-card`, and
   `custom:apollo-radar-zone-map-card` can be placed individually (they're in
   the card picker). See [Card options](#card-options).
 
@@ -486,16 +590,19 @@ the card's device configuration." The Gate Energy chart shows "Radar
 unavailable" while the radar is offline, and a button that turns on Radar
 Engineering Mode while the radar is online with the mode off.
 
-The calibrate and zone map cards take a `device_id`; `title` is display only.
-The zone map starts locked once the radar has zones, and the Lock toggle is
-remembered per radar in the browser. Set `start_locked: true` or `false` (also
-in the card editor) to force the starting state instead. The map is drawn on a
-square canvas, so a `grid` whose X span (`x_min` to `x_max`) differs from its Y
-span (`y_min` to `y_max`) is drawn stretched; give both the same span for a
-true-to-scale map. `cone.angle_deg` only sets where a double-click on the
-rotation slider resets to: the cone, the live targets and the presence sensors
-all use the radar's stored rotation, which is 0 until you set it with the
-slider (or with `update_zone`'s `rotation_deg`).
+The calibrate, Radar setup and zone map cards take a `device_id`; `title` is
+display only. The zone map starts locked once the radar has zones, and the
+Lock toggle is remembered per radar in the browser. Set `start_locked: true`
+or `false` (also in the card editor) to force the starting state instead.
+Without a `grid`, the zone map fits the radar's view (see
+[Map units and size](#map-units-and-size)). A `grid` (`x_min`, `x_max`,
+`y_min`, `y_max`, in `grid_units`) fixes the map instead and draws it on a
+square canvas, so a `grid` whose X span differs from its Y span is drawn
+stretched; give both the same span for a true-to-scale map.
+`cone.angle_deg` only sets where a double-click on the rotation slider resets
+to: the cone, the live targets and the presence sensors all use the radar's
+stored rotation, which is 0 until you set it with the slider (or with
+`update_zone`'s `rotation_deg`).
 
 ## Removing Apollo mmWave
 
@@ -549,6 +656,19 @@ the two rows yourself under Settings → Dashboards → ⋮ → **Resources**.
 - **The zone map card says Apollo mmWave is not loaded.** Right after a restart
   the card retries on its own. If it still says so, reload the page once the
   integration has loaded.
+- **The zone map shows no dot at all.** Look at the **Radar setup** card
+  above the map. The usual cause is Zone Type set to **Detection**: the radar
+  then reports only people inside its own built-in zones, and with none set
+  it reports nobody, so the dots never appear. Press **Set Zone Type to
+  Disabled**. **Filter** works the other way round and hides only people
+  inside those zones, so with none set it acts like Disabled. Disabled is
+  still the one to use, because the zone map replaces the radar's built-in
+  zones. If Zone Type is already Disabled and the **LD2450 Live** card's
+  Presence stays off with you in front of the radar, the radar itself sees
+  nobody: check that it is online and facing the room.
+- **The zone map shows only one dot with several people in the room.**
+  Multi Target Tracking is off. Press **Turn on Multi Target Tracking** on the
+  **Radar setup** card.
 - **The zone map dot stays at the sensor.** Before 2.2.7, the zone map card
   and the zone presence sensors read the radar's Target X and Y sensors as
   millimeters, whatever unit Home Assistant showed them in. Home Assistant set

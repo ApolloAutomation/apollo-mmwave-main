@@ -31,7 +31,9 @@ draw presence zones.
   listens to the empty room and sets how sensitive the radar is at each
   distance. **Undo** puts your old values back.
 - **Zone maps** on the R PRO-1 and MTR-1. Draw zones over the people the
-  radar sees, and each zone gets a presence sensor for your automations.
+  radar sees, and each zone gets a presence sensor for your automations. The
+  map is in feet or meters to match Home Assistant, and a **Radar setup**
+  card above it checks the radar's settings and fixes them with one tap.
 - **No YAML** and no separate card downloads. The integration serves its own
   cards.
 
@@ -150,11 +152,19 @@ including what each HACS box says.
 5. The **Start here** list on the tab covers the next settings: how far the
    radar looks and how long presence stays on. More about calibration:
    [Auto-calibration](docs/configuration.md#auto-calibration).
-6. On an R PRO-1 or MTR-1 tab, find the zone map: the grid that shows where
-   the radar sees people. A new radar has no zones yet, so open
+6. On an R PRO-1 or MTR-1 tab, look at the **Radar setup** card first. If it
+   shows a warning, press its button. Zone Type should be **Disabled**,
+   because the zone map replaces the radar's own built-in zones, and Multi
+   Target Tracking should be on. See
+   [Radar setup](docs/configuration.md#radar-setup).
+7. Below it is the zone map: the grid that shows where the radar sees
+   people, sized to what the radar can see (120 degrees, about 6 m or 20 ft).
+   It is in feet or meters to match Home Assistant; the **m / ft** switch on
+   the map changes it. A new radar has no zones yet, so open
    **Configure → Zones** on that card and press **Add Zone**. Then press the
    new zone's button, choose a shape from the ✎ menu and draw on the grid.
-   Each zone gets a presence sensor. See
+   Each zone gets a presence sensor, listed on the **Zone presence** card
+   next to the map. See
    [Drawing zones](docs/configuration.md#drawing-zones).
 
    ![The zone map on an R PRO-1: a grid in meters, the radar's view cone, a rectangle and an ellipse drawn as zones, and the zone buttons under the grid](https://raw.githubusercontent.com/ApolloAutomation/apollo-mmwave-main/main/docs/images/apollo-mmwave-zone-map.png)
@@ -173,6 +183,10 @@ including what each HACS box says.
   **Read settings from the radar** on the card.
 - **The zone map says Apollo mmWave is not loaded:** wait a moment after a
   restart, then reload the page.
+- **The zone map stays empty, with no dot for you:** look at the **Radar
+  setup** card above the map. Zone Type set to Detection makes the radar
+  report nobody until its own built-in zones are set. Press **Set Zone Type
+  to Disabled**.
 - **A sensor has no tab:** check that it is added through ESPHome, and that
   **Choose the dashboard's devices** in the integration's options
   (**Settings → Devices & services → Apollo mmWave → Configure**) is empty or

@@ -596,8 +596,8 @@ export function deviceView(
   path: string = dev.base,
   calibration?: CalibrationOptions
 ): Record<string, any> {
-  // TODO(REVIEW_REPORT.md X36): no max_columns, so an R-PRO-1's five sections wrap the Zone
-  // Map to a second row (HA default is 4); choose max_columns 5, a column_span, or accept it.
+  // TODO(REVIEW_REPORT.md X36): no max_columns, so an R-PRO-1's six sections wrap the Zone
+  // Map to a second row (HA default is 4); choose max_columns 6, a column_span, or accept it.
   return {
     title: dev.name,
     path,
