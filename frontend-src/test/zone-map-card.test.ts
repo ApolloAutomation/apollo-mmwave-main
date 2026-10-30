@@ -4845,4 +4845,12 @@ describe("zone map card units and fitted grid", () => {
       expect(save[2].data).toEqual({ x_min: -6000, x_max: 6000, y_min: 0, y_max: 9000 });
     });
   });
+
+  it("ships a stub that fits the map and follows Home Assistant's units", () => {
+    const stub = ZoneMapCard.getStubConfig(fakeHass()) as any;
+
+    expect(stub).not.toHaveProperty("grid");
+    expect(stub).not.toHaveProperty("grid_units");
+    expect(stub.unit_display).toBe(true);
+  });
 });

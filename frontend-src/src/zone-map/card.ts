@@ -330,11 +330,15 @@ export class ZoneMapCard extends HTMLElement {
       // is the point of this key being absent. Same for start_locked: absent
       // means the card locks itself once the radar has zones.
       show_undo: true,
-      unit_display: false,
+      // Distance labels on, like the cards the Apollo mmWave dashboard makes.
+      unit_display: true,
       // unit_label_size: 18,
       // optional, px label size override
       input_units: 'mm',
-      grid_units: 'mm',
+      // No grid_units and no grid: a card without them shows its map in Home
+      // Assistant's unit system (or the unit saved for the radar) and fits it
+      // to the radar's field of view. Seeding either here switched both off
+      // for every card added from the picker.
       // A card dragged out of the Lovelace picker opened straight onto the
       // "device_id required" error while this was blank. Empty when no device
       // has registered LD2450 target sensors, which includes a radar whose
@@ -344,15 +348,8 @@ export class ZoneMapCard extends HTMLElement {
       // Units support: 'mm', 'cm', 'm', 'in', 'ft' converts to millimeters internally
       // Zones can be managed in-card; you can optionally pre-seed a list here:
       // zones: [ { id: 1, name: 'Zone 1' } ],
-      // TODO(REVIEW_REPORT.md X42): this grid and unit_display: false differ from DEFAULT_GRID
-      // and strategy cards. Pick one, derive the stub from DEFAULT_GRID or drop grid; add a test.
-      grid: {
-        x_min: -6000,
-        x_max: 6000,
-        y_min: 0,
-        y_max: 12000,
-      },
-      // Grid is y-down oriented, so y_min is top, y_max is bottom
+      // An optional grid: { x_min, x_max, y_min, y_max } in grid_units fixes the
+      // map's extents. Grid is y-down oriented, so y_min is top, y_max is bottom
       cone: {
         y_max: 6000,
         fov_deg: 120,
