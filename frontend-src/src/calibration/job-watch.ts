@@ -197,8 +197,9 @@ export class CalibrationJobWatch {
     conn.removeEventListener("disconnected", this._onDisconnected);
   }
 
-  /** The config entry feed is admin-only; a non-admin viewer gets null and
-   *  only loses the reopen after an integration reload. */
+  /** The config entry feed is open to every user on the supported Home
+   *  Assistant versions; if it is ever refused, only the reopen after an
+   *  integration reload is lost. */
   private _openEntryFeed(conn: HassConnection): void {
     const api = this._api;
     if (!api || this._entryFeedConnection === conn) return;
