@@ -203,8 +203,16 @@ describe("tries on a locked slider", () => {
     expect(noteTry("dev1", false, t + 5000)).toBe("remind");
     expect(noteTry("dev1", false, t + 7000)).toBe("nudge");
     expect(noteTry("dev1", false, t + 10000)).toBe("remind");
+    // 11 s after the last try: a first try again.
     expect(noteTry("dev1", false, t + 21000)).toBe("nudge");
-    expect(w.changes).toEqual(["try", "try", "try", "try", "try"]);
+    // 10 s after it: still a second try.
+    expect(noteTry("dev1", false, t + 31000)).toBe("remind");
+    // 3.9 s after that reminder is too soon for another; 4 s is not.
+    expect(noteTry("dev1", false, t + 34900)).toBe("nudge");
+    expect(noteTry("dev1", false, t + 35000)).toBe("remind");
+    // 10.1 s after the last try: a first try again.
+    expect(noteTry("dev1", false, t + 45100)).toBe("nudge");
+    expect(w.changes).toEqual(Array(9).fill("try"));
   });
 
   it("reminds at once from the keyboard", () => {
