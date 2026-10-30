@@ -124,11 +124,17 @@ export interface CalibrationOptions {
   margin_pct?: number;
 }
 
-/** The "Radar setup" card: checks one LD2450 device's settings. */
+/** Which radar of a device the "Radar setup" card checks: its LD2450, or its
+ *  gate radar (the LD2410 or LD2412, whichever its profile names). */
+export type SetupRadar = "ld2450" | "gate";
+
+/** The "Radar setup" card: checks one device's radar settings. */
 export interface SetupCardConfig {
   type: string;
   device_id?: string;
   title?: string;
+  /** "ld2450" when absent, as before gate radars had checks. */
+  radar?: SetupRadar;
 }
 
 export interface CalibrateCardConfig {

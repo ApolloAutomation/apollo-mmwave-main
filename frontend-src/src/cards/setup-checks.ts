@@ -44,7 +44,15 @@ const FILTER_LINE =
   " Disabled is recommended because the zone map replaces them.";
 const MULTI_TARGET_LINE = "Multi Target Tracking is off. Only one person is tracked.";
 
-export type SettingKey = "zone_type" | "multi_target_tracking";
+/** The LD2450 settings, then the gate radar checks (`gate-setup-checks.ts`). */
+export type SettingKey =
+  | "zone_type"
+  | "multi_target_tracking"
+  | "engineering_mode"
+  | "settings_unread"
+  | "zone_order"
+  | "zone_reach"
+  | "gate_range";
 
 /** The one service call that fixes a problem, and how the card names it. */
 export interface SettingFix {
@@ -57,6 +65,14 @@ export interface SettingFix {
   clause: string;
   /** Shown while the call runs. */
   progress: string;
+  /** The error line's lead; "Could not change <name>" when absent. */
+  failure?: string;
+  /** For a call whose effect arrives later (the radar sending its settings
+   *  after a query): how long, in ms, the progress line stays up after the
+   *  call returns, unless the problem clears first. */
+  settleMs?: number;
+  /** Shown when the problem is still there once `settleMs` has passed. */
+  noAnswer?: string;
 }
 
 export interface SetupProblem {
@@ -64,7 +80,7 @@ export interface SetupProblem {
   /** The setting's display name, used in the error line. */
   name: string;
   entityId: string;
-  /** "warning" when the zone map misses people, "note" for milder advice. */
+  /** "warning" when the radar misses people, "note" for milder advice. */
   level: "warning" | "note";
   text: string;
   /** A second, quieter line under the text. */
@@ -80,17 +96,20 @@ export type SetupStatus =
   /** Online, but no checked setting has a value yet ("unknown"), or Zone
    *  Type has none and nothing else needs fixing. */
   | { kind: "waiting" }
+  /** Gate radars: Radar Engineering Mode is on and the card does not know yet
+   *  whether a calibration job owns it, with nothing else to show. */
+  | { kind: "checking" }
   /** `zoneTypeUnread`: the problems are all Multi Target Tracking's, and
    *  Zone Type, which can empty the map, has not been read yet. */
   | { kind: "checked"; problems: SetupProblem[]; zoneTypeUnread?: boolean };
 
 /** Only "unavailable" or no state at all is offline, as in strategy-core. */
-function isLive(state: HassEntity | undefined): state is HassEntity {
+export function isLive(state: HassEntity | undefined): state is HassEntity {
   return state !== undefined && state.state !== "unavailable";
 }
 
 /** Whether the radar has reported a value: live, and not "unknown". */
-function isRead(state: HassEntity | undefined): state is HassEntity {
+export function isRead(state: HassEntity | undefined): state is HassEntity {
   return isLive(state) && state.state !== "unknown";
 }
 

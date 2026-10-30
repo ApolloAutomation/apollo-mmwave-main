@@ -57,6 +57,9 @@ import {
   DEFAULT_DURATION_S,
   DEFAULT_SETTLE_S,
   INITIAL_LOCAL_STATE,
+  READING_SETTINGS,
+  READ_SETTINGS_LABEL,
+  READ_SETTINGS_WAIT_MS,
   WALK_AROUND_LINE,
   canStart,
   canStop,
@@ -107,13 +110,9 @@ const NOT_LOADED = "Apollo mmWave is not loaded, so calibration is unavailable."
 const PREVIEW_HELPER =
   "Computes new thresholds without changing any of them. Radar Engineering Mode is still turned on for the listen.";
 const FACTORY_HINT = "These look like factory thresholds. Calibrating sets them for your room.";
-/** Offered when the radar has not reported its thresholds yet: it presses the
- *  radar's query params button, waits, then runs the refused job again. */
-export const READ_SETTINGS_LABEL = "Read settings from the radar";
-const READING_SETTINGS = "Reading settings from the radar...";
-/** Time the radar gets to report its thresholds after the button press (the
- *  backend waits as long, `VERIFY_SETTLE_S`, after its own LD2412 press). */
-export const READ_SETTINGS_WAIT_MS = 3000;
+// The "Read settings from the radar" copy and wait live in the model, which
+// the setup card shares; re-exported here for the card's existing importers.
+export { READ_SETTINGS_LABEL, READ_SETTINGS_WAIT_MS };
 /** Without a query params button the card cannot ask, so it says where to. */
 const QUERY_PARAMS_HINT =
   "Open the radar's device page, press its Query Params button in the Diagnostic section, wait a few seconds, then try again.";
