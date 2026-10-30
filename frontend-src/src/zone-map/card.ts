@@ -108,10 +108,28 @@ const FIT_MARGIN_FRACTION = 0.05;
 // would be shorter still, but the drawing buttons open upward from the bottom
 // edge, five buttons tall in polygon mode, and need the height on a phone.
 const FIT_MIN_ASPECT = 0.75;
+// A fitted edge within this many mm of a grid step stays on that step. The
+// card saves zones in whole mm, rounded from a point clamped to the map, and a
+// feet edge is rarely a whole mm (22 ft is 6705.6 mm), so a zone drawn to the
+// edge comes back from the store up to 0.4 mm past it, an ellipse's center
+// plus radius up to 0.8 mm and a tapped 1 mm ellipse up to 1.4 mm. Without
+// the slack, that echo grew the map by a whole step right after the save.
+const FIT_EDGE_SLACK_MM = 2;
 
 // The units the m / ft switch offers, and the ones the zone store saves per
 // radar as display_units. Display only: zone geometry stays millimeters.
 const DISPLAY_UNITS = Object.freeze(['m', 'ft']);
+
+// The m / ft switch's tooltips. An administrator's press is saved for the
+// radar, so it changes the map for every viewer on every dashboard; anyone
+// else's changes only their own view.
+const UNIT_SWITCH_TITLES = Object.freeze({
+  admin: Object.freeze({
+    m: "Show this radar's map in meters for everyone",
+    ft: "Show this radar's map in feet for everyone",
+  }),
+  viewer: Object.freeze({ m: 'Show the map in meters', ft: 'Show the map in feet' }),
+});
 
 // What a card without show_undo or unit_label_size uses. setConfig assigns
 // them when the key is absent, so removing the key from a live card's config
@@ -288,6 +306,8 @@ export class ZoneMapCard extends HTMLElement {
     // True when the YAML grid set the extents, which then never move. False
     // means they are fitted to the cone and the zones.
     this._gridFromConfig = false;
+    // The step and unit of the last fit, { step, unit } (see _fittedStep).
+    this._fitStep = null;
     // The map's unit (_displayUnit) comes from, in order: what this page's
     // viewer picked on the m / ft switch, the unit saved for the radar, the
     // YAML grid_units of a hand-written card, and Home Assistant's unit system.
@@ -463,14 +483,17 @@ export class ZoneMapCard extends HTMLElement {
    * payload arrives, so the edit stays on the canvas until the page reloads.
    * The success toast therefore means Home Assistant accepted the call, not
    * that the zone store took the change.
+   *
+   * `withInputUnits: false` leaves the card's input_units out, for a write
+   * that says it changes nothing else (the m / ft switch).
    */
-  async _saveZoneUpdate(payload, successMessage) {
+  async _saveZoneUpdate(payload, successMessage, { withInputUnits = true } = {}) {
     if (!this._hass) return false;
     // A target sensor with no length unit of its own is scaled by this unit,
-    // here and in the presence sensors alike, so every write carries it.
-    // Absent on the backend means millimeters, which is also this card's
-    // default.
-    const request = { ...payload, input_units: this.inputUnits };
+    // here and in the presence sensors alike, so every zone and rotation
+    // write carries it. Absent on the backend means millimeters, which is
+    // also this card's default.
+    const request = withInputUnits ? { ...payload, input_units: this.inputUnits } : { ...payload };
     try {
       // notifyOnError false: the catch below raises the card's own toast, and
       // HA's default would show a second one for the same rejection.
@@ -521,6 +544,8 @@ export class ZoneMapCard extends HTMLElement {
     // The automatic map unit reads Home Assistant's unit system off hass, so
     // the first hass, or a change of that setting, can change the unit.
     const unitBefore = this._displayUnit();
+    // The m / ft switch's tooltips say whether a press saves for everyone.
+    const adminBefore = this._isAdmin();
     this._hass = hass;
     // hass is set repeatedly, several times a second while the LD2450 pushes
     // coordinates, so this only acts when the card is not overriding the
@@ -546,6 +571,7 @@ export class ZoneMapCard extends HTMLElement {
       }
     }
     if (this._displayUnit() !== unitBefore) this._displayUnitChanged();
+    else if (this._isAdmin() !== adminBefore) this._renderUnitSwitch();
     // Home Assistant assigns a new hass on every state change in the whole
     // instance, and the tracked targets are the only part of the picture drawn
     // from it. Everything else (zones, rotation, mode, lock, theme, config)
@@ -916,8 +942,9 @@ export class ZoneMapCard extends HTMLElement {
           </div>
           <div class="overlay-controls overlay-controls-right" id="overlayControlsRight">
             <div class="unit-switch" role="group" aria-label="Map units">
-              <button id="btnUnitM" data-unit="m" title="Show the map in meters" aria-pressed="false">m</button>
-              <button id="btnUnitFt" data-unit="ft" title="Show the map in feet" aria-pressed="false">ft</button>
+              <!-- _renderUnitSwitch sets the titles, which depend on the viewer. -->
+              <button id="btnUnitM" data-unit="m" aria-pressed="false">m</button>
+              <button id="btnUnitFt" data-unit="ft" aria-pressed="false">ft</button>
             </div>
             <button id="btnUndo" class="undo-toggle" title="Undo last zone change" disabled>↶</button>
             <button id="btnLock" class="lock-toggle" title="Lock drawing">🔓</button>
@@ -1084,21 +1111,36 @@ export class ZoneMapCard extends HTMLElement {
     if (this._unitFamily(this._displayUnit()) === unit) return;
     this._viewDisplayUnits = unit;
     this._displayUnitChanged();
-    if (this._hass?.user?.is_admin) {
-      // No toast on success: the map changing is the feedback.
-      this._saveZoneUpdate({ device_id: this.deviceId, display_units: unit }, null);
+    if (this._isAdmin()) {
+      // No toast on success: the map changing is the feedback. The switch
+      // says it shows the map in a unit, so it saves that and nothing else:
+      // input_units would also rescale presence for sensors without a unit.
+      this._saveZoneUpdate({ device_id: this.deviceId, display_units: unit }, null, {
+        withInputUnits: false,
+      });
     }
   }
 
-  /** Show the switch half for the map's unit as the pressed one. */
+  /** Whether this page's viewer can save, as update_zone is admin-only. */
+  _isAdmin() {
+    return !!this._hass?.user?.is_admin;
+  }
+
+  /**
+   * Show the switch half for the map's unit as the pressed one, with a
+   * tooltip that says what a press does: for an administrator it saves the
+   * unit for everyone who opens this radar's map, on any dashboard.
+   */
   _renderUnitSwitch() {
     const shown = this._unitFamily(this._displayUnit());
+    const titles = this._isAdmin() ? UNIT_SWITCH_TITLES.admin : UNIT_SWITCH_TITLES.viewer;
     ['btnUnitM', 'btnUnitFt'].forEach((id) => {
       const button = this.shadowRoot?.getElementById(id);
       if (!button) return;
       const pressed = button.dataset.unit === shown;
       button.classList.toggle('active', pressed);
       button.setAttribute('aria-pressed', pressed ? 'true' : 'false');
+      button.title = titles[button.dataset.unit];
     });
   }
 
@@ -1271,7 +1313,9 @@ export class ZoneMapCard extends HTMLElement {
       if (event.key === 'Escape') {
         this._polyPoints = [];
         this.isDrawing = false;
-        this.drawGrid();
+        // A payload or a unit change that came in while the polygon was open
+        // was not fitted (see _refitGrid), so the map catches up now.
+        this._refitAndDraw();
       } else if (event.key === 'Backspace' && this._polyPoints.length > 0) {
         this._popPolyPoint();
       }
@@ -1495,13 +1539,18 @@ export class ZoneMapCard extends HTMLElement {
    *
    * Leaves the extents alone while a shape is being drawn: a rect or ellipse
    * drag holds its start point in canvas pixels, so moving the map under it
-   * would save the zone somewhere the user never pointed. The save that ends
-   * the gesture echoes back as a payload, which fits again. Returns whether
-   * the extents changed; the caller draws.
+   * would save the zone somewhere the user never pointed, and a polygon holds
+   * its vertices until it is finished. Every path that ends or drops the
+   * gesture (a save, Finish, Escape, cancelDrawing, a mode change) fits
+   * again, so a payload or unit change skipped meanwhile is not lost. Returns
+   * whether the extents changed; the caller draws.
    */
   _refitGrid() {
     if (this._gridFromConfig || this.isDrawing) return false;
-    const next = this._fittedGrid();
+    const { step, ...next } = this._fittedGrid();
+    // The grid lines are drawn at this step (_fittedStep), and only in the
+    // unit it was chosen for.
+    this._fitStep = { step, unit: this._displayUnit() };
     const same = ['xMin', 'xMax', 'yMin', 'yMax'].every(
       (key) => Math.abs(next[key] - this[key]) < 1e-6,
     );
@@ -1521,7 +1570,18 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   /**
-   * The extents of a fitted grid, in mm.
+   * The step in mm a fitted grid's edges were rounded to, or null for a YAML
+   * grid, before the first fit, or when the map's unit changed since the fit
+   * (a refit skipped while a shape was being drawn).
+   */
+  _fittedStep() {
+    if (this._gridFromConfig || !this._fitStep) return null;
+    return this._fitStep.unit === this._displayUnit() ? this._fitStep.step : null;
+  }
+
+  /**
+   * The extents of a fitted grid, in mm, and the grid step they were rounded
+   * to (`step`).
    *
    * The box around the cone as it is rotated now (its apex, its two edges and
    * any point of its arc due ahead, behind or to a side), with the arc pushed
@@ -1534,7 +1594,13 @@ export class ZoneMapCard extends HTMLElement {
    *
    * The step depends on the span, through the 40 px line spacing, and
    * rounding out can widen the span past the next step, so the rounding
-   * repeats until the step settles. It does in one or two passes.
+   * repeats until the step settles. It need not settle: rounding out to a
+   * larger step can leave a narrower span than a smaller step did (-14.5 ft
+   * rounds to -16 on 2 ft steps but to -15 on 5 ft ones), narrow enough for
+   * the smaller step again, so two steps can take turns forever. Then the
+   * larger one is used, whose lines are further apart than the minimum.
+   * Either way both axes are drawn at the step returned (_computeGridMetrics),
+   * so every edge lands on a grid line.
    */
   _fittedGrid() {
     // A cone hidden with y_max 0 still leaves the radar's real range to map.
@@ -1556,13 +1622,24 @@ export class ZoneMapCard extends HTMLElement {
       this._shapeFit(this._roundOut(box, step), step, Math.sin(facing), Math.cos(facing));
     let step = stepFor(box);
     let fitted = fit(step);
-    for (let pass = 0; pass < 4; pass += 1) {
+    const tried = [step];
+    for (;;) {
       const next = stepFor(fitted);
       if (next === step) break;
+      // A step seen before is a cycle. The pass cap only guards the
+      // candidate list's span / 10 fallback, which is not a fixed set.
+      const seen = tried.indexOf(next);
+      if (seen !== -1 || tried.length >= 8) {
+        const largest = Math.max(...(seen !== -1 ? tried.slice(seen) : [...tried, next]));
+        if (largest !== step) fitted = fit(largest);
+        step = largest;
+        break;
+      }
+      tried.push(next);
       step = next;
       fitted = fit(step);
     }
-    return fitted;
+    return { ...fitted, step };
   }
 
   /** The box around a cone of `radius` mm at the card's width and rotation. */
@@ -1611,10 +1688,11 @@ export class ZoneMapCard extends HTMLElement {
 
   /** `box` grown out to the nearest multiples of `step`. */
   _roundOut(box, step) {
-    // The tolerance keeps an edge already on a step, give or take float
-    // error, where it is instead of a whole step out.
-    const down = (value) => Math.floor(value / step + 1e-9) * step;
-    const up = (value) => Math.ceil(value / step - 1e-9) * step;
+    // An edge already on a step, give or take FIT_EDGE_SLACK_MM of the card's
+    // own rounding and the float error in the division, stays where it is
+    // instead of moving a whole step out.
+    const down = (value) => Math.floor((value + FIT_EDGE_SLACK_MM) / step + 1e-9) * step;
+    const up = (value) => Math.ceil((value - FIT_EDGE_SLACK_MM) / step - 1e-9) * step;
     return { xMin: down(box.xMin), xMax: up(box.xMax), yMin: down(box.yMin), yMax: up(box.yMax) };
   }
 
@@ -1796,8 +1874,14 @@ export class ZoneMapCard extends HTMLElement {
     const spanX = Math.max(1, this.xMax - this.xMin);
     const spanY = Math.max(1, this.yMax - this.yMin);
 
-    const stepX = this._chooseGridStep(pxPerMmX, spanX, unit);
-    const stepY = this._chooseGridStep(pxPerMmY, spanY, unit);
+    // A fitted grid draws both axes at the one step its edges were rounded
+    // to. Picking each axis's step from its own px per mm drew X and Y lines
+    // at different steps when 2 ft came out at exactly 40 px (float error
+    // decided each axis), and could pick a step the edges were not rounded
+    // to. A YAML grid can scale X and Y apart, so it keeps a step per axis.
+    const fittedStep = this._fittedStep();
+    const stepX = fittedStep ?? this._chooseGridStep(pxPerMmX, spanX, unit);
+    const stepY = fittedStep ?? this._chooseGridStep(pxPerMmY, spanY, unit);
     // The tolerance keeps an edge that is a whole number of steps, give or
     // take float error (a fitted grid in feet), from growing a line off the
     // canvas past it.
@@ -1837,6 +1921,7 @@ export class ZoneMapCard extends HTMLElement {
     const labelGap = LABEL_GAP_CSS_PX * this._canvasScale();
     const keyParts = [
       this._displayUnit(),
+      this._roundKeyValue(this._fittedStep() ?? 0),
       this._roundKeyValue(this.xMin),
       this._roundKeyValue(this.xMax),
       this._roundKeyValue(this.yMin),
@@ -2162,7 +2247,7 @@ export class ZoneMapCard extends HTMLElement {
     this._highlightActiveModeButton();
     this._updatePolygonButtonsVisibility();
     this._invalidateGridCache();
-    this.drawGrid();
+    this._refitAndDraw();
   }
 
   _highlightActiveModeButton() {
@@ -2397,7 +2482,8 @@ export class ZoneMapCard extends HTMLElement {
     const zoneId = this.selectedZone;
     this._setUndoSnapshot(this._snapshotZones([zoneId]));
     this._upsertZone(zoneId, payload.shape, payload.data);
-    this.drawGrid();
+    // The save's echo fits the map again, but a refused save sends none.
+    this._refitAndDraw();
     const savedMessage =
       zoneId === null || zoneId === undefined ? null : `${this._zoneLabel(zoneId)} saved`;
     this.updateHomeAssistantShape(zoneId, payload.shape, payload.data, savedMessage);
@@ -2787,7 +2873,8 @@ export class ZoneMapCard extends HTMLElement {
       );
     }
     this._resetDrawingState();
-    this.drawGrid();
+    // Also when nothing was saved, which brings no payload to fit again.
+    this._refitAndDraw();
   }
 
   drawGrid() {
@@ -3568,7 +3655,8 @@ export class ZoneMapCard extends HTMLElement {
 
   cancelDrawing() {
     this._resetDrawingState();
-    this.drawGrid();
+    // Fits what a payload or a unit change brought in mid-gesture.
+    this._refitAndDraw();
   }
 
   disconnectedCallback() {

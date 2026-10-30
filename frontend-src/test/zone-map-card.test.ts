@@ -4424,6 +4424,27 @@ describe("zone map card units and fitted grid", () => {
     hass.handlers[ZONES_SUBSCRIBE].forEach((cb: Handler) => cb(payload));
   }
 
+  /** Drag the mouse across a canvas laid out at its backing store's size. */
+  function dragOnCanvas(card: any, from: [number, number], to: [number, number]) {
+    const { width, height } = card.canvas;
+    vi.spyOn(card.canvas, "getBoundingClientRect").mockReturnValue({
+      left: 0,
+      top: 0,
+      right: width,
+      bottom: height,
+      x: 0,
+      y: 0,
+      width,
+      height,
+      toJSON: () => ({}),
+    } as DOMRect);
+    const mouse = (type: string, [x, y]: [number, number]) =>
+      card.canvas.dispatchEvent(new MouseEvent(type, { clientX: x, clientY: y }));
+    mouse("mousedown", from);
+    mouse("mousemove", to);
+    mouse("mouseup", to);
+  }
+
   describe("automatic unit", () => {
     it("shows feet when Home Assistant is set to US customary units", async () => {
       const card = await mountCard(unitHass("mi"));
@@ -4524,9 +4545,9 @@ describe("zone map card units and fitted grid", () => {
 
       card.shadowRoot.getElementById("btnUnitFt").click();
 
-      expect(unitSaves(hass)).toEqual([
-        { device_id: "dev123", display_units: "ft", input_units: "mm" },
-      ]);
+      // Only the unit: input_units would also rescale presence for target
+      // sensors without a length unit, and the switch says nothing of that.
+      expect(unitSaves(hass)).toEqual([{ device_id: "dev123", display_units: "ft" }]);
       // Like every other save: the card shows its own toast on a rejection.
       expect(hass.callService.mock.calls.at(-1).slice(3)).toEqual([undefined, false]);
       expect(card._displayUnit()).toBe("ft");
@@ -4569,6 +4590,24 @@ describe("zone map card units and fitted grid", () => {
 
       expect(hass.callService).not.toHaveBeenCalled();
       expect(card._viewDisplayUnits).toBeNull();
+    });
+
+    it("says in its tooltips that an administrator's press is for everyone", async () => {
+      const titles = (card: any) =>
+        ["btnUnitM", "btnUnitFt"].map((id) => card.shadowRoot.getElementById(id).title);
+      const admin = await mountCard(unitHass("km", true));
+      const viewer = await mountCard(unitHass("km", false));
+
+      expect(titles(admin)).toEqual([
+        "Show this radar's map in meters for everyone",
+        "Show this radar's map in feet for everyone",
+      ]);
+      expect(titles(viewer)).toEqual(["Show the map in meters", "Show the map in feet"]);
+
+      // A hass for another user, on the same card, retitles it.
+      const hass = unitHass("km", false);
+      viewer.hass = { ...hass, user: { is_admin: true } };
+      expect(titles(viewer)[1]).toBe("Show this radar's map in feet for everyone");
     });
 
     it("says the save failed when Home Assistant refuses it", async () => {
@@ -4671,6 +4710,25 @@ describe("zone map card units and fitted grid", () => {
       expect(label.y + card.unitLabelSize / 2).toBeLessThanOrEqual(card.canvas.height);
     });
 
+    it("captions the arc just inside it when there is no room past it", async () => {
+      // Turned 45 degrees, the 18 px caption does not fit between the arc and
+      // the corner of the map, so it goes on the radar's side of the arc.
+      const card = await mountCard(unitHass("km", true, { ...EMPTY, rotation_deg: 45 }), {
+        unit_display: true,
+        unit_label_size: 18,
+      });
+
+      const label = card._rangeLabel();
+
+      const apexX = card.valueToPixels(0, "x");
+      const apexY = card.valueToPixels(0, "y");
+      const arc = 6000 * card.pxPerX;
+      expect(label).not.toBeNull();
+      expect(Math.hypot(label.x - apexX, label.y - apexY)).toBeLessThan(arc);
+      // Still on the line the radar faces.
+      expect(label.x - apexX).toBeCloseTo(label.y - apexY, 6);
+    });
+
     it("draws the range label only with distance labels on", async () => {
       const card = await mountCard(unitHass("km"), { unit_display: false });
 
@@ -4745,10 +4803,39 @@ describe("zone map card units and fitted grid", () => {
     });
 
     it("grows to take in an ellipse by its radii", async () => {
-      const zones = { "1": { shape: "ellipse", data: { cx: 0, cy: 7000, rx: 1000, ry: 1500 } } };
+      // Beside the cone, where neither the cone nor the aspect padding reaches
+      // past x = 6000, so only the radius takes the map out to 8000.
+      const zones = { "1": { shape: "ellipse", data: { cx: 6000, cy: 3000, rx: 2000, ry: 1000 } } };
       const card = await mountCard(unitHass("km", true, { ...EMPTY, zones }));
 
-      expect(card.yMax).toBeGreaterThanOrEqual(8500);
+      expect(card.xMax).toBeGreaterThanOrEqual(8000);
+    });
+
+    it("reaches the arc where it crosses straight ahead, not only its ends", async () => {
+      // A 60 degree cone's ends are 5.2 m ahead, but its arc reaches 6 m (6.3
+      // with the margin) straight ahead, which is what the map is fitted to.
+      const card = await mountCard(unitHass("km"), { cone: { fov_deg: 60 } });
+
+      expect(extents(card)).toEqual([-3500, 3500, 0, 6500]);
+    });
+
+    it("grows a sideways radar's map evenly above and below it", async () => {
+      // A zone far to the right makes the map wide, so it grows in height.
+      // Facing neither up nor down, the radar stays near the middle.
+      const zones = {
+        "1": { shape: "rect", data: { x_min: 14000, x_max: 21000, y_min: -1000, y_max: 1000 } },
+      };
+      const card = await mountCard(unitHass("km", true, { ...EMPTY, rotation_deg: 90, zones }));
+
+      expect(extents(card)).toEqual([0, 22000, -8000, 10000]);
+    });
+
+    it("leaves room past the arc when the radar is turned 45 degrees", async () => {
+      // The arc reaches 6000 mm along both axes. The margin past it takes the
+      // fit to the next 500 mm step instead of leaving the arc on the edge.
+      const card = await mountCard(unitHass("km", true, { ...EMPTY, rotation_deg: 45 }));
+
+      expect(extents(card)).toEqual([-2000, 6500, -2000, 6500]);
     });
 
     it("fits again when a payload turns the radar", async () => {
@@ -4786,6 +4873,103 @@ describe("zone map card units and fitted grid", () => {
       card.isDrawing = false;
       push(hass, { ...EMPTY, rotation_deg: 90 });
       expect(extents(card)).toEqual([0, 12000, -6000, 6000]);
+    });
+
+    it.each([
+      [90, "rect"],
+      [45, "rect"],
+      [45, "ellipse"],
+      [30, "rect"],
+    ])(
+      "keeps a feet map its size when a %s degree %s drawn past its corner comes back",
+      async (rotation, shape) => {
+        const payload = { ...EMPTY, rotation_deg: rotation, zones: { "1": {} } };
+        const hass = unitHass("mi", true, payload);
+        const card = await mountCard(hass, { start_locked: false });
+        card._setDrawMode(shape);
+        const before = extentsFt(card);
+        const size = [card.canvas.width, card.canvas.height];
+
+        dragOnCanvas(card, [400, 300], [size[0] + 100, size[1] + 100]);
+        const save = hass.callService.mock.calls.find((call: any[]) => call[2].shape === shape);
+        push(hass, { ...payload, zones: { "1": { shape, data: save[2].data } } });
+
+        // The save is whole mm, up to 1 mm past a feet edge (22 ft is
+        // 6705.6 mm), and must not round the map out a whole step.
+        expect(extentsFt(card)).toEqual(before);
+        expect([card.canvas.width, card.canvas.height]).toEqual(size);
+        if (rotation === 90) expect(before).toEqual([0, 36, -18, 18]);
+      }
+    );
+
+    it.each([
+      ["Escape", () => window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))],
+      ["cancelDrawing", (card: any) => card.cancelDrawing()],
+      ["Finish with too few points", (card: any) => card.finishPolygon()],
+      ["a mode change", (card: any) => card._setDrawMode("rect")],
+    ])("fits a payload that came in mid-polygon once it ends by %s", async (_how, end) => {
+      const hass = unitHass("km", true, { ...EMPTY, zones: { "1": {} } });
+      const card = await mountCard(hass, { start_locked: false });
+      card._setDrawMode("polygon");
+      card.isDrawing = true;
+      card._polyPoints = [{ x: 100, y: 200 }];
+
+      push(hass, { ...EMPTY, zones: { "1": {} }, rotation_deg: 90 });
+      expect(extents(card)).toEqual([-6000, 6000, 0, 9000]);
+
+      end(card);
+
+      expect(card.isDrawing).toBe(false);
+      expect(extents(card)).toEqual([0, 12000, -6000, 6000]);
+      expect(info(card)).toContain("Grid units: m (X: 0..12, Y: -6..6)");
+    });
+
+    it("fits a unit picked mid-polygon once the polygon is dropped", async () => {
+      const hass = unitHass("km", false, { ...EMPTY, zones: { "1": {} } });
+      const card = await mountCard(hass, { start_locked: false });
+      card._setDrawMode("polygon");
+      card.isDrawing = true;
+      card._polyPoints = [{ x: 100, y: 200 }];
+
+      card.shadowRoot.getElementById("btnUnitFt").click();
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+
+      expect(extentsFt(card)).toEqual([-18, 18, 0, 28]);
+      expect(info(card)).toContain("Grid units: ft (X: -18..18, Y: 0..28)");
+    });
+
+    it.each([
+      // 2 ft lines come out at exactly 40 px on a 40 ft map, so float error
+      // decided each axis's step apart.
+      ["a 40 ft map", 0, { "1": { shape: "rect", data: { x_min: 0, x_max: 1000, y_min: 500, y_max: 11750 } } }],
+      ["a 40 ft map turned 90 degrees", 90, { "1": { shape: "rect", data: { x_min: -5000, x_max: 0, y_min: 500, y_max: 5500 } } }],
+      // Rounding out to 2 ft and to 5 ft took turns, and the fit stopped on
+      // 2 ft edges that 5 ft lines missed.
+      [
+        "a fit whose step took turns",
+        110,
+        {
+          "1": {
+            shape: "polygon",
+            data: { points: [{ x: 5945, y: -86 }, { x: -3716, y: 827 }, { x: 2076, y: 4349 }] },
+          },
+          "2": { shape: "ellipse", data: { cx: 2316, cy: -4965, rx: 2605, ry: 2475.5 } },
+        },
+      ],
+    ])("draws X and Y lines at one step, with every edge on a line, on %s", async (_kind, rotation, zones) => {
+      const card = await mountCard(unitHass("mi", true, { ...EMPTY, rotation_deg: rotation, zones }));
+
+      const { metrics, xLines, yLines } = card._getGridRenderState();
+
+      expect(metrics.stepY).toBe(metrics.stepX);
+      for (const edge of extents(card)) {
+        const steps = edge / metrics.stepX;
+        expect(Math.abs(steps - Math.round(steps))).toBeLessThan(1e-6);
+      }
+      expect(xLines[0].value).toBeCloseTo(card.xMin, 6);
+      expect(xLines.at(-1).value).toBeCloseTo(card.xMax, 6);
+      expect(yLines[0].value).toBeCloseTo(card.yMin, 6);
+      expect(yLines.at(-1).value).toBeCloseTo(card.yMax, 6);
     });
 
     it("lets a YAML grid win, on the square canvas it always had", async () => {
