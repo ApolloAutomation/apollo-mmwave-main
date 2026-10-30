@@ -32,6 +32,7 @@ from .const import (
     DOMAIN,
     SIGNAL_CALIBRATION_UPDATED,
     SIGNAL_ZONES_UPDATED,
+    STORE_DISPLAY_UNITS,
     STORE_ENTITIES,
     STORE_INPUT_UNITS,
     STORE_LABEL,
@@ -112,6 +113,9 @@ def _payload(hass: HomeAssistant, device_id: str) -> dict[str, Any]:
         # What the presence sensor scales a target reading by when its sensor
         # has no length unit of its own; null means mm.
         STORE_INPUT_UNITS: entry.get(STORE_INPUT_UNITS),
+        # The unit an administrator picked for this radar's map, "m" or "ft";
+        # null means the card follows Home Assistant's unit system.
+        STORE_DISPLAY_UNITS: entry.get(STORE_DISPLAY_UNITS),
         # TODO(REVIEW_REPORT.md X53): resolved per subscriber.  # noqa: FIX002, TD003
         # Every subscriber re-resolves on every signal (about 66 us each). Low
         # priority now that zone edits send one signal; reusing DATA_PAIR_CACHE

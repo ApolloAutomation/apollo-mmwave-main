@@ -69,6 +69,16 @@ update_zone:
             - in
             - ft
             - yd
+    display_units:
+      name: Map Units
+      description: "The unit the zone map card shows this radar's map in, for everyone who opens it: m (meters) or ft (feet). auto forgets the choice, so the card follows Home Assistant's unit system again (feet for US customary, meters otherwise). Display only: zone geometry stays millimeters. Device-wide."
+      required: false
+      selector:
+        select:
+          options:
+            - auto
+            - m
+            - ft
     rotation_deg:
       name: Rotation Angle (deg)
       description: "Optional device rotation angle (-180..180). Positive degrees swing the device's facing direction toward its right (+X): 90 maps (x, y) to (y, -x), so a target straight ahead at (0, d) lands at (d, 0). Device-wide; if provided without zone fields, only the angle is updated for the device."

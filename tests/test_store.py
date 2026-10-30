@@ -511,6 +511,46 @@ async def test_input_units_survive_a_round_trip(hass, hass_storage) -> None:
     assert reloaded.devices["dev"]["input_units"] == "cm"
 
 
+async def test_display_units_survive_a_round_trip(hass, hass_storage) -> None:
+    """The map unit an administrator picked comes back after a restart."""
+    store = ZoneStore(hass)
+    store.devices["dev"] = {"zones": {}, "display_units": "ft"}
+    await store.async_save()
+    on_disk = hass_storage[ZONE_STORAGE_KEY]["data"]["devices"]["dev"]
+    assert on_disk["display_units"] == "ft"
+
+    reloaded = ZoneStore(hass)
+    assert await reloaded.async_load() is True
+
+    assert reloaded.devices["dev"]["display_units"] == "ft"
+
+
+async def test_unknown_display_units_on_disk_are_dropped(hass, hass_storage) -> None:
+    """Only m or ft is restored; anything else reads as following Home Assistant."""
+    hass_storage[ZONE_STORAGE_KEY] = {
+        "version": 2,
+        "data": {
+            "devices": {
+                "number": {"zones": {}, "display_units": 5},
+                # Never stored: the service turns auto into an absent key.
+                "auto": {"zones": {}, "display_units": "auto"},
+                "inches": {"zones": {}, "display_units": "in"},
+                "meters": {"zones": {}, "display_units": "m"},
+                "none": {"zones": {}},
+            },
+            "orphans": {"Ghost Room": {"zones": {}, "display_units": "ft"}},
+        },
+    }
+
+    store = ZoneStore(hass)
+    assert await store.async_load() is True
+
+    for device_id in ("number", "auto", "inches", "none"):
+        assert "display_units" not in store.devices[device_id]
+    assert store.devices["meters"]["display_units"] == "m"
+    assert store.orphans["Ghost Room"]["display_units"] == "ft"
+
+
 async def test_delayed_save_writes_after_the_delay(hass, hass_storage) -> None:
     """A mutation reaches disk once the debounce elapses, not before."""
     # Every zone edit after setup is persisted this way. The immediate
