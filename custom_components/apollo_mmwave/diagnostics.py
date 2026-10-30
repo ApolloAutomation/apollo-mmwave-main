@@ -304,9 +304,17 @@ def _zone_entry(entry: dict[str, Any] | None) -> dict[str, Any] | None:
 
 def _device_info(hass: HomeAssistant, device: dr.DeviceEntry) -> dict[str, Any]:
     """Return the registry fields support reads, and none that hold a MAC or IP."""
+    # Home Assistant 2026.10 gives a device one config entry, as
+    # config_entry_id, and deprecates the config_entries set; older versions
+    # only have the set.
+    entry_ids = (
+        {device.config_entry_id}
+        if hasattr(device, "config_entry_id")
+        else device.config_entries
+    )
     domains = {
         config_entry.domain
-        for entry_id in device.config_entries
+        for entry_id in entry_ids
         if (config_entry := hass.config_entries.async_get_entry(entry_id))
     }
     return {
@@ -381,10 +389,16 @@ def _device_ids(
     calibration store or the dashboard's device list names, which covers a DIY
     radar with zones and a radar that has since left the registry.
     """
+    # Every Apollo radar is an ESPHome device. Reading the registry through
+    # the ESPHome config entries avoids `registry.devices` as a mapping, which
+    # Home Assistant deprecates.
     registry = dr.async_get(hass)
     ids = {
         device.id
-        for device in registry.devices.values()
+        for esphome_entry in hass.config_entries.async_entries("esphome")
+        for device in dr.async_entries_for_config_entry(
+            registry, esphome_entry.entry_id
+        )
         if apollo_radars(device) is not None
     }
     if store is not None:
