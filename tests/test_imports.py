@@ -20,15 +20,22 @@ PACKAGE = Path(integration.__file__).parent
 REPO_ROOT = PACKAGE.parents[1]
 
 # Run in a fresh interpreter: this test session has imported every module
-# already. It imports what Home Assistant's import executor imports, then
-# prints every module of the package that is loaded.
+# already. It imports what Home Assistant's import executor imports (the
+# package, the platforms it preloads with it when their files exist, such as
+# config_flow and diagnostics, and the entity platforms), then prints every
+# module of the package that is loaded.
 _SCRIPT = """
 import importlib
 import sys
+from pathlib import Path
+
+from homeassistant.loader import BASE_PRELOAD_PLATFORMS
 
 import custom_components.apollo_mmwave as package
 
-for name in ("config_flow", *(platform.value for platform in package.PLATFORMS)):
+here = Path(package.__file__).parent
+preloaded = [name for name in BASE_PRELOAD_PLATFORMS if (here / f"{name}.py").is_file()]
+for name in (*preloaded, *(platform.value for platform in package.PLATFORMS)):
     importlib.import_module(f"{package.__name__}.{name}")
 print("\\n".join(name for name in sys.modules if name.startswith(package.__name__)))
 """
