@@ -14,6 +14,7 @@
  * after RELOCK_AFTER_MS without a slider change, when every row of it has
  * been gone for LEAVE_GRACE_MS (the user left the tab or the dashboard), and
  * never while a finger or the mouse is still down on one of its sliders.
+ * A context menu ends a mouse's hold, since it can take the pointerup.
  */
 
 import type { HassEntity } from "../types";
@@ -58,8 +59,9 @@ interface RadarLock {
   deadline: number;
   timer?: ReturnType<typeof setTimeout>;
   leaveTimer?: ReturnType<typeof setTimeout>;
-  /** Pointers down on one of this radar's unlocked sliders. */
-  drags: Set<number>;
+  /** Pointers down on one of this radar's unlocked sliders: pointerId to
+   *  pointerType. */
+  drags: Map<number, string>;
   lastTry: number;
   lastReminder: number;
   listeners: Set<(change: LockChange) => void>;
@@ -75,7 +77,7 @@ function radar(id: string): RadarLock {
     l = {
       unlocked: false,
       deadline: 0,
-      drags: new Set(),
+      drags: new Map(),
       lastTry: -Infinity,
       lastReminder: -Infinity,
       listeners: new Set(),
@@ -123,14 +125,33 @@ function expireAll(): void {
   for (const id of [...radars.keys()]) expire(id);
 }
 
-/** A drag ended. If the time ran out during it, check again one tick later:
- *  the slider sends its `change` just after the pointerup, and that change
- *  restarts the countdown, so a drag that set a value never ends in a relock. */
-function onPointerEnd(e: PointerEvent): void {
+/** End the drags `ends` picks. Where the time ran out during them, check
+ *  again one tick later: the slider sends its `change` just after the
+ *  pointerup, and that change restarts the countdown, so a drag that set a
+ *  value never ends in a relock. */
+function endDrags(ends: (pointerId: number, pointerType: string) => boolean): void {
   for (const [id, l] of radars) {
-    if (!l.drags.delete(e.pointerId) || l.drags.size > 0) continue;
+    let ended = false;
+    for (const [pointerId, pointerType] of l.drags) {
+      if (!ends(pointerId, pointerType)) continue;
+      l.drags.delete(pointerId);
+      ended = true;
+    }
+    if (!ended || l.drags.size > 0) continue;
     if (l.unlocked && Date.now() >= l.deadline) setTimeout(() => expire(id), 0);
   }
+}
+
+function onPointerEnd(e: PointerEvent): void {
+  endDrags((pointerId) => pointerId === e.pointerId);
+}
+
+/** A context menu can take the mouse's pointerup: macOS opens it on the
+ *  press of a ctrl-click, which the slider takes for a drag. A long press on
+ *  a touch screen can open one under a finger that goes on dragging, so a
+ *  touch keeps its drag. */
+function onContextMenu(): void {
+  endDrags((_, pointerType) => pointerType !== "touch");
 }
 
 function onVisibility(): void {
@@ -152,6 +173,7 @@ function install(): void {
   installed = true;
   window.addEventListener("pointerup", onPointerEnd, { capture: true, passive: true });
   window.addEventListener("pointercancel", onPointerEnd, { capture: true, passive: true });
+  window.addEventListener("contextmenu", onContextMenu, { capture: true, passive: true });
   document.addEventListener("visibilitychange", onVisibility);
   window.addEventListener("pageshow", expireAll);
   // Home Assistant's dashboards scroll the window.
@@ -187,9 +209,9 @@ export function noteSliderChange(id: string): void {
 
 /** A pointer went down on one of the radar's unlocked sliders. Until it is
  *  up again, the radar does not lock on its own. */
-export function dragStarted(id: string, pointerId: number): void {
+export function dragStarted(id: string, pointerId: number, pointerType: string): void {
   install();
-  radar(id).drags.add(pointerId);
+  radar(id).drags.set(pointerId, pointerType);
 }
 
 /**

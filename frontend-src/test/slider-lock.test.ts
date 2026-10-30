@@ -102,7 +102,7 @@ describe("slider lock and drags", () => {
     watch("dev1");
     setUnlocked("dev1", true);
     vi.advanceTimersByTime(4 * MIN);
-    dragStarted("dev1", 7);
+    dragStarted("dev1", 7, "touch");
     vi.advanceTimersByTime(2 * MIN);
     expect(isUnlocked("dev1")).toBe(true);
     pointer("pointerup", 7);
@@ -114,7 +114,7 @@ describe("slider lock and drags", () => {
   it("stays open when the drag's change arrives before that tick", () => {
     watch("dev1");
     setUnlocked("dev1", true);
-    dragStarted("dev1", 7);
+    dragStarted("dev1", 7, "touch");
     vi.advanceTimersByTime(6 * MIN);
     pointer("pointerup", 7);
     noteSliderChange("dev1");
@@ -127,12 +127,38 @@ describe("slider lock and drags", () => {
   it("ends a drag on pointercancel too, but not on another pointer", () => {
     watch("dev1");
     setUnlocked("dev1", true);
-    dragStarted("dev1", 7);
+    dragStarted("dev1", 7, "touch");
     vi.advanceTimersByTime(6 * MIN);
     pointer("pointerup", 8);
     vi.advanceTimersByTime(0);
     expect(isUnlocked("dev1")).toBe(true);
     pointer("pointercancel", 7);
+    vi.advanceTimersByTime(0);
+    expect(isUnlocked("dev1")).toBe(false);
+  });
+
+  it("ends a mouse drag on a context menu, which can take its pointerup", () => {
+    watch("dev1");
+    setUnlocked("dev1", true);
+    // A ctrl-click on macOS: the menu opens on the press, and no pointerup comes.
+    dragStarted("dev1", 1, "mouse");
+    vi.advanceTimersByTime(6 * MIN);
+    expect(isUnlocked("dev1")).toBe(true);
+    window.dispatchEvent(new MouseEvent("contextmenu"));
+    expect(isUnlocked("dev1")).toBe(true);
+    vi.advanceTimersByTime(0);
+    expect(isUnlocked("dev1")).toBe(false);
+  });
+
+  it("keeps a touch drag through a context menu from a long press", () => {
+    watch("dev1");
+    setUnlocked("dev1", true);
+    dragStarted("dev1", 7, "touch");
+    vi.advanceTimersByTime(6 * MIN);
+    window.dispatchEvent(new MouseEvent("contextmenu"));
+    vi.advanceTimersByTime(0);
+    expect(isUnlocked("dev1")).toBe(true);
+    pointer("pointerup", 7);
     vi.advanceTimersByTime(0);
     expect(isUnlocked("dev1")).toBe(false);
   });
@@ -142,7 +168,7 @@ describe("slider lock and the page in the background", () => {
   it("clears drags when hidden and locks on return once the time is up", () => {
     watch("dev1");
     setUnlocked("dev1", true);
-    dragStarted("dev1", 7);
+    dragStarted("dev1", 7, "touch");
     setVisibility("hidden");
     // The phone slept: its clock moved on, its timers did not fire.
     vi.setSystemTime(Date.now() + 6 * MIN);

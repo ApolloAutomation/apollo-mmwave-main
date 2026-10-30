@@ -367,10 +367,12 @@ export class ApolloRadarSliderRow extends LitElement {
   }
 
   /** A pointer down on an unlocked slider holds off the relock until it is
-   *  up again. */
+   *  up again. Only the main button drags, as on the shield and in HA's
+   *  slider: a right click opens a menu that can take its pointerup. */
   private _onSliderDown(e: PointerEvent): void {
     const c = this._config;
-    if (c && e.isPrimary && !this._locked() && fromSlider(e)) dragStarted(c.device_id, e.pointerId);
+    if (!c || !e.isPrimary || e.button > 0 || this._locked() || !fromSlider(e)) return;
+    dragStarted(c.device_id, e.pointerId, e.pointerType);
   }
 
   /** Someone tried to move this locked slider: color it, buzz and, on a

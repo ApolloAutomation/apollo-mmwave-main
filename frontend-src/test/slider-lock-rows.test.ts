@@ -567,4 +567,31 @@ describe("keys and changes on a locked slider", () => {
     await settle(el);
     expect(shield(el)).not.toBeNull();
   });
+
+  it("is not held open by a right click, or by a ctrl-click whose menu took the pointerup", async () => {
+    vi.useFakeTimers();
+    const id = freshId();
+    const el = await mountRow(id);
+    const lock = await mountLock(id);
+    await pressLockButton(lock, el);
+
+    // A right click: its menu can take the pointerup, and it never drags.
+    pointer(inner(el).thumb!, "pointerdown", { pointerType: "mouse", button: 2, buttons: 2 });
+    vi.advanceTimersByTime(RELOCK_AFTER_MS);
+    await settle(el);
+    expect(shield(el)).not.toBeNull();
+
+    // A ctrl-click on macOS: the main button, then the menu, and no pointerup.
+    await pressLockButton(lock, el);
+    pointer(inner(el).thumb!, "pointerdown", { pointerType: "mouse", buttons: 1, ctrlKey: true });
+    vi.advanceTimersByTime(RELOCK_AFTER_MS);
+    await settle(el);
+    expect(shield(el)).toBeNull();
+    inner(el).thumb!.dispatchEvent(
+      new MouseEvent("contextmenu", { ctrlKey: true, bubbles: true, composed: true })
+    );
+    vi.advanceTimersByTime(0);
+    await settle(el);
+    expect(shield(el)).not.toBeNull();
+  });
 });
