@@ -13,11 +13,18 @@ import "../src/cards/calibrate-card";
 import "../src/cards/setup-card";
 import "../src/strategy";
 import * as setupChecks from "../src/cards/setup-checks";
-import { LD2410_PROFILE, LD2412_PROFILE, PROFILES, rangeLimitTip } from "../src/profiles";
+import * as gateSetupChecks from "../src/cards/gate-setup-checks";
+import {
+  LD2410_PROFILE,
+  LD2412_PROFILE,
+  PROFILES,
+  rangeLimitTip,
+  type RadarProfile,
+} from "../src/profiles";
 import { buildDeviceCards, type RadarDevice, type StrategyConfig } from "../src/strategy-core";
 import { factoryResetRow } from "../src/panels/entity-rows";
 import { ZoneMapCard } from "../src/zone-map/card";
-import type { HomeAssistant } from "../src/types";
+import type { EntityMap, HomeAssistant } from "../src/types";
 
 const EM_DASH = "\u2014";
 
@@ -191,6 +198,71 @@ describe("setup card copy", () => {
       if (status.kind !== "checked") continue;
       const fixes = status.problems.flatMap((p) => (p.fix ? [p.fix] : []));
       texts.push(...strings(status.problems), setupChecks.recommendedLine(fixes));
+    }
+    expect(copyProblems(texts)).toEqual([]);
+  });
+});
+
+describe("gate setup card copy", () => {
+  /** States for every id of a profile's map, with `overrides` on top. */
+  type Overrides = (m: EntityMap) => Record<string, string>;
+  const hass = (profile: RadarProfile, overrides: Overrides): HomeAssistant => {
+    const m = profile.entityMap("hall");
+    const states: HomeAssistant["states"] = {};
+    for (const v of Object.values(m)) {
+      for (const id of Array.isArray(v) ? v : [v]) {
+        if (typeof id === "string") states[id] = { entity_id: id, state: "5", attributes: {} };
+      }
+    }
+    if (m.gate_size) states[m.gate_size].state = "0.75m";
+    for (const [id, state] of Object.entries(overrides(m))) {
+      states[id] = { entity_id: id, state, attributes: { unit_of_measurement: "cm" } };
+    }
+    return { states, entities: {}, devices: {} };
+  };
+
+  it("writes every line and button without em dashes", () => {
+    const texts: string[] = Object.values(gateSetupChecks as Record<string, unknown>).filter(
+      (v): v is string => typeof v === "string"
+    );
+    expect(texts.length).toBeGreaterThan(3);
+    const cases: [RadarProfile, Overrides][] = [
+      [
+        LD2410_PROFILE,
+        (m) => ({
+          [m.engineering_mode!]: "on",
+          [m.radar_timeout!]: "unknown",
+          [m.move_threshold[0]]: "unknown",
+          [m.max_move_distance!]: "2",
+          [m.max_still_distance!]: "unknown",
+          [m.zone_1_start!]: "300",
+          [m.end_zone_1!]: "100",
+          [m.end_zone_2!]: "250",
+          [m.end_zone_3!]: "200",
+        }),
+      ],
+      [
+        LD2410_PROFILE,
+        (m) => ({
+          [m.zone_1_start!]: "0",
+          [m.end_zone_1!]: "50",
+          [m.end_zone_2!]: "200",
+          [m.end_zone_3!]: "300",
+          [m.max_move_distance!]: "2",
+          [m.max_still_distance!]: "2",
+        }),
+      ],
+      [LD2412_PROFILE, (m) => ({ [m.max_move_distance!]: "4", [m.max_still_distance!]: "6" })],
+      [LD2412_PROFILE, (m) => ({ [m.max_move_distance!]: "4", [m.max_still_distance!]: "4" })],
+    ];
+    for (const [profile, overrides] of cases) {
+      const map = profile.entityMap("hall");
+      const status = gateSetupChecks.gateSetupStatus(hass(profile, overrides), "hall", map, profile, "idle");
+      expect(status.kind).toBe("checked");
+      if (status.kind === "checked") {
+        expect(status.problems.length).toBeGreaterThan(0);
+        texts.push(...strings(status.problems));
+      }
     }
     expect(copyProblems(texts)).toEqual([]);
   });
