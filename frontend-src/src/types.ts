@@ -40,6 +40,9 @@ export interface HomeAssistant {
   /** HA's translator; "" for an unknown key. Used to render a rejected
    *  service call's translated exception message. */
   localize?(key: string, values?: Record<string, any>): string;
+  /** HA's display text for a state, with its unit (the slider rows'
+   *  fallback). */
+  formatEntityState?(stateObj: HassEntity): string;
   /** Loads a translation category for an integration and resolves to the
    *  updated `localize`. */
   loadBackendTranslation?(
@@ -143,4 +146,22 @@ export interface CalibrateCardConfig {
   device_base_name?: string;
   title?: string;
   calibration?: CalibrationOptions;
+}
+
+/** A slider row (`custom:apollo-radar-slider-row`): Home Assistant's own
+ *  number row behind the slider lock. Every key but `type` and `device_id`
+ *  goes to that row. */
+export interface SliderRowConfig {
+  type: string;
+  entity: string;
+  name?: string;
+  /** The lock's key: rows and lock rows with the same value share one lock. */
+  device_id: string;
+  [key: string]: unknown;
+}
+
+/** The lock row (`custom:apollo-radar-slider-lock-row`) above the sliders. */
+export interface SliderLockRowConfig {
+  type: string;
+  device_id: string;
 }
