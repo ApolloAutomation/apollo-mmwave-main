@@ -63,6 +63,15 @@ INPUT_UNIT_FACTORS = {
     "ft": 304.8,
     "yd": 914.4,
 }
+# The unit the zone card shows one radar's map in, saved per radar so every
+# viewer sees the same one. Display only: zone geometry stays millimeters and
+# presence detection never reads it. Absent means the card follows Home
+# Assistant's unit system, feet for US customary and meters otherwise.
+STORE_DISPLAY_UNITS = "display_units"
+DISPLAY_UNITS = ("m", "ft")
+# What update_zone takes to forget the saved unit, so the card follows Home
+# Assistant's unit system again. Never stored.
+DISPLAY_UNITS_AUTO = "auto"
 # Millimeters per Home Assistant length unit, keyed by the UnitOfLength
 # symbols exactly as Home Assistant writes them. ESPHome reports LD2450
 # targets in mm, but Home Assistant set to US customary units shows a new

@@ -43,6 +43,8 @@ from .const import (
     CONF_DASHBOARD_URL_PATH,
     DASHBOARD_URL_PATH,
     DATA_STORE,
+    DISPLAY_UNITS,
+    DISPLAY_UNITS_AUTO,
     DOMAIN,
     ENTRY_MINOR_VERSION,
     EVENT_ZONE_UPDATED,
@@ -56,6 +58,7 @@ from .const import (
     SHAPE_RECT,
     SIGNAL_ZONES_UPDATED,
     STORE_ALIASES,
+    STORE_DISPLAY_UNITS,
     STORE_ENTITIES,
     STORE_INPUT_UNITS,
     STORE_LABEL,
@@ -470,12 +473,18 @@ def _resolve_target_device(
 def _apply_device_settings(
     device: dict[str, Any], call: ServiceCall, rotation: int | None
 ) -> None:
-    """Write the device-wide rotation and target unit, when the call sets them."""
+    """Write the device-wide rotation and units, when the call sets them."""
     if rotation is not None:
         device[ATTR_ROTATION_DEG] = rotation
     input_units = call.data.get("input_units")
     if input_units is not None:
         device[STORE_INPUT_UNITS] = input_units
+    display_units = call.data.get(STORE_DISPLAY_UNITS)
+    if display_units == DISPLAY_UNITS_AUTO:
+        # Absent is how the store says "follow Home Assistant's unit system".
+        device.pop(STORE_DISPLAY_UNITS, None)
+    elif display_units is not None:
+        device[STORE_DISPLAY_UNITS] = display_units
 
 
 def _apply_entity_pairs(device: dict[str, Any], call: ServiceCall) -> None:
@@ -515,6 +524,21 @@ def _zone_part_changes_something(
     return False
 
 
+def _display_units_change_something(
+    call: ServiceCall, store: ZoneStore, device_id: str
+) -> bool:
+    """Report whether the call's display_units changes what the card shows."""
+    display_units = call.data.get(STORE_DISPLAY_UNITS)
+    if display_units is None:
+        return False
+    if display_units != DISPLAY_UNITS_AUTO:
+        # Like input_units, a unit counts even when it is the one stored.
+        return True
+    # "auto" only forgets a saved unit. Read through `devices`, because
+    # `store.device()` would mint an entry for a radar with nothing to forget.
+    return STORE_DISPLAY_UNITS in (store.devices.get(device_id) or {})
+
+
 def _call_changes_something(
     call: ServiceCall, store: ZoneStore, device_id: str, rotation: int | None
 ) -> bool:
@@ -547,6 +571,7 @@ def _call_changes_something(
     if (
         rotation is not None
         or call.data.get("input_units") is not None
+        or _display_units_change_something(call, store, device_id)
         or call.data.get("clear_entities")
         or _normalize_entities(call.data.get("entities")) is not None
         or zone_counts
@@ -658,6 +683,9 @@ UPDATE_ZONE_SERVICE_SCHEMA = vol.All(
             vol.Optional("data"): vol.Any(None, dict),
             vol.Optional(ATTR_ROTATION_DEG): vol.Coerce(float),
             vol.Optional("input_units"): vol.In(list(INPUT_UNIT_FACTORS)),
+            vol.Optional(STORE_DISPLAY_UNITS): vol.In(
+                [*DISPLAY_UNITS, DISPLAY_UNITS_AUTO]
+            ),
             vol.Optional("name"): cv.string,
             vol.Optional("delete"): cv.boolean,
             vol.Optional("entities"): vol.All(
