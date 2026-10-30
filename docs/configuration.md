@@ -549,6 +549,18 @@ the two rows yourself under Settings → Dashboards → ⋮ → **Resources**.
 - **The zone map card says Apollo mmWave is not loaded.** Right after a restart
   the card retries on its own. If it still says so, reload the page once the
   integration has loaded.
+- **The zone map dot stays at the sensor.** Before 2.2.7, the zone map card
+  and the zone presence sensors read the radar's Target X and Y sensors as
+  millimeters, whatever unit Home Assistant showed them in. Home Assistant set
+  to US customary units shows them in inches, and you can change any of them
+  by hand, so the dots sat at or right around the sensor and zone presence did
+  not turn on. 2.2.7 reads each sensor's unit; update and the dots move. On an
+  older release, open each Target X and Target Y sensor on the radar's device
+  page (six of them, for the three targets), open its settings (⚙), set
+  **Unit of measurement** to **mm** and select **Update**. Either way, check
+  zones you drew while the dots were in the wrong place. The card's
+  `input_units` only applies to target sensors with no unit, such as DIY
+  template sensors.
 - **Zones are missing after a restart.** If `.storage/apollo_mmwave.zones` was
   edited by hand or partly restored and has the wrong shape, the integration
   logs what it could not read and loads the rest (possibly nothing), and the

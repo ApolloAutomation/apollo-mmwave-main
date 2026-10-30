@@ -58,7 +58,7 @@ update_zone:
         boolean: {}
     input_units:
       name: Target Sensor Units
-      description: "Unit the radar's X/Y target sensors report in. Zone geometry is always millimeters; presence detection scales readings by this before testing them. Device-wide. Apollo firmware reports millimeters, so leave this unset unless you are on DIY hardware."
+      description: "Unit for the radar's X/Y target sensors when a sensor has no length unit of its own, such as a DIY template sensor. A sensor that has one (mm, cm, m, km, in, ft, yd, mi or nmi) is converted by it instead, so Apollo radars need nothing here, whichever unit Home Assistant shows them in. Zone geometry is always millimeters; presence detection converts readings before testing them. Device-wide."
       required: false
       selector:
         select:
