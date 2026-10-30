@@ -8,6 +8,11 @@ install the integration and run your first calibration.
 - [The Apollo mmWave dashboard](#the-apollo-mmwave-dashboard)
 - [Lovelace resources](#lovelace-resources)
 - [Choosing which devices appear](#choosing-which-devices-appear)
+- [What each tab shows](#what-each-tab-shows)
+  - [Start here](#start-here)
+  - [Gate radar cards](#gate-radar-cards)
+  - [Gate radar setup checks](#gate-radar-setup-checks)
+  - [Device card](#device-card)
 - [Auto-calibration](#auto-calibration)
   - [The calibration services](#the-calibration-services)
 - [The zone map and its cards](#the-zone-map-and-its-cards)
@@ -18,6 +23,7 @@ install the integration and run your first calibration.
 - [Use your own dashboards instead](#use-your-own-dashboards-instead)
   - [Strategy options](#strategy-options)
   - [Card options](#card-options)
+- [Support file](#support-file)
 - [Removing Apollo mmWave](#removing-apollo-mmwave)
 - [Troubleshooting](#troubleshooting)
 
@@ -159,10 +165,171 @@ into its raw configuration editor (saving **Dashboard devices** rewrites only
 devices** option. See
 [Strategy options](#strategy-options) for the full list.
 
+## What each tab shows
+
+Each sensor's tab is built from the radars it has: the LD2410 on an MSR-1 or
+MSR-2, the LD2450 on an MTR-1, and on an R PRO-1 the LD2450 plus the
+optional LD2412. On a wide screen the cards sit in columns; on a phone they
+read top to bottom in the order below.
+
+- **MSR-1 and MSR-2:** Radar setup, Auto-calibrate, Start here, LD2410
+  Controls and LD2410 Zone Config; then LD2410 Distances, Detection Range
+  and Target / Occupancy; then Gate Energy and Move Thresholds; then the
+  occupancy history, Still Thresholds and the Device card.
+- **R PRO-1:** the LD2412's Radar setup, Auto-calibrate, Start here, LD2412
+  Controls and Target / Occupancy; then the Zone Map heading with the
+  LD2450's Radar setup and the zone map; then the LD2450's cards (see
+  [The zone map and its cards](#the-zone-map-and-its-cards)); then the
+  LD2412's Distances, Detection Range, Gate Energy, Move Thresholds,
+  Occupancy History, Still Thresholds and the Device card.
+- **MTR-1:** Start here, Radar setup and the zone map; then Zone presence,
+  LD2450 Live and Occupancy History; then LD2450 Controls, the radar's
+  built-in zones and the Device card.
+
+A card only shows rows for entities Home Assistant has, so a setting the
+firmware hides by default has no row.
+
+### Start here
+
+The help card on every tab lists the first steps for that sensor and ends
+with **All settings for this device →**, which opens the device's own page
+in Home Assistant, where every setting this dashboard leaves out lives.
+
+- **MSR-1 and MSR-2:** fix anything the Radar setup card flags, calibrate
+  with an empty room, set how far the radar looks and how long presence
+  stays on, then walk the room and watch the Gate Energy chart. Each gate's
+  depth is given in your units ("each gate is about 0.75 m", or "about
+  2.5 ft" on a US customary system). A **Full tuning guide →** link opens
+  the Apollo wiki.
+- **R PRO-1:** first what each radar is for: the LD2412 senses people
+  anywhere in range, even sitting still, and the LD2450 tracks where people
+  are and drives the zone map. Then the LD2412 steps above, and for the
+  LD2450: fix anything its Radar setup card flags, set **Cone rotation**,
+  then draw a zone and walk into it. **In automations**, use **LD2412
+  Presence** (the Radar Target row on this tab) for the whole room, or a
+  zone's presence sensor for one part of it.
+- **MTR-1:** fix anything the Radar setup card flags, set **Cone rotation**
+  (under Configure on the zone map) to match how the sensor is mounted, then
+  draw a zone and walk into it. **In automations**, use a zone's presence
+  sensor, or **LD2450 Presence** for anywhere the radar sees.
+
+An offline sensor's help card adds an "Offline right now" note.
+
+### Gate radar cards
+
+These cards are on MSR-1, MSR-2 and R PRO-1 tabs. Each title starts with the
+chip: LD2410 on an MSR, LD2412 on an R PRO-1.
+
+- **Controls:** Radar Engineering Mode, Start Dynamic Background Correction
+  and Background Correction Running (LD2412 only), **Radar Bluetooth (HLK
+  app)**, **Restart Radar** and **Factory Reset Radar**. Radar Bluetooth is
+  the radar chip's own Bluetooth, which the HLK phone app connects to, not
+  the device's Bluetooth proxy. Restart Radar asks "Restart the LD2410
+  radar? It stops detecting for a few seconds while it starts up." before it
+  restarts the radar chip, and Factory Reset Radar asks before it resets it.
+  The whole-device restart is on the [Device card](#device-card).
+- **Detection Range:** Radar Timeout, then Max Move Gate and Max Still Gate
+  on the LD2410, or Max Gate and Min Gate on the LD2412. The tip under it
+  says each gate is about 0.75 m (2.5 ft) deep and that Radar Timeout is how
+  long **Radar Target** (on the R PRO-1, **LD2412 Presence**) stays on after
+  the radar last detects someone.
+- **LD2410 Zone Config** (MSR only): Start Zone 1 and End Zone 1 to 3. The
+  note under it says the boxes are in cm, also on a US customary system
+  ("100 cm is about 3.3 ft"), and that the zones sit back to back: Zone 1
+  runs from Start Zone 1 to End Zone 1, Zone 2 from there to End Zone 2, and
+  Zone 3 from there to End Zone 3. In automations, use **Any zone**.
+- **Move Thresholds** and **Still Thresholds:** one row per gate, named for
+  how far out the gate reaches: "G0 (at the sensor)", "G1 (about 0.75 m)" up
+  to "G8 (about 6 m)" on the LD2410, in feet ("G4 (about 10 ft)") on a US
+  customary system. The distances use 0.75 m gates, or the radar's own gate
+  size when that hidden setting is enabled.
+- **Target / Occupancy:** Radar Target, Radar Moving Target, Radar Still
+  Target and, on an MSR, Radar Zone 1 to 3 Occupancy and **Any zone**. Any
+  zone is on while someone is in any of the three zones, so it ignores
+  people past End Zone 3. The rows light up while on.
+- **Occupancy History:** the last 24 hours. On an MSR (titled "LD2410
+  Occupancy History"): Detected, Moving, Still, Any zone and Zone 1 to 3. On
+  an R PRO-1: LD2412 Presence, LD2412 Moving, LD2412 Still, LD2450 Presence
+  and each zone you drew. A zone you just drew joins the history after a
+  page reload.
+
+### Gate radar setup checks
+
+The **Radar setup** card at the top of MSR-1, MSR-2 and R PRO-1 tabs checks
+the gate radar (the LD2410 or LD2412). It changes nothing on its own: each
+button names what it does and makes that one change, the buttons are greyed
+out while it is sent, and if Home Assistant refuses it the card says why.
+The card's second line names the chip and the sensor ("LD2412 · Office"),
+so on an R PRO-1 you can tell it from the LD2450's card above the zone map.
+
+- **Radar Engineering Mode left on.** The card says "Radar Engineering Mode
+  is on, so every gate's energy is saved to the database about once a
+  second." The Gate Energy chart needs it only while you watch it. **Turn
+  off Radar Engineering Mode** turns it off. While a calibration runs on the
+  radar the card says nothing about it, because the calibration turns the
+  mode on and off itself; until the card knows whether one is running, it
+  shows "Checking the radar's settings...".
+- **Settings not reported yet.** When a gate threshold, the detection range
+  or the timeout reads unknown, their rows are blank and calibration cannot
+  start. **Read settings from the radar** only asks the radar to send them;
+  nothing on the radar changes. The card waits a few seconds for the answer
+  and, if none comes, says "The radar has not sent its settings yet. Try
+  again in a moment." When the radar's query button is not available, the
+  card says to press Query Params on the radar's device page instead.
+- **LD2410 zones that can never turn on.** Each zone starts where the one
+  before it ends, so an end at or below the one before leaves that zone
+  empty, for example "Zone 2 can never turn on. End Zone 2 (150 cm) must be
+  larger than End Zone 1 (200 cm)." A zone that starts or ends past the
+  radar's reach (the larger of Max Move Gate and Max Still Gate, times the
+  gate size) is flagged too. Change the distances on the Zone Config card, or
+  raise the max gates on the Detection Range card.
+- **LD2412 Min Gate at or above Max Gate.** The LD2412 only detects people
+  from Min Gate out to Max Gate, so the card asks you to set Min Gate lower
+  than Max Gate on the Detection Range card.
+
+The zone and range problems have no button: the card explains them and
+leaves the new values to you. "Radar settings look good." means everything
+the card can read is fine. While the radar is offline, or has not reported
+anything yet, the card says so and waits.
+
+The card is part of the generated dashboard and can be placed on your own
+with `radar: gate`:
+
+```yaml
+type: custom:apollo-radar-setup-card
+device_id: your_device_id
+radar: gate          # check the LD2410 or LD2412; leave out for the LD2450
+title: Radar setup   # optional
+```
+
+### Device card
+
+The **Device** card ends every tab.
+
+- **Apollo firmware**, and the radar chip firmware: **LD2410 firmware** on an
+  MSR, **LD2412 firmware** and **LD2450 firmware** on an R PRO-1, **LD2450
+  firmware** on an MTR-1. The R PRO-1 hides both chip versions by default;
+  enable them on the device page to get the rows.
+- **Firmware update** shows whether Apollo has a new firmware. Tap it to open
+  Home Assistant's own update window, where you can install it. The card has
+  no install button. The MTR-1 firmware has no update entity, so it has no
+  such row.
+- **Restart device** restarts the whole sensor and asks first. On an R PRO-1
+  it reads **Restart device (both radars)**, and on an MTR-1 **Restart device
+  (also restarts the radar)**. The device is offline for a short while
+  before it reconnects.
+- **Weak Wi-Fi.** While the Wi-Fi signal is below -75 dBm, a note says
+  presence updates can lag or drop out and suggests moving the device or the
+  router closer, or adding an access point. It stays hidden while the signal
+  is fine or the device is offline.
+- **All settings for this device →** opens the device's own page, and
+  **Download a support file** says where to get the
+  [support file](#support-file).
+
 ## Auto-calibration
 
-Every gate-radar tab (MSR-1, MSR-2, R PRO-1) starts with an **Auto-calibrate**
-card. Press **Calibrate with empty room** and leave: Home Assistant turns Radar
+Every gate-radar tab (MSR-1, MSR-2, R PRO-1) has an **Auto-calibrate** card
+near the top, right under Radar setup. Press **Calibrate with empty room** and leave: Home Assistant turns Radar
 Engineering Mode on, counts down 15 seconds so you can get out, listens to every
 gate's move and still energy for a minute, then sets each threshold a margin
 above the background it heard. Your current thresholds are saved first, so the
@@ -292,9 +459,10 @@ actions:
 **Recorder.** While Radar Engineering Mode is on, the radar updates its 18
 (LD2410) or 28 (LD2412) gate energy sensors about once a second, and every
 update lands in the recorder. The job turns the mode back off when it was the
-one that turned it on, so a calibration adds about two minutes of that. If you
-leave the mode on to watch the Gate Energy chart, exclude the per-gate energy
-sensors. The globs match the gate number exactly (one digit on the LD2410, two
+one that turned it on, so a calibration adds about two minutes of that. The
+[Radar setup](#gate-radar-setup-checks) card at the top of the tab flags the
+mode left on and offers **Turn off Radar Engineering Mode**. If you leave the
+mode on to watch the Gate Energy chart, exclude the per-gate energy sensors. The globs match the gate number exactly (one digit on the LD2410, two
 on the LD2412), so the aggregate move and still energy sensors stay recorded
 even when the device name contains `_g`:
 
@@ -312,8 +480,10 @@ recorder:
 
 On R PRO-1 and MTR-1 tabs, everything for the LD2450, the radar that tracks
 people for the zone map, sits together. An MTR-1 tab shows these cards in
-three columns. On an R PRO-1 they come after the LD2412 tuning cards, under
-the **Zone Map** heading. On a phone they read top to bottom in this order:
+three columns, after its **Start here** card. On an R PRO-1 they come after
+the LD2412's first column, under the **Zone Map** heading (see
+[What each tab shows](#what-each-tab-shows)). On a phone they read top to
+bottom in this order:
 
 - **Radar setup** checks the radar's settings and fixes them with one tap;
   see [Radar setup](#radar-setup).
@@ -327,22 +497,33 @@ the **Zone Map** heading. On a phone they read top to bottom in this order:
   direction. If the map shows no dot, check Presence here: off with you in
   the room means the radar reports nobody (see
   [Troubleshooting](#troubleshooting)).
+- **Occupancy History** (MTR-1, beside LD2450 Live) shows the last 24 hours
+  of LD2450 Presence and each zone you drew. On an R PRO-1 the same lines
+  join the LD2412's in one history at the end of the tab.
 - **LD2450 Controls** holds Zone Type, Multi Target Tracking, Radar Timeout,
-  Bluetooth, Restart Radar, Factory Reset Radar and Firmware, whichever your
-  sensor has. **Factory Reset Radar** asks before it resets the radar, as it
-  does on the LD2410 and LD2412 **Controls** cards. On the R PRO-1, Home
-  Assistant hides Multi Target Tracking by default. The radar tracks several
-  people unless that setting was turned off, so most people never need it.
+  **Radar Bluetooth (HLK app)**, Restart Radar and Factory Reset Radar,
+  whichever your sensor has (the MTR-1 has no Restart Radar). **Restart
+  Radar** and **Factory Reset Radar** ask first, as they do on the LD2410 and
+  LD2412 **Controls** cards. On the R PRO-1, Home Assistant hides Multi
+  Target Tracking by default. The radar tracks several people unless that
+  setting was turned off, so most people never need it. The note under the
+  card says **Radar Timeout** is how long LD2450 Presence stays on after the
+  radar last sees someone. It does not hold the zones you draw: a zone turns
+  off as soon as nobody is in it. The LD2450's firmware version is on the
+  [Device card](#device-card).
 - **Radar's built-in zones** shows the radar chip's own zone corners and
   counts. These are not the zones you draw on the map. The card shows only
   while Zone Type is not Disabled, and goes away when you set it to Disabled.
+- The [Device card](#device-card) ends the tab.
 
 ### Radar setup
 
 The **Radar setup** card sits right above the zone map. It checks the two
-radar settings that decide whether the zone map can show people, and fixes
+LD2450 settings that decide whether the zone map can show people, and fixes
 them when you press its button. It changes nothing on its own. Apollo
-firmware never sets these two, so they are whatever the radar chip holds.
+firmware never sets these two, so they are whatever the radar chip holds. On
+an R PRO-1 a second Radar setup card, at the top of the tab, checks the
+LD2412; see [Gate radar setup checks](#gate-radar-setup-checks).
 
 - **Zone Type** should be **Disabled**. The radar chip has its own built-in
   zones, separate from the zones you draw, and the zone map replaces them.
@@ -367,13 +548,16 @@ reported Zone Type yet, the card says so and waits.
 
 The card is part of the generated dashboard, and can be placed on your own.
 It is in the card picker as **Apollo Radar Setup**, filled in with your first
-R PRO-1 or MTR-1, or in YAML:
+R PRO-1 or MTR-1 (with neither, your first MSR-1 or MSR-2 and `radar: gate`),
+or in YAML:
 
 ```yaml
 type: custom:apollo-radar-setup-card
 device_id: your_device_id
 title: Radar setup   # optional
 ```
+
+Add `radar: gate` to check the device's LD2410 or LD2412 instead.
 
 ## Drawing zones
 
@@ -596,7 +780,9 @@ unavailable" while the radar is offline, and a button that turns on Radar
 Engineering Mode while the radar is online with the mode off.
 
 The calibrate, Radar setup and zone map cards take a `device_id`; `title` is
-display only. The zone map starts locked once the radar has zones, and the
+display only. The Radar setup card also takes `radar`: `ld2450` (the default)
+checks the LD2450 above the zone map, and `gate` checks the LD2410 or LD2412
+(see [Gate radar setup checks](#gate-radar-setup-checks)). The zone map starts locked once the radar has zones, and the
 Lock toggle is remembered per radar in the browser. Set `start_locked: true`
 or `false` (also in the card editor) to force the starting state instead.
 Without a `grid`, the zone map fits the radar's view (see
@@ -608,6 +794,50 @@ stretched; give both the same span for a true-to-scale map.
 to: the cone, the live targets and the presence sensors all use the radar's
 stored rotation, which is 0 until you set it with the slider (or with
 `update_zone`'s `rotation_deg`).
+
+## Support file
+
+When you ask Apollo for help, send a support file. Open Settings → Devices &
+services → **Apollo mmWave**, open the ⋮ menu and choose **Download
+diagnostics**. The Device card at the bottom of each tab links to that page.
+Home Assistant offers the download to administrators only.
+
+[![Open your Home Assistant instance and show an integration.](https://my.home-assistant.io/badges/integration.svg)](https://my.home-assistant.io/redirect/integration/?domain=apollo_mmwave)
+
+Home Assistant adds its own system details and your custom integrations'
+versions. Apollo mmWave adds:
+
+- The Apollo mmWave and Home Assistant versions, and Home Assistant's unit
+  system (which decides feet or meters on the cards).
+- The integration's options: which dashboard it created, whether that
+  dashboard is still its own, and the **Dashboard devices** selection.
+- The Lovelace resource mode and the `/apollo_mmwave/` resource rows.
+- For each Apollo radar, and any other radar with zones, calibration data or
+  a dashboard selection:
+  - its name, model, firmware and hardware versions, and which radars it
+    has;
+  - the firmware version sensors, every update entity, and the Wi-Fi
+    signal;
+  - the gate radar's thresholds by gate;
+  - the LD2450's Zone Type, Multi Target Tracking and the target X/Y sensors
+    the zones track, with their readings and units;
+  - its zones, rotation and units as stored, and this integration's zone
+    entities;
+  - the running calibration, the saved snapshots and the last calibration
+    result.
+
+Each entity is listed with its state, unit, device class and whether it is
+disabled.
+
+Left out: the radar's MAC address, IP address, Bluetooth MAC and Wi-Fi
+network name are never read, and any MAC, IP, SSID, host, password, token or
+user id that turns up anyway is replaced with `**REDACTED**`. Device names
+and entity ids stay, because support needs them to tell radars apart.
+Apollo's default device names, and so the entity ids, end in the last six
+characters of the device's MAC address (for example `apollo_msr_2_7a711c`).
+
+Downloading the file changes nothing: no setting, zone, dashboard or
+resource is written.
 
 ## Removing Apollo mmWave
 
@@ -655,9 +885,10 @@ the two rows yourself under Settings → Dashboards → ⋮ → **Resources**.
   Point it at an MSR-1, MSR-2 or an R PRO-1 with the LD2412.
 - **Calibration says the radar has not reported its threshold values.** A radar
   that has been running for a long time may not have sent them to Home
-  Assistant yet. Press **Read settings from the radar** on the card. If the
-  card does not offer it, open the radar's device page, press its Query Params
-  button in the Diagnostic section, wait a few seconds and try again.
+  Assistant yet. Press **Read settings from the radar** on the card, or on the
+  Radar setup card at the top of the tab. If neither offers it, open the
+  radar's device page, press its Query Params button in the Diagnostic
+  section, wait a few seconds and try again.
 - **The zone map card says Apollo mmWave is not loaded.** Right after a restart
   the card retries on its own. If it still says so, reload the page once the
   integration has loaded.
@@ -702,3 +933,7 @@ the two rows yourself under Settings → Dashboards → ⋮ → **Resources**.
 - **Going back to an older release.** If a future release changes the zone
   store format, an older release cannot read the newer file: setup fails and
   the file is left untouched. Restore the backup you took before upgrading.
+- **Still stuck?** Send Apollo a support file with your question: Settings →
+  Devices & services → Apollo mmWave → ⋮ → **Download diagnostics**. It
+  leaves out MAC and IP addresses and Wi-Fi names; see
+  [Support file](#support-file).

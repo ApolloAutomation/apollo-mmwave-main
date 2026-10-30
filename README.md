@@ -34,6 +34,11 @@ draw presence zones.
   radar sees, and each zone gets a presence sensor for your automations. The
   map is in feet or meters to match Home Assistant, and a **Radar setup**
   card above it checks the radar's settings and fixes them with one tap.
+- **Setup checks and plain help on every tab.** A **Radar setup** card flags
+  radar settings that are off, a **Start here** list walks you through the
+  rest, and an occupancy history shows the last 24 hours. A **Device** card
+  at the bottom shows the firmware versions, restarts the device (it asks
+  first) and says how to get a support file for Apollo.
 - **No YAML** and no separate card downloads. The integration serves its own
   cards.
 
@@ -137,8 +142,11 @@ including what each HACS box says.
    dashboard? Add it from the integration's options
    (**Settings → Devices & services → Apollo mmWave → Configure**).
 2. On an MSR-1 or MSR-2 tab, or an R PRO-1 tab if the sensor has the
-   optional LD2412, find the **Auto-calibrate** card. On an R PRO-1 without
-   it, skip to step 6. Before you start:
+   optional LD2412, look at the **Radar setup** card at the top first and fix
+   anything it flags (see
+   [Gate radar setup checks](docs/configuration.md#gate-radar-setup-checks)).
+   Then find the **Auto-calibrate** card below it. On an R PRO-1 without the
+   LD2412, skip to step 6. Before you start:
    - Make sure nobody is in the room, pets included. Turn off robot vacuums.
    - Leave fans and curtains the way they usually are.
    - **R PRO-1 only:** with the room empty, press **Start Dynamic Background
@@ -152,10 +160,10 @@ including what each HACS box says.
 5. The **Start here** list on the tab covers the next settings: how far the
    radar looks and how long presence stays on. More about calibration:
    [Auto-calibration](docs/configuration.md#auto-calibration).
-6. On an R PRO-1 or MTR-1 tab, look at the **Radar setup** card first. If it
-   shows a warning, press its button. Zone Type should be **Disabled**,
-   because the zone map replaces the radar's own built-in zones, and Multi
-   Target Tracking should be on. See
+6. On an R PRO-1 or MTR-1 tab, look at the **Radar setup** card above the
+   zone map. If it shows a warning, press its button. Zone Type should be
+   **Disabled**, because the zone map replaces the radar's own built-in
+   zones, and Multi Target Tracking should be on. See
    [Radar setup](docs/configuration.md#radar-setup).
 7. Below it is the zone map: the grid that shows where the radar sees
    people, sized to what the radar can see (120 degrees, about 6 m or 20 ft).
@@ -180,7 +188,8 @@ including what each HACS box says.
   [The radar still triggers with nobody there](https://wiki.apolloautomation.com/products/general/setup/apollo-mmwave-dashboard/#the-radar-still-triggers-with-nobody-there)
   has more.
 - **Calibration says the radar has not reported its threshold values:** press
-  **Read settings from the radar** on the card.
+  **Read settings from the radar** on the card, or on the **Radar setup**
+  card at the top of the tab.
 - **The zone map says Apollo mmWave is not loaded:** wait a moment after a
   restart, then reload the page.
 - **The zone map stays empty, with no dot for you:** look at the **Radar
@@ -194,6 +203,13 @@ including what each HACS box says.
   lists it.
 
   [![Open your Home Assistant instance and show an integration.](https://my.home-assistant.io/badges/integration.svg)](https://my.home-assistant.io/redirect/integration/?domain=apollo_mmwave)
+
+- **Still stuck? Send a support file.** Open
+  **Settings → Devices & services → Apollo mmWave**, choose **Download
+  diagnostics** from the ⋮ menu, and attach the file to your issue or your
+  email to Apollo support. It leaves out MAC and IP addresses and Wi-Fi
+  names. The **Device** card at the bottom of each tab links there too; see
+  [Support file](docs/configuration.md#support-file).
 
 The [full troubleshooting list](docs/configuration.md#troubleshooting) covers
 more.
