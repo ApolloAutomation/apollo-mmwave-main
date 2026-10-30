@@ -893,7 +893,7 @@ export class ZoneMapCard extends HTMLElement {
               </div>
             </div>
             <div class="info">
-              Click & drag for Rectangle/Ellipse. Polygon: click points, double-click to finish (max ${this.polyMaxPoints} pts). Grid units: ${gridUnitLabel} (X: ${displayXMin}..${displayXMax}, Y: ${displayYMin}..${displayYMax}). Input units: ${inputUnitLabel}. Cone range: ${displayConeRange} ${gridUnitLabel}
+              Click & drag for Rectangle/Ellipse. Polygon: click points, double-click to finish (max ${this.polyMaxPoints} pts). Grid units: ${gridUnitLabel} (X: ${displayXMin}..${displayXMax}, Y: ${displayYMin}..${displayYMax}). Input units (sensors without a length unit): ${inputUnitLabel}. Cone range: ${displayConeRange} ${gridUnitLabel}
             </div>
           </div>
 
