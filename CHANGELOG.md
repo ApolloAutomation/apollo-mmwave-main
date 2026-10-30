@@ -14,11 +14,11 @@ meters to match Home Assistant and fills the card with what the radar can
 see. Every tab is also easier to read: setup checks on MSR-1, MSR-2 and
 R PRO-1 tabs too, plainer labels and help, a fuller occupancy history, a
 Device card at the bottom, and a support file to send Apollo. On a phone, a
-scroll can no longer move a slider by accident. Nothing needs changing by
-hand unless your Lovelace resources are managed in YAML (replace both `?v=`
-URLs; see [Lovelace resources](docs/configuration.md#lovelace-resources)), or
-you added a zone map card from the card picker before 2.3.0 (see the last
-item).
+scroll can no longer move a threshold or Detection Range slider by accident.
+Nothing needs changing by hand unless your Lovelace resources are managed in
+YAML (replace both `?v=` URLs; see
+[Lovelace resources](docs/configuration.md#lovelace-resources)), or you added
+a zone map card from the card picker before 2.3.0 (see the last item).
 
 - **New Radar setup card.** It sits above the zone map on R PRO-1 and MTR-1
   tabs and checks two radar settings. Apollo firmware never sets them, so

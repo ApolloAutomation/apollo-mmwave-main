@@ -261,11 +261,11 @@ chip: LD2410 on an MSR, LD2412 on an R PRO-1.
 
 ### Locked sliders
 
-On MSR-1, MSR-2 and R PRO-1 tabs the sliders start locked, so a finger that
-lands on one while you scroll a phone cannot move it. That covers every
-threshold on **Move Thresholds** and **Still Thresholds** and the two gate
-sliders on **Detection Range** (Max Move Gate and Max Still Gate on the
-LD2410, Max Gate and Min Gate on the LD2412).
+On MSR-1, MSR-2 and R PRO-1 tabs the gate radar's sliders start locked, so a
+finger that lands on one while you scroll a phone cannot move it. That
+covers every threshold on **Move Thresholds** and **Still Thresholds** and
+the two gate sliders on **Detection Range** (Max Move Gate and Max Still Gate
+on the LD2410, Max Gate and Min Gate on the LD2412).
 
 - A locked slider is gray and still shows its value. A scroll that starts on
   it scrolls the page.
@@ -282,9 +282,9 @@ LD2410, Max Gate and Min Gate on the LD2412).
   **Unlock** button. With a keyboard, an arrow key on a locked slider shows
   that reminder at once.
 - Not locked: number boxes such as Radar Timeout and the LD2410 Zone Config
-  boxes, the LD2450's settings, a row's name (a tap opens its details, where
-  you can still change the value), **Calibrate with empty room** and
-  **Undo**.
+  boxes, the LD2450's settings, the zone map's **Cone rotation** slider
+  (under Configure), a row's name (a tap opens its details, where you can
+  still change the value), **Calibrate with empty room** and **Undo**.
 - The lock lives in the browser page: another phone or browser tab has its
   own, and nothing is saved on the sensor. It is separate from the zone
   map's **Locked** button, which the browser remembers.
