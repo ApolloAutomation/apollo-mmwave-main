@@ -65,9 +65,10 @@ INPUT_UNIT_FACTORS = {
 }
 # Millimeters per Home Assistant length unit, keyed by the UnitOfLength
 # symbols exactly as Home Assistant writes them. ESPHome reports LD2450
-# targets in mm, but Home Assistant set to US customary units shows every new
-# distance sensor in inches, and anyone can pick another unit in an entity's
-# settings, so a target's state is in whatever its unit_of_measurement says.
+# targets in mm, but Home Assistant set to US customary units shows a new
+# distance sensor reported in mm (or cm) in inches, and anyone can pick
+# another unit in an entity's settings, so a target's state is in whatever
+# its unit_of_measurement says.
 # Not INPUT_UNIT_FACTORS, which is what the service accepts. Not Home
 # Assistant's DistanceConverter either: it converts through meters, which
 # ends one bit away from a single multiplication for about a quarter of

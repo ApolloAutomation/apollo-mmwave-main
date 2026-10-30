@@ -172,12 +172,12 @@ const LENGTH_UNITS = Object.freeze({
 
 // Millimeters per Home Assistant length unit, keyed by the UnitOfLength symbols exactly as
 // Home Assistant writes them, for reading a target sensor in the unit its state is in. ESPHome
-// reports LD2450 targets in mm, but Home Assistant set to US customary units shows every new
-// distance sensor in inches, and anyone can pick another unit in an entity's settings. Not
-// LENGTH_UNITS, which holds the grid and YAML units and takes aliases. SENSOR_UNIT_FACTORS in
-// const.py is this table, and the presence sensor also converts with one multiplication, so the
-// dot drawn here and the zone's presence agree on every reading. tests/test_contracts.py keeps
-// the two equal.
+// reports LD2450 targets in mm, but Home Assistant set to US customary units shows a new
+// distance sensor reported in mm (or cm) in inches, and anyone can pick another unit in an
+// entity's settings. Not LENGTH_UNITS, which holds the grid and YAML units and takes aliases.
+// SENSOR_UNIT_FACTORS in const.py is this table, and the presence sensor also converts with one
+// multiplication, so the dot drawn here and the zone's presence agree on every reading.
+// tests/test_contracts.py keeps the two equal.
 const SENSOR_LENGTH_UNITS = Object.freeze({
   mm: 1,
   cm: 10,
