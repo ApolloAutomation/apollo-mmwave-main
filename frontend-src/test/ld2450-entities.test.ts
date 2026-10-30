@@ -113,7 +113,6 @@ describe("ld2450Entities on an R PRO-1", () => {
       timeout: `number.${d}_ld2450_timeout`,
       restart: `button.${d}_ld2450_restart`,
       factory_reset: `button.${d}_ld2450_factory_reset`,
-      firmware: `sensor.${d}_ld2450_firmware`,
     });
   });
 
@@ -193,7 +192,6 @@ describe("ld2450Entities on an MTR-1", () => {
       bluetooth: `switch.${d}_ld2450_bluetooth`,
       timeout: `number.${d}_timeout`,
       factory_reset: `button.${d}_factory_reset_ld2450`,
-      firmware: `sensor.${d}_ld2450_firmware`,
       presence: `binary_sensor.${d}_ld2450_presence`,
       presence_target_count: `sensor.${d}_presence_target_count`,
       still_target_count: `sensor.${d}_still_target_count`,

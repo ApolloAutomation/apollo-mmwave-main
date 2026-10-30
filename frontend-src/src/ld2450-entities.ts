@@ -28,7 +28,8 @@ import { entitiesForDevice } from "./entity-index";
  * follow a zone token (`zone_1_still_target_count` is built-in zone 1's).
  * Matching every id by suffix read a device named "Garage Zone 2" as having
  * zone tokens before every bare name. The whole-device ESP Reboot and
- * Factory Reset ESP buttons match no spelling here.
+ * Factory Reset ESP buttons match no spelling here, and the chip's firmware
+ * version is the Device card's (`deviceInfoEntities`).
  */
 
 /** One LD2450 target's live readings. */
@@ -58,7 +59,6 @@ export interface Ld2450Entities {
   /** R PRO-1 only: the MTR-1 firmware has no LD2450 restart button. */
   restart?: string;
   factory_reset?: string;
-  firmware?: string;
   presence?: string;
   moving_target?: string;
   still_target?: string;
@@ -151,7 +151,6 @@ const PATTERNS: Pattern[] = [
   scalar("bluetooth", "switch", [chip("bluetooth")]),
   scalar("restart", "button", [chip("restart")]),
   scalar("factory_reset", "button", [chip("factory_reset"), exact("factory_reset_ld2450")]),
-  scalar("firmware", "sensor", [chip("firmware")]),
   scalar("presence", "binary_sensor", [chip("presence")]),
   scalar("moving_target", "binary_sensor", [chip("moving_target")]),
   scalar("still_target", "binary_sensor", [chip("still_target")]),

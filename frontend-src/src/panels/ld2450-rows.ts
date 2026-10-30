@@ -1,18 +1,24 @@
 import type { Ld2450Entities } from "../ld2450-entities";
-import { factoryResetRow, row, type Row } from "./entity-rows";
+import {
+  factoryResetRow,
+  RADAR_BLUETOOTH,
+  restartRadarRow,
+  row,
+  type Row,
+} from "./entity-rows";
 
 /** The LD2450's own settings. The row names match the gate radars' Controls
- *  card, so the same button reads the same on every tab. */
+ *  card, so the same button reads the same on every tab. Its firmware version
+ *  is on the Device card, beside the other versions. */
 export function ld2450ControlRows(l: Ld2450Entities): Row[] {
   return [
     ...row(l.zone_type, "Zone Type"),
     // Disabled by default on the R PRO-1, so usually absent there.
     ...row(l.multi_target_tracking, "Multi Target Tracking"),
     ...row(l.timeout, "Radar Timeout"),
-    ...row(l.bluetooth, "Bluetooth"),
-    ...row(l.restart, "Restart Radar"),
+    ...row(l.bluetooth, RADAR_BLUETOOTH),
+    ...restartRadarRow(l.restart, "LD2450"),
     ...factoryResetRow(l.factory_reset, "LD2450"),
-    ...row(l.firmware, "Firmware"),
   ];
 }
 

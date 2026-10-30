@@ -34,6 +34,7 @@ function emptyZones(): Pick<
   | "zone_1_occupancy"
   | "zone_2_occupancy"
   | "zone_3_occupancy"
+  | "zone_occupancy"
 > {
   return {
     zone_1_start: undefined,
@@ -43,6 +44,7 @@ function emptyZones(): Pick<
     zone_1_occupancy: undefined,
     zone_2_occupancy: undefined,
     zone_3_occupancy: undefined,
+    zone_occupancy: undefined,
   };
 }
 
@@ -60,9 +62,18 @@ const GATE_TIP =
   "💡 Each gate's **move / still threshold** is how strong a signal must be to count as presence at that distance. Lower = more sensitive (more false triggers), higher = less. Turn on **Radar Engineering Mode** and watch the Gate Energy chart while you move around to pick values. " +
   CALIBRATE_TIP;
 
-/** Sentence shared by both chips' range tips: explains the timeout slider. */
-const RADAR_TIMEOUT_TIP =
-  "**Radar Timeout** is how long presence stays on after the last detection; raise it if lights flick off while you sit still.";
+/** Sentence shared by both chips' range tips: what the timeout holds, and
+ *  when to raise it. `holds` names the sensor it keeps on. */
+function radarTimeoutTip(holds: string): string {
+  return (
+    `**Radar Timeout** is how long ${holds} stays on after the radar last detects someone;` +
+    " raise it if lights turn off while you sit still."
+  );
+}
+
+/** How deep one gate is at the stock gate size. The gate size control ships
+ *  disabled, so the tips state the size rather than point at the control. */
+const GATE_DEPTH_TIP = "Each gate is about 0.75 m (2.5 ft) deep.";
 
 /**
  * HLK-LD2410 factory thresholds per gate (g0..g8). They match the commonly
@@ -85,8 +96,9 @@ export const LD2410_PROFILE: RadarProfile = {
   rangeLabels: ["Max Move Gate", "Max Still Gate"],
   gateSizeLabel: "Gate Size",
   rangeTip:
-    "💡 **Gate Size** sets how far each gate reaches (e.g. 0.75 m). **Max Move / Still Gate** cap the farthest gate used to detect moving vs. still targets; lower them to ignore distant motion. " +
-    RADAR_TIMEOUT_TIP,
+    "💡 **Max Move / Still Gate** cap the farthest gate used to detect moving vs. still targets; lower them to ignore distant motion. " +
+    `${GATE_DEPTH_TIP} ` +
+    radarTimeoutTip("**Radar Target**"),
   gateTip: GATE_TIP,
   wikiUrl:
     "https://wiki.apolloautomation.com/products/general/setup/apollo-mmwave-dashboard/",
@@ -123,6 +135,7 @@ export const LD2410_PROFILE: RadarProfile = {
       zone_1_occupancy: `binary_sensor.${base}_radar_zone_1_occupancy`,
       zone_2_occupancy: `binary_sensor.${base}_radar_zone_2_occupancy`,
       zone_3_occupancy: `binary_sensor.${base}_radar_zone_3_occupancy`,
+      zone_occupancy: `binary_sensor.${base}_radar_zone_occupancy`,
     };
   },
 };
@@ -142,8 +155,9 @@ export const LD2412_PROFILE: RadarProfile = {
   rangeLabels: ["Max Gate", "Min Gate"],
   gateSizeLabel: "Distance Resolution",
   rangeTip:
-    "💡 **Distance Resolution** sets gate spacing: smaller (0.5 m) gives finer tuning over a shorter range, larger (0.75 m) reaches farther. **Min / Max Gate** limit which gates are used for detection. " +
-    RADAR_TIMEOUT_TIP,
+    "💡 **Max Gate** is the farthest gate the radar uses and **Min Gate** the nearest; raise Min Gate to ignore anything right next to the sensor. " +
+    `${GATE_DEPTH_TIP} ` +
+    radarTimeoutTip("**LD2412 Presence** (Radar Target)"),
   gateTip: GATE_TIP,
   wikiUrl:
     "https://wiki.apolloautomation.com/products/rpro1/setup/apollo-mmwave-dashboard/#r-pro-1-and-its-ld2412-radar",

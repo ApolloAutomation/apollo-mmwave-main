@@ -14,8 +14,17 @@ import "../src/cards/setup-card";
 import "../src/strategy";
 import * as setupChecks from "../src/cards/setup-checks";
 import { LD2410_PROFILE, LD2412_PROFILE, PROFILES, rangeLimitTip } from "../src/profiles";
-import { buildDeviceCards, type RadarDevice, type StrategyConfig } from "../src/strategy-core";
-import { factoryResetRow } from "../src/panels/entity-rows";
+import {
+  buildDeviceCards,
+  detectRadarDevices,
+  LD2450_TIMEOUT_NOTE,
+  SUPPORT_FILE_NOTE,
+  WEAK_WIFI_NOTE,
+  zoneConfigNote,
+  type RadarDevice,
+  type StrategyConfig,
+} from "../src/strategy-core";
+import { factoryResetRow, restartRadarRow } from "../src/panels/entity-rows";
 import { ZoneMapCard } from "../src/zone-map/card";
 import type { HomeAssistant } from "../src/types";
 
@@ -204,6 +213,50 @@ describe("controls and zone map copy", () => {
     expect(texts).toContain(
       "Reset the LD2450 radar to its factory settings? It restarts and forgets its own settings."
     );
+    expect(copyProblems(texts)).toEqual([]);
+  });
+
+  it("asks before a radar restart without em dashes", () => {
+    const texts = ["LD2410", "LD2412", "LD2450"].flatMap((chip) =>
+      strings(restartRadarRow("button.hall_restart", chip))
+    );
+    expect(texts).toContain(
+      "Restart the LD2412 radar? It stops detecting for a few seconds while it starts up."
+    );
+    expect(copyProblems(texts)).toEqual([]);
+  });
+
+  it("writes the notes and every product's Device card without em dashes", () => {
+    const texts = [
+      LD2450_TIMEOUT_NOTE,
+      SUPPORT_FILE_NOTE,
+      WEAK_WIFI_NOTE,
+      zoneConfigNote("m", true),
+      zoneConfigNote("ft", false),
+    ];
+    // One tab per product, each with its restart button, so every restart
+    // name and question is checked.
+    for (const [deviceId, model, ids] of [
+      ["msr", "MSR-2", ["switch.den_radar_engineering_mode", "button.den_esp_reboot"]],
+      [
+        "rpro",
+        "R-PRO-1-W",
+        ["switch.den_ld2412_engineering_mode", "sensor.den_ld2450_target_1_x", "button.den_esp_reboot"],
+      ],
+      ["mtr", "MTR-1", ["sensor.den_target_1_x", "button.den_esp_reboot"]],
+    ] as const) {
+      const hass: HomeAssistant = {
+        states: Object.fromEntries(
+          ids.map((id) => [id, { entity_id: id, state: "unknown", attributes: {} }])
+        ),
+        entities: Object.fromEntries(ids.map((id) => [id, { device_id: deviceId }])),
+        devices: { [deviceId]: { name: "Den", manufacturer: "ApolloAutomation", model } },
+      };
+      const [dev] = detectRadarDevices(hass);
+      const cards = buildDeviceCards(hass, dev);
+      expect(JSON.stringify(cards)).toContain("Restart the whole device?");
+      texts.push(...strings(cards));
+    }
     expect(copyProblems(texts)).toEqual([]);
   });
 
