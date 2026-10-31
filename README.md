@@ -164,11 +164,15 @@ including what each HACS box says.
    radar looks and how long presence stays on. The sliders start locked, so
    press **Unlock** above them first. More about calibration:
    [Auto-calibration](docs/configuration.md#auto-calibration).
+
+   ![A locked Detection Range card: a tap turns the Max Move Gate slider orange, a second tap shows the reminder These sliders are locked. Press Unlock above them to change one., then Unlock is pressed and the sliders turn blue under Sliders unlocked](https://raw.githubusercontent.com/ApolloAutomation/apollo-mmwave-main/main/docs/images/apollo-mmwave-slider-lock.gif)
 6. On an R PRO-1 or MTR-1 tab, look at the **Radar setup** card above the
    zone map. If it shows a warning, press its button. Zone Type should be
    **Disabled**, because the zone map replaces the radar's own built-in
    zones, and Multi Target Tracking should be on. See
    [Radar setup](docs/configuration.md#radar-setup).
+
+   ![The Radar setup card for an R PRO-1's LD2450: Zone Type is Filter. This radar ignores people inside its built-in zones. Disabled is recommended because the zone map replaces them., with a Set Zone Type to Disabled button](https://raw.githubusercontent.com/ApolloAutomation/apollo-mmwave-main/main/docs/images/apollo-mmwave-radar-setup.png)
 7. Below it is the zone map: the grid that shows where the radar sees
    people, sized to what the radar can see (120 degrees, about 6 m or 20 ft).
    It is in feet or meters to match Home Assistant; the **m / ft** switch on
@@ -176,10 +180,12 @@ including what each HACS box says.
    **Configure → Zones** on that card and press **Add Zone**. Then press the
    new zone's button, choose a shape from the ✎ menu and draw on the grid.
    Each zone gets a presence sensor, listed on the **Zone presence** card
-   next to the map. See
+   next to the map. Once a radar has zones the map starts locked, so a
+   scroll cannot draw on it or turn the cone; press **Locked** in its corner
+   to unlock it. See
    [Drawing zones](docs/configuration.md#drawing-zones).
 
-   ![The zone map on an R PRO-1: a grid in meters, the radar's view cone, a rectangle and an ellipse drawn as zones, and the zone buttons under the grid](https://raw.githubusercontent.com/ApolloAutomation/apollo-mmwave-main/main/docs/images/apollo-mmwave-zone-map.png)
+   ![The zone map on an R PRO-1 in feet, fitted to the radar's view with the caption Radar range 20 ft (6 m), 120°: a rectangle, a circle and a polygon drawn as zones, the m / ft switch and the Locked button in the corner, and the zone buttons under the grid](https://raw.githubusercontent.com/ApolloAutomation/apollo-mmwave-main/main/docs/images/apollo-mmwave-zone-map.png)
 
 ## If something is wrong
 
