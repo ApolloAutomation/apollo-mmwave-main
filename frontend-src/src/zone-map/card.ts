@@ -161,6 +161,16 @@ const POLYGON_MAX_POINTS = 32;
 // vertex. A UI gesture tolerance for finger jitter, not a radar setting.
 const POLY_DOUBLE_TAP_SLOP_PX = 24;
 
+// How far (CSS px) a press on the locked Cone rotation slider moves along it
+// before it is a try at turning the cone, and how far it may move up or down
+// and still be a tap rather than the end of a scroll.
+const CONE_TRY_PX = 10;
+// How long a try at the locked slider rings the Locked button.
+const LOCK_NUDGE_MS = 1200;
+
+const CONE_LOCKED_HINT = 'Locked with the map. Press Locked on the map to change it.';
+const CONE_LOCKED_TOAST = 'Cone rotation is locked. Press Locked on the map to change it.';
+
 const LOCK_STORAGE_PREFIX = 'apollo-mmwave.zone-map.lock';
 
 function lockStorageKey(deviceId) {
@@ -865,6 +875,7 @@ export class ZoneMapCard extends HTMLElement {
         .overlay-controls button.undo-toggle { padding: 6px; font-size: 1.1em; line-height: 1; }
         .overlay-controls button.undo-toggle:disabled { opacity: 0.35; cursor: not-allowed; }
         .overlay-controls button.lock-toggle .icon { font-size: 1.35em; line-height: 1; }
+        .overlay-controls button.lock-toggle.nudge { outline: 2px solid var(--warning-color, #ffa600); }
         .container.dark .overlay-controls button { background: ${COLOR.ui.overlayButtonDarkBg}; color: ${COLOR.ui.overlayButtonText}; border-color: ${COLOR.ui.overlayButtonDarkBorder}; }
         .overlay-controls button.active { outline: 2px solid ${COLOR.ui.overlayButtonActiveOutline}; }
         .overlay-controls button:disabled { opacity: 0.4; cursor: default; }
@@ -877,6 +888,10 @@ export class ZoneMapCard extends HTMLElement {
         .container.dark .overlay-controls .unit-switch button.active { background: ${COLOR.ui.darkPrimaryButton}; }
         .controls { margin: 12px 0; display: flex; gap: var(--zm-gap); flex-wrap: wrap; }
         #cone-controls { align-items: center; padding-top: 8px; }
+        /* A locked slider takes no pointer, so a scroll that starts on it
+           scrolls the page and a tap lands on the row (_watchLockedConeTries). */
+        #cone-controls.locked input[type="range"] { pointer-events: none; }
+        #cone-controls .cone-lock-hint { flex-basis: 100%; font-size: 0.85em; opacity: 0.75; }
         #coneAngleSlider { flex: 1; min-width: 160px; }
         button { padding: 8px 16px; background: var(--primary-color); color: ${COLOR.ui.primaryButtonText}; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; }
         .container.dark button { background: ${COLOR.ui.darkPrimaryButton}; }
@@ -947,7 +962,7 @@ export class ZoneMapCard extends HTMLElement {
               <button id="btnUnitFt" data-unit="ft" aria-pressed="false">ft</button>
             </div>
             <button id="btnUndo" class="undo-toggle" title="Undo last zone change" disabled>↶</button>
-            <button id="btnLock" class="lock-toggle" title="Lock drawing">🔓</button>
+            <button id="btnLock" class="lock-toggle" title="Lock drawing and cone rotation">🔓</button>
           </div>
         </div>
         <div class="controls" id="zone-buttons">
@@ -962,6 +977,7 @@ export class ZoneMapCard extends HTMLElement {
               <label for="coneAngleSlider">Cone rotation: </label>
               <input type="range" id="coneAngleSlider" min="-180" max="180" step="1" value="${this.coneAngleDeg}" />
               <span id="coneAngleLabel">${this.coneAngleDeg}°</span>
+              <span id="coneLockHint" class="cone-lock-hint" hidden>${CONE_LOCKED_HINT}</span>
             </div>
             <!-- Read only. The radar's X/Y targets are resolved by the
                  integration, and the DIY override is the update_zone
@@ -1344,6 +1360,8 @@ export class ZoneMapCard extends HTMLElement {
     const angleSlider = this.shadowRoot.getElementById('coneAngleSlider');
     const angleLabel = this.shadowRoot.getElementById('coneAngleLabel');
     if (!angleSlider || !angleLabel) return;
+    const coneControls = this.shadowRoot.getElementById('cone-controls');
+    if (coneControls) this._watchLockedConeTries(coneControls);
 
     const updateDisplay = () => {
       angleLabel.textContent = `${this.coneAngleDeg}°`;
@@ -1353,7 +1371,14 @@ export class ZoneMapCard extends HTMLElement {
     // A fitted grid follows the cone only once the slider is let go. Fitting
     // on every step would resize the canvas, and the slider below it with it,
     // under the finger that is dragging it.
+    // The Locked button covers the slider too: _updateLockVisual disables it.
+    // The handlers check as well, so nothing that still reaches a locked
+    // slider (a screen reader, say) turns the cone or saves.
     angleSlider.addEventListener('input', () => {
+      if (this.isLocked) {
+        updateDisplay();
+        return;
+      }
       const value = parseInt(angleSlider.value, 10);
       if (Number.isNaN(value)) return;
       this.coneAngleDeg = this._clampConeAngle(value);
@@ -1363,11 +1388,16 @@ export class ZoneMapCard extends HTMLElement {
     });
 
     angleSlider.addEventListener('change', () => {
+      if (this.isLocked) {
+        updateDisplay();
+        return;
+      }
       this._refitAndDraw();
       this._persistRotation();
     });
 
     angleSlider.addEventListener('dblclick', () => {
+      if (this.isLocked) return;
       this.coneAngleDeg = this.coneAngleDefault;
       this._invalidateConeCache();
       updateDisplay();
@@ -1376,6 +1406,54 @@ export class ZoneMapCard extends HTMLElement {
     });
 
     updateDisplay();
+  }
+
+  /**
+   * A locked slider takes no pointer, so a press on it lands on its row. A
+   * tap there, or a drag along the slider, is someone trying to turn the
+   * cone: say where the lock is. A press that moves up or down is a scroll
+   * (the browser scrolls the page and may cancel the pointer), not a try.
+   */
+  _watchLockedConeTries(row) {
+    let press = null;
+    row.addEventListener('pointerdown', (e) => {
+      press =
+        this.isLocked && e.button === 0
+          ? { id: e.pointerId, x: e.clientX, y: e.clientY, tried: false }
+          : null;
+    });
+    row.addEventListener('pointermove', (e) => {
+      if (!press || press.tried || e.pointerId !== press.id) return;
+      const dx = Math.abs(e.clientX - press.x);
+      if (dx > CONE_TRY_PX && dx > Math.abs(e.clientY - press.y)) {
+        press.tried = true;
+        this._remindConeLocked();
+      }
+    });
+    row.addEventListener('pointerup', (e) => {
+      if (!press || e.pointerId !== press.id) return;
+      const { tried, y } = press;
+      press = null;
+      if (!tried && Math.abs(e.clientY - y) <= CONE_TRY_PX) this._remindConeLocked();
+    });
+    row.addEventListener('pointercancel', () => {
+      press = null;
+    });
+  }
+
+  /** Ring the Locked button and, at most once per 1.5 s like the drawing
+   *  reminder, say how to unlock. */
+  _remindConeLocked() {
+    const btnLock = this.shadowRoot?.getElementById('btnLock');
+    if (btnLock) {
+      btnLock.classList.add('nudge');
+      clearTimeout(this._lockNudgeTimer);
+      this._lockNudgeTimer = setTimeout(() => btnLock.classList.remove('nudge'), LOCK_NUDGE_MS);
+    }
+    const now = Date.now();
+    if (this._lastLockWarningTs && now - this._lastLockWarningTs <= 1500) return;
+    this._lastLockWarningTs = now;
+    this._notify(CONE_LOCKED_TOAST);
   }
 
   _attachDrawingModeControls() {
@@ -1421,10 +1499,18 @@ export class ZoneMapCard extends HTMLElement {
         btnLock.innerHTML = this.isLocked
           ? '<span>Locked</span><span class="icon">🔒</span>'
           : '<span>Unlocked</span><span class="icon">🔓</span>';
-        btnLock.title = this.isLocked ? 'Unlock drawing' : 'Lock drawing';
+        btnLock.title = this.isLocked
+          ? 'Unlock drawing and cone rotation'
+          : 'Lock drawing and cone rotation';
         if (this.canvas) {
           this.canvas.style.cursor = this.isLocked ? 'not-allowed' : 'crosshair';
         }
+        const angleSlider = this.shadowRoot.getElementById('coneAngleSlider');
+        if (angleSlider) angleSlider.disabled = this.isLocked;
+        const coneControls = this.shadowRoot.getElementById('cone-controls');
+        if (coneControls) coneControls.classList.toggle('locked', this.isLocked);
+        const hint = this.shadowRoot.getElementById('coneLockHint');
+        if (hint) hint.hidden = !this.isLocked;
       };
       btnLock.addEventListener('click', () => {
         this.isLocked = !this.isLocked;
@@ -1435,9 +1521,9 @@ export class ZoneMapCard extends HTMLElement {
           if (this.isDrawing) this.cancelDrawing();
           // TODO(REVIEW_REPORT.md X06): the lock gates only drawing; chip double-click clear,
           // Clear All, Undo and the manager still write. Gate the two clears or say "draw".
-          this._notify('Drawing locked. Unlock the grid to edit zones.');
+          this._notify('Drawing and cone rotation locked. Unlock the grid to change them.');
         } else {
-          this._notify('Drawing unlocked. You can edit zones now.');
+          this._notify('Drawing and cone rotation unlocked. You can edit zones now.');
         }
       });
       this._updateLockVisual = updateLockVisual;

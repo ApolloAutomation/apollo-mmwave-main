@@ -282,12 +282,14 @@ on the LD2410, Max Gate and Min Gate on the LD2412).
   **Unlock** button. With a keyboard, an arrow key on a locked slider shows
   that reminder at once.
 - Not locked: number boxes such as Radar Timeout and the LD2410 Zone Config
-  boxes, the LD2450's settings, the zone map's **Cone rotation** slider
-  (under Configure), a row's name (a tap opens its details, where you can
-  still change the value), **Calibrate with empty room** and **Undo**.
+  boxes, the LD2450's settings, a row's name (a tap opens its details, where
+  you can still change the value), **Calibrate with empty room** and
+  **Undo**.
 - The lock lives in the browser page: another phone or browser tab has its
   own, and nothing is saved on the sensor. It is separate from the zone
-  map's **Locked** button, which the browser remembers.
+  map's **Locked** button, which the browser remembers and which also locks
+  the map's **Cone rotation** slider (see
+  [Drawing zones](#drawing-zones)).
 - A dashboard you took control of before 2.3.0 keeps plain slider rows with
   no lock. [Card options](#card-options) shows how to add it.
 
@@ -630,6 +632,15 @@ and draw on the grid:
   saves nothing. A shape in progress is also dropped, unsaved, if the card is
   hidden or collapsed before you finish it.
 
+The map starts locked once the radar has zones, so a scroll on a phone
+cannot draw over a zone. The button in the corner of the map reads
+**Locked** (🔒); press it to unlock, and press **Unlocked** (🔓) to lock again.
+The browser remembers your choice for each radar. The lock also covers the
+**Cone rotation** slider under Configure: while the map is locked, the slider
+is gray, a scroll that starts on it scrolls the page, and a tap or drag on it
+outlines the **Locked** button and shows "Cone rotation is locked. Press
+Locked on the map to change it."
+
 Double-clicking a zone's button clears its shape, and **Clear All Zones**
 clears every zone; **Undo last zone change** (↶) puts them back. Under
 **Configure → Zones**, **Add Zone** adds a zone and each row renames (**Save**)
@@ -827,8 +838,9 @@ The calibrate, Radar setup and zone map cards take a `device_id`; `title` is
 display only. The Radar setup card also takes `radar`: `ld2450` (the default)
 checks the LD2450 above the zone map, and `gate` checks the LD2410 or LD2412
 (see [Gate radar setup checks](#gate-radar-setup-checks)). The zone map starts locked once the radar has zones, and the
-Lock toggle is remembered per radar in the browser. Set `start_locked: true`
-or `false` (also in the card editor) to force the starting state instead.
+Lock toggle is remembered per radar in the browser (see
+[Drawing zones](#drawing-zones)). Set `start_locked: true` or `false` (also
+in the card editor) to force the starting state instead.
 Without a `grid`, the zone map fits the radar's view (see
 [Map units and size](#map-units-and-size)). A `grid` (`x_min`, `x_max`,
 `y_min`, `y_max`, in `grid_units`) fixes the map instead and draws it on a

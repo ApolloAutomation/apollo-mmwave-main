@@ -178,6 +178,166 @@ describe("zone map card lock state", () => {
   });
 });
 
+describe("zone map card cone rotation lock", () => {
+  // The radar in ZONE_PAYLOAD has a zone, so the card starts locked.
+  const slider = (card: any) => card.shadowRoot.getElementById("coneAngleSlider");
+  const row = (card: any) => card.shadowRoot.getElementById("cone-controls");
+  const hint = (card: any) => card.shadowRoot.getElementById("coneLockHint");
+
+  function press(target: EventTarget, type: string, init: PointerEventInit = {}): void {
+    target.dispatchEvent(
+      new PointerEvent(type, {
+        pointerId: 1,
+        isPrimary: true,
+        pointerType: "touch",
+        button: 0,
+        clientX: 100,
+        clientY: 20,
+        bubbles: true,
+        composed: true,
+        ...init,
+      })
+    );
+  }
+
+  it("disables the slider and shows the hint while the map is locked", async () => {
+    const card = await mountCard(fakeHass());
+    expect(card.isLocked).toBe(true);
+    expect(slider(card).disabled).toBe(true);
+    expect(row(card).classList.contains("locked")).toBe(true);
+    expect(hint(card).hidden).toBe(false);
+    expect(hint(card).textContent).toBe(
+      "Locked with the map. Press Locked on the map to change it."
+    );
+
+    card.shadowRoot.getElementById("btnLock").click();
+
+    expect(slider(card).disabled).toBe(false);
+    expect(row(card).classList.contains("locked")).toBe(false);
+    expect(hint(card).hidden).toBe(true);
+  });
+
+  it("leaves the slider free on a radar with no zones yet", async () => {
+    const card = await mountCard(fakeHass({ ...ZONE_PAYLOAD, zones: {} }));
+    expect(slider(card).disabled).toBe(false);
+    expect(hint(card).hidden).toBe(true);
+  });
+
+  it("neither turns the cone nor saves when a locked slider still gets input", async () => {
+    const hass = fakeHass();
+    const card = await mountCard(hass, { cone: { angle_deg: 45 } });
+    hass.callService.mockClear();
+
+    slider(card).value = "90";
+    slider(card).dispatchEvent(new Event("input"));
+    slider(card).dispatchEvent(new Event("change"));
+    slider(card).dispatchEvent(new MouseEvent("dblclick"));
+
+    expect(card.coneAngleDeg).toBe(12);
+    expect(slider(card).value).toBe("12");
+    expect(card.shadowRoot.getElementById("coneAngleLabel").textContent).toBe("12°");
+    expect(hass.callService).not.toHaveBeenCalled();
+  });
+
+  it("turns and saves again once the map is unlocked", async () => {
+    const hass = fakeHass();
+    const card = await mountCard(hass);
+    card.shadowRoot.getElementById("btnLock").click();
+    hass.callService.mockClear();
+
+    slider(card).value = "30";
+    slider(card).dispatchEvent(new Event("input"));
+    slider(card).dispatchEvent(new Event("change"));
+
+    expect(card.coneAngleDeg).toBe(30);
+    expect(hass.callService.mock.calls.at(-1)[2]).toMatchObject({ rotation_deg: 30 });
+  });
+
+  it("reminds on a tap at the locked slider and rings the Locked button", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      const card = await mountCard(fakeHass());
+      const seen = notifications(card);
+      const btnLock = card.shadowRoot.getElementById("btnLock");
+
+      press(row(card), "pointerdown");
+      press(row(card), "pointerup", { clientX: 103, clientY: 22 });
+
+      expect(seen).toEqual([
+        "Cone rotation is locked. Press Locked on the map to change it.",
+      ]);
+      expect(btnLock.classList.contains("nudge")).toBe(true);
+      vi.advanceTimersByTime(1200);
+      expect(btnLock.classList.contains("nudge")).toBe(false);
+
+      // A second tap right away rings the button but does not toast again.
+      press(row(card), "pointerdown");
+      press(row(card), "pointerup");
+      expect(seen).toHaveLength(1);
+      expect(btnLock.classList.contains("nudge")).toBe(true);
+
+      vi.advanceTimersByTime(1600);
+      press(row(card), "pointerdown");
+      press(row(card), "pointerup");
+      expect(seen).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reminds once on a drag along the locked slider", async () => {
+    const card = await mountCard(fakeHass());
+    const seen = notifications(card);
+
+    press(row(card), "pointerdown");
+    press(row(card), "pointermove", { clientX: 115, clientY: 22 });
+    press(row(card), "pointermove", { clientX: 160, clientY: 24 });
+    press(row(card), "pointerup", { clientX: 160, clientY: 24 });
+
+    expect(seen).toHaveLength(1);
+  });
+
+  it("says nothing about a scroll that starts on the locked slider", async () => {
+    const card = await mountCard(fakeHass());
+    const seen = notifications(card);
+
+    // The browser takes the pan and cancels the pointer.
+    press(row(card), "pointerdown");
+    press(row(card), "pointermove", { clientX: 102, clientY: 60 });
+    press(row(card), "pointercancel");
+    // A mouse dragged up the row and let go.
+    press(row(card), "pointerdown", { pointerType: "mouse" });
+    press(row(card), "pointermove", { pointerType: "mouse", clientY: 80 });
+    press(row(card), "pointerup", { pointerType: "mouse", clientY: 80 });
+
+    expect(seen).toEqual([]);
+  });
+
+  it("says nothing about a tap on the slider row once the map is unlocked", async () => {
+    const card = await mountCard(fakeHass(), { start_locked: false });
+    const seen = notifications(card);
+
+    press(row(card), "pointerdown");
+    press(row(card), "pointerup");
+
+    expect(seen).toEqual([]);
+  });
+
+  it("names the cone rotation in the lock toggle's toasts", async () => {
+    const card = await mountCard(fakeHass());
+    const seen = notifications(card);
+    const btnLock = card.shadowRoot.getElementById("btnLock");
+
+    btnLock.click();
+    btnLock.click();
+
+    expect(seen).toEqual([
+      "Drawing and cone rotation unlocked. You can edit zones now.",
+      "Drawing and cone rotation locked. Unlock the grid to change them.",
+    ]);
+  });
+});
+
 describe("zone map card config", () => {
   it("rejects a config with no device_id and says what to do about it", () => {
     const card = new ZoneMapCard();
@@ -386,7 +546,9 @@ describe("zone map card config keys removed on a live element", () => {
     expect(card.shadowRoot.getElementById("btnUndo").style.display).not.toBe("none");
     expect(card.isLocked).toBe(false);
     expect(card.isLocked).toBe(fresh.isLocked);
-    expect(card.shadowRoot.getElementById("btnLock").title).toBe("Lock drawing");
+    expect(card.shadowRoot.getElementById("btnLock").title).toBe(
+      "Lock drawing and cone rotation"
+    );
   });
 
   it("re-derives the lock from the radar's zones once start_locked is removed", async () => {
@@ -397,7 +559,9 @@ describe("zone map card config keys removed on a live element", () => {
     card.setConfig({ type: TYPE, device_id: "dev123" });
 
     expect(card.isLocked).toBe(true);
-    expect(card.shadowRoot.getElementById("btnLock").title).toBe("Unlock drawing");
+    expect(card.shadowRoot.getElementById("btnLock").title).toBe(
+      "Unlock drawing and cone rotation"
+    );
   });
 
   it("puts the sub-keys a partial grid or cone leaves out back at their defaults", async () => {
@@ -1988,7 +2152,7 @@ describe("zone map card rotation source", () => {
 
   it("resets to the YAML angle on double-click and persists it", async () => {
     const hass = fakeHass(UNROTATED);
-    const card = await mountCard(hass, { cone: { angle_deg: 45 } });
+    const card = await mountCard(hass, { cone: { angle_deg: 45 }, start_locked: false });
     const slider = card.shadowRoot.getElementById("coneAngleSlider");
 
     slider.dispatchEvent(new MouseEvent("dblclick"));

@@ -14,7 +14,8 @@ meters to match Home Assistant and fills the card with what the radar can
 see. Every tab is also easier to read: setup checks on MSR-1, MSR-2 and
 R PRO-1 tabs too, plainer labels and help, a fuller occupancy history, a
 Device card at the bottom, and a support file to send Apollo. On a phone, a
-scroll can no longer move a threshold or Detection Range slider by accident.
+scroll can no longer move a threshold, Detection Range or Cone rotation
+slider by accident.
 Nothing needs changing by hand unless your Lovelace resources are managed in
 YAML (replace both `?v=` URLs; see
 [Lovelace resources](docs/configuration.md#lovelace-resources)), or you added
@@ -75,6 +76,12 @@ a zone map card from the card picker before 2.3.0 (see the last item).
   such as Radar Timeout are never locked, tapping a row's name still opens
   its details, and Auto-calibrate works either way. See
   [Locked sliders](docs/configuration.md#locked-sliders).
+- **The zone map's Locked button also locks Cone rotation.** While the map
+  is locked, the **Cone rotation** slider under Configure is gray, a scroll
+  that starts on it scrolls the page, and a tap or drag on it outlines
+  **Locked** and shows a reminder of how to unlock. A radar with no zones yet
+  starts unlocked, as before, so a new sensor can still be turned to match
+  how it is mounted. See [Drawing zones](docs/configuration.md#drawing-zones).
 - **ESP Reboot moved to the Device card.** It restarts the whole device, both
   radars on an R PRO-1, so it left the radar's Controls card. It is now
   **Restart device** on the MSR-1 and MSR-2, **Restart device (both radars)**
