@@ -13,6 +13,7 @@ import {
   resolveEntitiesDetailed,
   resolveProfile,
   exists,
+  deviceInfoEntities,
 } from "../src/entities";
 import { LD2412_PROFILE, detectProfile } from "../src/profiles";
 import type { EntityMap, HomeAssistant } from "../src/types";
@@ -217,7 +218,7 @@ describe("resolveEntities", () => {
     });
     expect(resolved.bluetooth).toBeDefined();
     expect(map.bluetooth).toBeNull();
-    expect(controlRows(map).map((r) => r.entity)).not.toContain(resolved.bluetooth);
+    expect(controlRows(map, "LD2410").map((r) => r.entity)).not.toContain(resolved.bluetooth);
   });
 });
 
@@ -413,6 +414,18 @@ describe("classifyObjectId", () => {
     });
   });
 
+  it("keeps the any-zone sensor apart from the numbered zones", () => {
+    expect(classifyObjectId("binary_sensor", `${base}_radar_zone_occupancy`)).toEqual({
+      slot: "zone_occupancy",
+    });
+    expect(classifyObjectId("binary_sensor", `${base}_radar_zone_occupancy_2`)).toEqual({
+      slot: "zone_occupancy",
+    });
+    expect(classifyObjectId("binary_sensor", `${base}_radar_zone_2_occupancy`)).toEqual({
+      slot: "zone_2_occupancy",
+    });
+  });
+
   it("rejects a matching suffix in the wrong domain", () => {
     expect(classifyObjectId("automation", `${base}_radar_engineering_mode`)).toBeUndefined();
     expect(classifyObjectId("sensor", `${base}_g3_move_threshold`)).toBeUndefined();
@@ -551,5 +564,45 @@ describe("exists", () => {
     expect(exists(hass, `switch.${base}_radar_engineering_mode`)).toBe(true);
     expect(exists(hass, `switch.${base}_missing`)).toBe(false);
     expect(exists(hass, undefined)).toBe(false);
+  });
+});
+
+describe("deviceInfoEntities", () => {
+  it("finds an MSR's versions, update entity, signal and restart", () => {
+    const hass = hassWith([
+      `button.${base}_firmware_update`,
+      `sensor.${base}_apollo_firmware_version`,
+      `sensor.${base}_radar_firmware_version`,
+      `update.${base}_firmware_update`,
+      `sensor.${base}_rssi`,
+      `button.${base}_esp_reboot`,
+    ]);
+    expect(deviceInfoEntities(hass, "dev1")).toEqual({
+      apollo_firmware: `sensor.${base}_apollo_firmware_version`,
+      ld2410_firmware: `sensor.${base}_radar_firmware_version`,
+      // The update domain only: the template button of the same name installs
+      // with no dialog, so it is never picked, even listed first.
+      update: `update.${base}_firmware_update`,
+      rssi: `sensor.${base}_rssi`,
+      esp_reboot: `button.${base}_esp_reboot`,
+    });
+  });
+
+  it("finds both chip versions on an R PRO-1 and skips this integration's own entities", () => {
+    const d = "apollo_r_pro_1_7a711c";
+    const hass = hassWith([
+      `sensor.${d}_ld2412_firmware`,
+      `sensor.${d}_ld2450_firmware_2`,
+      `sensor.${d}_zone_1_rssi`,
+    ]);
+    hass.entities[`sensor.${d}_zone_1_rssi`].platform = "apollo_mmwave";
+    expect(deviceInfoEntities(hass, "dev1")).toEqual({
+      ld2412_firmware: `sensor.${d}_ld2412_firmware`,
+      ld2450_firmware: `sensor.${d}_ld2450_firmware_2`,
+    });
+  });
+
+  it("is empty for a device with none of them", () => {
+    expect(deviceInfoEntities(hassWith([`sensor.${base}_rssi`]), "other")).toEqual({});
   });
 });

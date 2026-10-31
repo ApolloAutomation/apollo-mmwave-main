@@ -17,7 +17,7 @@ body:
   attributes:
     label: "Integration version"
     description: "The version of this custom integration you are using"
-    placeholder: "2.2.7"
+    placeholder: "2.3.0"
   validations:
     required: false
 - type: textarea
@@ -65,7 +65,7 @@ body:
 
 - type: textarea
   attributes:
-    label: "ESPHome device diagnostics"
-    description: "This integration has no diagnostics download of its own. If the issue involves a specific radar, open that device under Settings > Devices & services > ESPHome, choose Download diagnostics from its menu, and drag the file here. (see https://www.home-assistant.io/integrations/diagnostics/ for info)"
+    label: "Apollo mmWave support file"
+    description: "Open Settings > Devices & services > Apollo mmWave, choose Download diagnostics from the three dots menu, and drag the file here. It leaves out MAC and IP addresses and Wi-Fi names. (see https://www.home-assistant.io/integrations/diagnostics/ for info)"
   validations:
     required: false

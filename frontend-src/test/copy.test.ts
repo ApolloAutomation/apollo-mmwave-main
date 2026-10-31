@@ -10,10 +10,31 @@ import { describe, it, expect } from "vitest";
 import "../src/cards/distance-card";
 import "../src/cards/gate-energy-card";
 import "../src/cards/calibrate-card";
+import "../src/cards/setup-card";
 import "../src/strategy";
-import { LD2410_PROFILE, LD2412_PROFILE, PROFILES, rangeLimitTip } from "../src/profiles";
-import { buildDeviceCards, type RadarDevice, type StrategyConfig } from "../src/strategy-core";
-import type { HomeAssistant } from "../src/types";
+import * as setupChecks from "../src/cards/setup-checks";
+import * as gateSetupChecks from "../src/cards/gate-setup-checks";
+import * as sliderLock from "../src/cards/slider-lock";
+import {
+  LD2410_PROFILE,
+  LD2412_PROFILE,
+  PROFILES,
+  rangeLimitTip,
+  type RadarProfile,
+} from "../src/profiles";
+import {
+  buildDeviceCards,
+  detectRadarDevices,
+  LD2450_TIMEOUT_NOTE,
+  SUPPORT_FILE_NOTE,
+  WEAK_WIFI_NOTE,
+  zoneConfigNote,
+  type RadarDevice,
+  type StrategyConfig,
+} from "../src/strategy-core";
+import { factoryResetRow, restartRadarRow } from "../src/panels/entity-rows";
+import { ZoneMapCard } from "../src/zone-map/card";
+import type { EntityMap, HomeAssistant } from "../src/types";
 
 const EM_DASH = "\u2014";
 
@@ -48,7 +69,8 @@ describe("profile tips", () => {
         ...(profile.maxBarTips ?? []),
         ...profile.rangeLabels,
         profile.gateSizeLabel,
-        profile.rangeTip,
+        profile.rangeTip("about 0.75 m"),
+        profile.rangeTip("about 2.5 ft"),
         profile.gateTip,
         rangeLimitTip(profile.label),
       ];
@@ -99,11 +121,30 @@ describe("help card builders", () => {
     ["a selected device with nothing detectable", nothingDetected],
   ];
 
+  /** No entities, except the LD2412's presence on a two-radar device, so its
+   *  tab gets the two-radar help (with no LD2412 entity it gets the LD2450's). */
+  function hassFor(dev: RadarDevice): HomeAssistant {
+    if (!dev.profile || !dev.ld2450) return emptyHass;
+    const id = dev.profile.entityMap(dev.base).radar_target!;
+    const state = dev.online ? "off" : "unavailable";
+    return {
+      states: { [id]: { entity_id: id, state, attributes: {} } },
+      entities: { [id]: { device_id: dev.deviceId } },
+      devices: { [dev.deviceId]: { name: dev.name } },
+    };
+  }
+
   it.each(DEVICES)("writes %s tab without em dashes", (_kind, dev) => {
-    const cards = buildDeviceCards(emptyHass, dev);
+    const cards = buildDeviceCards(hassFor(dev), dev);
     const markdown = cards.filter((c) => c.type === "markdown");
     expect(markdown.length).toBeGreaterThan(0);
     expect(copyProblems(strings(cards))).toEqual([]);
+  });
+
+  it("writes the two-radar help when the LD2412 is there", () => {
+    expect(buildDeviceCards(hassFor(ld2412), ld2412)[0].content).toMatch(
+      /^\*\*Office\*\*, Apollo mmWave with two radars\./
+    );
   });
 
   it("joins the device name to the zone-only and nothing-detected help with punctuation", () => {
@@ -144,15 +185,199 @@ describe("dashboard empty states and picker entries", () => {
         "apollo-radar-distance-card",
         "apollo-radar-gate-energy-card",
         "apollo-radar-calibrate-card",
+        "apollo-radar-setup-card",
       ].includes(c.type ?? "")
     );
     expect(strategies).toHaveLength(1);
-    expect(cards).toHaveLength(3);
+    expect(cards).toHaveLength(4);
     const texts = [...strategies, ...cards].flatMap((e: { name: string; description: string }) => [
       e.name,
       e.description,
     ]);
     expect(copyProblems(texts)).toEqual([]);
     for (const e of [...strategies, ...cards]) expect(e.description).toContain("R PRO");
+  });
+});
+
+describe("setup card copy", () => {
+  const hass = (zoneType: string, multi: string): HomeAssistant => {
+    const zone = "select.hall_zone_type";
+    const sw = "switch.hall_multi_target_tracking";
+    return {
+      states: {
+        [zone]: { entity_id: zone, state: zoneType, attributes: {} },
+        [sw]: { entity_id: sw, state: multi, attributes: {} },
+      },
+      entities: { [zone]: { device_id: "mtr" }, [sw]: { device_id: "mtr" } },
+      devices: { mtr: { name: "Hall" } },
+    };
+  };
+
+  it("writes every line and button without em dashes", () => {
+    const texts: string[] = Object.values(setupChecks as Record<string, unknown>).filter(
+      (v): v is string => typeof v === "string"
+    );
+    expect(texts.length).toBeGreaterThan(5);
+    for (const [zoneType, multi] of [
+      ["Detection", "off"],
+      ["Filter", "off"],
+      ["Something new", "on"],
+    ]) {
+      const status = setupChecks.setupStatus(hass(zoneType, multi), "mtr");
+      expect(status.kind).toBe("checked");
+      if (status.kind !== "checked") continue;
+      const fixes = status.problems.flatMap((p) => (p.fix ? [p.fix] : []));
+      texts.push(...strings(status.problems), setupChecks.recommendedLine(fixes));
+    }
+    expect(copyProblems(texts)).toEqual([]);
+  });
+});
+
+describe("gate setup card copy", () => {
+  /** States for every id of a profile's map, with `overrides` on top. */
+  type Overrides = (m: EntityMap) => Record<string, string>;
+  const hass = (profile: RadarProfile, overrides: Overrides): HomeAssistant => {
+    const m = profile.entityMap("hall");
+    const states: HomeAssistant["states"] = {};
+    for (const v of Object.values(m)) {
+      for (const id of Array.isArray(v) ? v : [v]) {
+        if (typeof id === "string") states[id] = { entity_id: id, state: "5", attributes: {} };
+      }
+    }
+    if (m.gate_size) states[m.gate_size].state = "0.75m";
+    for (const [id, state] of Object.entries(overrides(m))) {
+      states[id] = { entity_id: id, state, attributes: { unit_of_measurement: "cm" } };
+    }
+    return { states, entities: {}, devices: {} };
+  };
+
+  it("writes every line and button without em dashes", () => {
+    const texts: string[] = Object.values(gateSetupChecks as Record<string, unknown>).filter(
+      (v): v is string => typeof v === "string"
+    );
+    expect(texts.length).toBeGreaterThan(3);
+    const cases: [RadarProfile, Overrides][] = [
+      [
+        LD2410_PROFILE,
+        (m) => ({
+          [m.engineering_mode!]: "on",
+          [m.radar_timeout!]: "unknown",
+          [m.move_threshold[0]]: "unknown",
+          [m.max_move_distance!]: "2",
+          [m.max_still_distance!]: "unknown",
+          [m.zone_1_start!]: "300",
+          [m.end_zone_1!]: "100",
+          [m.end_zone_2!]: "250",
+          [m.end_zone_3!]: "200",
+        }),
+      ],
+      [
+        LD2410_PROFILE,
+        (m) => ({
+          [m.zone_1_start!]: "0",
+          [m.end_zone_1!]: "50",
+          [m.end_zone_2!]: "200",
+          [m.end_zone_3!]: "300",
+          [m.max_move_distance!]: "2",
+          [m.max_still_distance!]: "2",
+        }),
+      ],
+      [LD2412_PROFILE, (m) => ({ [m.max_move_distance!]: "4", [m.max_still_distance!]: "6" })],
+      [LD2412_PROFILE, (m) => ({ [m.max_move_distance!]: "4", [m.max_still_distance!]: "4" })],
+    ];
+    for (const [profile, overrides] of cases) {
+      const map = profile.entityMap("hall");
+      const status = gateSetupChecks.gateSetupStatus(hass(profile, overrides), "hall", map, profile, "idle");
+      expect(status.kind).toBe("checked");
+      if (status.kind === "checked") {
+        expect(status.problems.length).toBeGreaterThan(0);
+        texts.push(...strings(status.problems));
+      }
+    }
+    expect(copyProblems(texts)).toEqual([]);
+  });
+});
+
+describe("controls and zone map copy", () => {
+  it("asks before a factory reset without em dashes", () => {
+    const texts = ["LD2410", "LD2412", "LD2450"].flatMap((chip) =>
+      strings(factoryResetRow("button.hall_factory_reset", chip))
+    );
+    expect(texts).toContain(
+      "Reset the LD2450 radar to its factory settings? It restarts and forgets its own settings."
+    );
+    expect(copyProblems(texts)).toEqual([]);
+  });
+
+  it("asks before a radar restart without em dashes", () => {
+    const texts = ["LD2410", "LD2412", "LD2450"].flatMap((chip) =>
+      strings(restartRadarRow("button.hall_restart", chip))
+    );
+    expect(texts).toContain(
+      "Restart the LD2412 radar? It stops detecting for a few seconds while it starts up."
+    );
+    expect(copyProblems(texts)).toEqual([]);
+  });
+
+  it("writes the notes and every product's Device card without em dashes", () => {
+    const texts = [
+      LD2450_TIMEOUT_NOTE,
+      SUPPORT_FILE_NOTE,
+      WEAK_WIFI_NOTE,
+      zoneConfigNote("m", true),
+      zoneConfigNote("ft", false),
+    ];
+    // One tab per product, each with its restart button, so every restart
+    // name and question is checked.
+    for (const [deviceId, model, ids] of [
+      ["msr", "MSR-2", ["switch.den_radar_engineering_mode", "button.den_esp_reboot"]],
+      [
+        "rpro",
+        "R-PRO-1-W",
+        ["switch.den_ld2412_engineering_mode", "sensor.den_ld2450_target_1_x", "button.den_esp_reboot"],
+      ],
+      ["mtr", "MTR-1", ["sensor.den_target_1_x", "button.den_esp_reboot"]],
+    ] as const) {
+      const hass: HomeAssistant = {
+        states: Object.fromEntries(
+          ids.map((id) => [id, { entity_id: id, state: "unknown", attributes: {} }])
+        ),
+        entities: Object.fromEntries(ids.map((id) => [id, { device_id: deviceId }])),
+        devices: { [deviceId]: { name: "Den", manufacturer: "ApolloAutomation", model } },
+      };
+      const [dev] = detectRadarDevices(hass);
+      const cards = buildDeviceCards(hass, dev);
+      expect(JSON.stringify(cards)).toContain("Restart the whole device?");
+      texts.push(...strings(cards));
+    }
+    expect(copyProblems(texts)).toEqual([]);
+  });
+
+  it("titles the m / ft switch without em dashes, for administrators and others", () => {
+    const card: any = new ZoneMapCard();
+    card.setConfig({ device_id: "hall" });
+    const titles = (isAdmin: boolean): string[] => {
+      card._hass = { user: { is_admin: isAdmin }, states: {} };
+      card._renderUnitSwitch();
+      return ["btnUnitM", "btnUnitFt"].map((id) => card.shadowRoot.getElementById(id).title);
+    };
+    const texts = [...titles(true), ...titles(false)];
+    expect(texts).toEqual([
+      "Show this radar's map in meters for everyone",
+      "Show this radar's map in feet for everyone",
+      "Show the map in meters",
+      "Show the map in feet",
+    ]);
+    expect(copyProblems(texts)).toEqual([]);
+  });
+});
+
+describe("slider lock copy", () => {
+  it("writes the lock row, the toasts and the tip without em dashes", () => {
+    const texts = strings(Object.values(sliderLock));
+    expect(texts).toContain(sliderLock.REMINDER_TOAST);
+    expect(texts).toContain(sliderLock.UNLOCKED_HINT);
+    expect(copyProblems(texts)).toEqual([]);
+    expect(LD2410_PROFILE.gateTip).toContain("The sliders start locked");
   });
 });

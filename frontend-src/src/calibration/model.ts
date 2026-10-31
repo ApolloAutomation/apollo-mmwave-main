@@ -34,6 +34,15 @@ export const KEEP_ON_LD2412 =
 export const WALK_AROUND_LINE =
   "Now walk around, then sit still for a minute: the Radar Target row in Target / Occupancy should stay on the whole time you are in the room and turn off a few seconds after you leave (Radar Timeout).";
 export const NOTHING_TO_RESTORE = "Nothing to restore yet";
+/** Offered when the radar has not reported its thresholds yet: it presses the
+ *  radar's query params button, which only asks the radar to send them. The
+ *  calibrate card then runs the refused job again; the setup card offers it
+ *  whenever a setting reads unknown. */
+export const READ_SETTINGS_LABEL = "Read settings from the radar";
+export const READING_SETTINGS = "Reading settings from the radar...";
+/** Time the radar gets to report its thresholds after the button press (the
+ *  backend waits as long, `VERIFY_SETTLE_S`, after its own LD2412 press). */
+export const READ_SETTINGS_WAIT_MS = 3000;
 
 const TERMINAL: ReadonlySet<string> = new Set(["done", "cancelled", "failed"]);
 

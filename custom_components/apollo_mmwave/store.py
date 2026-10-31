@@ -19,6 +19,7 @@ in-memory shape is::
             "label": "Apollo R_PRO-1 abc123",   # optional, display only
             "aliases": ["Kitchen"],   # optional, other merged v1 names
             "input_units": "mm",  # optional; absent means millimeters
+            "display_units": "ft",  # optional, "m" or "ft"; display only
         },
     }
 
@@ -53,10 +54,12 @@ from homeassistant.util import slugify
 
 from .const import (
     ATTR_ROTATION_DEG,
+    DISPLAY_UNITS,
     DOMAIN,
     INPUT_UNIT_FACTORS,
     STORE_ALIASES,
     STORE_DEVICES,
+    STORE_DISPLAY_UNITS,
     STORE_ENTITIES,
     STORE_INPUT_UNITS,
     STORE_LABEL,
@@ -311,6 +314,11 @@ def _parse_entry(raw: Any, device_id: str | None = None) -> dict[str, Any] | Non
     units = raw.get(STORE_INPUT_UNITS)
     if isinstance(units, str) and units in INPUT_UNIT_FACTORS:
         entry[STORE_INPUT_UNITS] = units
+    # Absent stays absent, so the card follows Home Assistant's unit system.
+    # Anything the service could not have saved reads the same way.
+    display_units = raw.get(STORE_DISPLAY_UNITS)
+    if isinstance(display_units, str) and display_units in DISPLAY_UNITS:
+        entry[STORE_DISPLAY_UNITS] = display_units
     return entry
 
 

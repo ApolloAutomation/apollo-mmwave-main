@@ -4,6 +4,141 @@ What changed in each release of Apollo mmWave, newest first. Setup and
 everyday use are in [README.md](README.md) and
 [docs/configuration.md](docs/configuration.md).
 
+## What changed in 2.3.0
+
+R PRO-1 and MTR-1 tabs now have everything for the zone map in one place: a
+Radar setup card that finds the settings that hide people from the map and
+fixes them with one tap, and the radar's live status and controls next to the
+map, so there is no need to open the device page. The zone map is in feet or
+meters to match Home Assistant and fills the card with what the radar can
+see. Every tab is also easier to read: setup checks on MSR-1, MSR-2 and
+R PRO-1 tabs too, plainer labels and help, a fuller occupancy history, a
+Device card at the bottom, and a support file to send Apollo. On a phone, a
+scroll can no longer move a threshold, Detection Range or Cone rotation
+slider by accident.
+Nothing needs changing by hand unless your Lovelace resources are managed in
+YAML (replace both `?v=` URLs; see
+[Lovelace resources](docs/configuration.md#lovelace-resources)), or you added
+a zone map card from the card picker before 2.3.0 (see the last item).
+
+- **New Radar setup card.** It sits above the zone map on R PRO-1 and MTR-1
+  tabs and checks two radar settings. Apollo firmware never sets them, so
+  they are whatever the radar chip holds:
+  - **Zone Type** should be **Disabled**, because the zone map replaces the
+    radar chip's own built-in zones. On Detection the radar reports only
+    people inside those built-in zones, and with none set it reports nobody,
+    so the map stays empty. On Filter it hides people inside them. **Set Zone
+    Type to Disabled** fixes it.
+  - **Multi Target Tracking** off means only one person is tracked. **Turn on
+    Multi Target Tracking** fixes it.
+
+  When both need fixing, **Use recommended settings** does both. The card
+  changes nothing until you press a button. It is also in the card picker as
+  **Apollo Radar Setup**; see
+  [Radar setup](docs/configuration.md#radar-setup).
+- **Setup checks on MSR-1, MSR-2 and R PRO-1 tabs.** A second kind of Radar
+  setup card now sits right under **Start here** on every tab with an LD2410
+  or LD2412. It flags:
+  - **Radar Engineering Mode left on**, which saves every gate's energy to
+    the database about once a second. **Turn off Radar Engineering Mode**
+    fixes it. The card says nothing about it while a calibration runs, since
+    the calibration needs the mode on.
+  - **Settings the radar has not reported yet**, so their rows are blank.
+    **Read settings from the radar** only asks the radar to send them.
+  - **LD2410 zones that can never turn on**, because their distances are out
+    of order or past what the radar can see, and an **LD2412 Min Gate** at or
+    above Max Gate. The card explains these and leaves the fix to you.
+
+  It changes nothing until you press a button; see
+  [Gate radar setup checks](docs/configuration.md#gate-radar-setup-checks).
+- **The radar's status and controls next to the map.** R PRO-1 and MTR-1
+  tabs gain **Zone presence** (each zone's presence sensor, lit while someone
+  is in it; a zone you just drew shows after a page reload), **LD2450 Live**
+  (whether the radar sees anyone, how many, and each target's distance and
+  direction) and **LD2450 Controls** (Zone Type, Multi Target Tracking, Radar
+  Timeout, Radar Bluetooth (HLK app), Restart Radar and Factory Reset Radar).
+  A note under it says Radar Timeout holds LD2450 Presence only: a zone you
+  drew turns off as soon as nobody is in it. A **Radar's built-in zones** card
+  shows the chip's own zones only while Zone Type is not Disabled.
+- **Resets and restarts ask first.** On every tab, **Factory Reset Radar**,
+  **Restart Radar** and the whole-device restart now ask before they act
+  instead of going off on one tap of **Press**.
+- **Sliders lock so a scroll cannot move them.** On MSR-1, MSR-2 and R PRO-1
+  tabs, the sliders on Detection Range (Max Move Gate and Max Still Gate, or
+  Max Gate and Min Gate on the R PRO-1), Move Thresholds and Still
+  Thresholds start locked every time the dashboard opens. A locked slider is
+  gray and still shows its value, and a scroll that starts on it scrolls the
+  page. Press **Unlock** above them to change them; that unlocks the
+  sensor's sliders on all three cards. They lock again after 5 minutes
+  without a change or when you leave the tab, but never while you drag one.
+  Touch a locked slider and **Unlock** flashes; try again within 10 seconds
+  and Home Assistant shows a reminder with an **Unlock** button. Number boxes
+  such as Radar Timeout are never locked, tapping a row's name still opens
+  its details, and Auto-calibrate works either way. See
+  [Locked sliders](docs/configuration.md#locked-sliders).
+- **The zone map's Locked button also locks Cone rotation.** While the map
+  is locked, the **Cone rotation** slider under Configure is gray, a scroll
+  that starts on it scrolls the page, and a tap or drag on it outlines
+  **Locked** and shows a reminder of how to unlock. A radar with no zones yet
+  starts unlocked, as before, so a new sensor can still be turned to match
+  how it is mounted. See [Drawing zones](docs/configuration.md#drawing-zones).
+- **ESP Reboot moved to the Device card.** It restarts the whole device, both
+  radars on an R PRO-1, so it left the radar's Controls card. It is now
+  **Restart device** on the MSR-1 and MSR-2, **Restart device (both radars)**
+  on the R PRO-1 and **Restart device (also restarts the radar)** on the
+  MTR-1 and on an R PRO-1 without the optional LD2412.
+- **New Device card** at the bottom of every tab: the Apollo firmware
+  version, the radar chip's firmware version (the R PRO-1 hides both of its
+  chips' versions until you enable them), the firmware update (tap it for
+  Home Assistant's own update window), the restart, a link to the device's
+  own page, and how to download a support file. A weak Wi-Fi note shows
+  while the signal is below -75 dBm.
+- **Clearer labels and help on every tab.** Every tab, a live MTR-1
+  included, starts with **Start here** steps and a link to the device's own
+  page. The R PRO-1 help covers both radars and says which presence sensor to
+  use in automations. The help no longer tells you to change Gate Size, which
+  is hidden on every model. Threshold rows say how far out their gate reaches,
+  such as "G4 (about 3 m)", in feet on a US customary system, and the
+  Detection Range tip gives each gate's depth the same way. **Bluetooth** is
+  now **Radar Bluetooth (HLK app)**. The LD2410 Zone Config card says its
+  boxes are in cm and how the three zones sit back to back, and each Radar
+  Timeout says what it holds.
+- **Clearer occupancy.** MSR-1 and MSR-2 tabs add **Any zone** (on while
+  someone is in any of the three zones) to Target / Occupancy and the
+  history. Target / Occupancy rows light up while on. The history adds
+  **Moving** and **Still** lines and covers 24 hours instead of 1. The R PRO-1
+  history, now **Occupancy History**, shows LD2412 Presence, Moving and
+  Still, LD2450 Presence and each zone you drew. MTR-1 tabs get the same
+  history for the LD2450 and its zones.
+- **A support file for Apollo support.** Settings → Devices & services →
+  Apollo mmWave → ⋮ → **Download diagnostics** saves a file with the
+  versions, the dashboard and resource state, and for each radar its model,
+  firmware, settings, zones and last calibration. MAC and IP addresses, Wi-Fi
+  names and tokens are left out. Only administrators can download it; see
+  [Support file](docs/configuration.md#support-file).
+- **New tab layout.** An MTR-1 tab is no longer just the zone map: its help,
+  Radar setup and the map come first, then the cards above. On an R PRO-1
+  they sit after the LD2412's first column, under the Zone Map heading. MSR-1,
+  MSR-2 and R PRO-1 tabs start with **Start here**, then the gate radar's
+  Radar setup card and Auto-calibrate, and every tab ends with the Device
+  card.
+- **The zone map in feet or meters.** The map follows Home Assistant's unit
+  system: feet for US customary, meters otherwise. The new **m / ft** switch
+  on the map changes it. An administrator's choice is saved for that radar,
+  so everyone sees it; anyone else only changes their own view. Labels in
+  feet now read "4 ft". Automations can set it with `apollo_mmwave.update_zone`
+  and its new `display_units` (`m`, `ft`, or `auto` to follow Home Assistant
+  again).
+- **The map fits what the radar sees.** The radar sees 120 degrees wide and
+  about 6 m (20 ft) out. The map now fits that area, turned the way the radar
+  is rotated, plus any zone you drew, instead of a fixed 10 m square where the
+  radar's view filled only the top half. A caption at its edge reads "Radar
+  range 6 m (20 ft), 120°". A card with its own `grid` in YAML keeps it.
+  Zone map cards added from the card picker before 2.3.0 carry a `grid`,
+  `grid_units: mm` and `unit_display: false` in their YAML. Delete `grid` and
+  `grid_units` and set `unit_display: true` to get the fitted map in your
+  units, with its distance labels and range caption.
+
 ## What changed in 2.2.7
 
 The zone map card and zone presence sensors now work when Home Assistant

@@ -1,23 +1,39 @@
-import type { CalibrationOptions, HassEntity, HomeAssistant } from "./types";
+import type { CalibrationOptions, EntityMap, HassEntity, HomeAssistant } from "./types";
 import {
   baseNameFromDevice,
   detectProfileFromEntities,
+  deviceInfoEntities,
   entityMapFromDevice,
+  exists,
 } from "./entities";
 import { entitiesForDevice } from "./entity-index";
 import { hasLd2450Device, ld2450EntityIds, zoneMapCard } from "./ld2450";
-import { apolloModelInfo, isEsphomeDevice, type RadarProfile } from "./profiles";
 import {
+  LD2450_ZONES,
+  ld2450Entities,
+  zonePresenceSensors,
+  type Ld2450Entities,
+} from "./ld2450-entities";
+import { builtInZoneRows, ld2450ControlRows, ld2450LiveRows } from "./panels/ld2450-rows";
+import { apolloModelInfo, isEsphomeDevice, type RadarProfile } from "./profiles";
+import { parseGateSizeMeters } from "./charts/geometry";
+import {
+  aboutDistance,
   controlRows,
+  gateName,
   zoneConfigRows,
   moveThresholdRows,
   stillThresholdRows,
   occupancyRows,
   rangeRows,
   presentRows,
+  type LengthUnit,
   type Row,
 } from "./panels/entity-rows";
-import { historyEntities } from "./panels/history";
+import { deviceRows, type DeviceRestart } from "./panels/device-rows";
+import { historyEntities, ld2450HistoryEntities, type HistoryRow } from "./panels/history";
+import { gateCheckedIds } from "./cards/gate-setup-checks";
+import { SLIDER_LOCK_ROW_TAG, SLIDER_ROW_TAG, showsSlider } from "./cards/slider-lock";
 
 export interface RadarDevice {
   deviceId: string;
@@ -197,13 +213,80 @@ export function strategyDevices(
   return detectRadarDevices(hass);
 }
 
-function entitiesCard(title: string, rows: Row[]): Record<string, any> | undefined {
+/** An entities card of `rows`, none without rows. With `lockDevice`, its
+ *  slider rows go behind that radar's slider lock (`entityRows`). */
+function entitiesCard(
+  title: string,
+  rows: Row[],
+  options: Record<string, any> = {},
+  lockDevice?: string
+): Record<string, any> | undefined {
   if (rows.length === 0) return undefined;
   return {
     type: "entities",
     title,
     show_header_toggle: false,
-    entities: rows.map((r) => ({ entity: r.entity, name: r.name })),
+    ...options,
+    entities: entityRows(rows, lockDevice),
+  };
+}
+
+/** The card's rows. With a device, each slider row goes behind that radar's
+ *  slider lock (cards/slider-lock-rows.ts), and the lock row sits right above
+ *  the first slider, next to what it locks, so a box above it (Radar Timeout)
+ *  reads as unlocked. */
+function entityRows(rows: Row[], lockDevice?: string): Record<string, any>[] {
+  const out: Record<string, any>[] = [];
+  let lockRow = false;
+  for (const r of rows) {
+    if (!lockDevice || !r.slider) {
+      out.push(entityRow(r));
+      continue;
+    }
+    if (!lockRow) {
+      out.push({ type: `custom:${SLIDER_LOCK_ROW_TAG}`, device_id: lockDevice });
+      lockRow = true;
+    }
+    out.push({
+      type: `custom:${SLIDER_ROW_TAG}`,
+      entity: r.entity,
+      name: r.name,
+      device_id: lockDevice,
+    });
+  }
+  return out;
+}
+
+/** A number Home Assistant draws as a box (a DIY build with mode: box) needs
+ *  no lock: a scroll cannot change a box. A state without a mode keeps the
+ *  lock, the safe side. */
+function unlockBoxes(hass: HomeAssistant, rows: Row[]): Row[] {
+  return rows.map((r) => {
+    const s = hass.states[r.entity];
+    return r.slider && s?.attributes.mode !== undefined && !showsSlider(s)
+      ? { entity: r.entity, name: r.name }
+      : r;
+  });
+}
+
+/**
+ * One entities card row. A row with `confirm` becomes HA's special button row,
+ * whose tap action carries a confirmation, so Home Assistant asks the question
+ * before it presses the button; a plain button entity row presses at once.
+ */
+function entityRow(r: Row): Record<string, any> {
+  if (!r.confirm) return { entity: r.entity, name: r.name };
+  return {
+    type: "button",
+    entity: r.entity,
+    name: r.name,
+    action_name: r.confirm.action,
+    tap_action: {
+      action: "perform-action",
+      perform_action: "button.press",
+      target: { entity_id: r.entity },
+      confirmation: { text: r.confirm.text },
+    },
   };
 }
 
@@ -213,8 +296,25 @@ const OFFLINE_NOTE =
   " reflashed under a new name, delete the old device in Home Assistant to" +
   " drop this tab.";
 
-function helpCard(dev: RadarDevice): Record<string, any> {
-  const card = helpCardBody(dev);
+/** What the help card says beyond the device itself. */
+interface HelpContext {
+  /** One gate's depth in the user's unit, such as "about 0.75 m". */
+  gateDepth: string;
+  /** Whether the tab has the gate radar's Radar setup card to point at. */
+  gateSetup: boolean;
+  /** Whether the tab has the LD2450's Radar setup card to point at. */
+  ld2450Setup: boolean;
+  /** Whether the gate radar's presence sensor exists. An R PRO-1 built
+   *  without the optional LD2412 has none to recommend. */
+  gatePresence: boolean;
+  /** Whether the device has any of the gate radar's entities. An R PRO-1
+   *  built without the optional LD2412 keeps the LD2412 profile from its
+   *  registry model, but has only the LD2450. */
+  gateRadar: boolean;
+}
+
+function helpCard(dev: RadarDevice, ctx: HelpContext): Record<string, any> {
+  const card = helpCardBody(dev, ctx);
   if (!dev.online && (dev.profile || dev.ld2450)) {
     card.content = `${card.content}${OFFLINE_NOTE}`;
   }
@@ -233,7 +333,39 @@ export function markdownText(text: string): string {
   return text.replace(/[!-\/:-@\[-`{-~]/g, "\\$&");
 }
 
-function helpCardBody(dev: RadarDevice): Record<string, any> {
+/** A markdown link to the device's own page in Home Assistant, where every
+ *  setting this dashboard leaves out lives. */
+function deviceLink(dev: RadarDevice): string {
+  const path = `/config/devices/device/${encodeURIComponent(dev.deviceId)}`;
+  return `[All settings for this device →](${path})`;
+}
+
+function numbered(steps: string[]): string {
+  return steps.map((step, i) => `${i + 1}. ${step}`).join("\n");
+}
+
+/** For automations on a tab with an LD2450 and no gate radar presence. */
+const LD2450_AUTOMATIONS =
+  "**In automations**, use a zone's presence sensor, or **LD2450 Presence** for" +
+  " anywhere the radar sees.";
+
+/** The gate radar's first steps. On a tab with two radars they name the chip. */
+function gateSteps(p: RadarProfile, ctx: HelpContext, twoRadars: boolean): string[] {
+  const it = twoRadars ? `the ${p.label}` : "it";
+  const presence = twoRadars ? `${p.label} presence` : "presence";
+  const setup = twoRadars ? `the ${p.label}'s Radar setup card` : "the Radar setup card";
+  return [
+    ...(ctx.gateSetup ? [`Fix anything ${setup} flags.`] : []),
+    "Press **Calibrate with empty room** on the Auto-calibrate card and leave the room.",
+    `Set how far ${it} should look: **${p.rangeLabels[0]} / ${p.rangeLabels[1]}** on the` +
+      ` Detection Range card (each gate is ${ctx.gateDepth}).`,
+    `Set how long ${presence} stays on after you stop moving: **Radar Timeout**, same card.`,
+    "Walk the room and watch the Gate Energy chart. Raise a gate's threshold if it" +
+      " triggers with nobody there, lower it if it misses you.",
+  ];
+}
+
+function helpCardBody(dev: RadarDevice, ctx: HelpContext): Record<string, any> {
   const name = markdownText(dev.name);
   if (!dev.profile && !dev.ld2450) {
     // Forced (explicitly selected) device with nothing detectable — offline
@@ -243,30 +375,61 @@ function helpCardBody(dev: RadarDevice): Record<string, any> {
       content:
         `**${name}**: no radar data available right now.\n\n` +
         `The device looks offline (or exposes no recognizable radar ` +
-        `entities). Its cards will appear here once it reports in.`,
+        `entities). Its cards will appear here once it reports in.\n\n` +
+        deviceLink(dev),
     };
   }
-  if (!dev.profile) {
+  // An LD2450 alone: an MTR-1, or an R PRO-1 built without the LD2412. A
+  // new zone's sensor joins Zone presence only after a page reload.
+  if (!dev.profile || (dev.ld2450 && !ctx.gateRadar)) {
+    const steps = [
+      ...(ctx.ld2450Setup ? ["Fix anything the Radar setup card flags."] : []),
+      "Set **Cone rotation** (under Configure on the zone map) to match how the sensor is mounted.",
+      "Draw a zone on the map, reload this page, then walk into the zone and watch it" +
+        " turn on under Zone presence.",
+    ];
     return {
       type: "markdown",
       content:
         `**${name}**, Apollo mmWave (LD2450 tracking radar).\n\n` +
-        `Draw occupancy zones over the live target positions below.`,
+        `Draw occupancy zones over the live target positions below.\n\n` +
+        `**Start here**\n${numbered(steps)}\n\n` +
+        `${LD2450_AUTOMATIONS}\n\n` +
+        deviceLink(dev),
     };
   }
   const p = dev.profile;
+  const links = `[Full tuning guide →](${p.wikiUrl}) · ${deviceLink(dev)}`;
+  if (!dev.ld2450) {
+    return {
+      type: "markdown",
+      content:
+        `**${name}**, Apollo ${p.label} radar.\n\n` +
+        `**Start here**\n${numbered(gateSteps(p, ctx, false))}\n\n` +
+        links,
+    };
+  }
+  // Two radars (R PRO-1): what each one is for, then both radars' steps, and
+  // which presence sensor an automation should use.
+  const setup = ctx.ld2450Setup ? "fix anything Radar setup flags above the zone map, " : "";
+  const automations = ctx.gatePresence
+    ? `**In automations**, use **${p.label} Presence** (Radar Target on this tab)` +
+      " for the whole room, or a zone's presence sensor for one part of it."
+    : LD2450_AUTOMATIONS;
   return {
     type: "markdown",
     content:
-      `**${name}**, Apollo ${p.label} radar.\n\n` +
+      `**${name}**, Apollo mmWave with two radars. The **${p.label}** senses people` +
+      ` anywhere in range, even sitting still. The **LD2450** tracks where people are` +
+      ` and drives the zone map.\n\n` +
       `**Start here**\n` +
-      `1. Press **Calibrate with empty room** on the Auto-calibrate card and leave the room.\n` +
-      `2. Set how far it should look: **${p.rangeLabels[0]} / ${p.rangeLabels[1]}** on the` +
-      ` Detection Range card (each gate is 0.75 m unless you changed ${p.gateSizeLabel}).\n` +
-      `3. Set how long presence stays on after you stop moving: **Radar Timeout**, same card.\n` +
-      `4. Walk the room and watch the Gate Energy chart. Raise a gate's threshold if it` +
-      ` triggers with nobody there, lower it if it misses you.\n\n` +
-      `[Full tuning guide →](${p.wikiUrl})`,
+      numbered([
+        ...gateSteps(p, ctx, true),
+        `For the LD2450, ${setup}set **Cone rotation** (under Configure on the zone map) to` +
+          " match how the sensor is mounted, then draw a zone and walk into it.",
+      ]) +
+      `\n\n${automations}\n\n` +
+      links,
   };
 }
 
@@ -274,24 +437,240 @@ function noteCard(text: string): Record<string, any> {
   return { type: "markdown", content: text };
 }
 
+export const ZONE_PRESENCE_TITLE = "Zone presence";
+export const ZONE_PRESENCE_HINT =
+  "Draw a zone on the map to get a presence sensor for it. Reload this page to see it here.";
+export const BUILT_IN_ZONES_TITLE = "Radar's built-in zones";
+export const BUILT_IN_ZONES_NOTE =
+  "These are the radar chip's own zones, not the ones on the zone map." +
+  " Zone Type Disabled is recommended, because the zone map replaces them.";
+
+/** Under the LD2450 Controls card: what its Radar Timeout holds, and what it
+ *  does not. Drawn zones are evaluated from the live X/Y with no hold. */
+export const LD2450_TIMEOUT_NOTE =
+  "💡 **Radar Timeout** is how long LD2450 Presence stays on after the radar last" +
+  " sees someone. It does not hold the zones you draw: a zone turns off as soon as" +
+  " nobody is in it.";
+
+/**
+ * Under the LD2410 Zone Config card. The boxes are template numbers in cm, and
+ * Home Assistant converts no number entity's unit but temperature, so they
+ * stay cm on a US customary system too. `anyZone` adds the automation advice
+ * only when the any-zone sensor exists.
+ */
+export function zoneConfigNote(unit: LengthUnit, anyZone: boolean): string {
+  return (
+    `💡 The boxes are in cm${unit === "ft" ? " (100 cm is about 3.3 ft)" : ""}.` +
+    " The zones sit back to back: Zone 1 runs from Start Zone 1 to End Zone 1," +
+    " Zone 2 from there to End Zone 2, and Zone 3 from there to End Zone 3." +
+    (anyZone
+      ? " In automations, use **Any zone**: it is on while someone is in any of the" +
+        " three zones, so it ignores people past End Zone 3."
+      : "")
+  );
+}
+
+export const DEVICE_TITLE = "Device";
+/** Below this signal (dBm) the Device card shows the weak Wi-Fi note. */
+export const WEAK_WIFI_DBM = -75;
+export const WEAK_WIFI_NOTE =
+  "**Weak Wi-Fi.** The signal is below -75 dBm, so presence updates can lag or" +
+  " drop out. Move the device or your Wi-Fi router closer, or add an access point.";
+export const SUPPORT_FILE_NOTE =
+  "**Download a support file** for Apollo support: open" +
+  " [Apollo mmWave](/config/integrations/integration/apollo_mmwave), then pick" +
+  " **Download diagnostics** from the three dots menu.";
+
+/** The whole-device restart, named for what it takes down with it.
+ *  `gateRadar` is whether the device has any of the gate radar's entities. */
+function deviceRestart(dev: RadarDevice, gateRadar: boolean): DeviceRestart {
+  if (dev.profile && gateRadar && dev.ld2450) {
+    return {
+      name: "Restart device (both radars)",
+      text:
+        "Restart the whole device? Both radars stop, and the device is offline for a" +
+        " short while before it reconnects.",
+    };
+  }
+  if (dev.ld2450) {
+    return {
+      name: "Restart device (also restarts the radar)",
+      text:
+        "Restart the whole device? The radar restarts with it, and the device is" +
+        " offline for a short while before it reconnects.",
+    };
+  }
+  return {
+    name: "Restart device",
+    text: "Restart the whole device? It is offline for a short while before it reconnects.",
+  };
+}
+
+/**
+ * The Device card, last on every tab: versions, the update entity, the
+ * restart (which asks first), a weak Wi-Fi note and where to get help.
+ *
+ * The note is a native conditional card, so it follows the live signal with
+ * no dashboard regeneration and stays hidden while the device is offline (an
+ * "unavailable" state is not below anything).
+ */
+function deviceCard(
+  hass: HomeAssistant,
+  dev: RadarDevice,
+  gateRadar: boolean
+): Record<string, any> {
+  const d = deviceInfoEntities(hass, dev.deviceId);
+  const restart = deviceRestart(dev, gateRadar);
+  const rows = entitiesCard(DEVICE_TITLE, presentRows(hass, deviceRows(d, restart)));
+  const cards: Record<string, any>[] = rows ? [rows] : [];
+  if (exists(hass, d.rssi)) {
+    cards.push({
+      type: "conditional",
+      conditions: [{ condition: "numeric_state", entity: d.rssi, below: WEAK_WIFI_DBM }],
+      card: { type: "markdown", content: WEAK_WIFI_NOTE },
+    });
+  }
+  cards.push({
+    type: "markdown",
+    ...(rows ? {} : { title: DEVICE_TITLE }),
+    content: `${deviceLink(dev)}\n\n${SUPPORT_FILE_NOTE}`,
+  });
+  return cards.length === 1 ? cards[0] : { type: "vertical-stack", cards };
+}
+
+/** Feet on a US customary system, meters otherwise. */
+function lengthUnit(hass: HomeAssistant): LengthUnit {
+  return hass.config?.unit_system?.length === "mi" ? "ft" : "m";
+}
+
+/** The chips' stock gate depth. The gate size control ships disabled. */
+const DEFAULT_GATE_SIZE_M = 0.75;
+
+/** One gate's depth in meters: the gate size control's value when the user
+ *  enabled it, otherwise the stock depth. */
+function gateSizeMeters(hass: HomeAssistant, m: EntityMap): number {
+  const size = parseGateSizeMeters(m.gate_size ? hass.states[m.gate_size]?.state : undefined);
+  return size !== undefined && size > 0 ? size : DEFAULT_GATE_SIZE_M;
+}
+
+/**
+ * This integration's zone presence sensors for the radar, one per drawn zone,
+ * so a user can walk into a zone and watch it turn on. The rows carry no
+ * name: HA shows each sensor's own name, which follows a zone rename.
+ *
+ * Drawing or deleting a zone does not regenerate the dashboard (that would
+ * rebuild the zone map mid-edit, see `shouldRegenerate`), so the rows are the
+ * zones there were when the page loaded. A new zone's sensor shows after the
+ * next page load; only the empty card says so, since with zones listed the
+ * extra line is noise. A deleted zone's sensor leaves `hass.states`, and HA
+ * draws a row for a missing entity as an "Entity not available" warning, right
+ * beside the map the zone was just deleted on. So each row is a conditional
+ * row that hides itself once its sensor is gone: a condition reads a missing
+ * entity as "unavailable", and these sensors never are otherwise.
+ */
+function zonePresenceCard(hass: HomeAssistant, deviceId: string): Record<string, any> {
+  const ids = zonePresenceSensors(hass, deviceId).filter((id) => exists(hass, id));
+  if (ids.length === 0) {
+    return { type: "markdown", title: ZONE_PRESENCE_TITLE, content: ZONE_PRESENCE_HINT };
+  }
+  return {
+    type: "entities",
+    title: ZONE_PRESENCE_TITLE,
+    show_header_toggle: false,
+    // Colored while occupied, so a zone turning on is easy to spot. The
+    // conditional row builds its row from `row` alone, so the row carries it
+    // too.
+    state_color: true,
+    entities: ids.map((entity) => ({
+      type: "conditional",
+      conditions: [{ condition: "state", entity, state_not: "unavailable" }],
+      row: { entity, state_color: true },
+    })),
+  };
+}
+
+/**
+ * The radar chip's own built-in zones, shown only while Zone Type is not
+ * Disabled. A native conditional card reads the live state, so the card
+ * appears the moment someone picks Detection or Filter and goes away again
+ * on Disabled, without a dashboard regeneration. Offline ("unavailable") and
+ * unreported ("unknown") hide it too: there is nothing to act on then.
+ */
+function builtInZonesCard(
+  hass: HomeAssistant,
+  l: Ld2450Entities
+): Record<string, any> | undefined {
+  if (!exists(hass, l.zone_type)) return undefined;
+  const entities: Record<string, any>[] = [];
+  for (let i = 0; i < LD2450_ZONES; i++) {
+    const rows = presentRows(hass, builtInZoneRows(l, i));
+    if (rows.length === 0) continue;
+    entities.push(
+      { type: "section", label: `Zone ${i + 1}` },
+      ...rows.map((r) => ({ entity: r.entity, name: r.name }))
+    );
+  }
+  if (entities.length === 0) return undefined;
+  return {
+    type: "conditional",
+    conditions: [
+      {
+        condition: "state",
+        entity: l.zone_type,
+        state_not: ["Disabled", "unavailable", "unknown"],
+      },
+    ],
+    card: {
+      type: "vertical-stack",
+      cards: [
+        { type: "markdown", title: BUILT_IN_ZONES_TITLE, content: BUILT_IN_ZONES_NOTE },
+        { type: "entities", show_header_toggle: false, entities },
+      ],
+    },
+  };
+}
+
 interface DeviceCards {
   help: Record<string, any>;
-  /** The auto-calibrate card, first on every gate-radar tab. */
+  /** The gate radar's "Radar setup" card, under the help card on every
+   *  gate-radar tab. */
+  gateSetup?: Record<string, any>;
+  /** The auto-calibrate card, right below it. */
   calibrate?: Record<string, any>;
   controls?: Record<string, any>;
   range?: Record<string, any>;
   rangeNote?: Record<string, any>;
   zone?: Record<string, any>;
+  zoneNote?: Record<string, any>;
   distance?: Record<string, any>;
   gateEnergy?: Record<string, any>;
   moveThr?: Record<string, any>;
   stillThr?: Record<string, any>;
   gateNote?: Record<string, any>;
   occupancy?: Record<string, any>;
+  /** Every radar's presence on the tab, and the drawn zones. */
   history?: Record<string, any>;
   // LD2450 zone-mapping (R-PRO-1 / MTR-1).
   zoneHeader?: Record<string, any>;
+  /** The "Radar setup" card, right above the zone map. */
+  ld2450Setup?: Record<string, any>;
   zoneMap?: Record<string, any>;
+  zonePresence?: Record<string, any>;
+  ld2450Live?: Record<string, any>;
+  ld2450Controls?: Record<string, any>;
+  /** What the LD2450's Radar Timeout holds. */
+  ld2450ControlsNote?: Record<string, any>;
+  /** Shown only while Zone Type is not Disabled (a conditional card). */
+  builtInZones?: Record<string, any>;
+  /** Versions, update, restart and support, at the bottom of every tab. */
+  device: Record<string, any>;
+}
+
+/** A history graph of `rows` over the last day, so an overnight false
+ *  trigger or dropout is still on it in the morning. */
+function historyCard(title: string, rows: HistoryRow[]): Record<string, any> | undefined {
+  if (rows.length === 0) return undefined;
+  return { type: "history-graph", title, hours_to_show: 24, entities: rows };
 }
 
 function cardMap(
@@ -300,7 +679,14 @@ function cardMap(
   distanceUnit?: string,
   calibration?: CalibrationOptions
 ): DeviceCards {
-  const cards: DeviceCards = { help: helpCard(dev) };
+  const unit = lengthUnit(hass);
+  let gateSizeM = DEFAULT_GATE_SIZE_M;
+  let gatePresence = false;
+  let gateRadar = false;
+  const cards: Partial<DeviceCards> = {};
+  // On a tab with two radars (R PRO-1) each history line names its chip.
+  const twoRadars = !!dev.profile && dev.ld2450;
+  const historyRows: HistoryRow[] = [];
 
   // Gate-radar tuning cards (LD2410 / LD2412), only when the device has a
   // tunable gate radar.
@@ -319,29 +705,58 @@ function cardMap(
     // ids are only right when nothing was renamed.
     const m = entityMapFromDevice(hass, dev.deviceId) ?? profile.entityMap(dev.base);
     const label = profile.label;
-    const historyRows = presentRows(hass, historyEntities(m));
+    // Online or not, like the calibrate card: it renders its own offline
+    // line. Left out when none of the settings it checks exists (an R PRO-1
+    // built without the LD2412).
+    cards.gateSetup = gateCheckedIds(m, profile).some((id) => exists(hass, id))
+      ? { type: "custom:apollo-radar-setup-card", device_id: dev.deviceId, radar: "gate" }
+      : undefined;
+    gateSizeM = gateSizeMeters(hass, m);
+    gatePresence = exists(hass, m.radar_target);
+    // The help card and the Device card's restart describe the radars the
+    // device has, not the ones its registry model can carry.
+    gateRadar = !!cards.gateSetup || gatePresence;
+    // Each threshold row says how far out its gate reaches.
+    const gate = (n: number) => gateName(n, gateSizeM, unit);
+    historyRows.push(...historyEntities(m, twoRadars ? label : undefined));
+    // The three cards with sliders share the radar's slider lock.
     const range = entitiesCard(
       `${label} Detection Range`,
-      presentRows(hass, rangeRows(m, profile.rangeLabels, profile.gateSizeLabel))
+      unlockBoxes(
+        hass,
+        presentRows(hass, rangeRows(m, profile.rangeLabels, profile.gateSizeLabel))
+      ),
+      {},
+      dev.deviceId
     );
     const moveThr = entitiesCard(
       `${label} Move Thresholds`,
-      presentRows(hass, moveThresholdRows(m))
+      unlockBoxes(hass, presentRows(hass, moveThresholdRows(m, gate))),
+      {},
+      dev.deviceId
     );
     const stillThr = entitiesCard(
       `${label} Still Thresholds`,
-      presentRows(hass, stillThresholdRows(m))
+      unlockBoxes(hass, presentRows(hass, stillThresholdRows(m, gate))),
+      {},
+      dev.deviceId
     );
     cards.controls = entitiesCard(
       `${label} Controls`,
-      presentRows(hass, controlRows(m))
+      presentRows(hass, controlRows(m, label))
     );
     cards.range = range;
-    cards.rangeNote = range ? noteCard(profile.rangeTip) : undefined;
+    // The note gives the same gate depth as the help card and the G rows.
+    cards.rangeNote = range
+      ? noteCard(profile.rangeTip(aboutDistance(gateSizeM, unit)))
+      : undefined;
     cards.zone = entitiesCard(
       `${label} Zone Config`,
       presentRows(hass, zoneConfigRows(m))
     );
+    cards.zoneNote = cards.zone
+      ? noteCard(zoneConfigNote(unit, exists(hass, m.zone_occupancy)))
+      : undefined;
     // TODO(REVIEW_REPORT.md X35): emitted even for offline or unresolvable devices (deliberate,
     // per OFFLINE_NOTE); at most drop device_base_name when dev.base === dev.deviceId.
     // device_id is the durable reference; device_base_name is kept so configs
@@ -362,32 +777,67 @@ function cardMap(
     cards.moveThr = moveThr;
     cards.stillThr = stillThr;
     cards.gateNote = moveThr || stillThr ? noteCard(profile.gateTip) : undefined;
+    // Colored while on, so a user walking the room sees detection flip.
     cards.occupancy = entitiesCard(
       `${label} Target / Occupancy`,
-      presentRows(hass, occupancyRows(m))
+      presentRows(hass, occupancyRows(m)),
+      { state_color: true }
     );
-    cards.history = historyRows.length
-      ? {
-          type: "history-graph",
-          title: `${label} Occupancy History`,
-          hours_to_show: 1,
-          entities: historyRows,
-        }
-      : undefined;
   }
 
   // LD2450 zone map (R-PRO-1 / MTR-1). Only labelled when it shares a tab with
-  // tuning cards (R-PRO-1) — a thin native section heading, so it's clear the
-  // LD2450 is a separate radar. Zone-only devices (MTR-1) get no header: the
-  // card is the whole tab.
+  // tuning cards (R-PRO-1): a thin native section heading, so it's clear the
+  // LD2450 is a separate radar. Zone-only devices (MTR-1) get no header: every
+  // card on the tab is the LD2450's.
   if (dev.ld2450) {
     cards.zoneHeader = dev.profile
       ? { type: "heading", heading: "Zone Map" }
       : undefined;
+    // Everything a user needs to get a dot on the map sits beside it. The
+    // ids come from this device's own entities only: the MTR-1's bare names
+    // ("Timeout", "Zone Type") would match any device's.
+    const l = ld2450Entities(hass, dev.deviceId);
+    // Online or not, like the calibrate card: it renders its own offline
+    // line. Left out when neither setting it checks exists on the device.
+    cards.ld2450Setup =
+      exists(hass, l.zone_type) || exists(hass, l.multi_target_tracking)
+        ? { type: "custom:apollo-radar-setup-card", device_id: dev.deviceId }
+        : undefined;
     cards.zoneMap = zoneMapCard(dev.deviceId, dev.name);
+    cards.zonePresence = zonePresenceCard(hass, dev.deviceId);
+    cards.ld2450Live = entitiesCard("LD2450 Live", presentRows(hass, ld2450LiveRows(l)), {
+      state_color: true,
+    });
+    cards.ld2450Controls = entitiesCard(
+      "LD2450 Controls",
+      presentRows(hass, ld2450ControlRows(l))
+    );
+    cards.ld2450ControlsNote = exists(hass, l.timeout) ? noteCard(LD2450_TIMEOUT_NOTE) : undefined;
+    cards.builtInZones = builtInZonesCard(hass, l);
+    historyRows.push(
+      ...ld2450HistoryEntities(
+        l,
+        zonePresenceSensors(hass, dev.deviceId),
+        twoRadars ? "LD2450" : undefined
+      )
+    );
   }
 
-  return cards;
+  // One graph for every radar on the tab. Named for the chip on a gate radar
+  // alone, as the tab's other gate-radar cards are.
+  cards.history = historyCard(
+    dev.profile && !dev.ld2450 ? `${dev.profile.label} Occupancy History` : "Occupancy History",
+    presentRows(hass, historyRows)
+  );
+  cards.help = helpCard(dev, {
+    gateDepth: aboutDistance(gateSizeM, unit),
+    gateSetup: !!cards.gateSetup,
+    ld2450Setup: !!cards.ld2450Setup,
+    gatePresence,
+    gateRadar,
+  });
+  cards.device = deviceCard(hass, dev, gateRadar);
+  return cards as DeviceCards;
 }
 
 /** Flat card list for a device (used by the view strategy / tests). */
@@ -400,20 +850,29 @@ export function buildDeviceCards(
   const c = cardMap(hass, dev, distanceUnit, calibration);
   return [
     c.help,
+    c.gateSetup,
     c.calibrate,
     c.controls,
     c.range,
     c.rangeNote,
     c.zone,
+    c.zoneNote,
     c.distance,
     c.gateEnergy,
     c.moveThr,
     c.stillThr,
     c.gateNote,
     c.occupancy,
-    c.history,
     c.zoneHeader,
+    c.ld2450Setup,
     c.zoneMap,
+    c.zonePresence,
+    c.ld2450Live,
+    c.history,
+    c.ld2450Controls,
+    c.ld2450ControlsNote,
+    c.builtInZones,
+    c.device,
   ].filter(Boolean) as Record<string, any>[];
 }
 
@@ -426,46 +885,64 @@ export function buildDeviceSections(
   calibration?: CalibrationOptions
 ): Record<string, any>[] {
   const c = cardMap(hass, dev, distanceUnit, calibration);
-  const columns: (Record<string, any> | undefined)[][] = [];
+  type Column = (Record<string, any> | undefined)[];
 
-  // Gate-radar tuning columns: calibrate+help+controls | distance+config |
-  // gate-energy+move | history+still. LD2412 has no Zone Config, so column 1
-  // is short; put occupancy there instead of column 2 to balance it.
+  // LD2450 zone map gets its own column, the setup card right above it. On a
+  // shared tab (R-PRO-1) a thin heading precedes them and the LD2450's status
+  // and settings fill one more column next to the map; on a zone-only device
+  // (MTR-1) the tab title already names the device, the help card leads as on
+  // every tab, and the LD2450's cards split into two columns so each reads at
+  // a glance.
+  const zoneColumns: Column[] = [];
+  if (c.zoneMap) {
+    if (dev.profile) {
+      zoneColumns.push(
+        [c.zoneHeader, c.ld2450Setup, c.zoneMap],
+        [c.zonePresence, c.ld2450Live, c.ld2450Controls, c.ld2450ControlsNote, c.builtInZones]
+      );
+    } else {
+      zoneColumns.push(
+        [c.help, c.ld2450Setup, c.zoneMap],
+        [c.zonePresence, c.ld2450Live, c.history],
+        [c.ld2450Controls, c.ld2450ControlsNote, c.builtInZones]
+      );
+    }
+  }
+
+  const columns: Column[] = [];
+  // Gate-radar tuning columns: help+setup+calibrate+controls |
+  // distance+config | gate-energy+move | history+still. LD2412 has no Zone
+  // Config, so column 1 is short; put occupancy there instead of column 2 to
+  // balance it.
+  //
+  // Section order is also the phone's reading order. The help card leads, so
+  // its steps come before the cards they point at. On a tab with both radars
+  // (R-PRO-1) the zone map and the LD2450's cards follow column 1, so a phone
+  // reaches them before the 28 LD2412 threshold rows.
   if (dev.profile) {
-    const col1 = [c.calibrate, c.help, c.controls, c.zone];
-    const col2: (Record<string, any> | undefined)[] = [
-      c.distance,
-      c.range,
-      c.rangeNote,
-    ];
+    const col1: Column = [c.help, c.gateSetup, c.calibrate, c.controls, c.zone, c.zoneNote];
+    const col2: Column = [c.distance, c.range, c.rangeNote];
     (c.zone ? col2 : col1).push(c.occupancy);
     columns.push(
       col1,
+      ...zoneColumns,
       col2,
       [c.gateEnergy, c.moveThr, c.gateNote],
       [c.history, c.stillThr]
     );
-  }
-
-  // A zone-only or undetectable device has no tuning column to carry the help
-  // card, so it gets its own section only when it has something to say (the
-  // offline note, or that nothing is detectable). A live MTR-1 stays just the
-  // zone map.
-  if (!dev.profile && (!dev.online || !c.zoneMap)) {
+  } else if (c.zoneMap) {
+    columns.push(...zoneColumns);
+  } else {
+    // A device with nothing detectable has only its help card to show.
     columns.push([c.help]);
   }
 
-  // LD2450 zone map gets its own column. On a shared tab (R-PRO-1) a thin
-  // heading precedes it; on a zone-only device (MTR-1) it's just the card —
-  // the tab title already names the device.
-  if (c.zoneMap) {
-    columns.push([c.zoneHeader, c.zoneMap]);
-  }
-
-  return columns
+  const sections = columns
     .map((col) => col.filter(Boolean) as Record<string, any>[])
-    .filter((col) => col.length > 0)
-    .map((cards) => ({ type: "grid", cards }));
+    .filter((col) => col.length > 0);
+  // The Device card goes last on the tab: at the bottom of the last column.
+  sections[sections.length - 1].push(c.device);
+  return sections.map((cards) => ({ type: "grid", cards }));
 }
 
 /** One full view (a tab) for a single device. */
@@ -476,8 +953,8 @@ export function deviceView(
   path: string = dev.base,
   calibration?: CalibrationOptions
 ): Record<string, any> {
-  // TODO(REVIEW_REPORT.md X36): no max_columns, so an R-PRO-1's five sections wrap the Zone
-  // Map to a second row (HA default is 4); choose max_columns 5, a column_span, or accept it.
+  // TODO(REVIEW_REPORT.md X36): no max_columns, so an R-PRO-1's six sections wrap its gate
+  // tuning to a second row (HA default is 4); choose max_columns 6, a column_span, or accept it.
   return {
     title: dev.name,
     path,

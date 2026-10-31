@@ -1,9 +1,11 @@
 // Keep in sync with custom_components/apollo_mmwave/manifest.json.
-export const CARD_VERSION = "2.2.7";
+export const CARD_VERSION = "2.3.0";
 
 import "./cards/distance-card";
 import "./cards/gate-energy-card";
 import "./cards/calibrate-card";
+import "./cards/setup-card";
+import "./cards/slider-lock-rows";
 import "./strategy";
 
 // TODO(REVIEW_REPORT.md X51): no ESLint is installed or run, so the directive below is inert;

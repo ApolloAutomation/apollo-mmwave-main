@@ -146,6 +146,9 @@ describe("tuning bundle registration", () => {
       "apollo-radar-calibrate-card",
       "apollo-radar-distance-card",
       "apollo-radar-gate-energy-card",
+      "apollo-radar-setup-card",
+      "apollo-radar-slider-lock-row",
+      "apollo-radar-slider-row",
       "ll-strategy-dashboard-apollo-radar-tuning",
       "ll-strategy-section-apollo-radar-tuning",
       "ll-strategy-view-apollo-radar-tuning",
@@ -159,12 +162,13 @@ describe("tuning bundle registration", () => {
     }
   });
 
-  it("lists each of its three cards in the card picker once", () => {
+  it("lists each of its four cards in the card picker once", () => {
     const cards = (window as any).customCards as { type: string; name: string }[];
     expect(cards.map((c) => [c.type, c.name])).toEqual([
       ["apollo-radar-distance-card", "Apollo Radar Distance Chart"],
       ["apollo-radar-gate-energy-card", "Apollo Radar Gate Energy Chart"],
       ["apollo-radar-calibrate-card", "Apollo Radar Auto-Calibrate"],
+      ["apollo-radar-setup-card", "Apollo Radar Setup"],
     ]);
   });
 
@@ -180,6 +184,9 @@ describe("tuning bundle Lit cards", () => {
     "apollo-radar-calibrate-card",
     "apollo-radar-distance-card",
     "apollo-radar-gate-energy-card",
+    "apollo-radar-setup-card",
+    "apollo-radar-slider-lock-row",
+    "apollo-radar-slider-row",
   ];
 
   it.each(LIT_CARDS)("%s keeps its reactive properties on Lit's accessors", (tag) => {
@@ -276,6 +283,83 @@ describe("tuning bundle Lit cards", () => {
     expect(text(card)).not.toBe(before);
   });
 
+  it("setup card renders, then re-renders for a new hass and after a click", async () => {
+    const zoneType = "select.apollo_mtr_1_abc123_zone_type";
+    const hass = fakeHass({
+      [zoneType]: { entity_id: zoneType, state: "Detection", attributes: {} },
+    });
+    const card = await mount("apollo-radar-setup-card", { device_id: "dev1" }, hass);
+    expect(text(card)).toContain("Zone Type is Detection.");
+    const fix = card.shadowRoot.querySelector("button") as HTMLButtonElement;
+    expect(fix.textContent.trim()).toBe("Set Zone Type to Disabled");
+
+    // `_busy` (@state): the click disables the button until the call settles.
+    let finish!: () => void;
+    hass.callService.mockImplementationOnce(() => new Promise<undefined>((r) => (finish = () => r(undefined))));
+    fix.click();
+    await card.updateComplete;
+    expect(fix.disabled).toBe(true);
+    expect(hass.callService).toHaveBeenCalledWith(
+      "select",
+      "select_option",
+      { entity_id: zoneType, option: "Disabled" },
+      undefined,
+      false
+    );
+    finish();
+    await settle(card);
+    expect(fix.disabled).toBe(false);
+
+    // `hass` (@property): the radar took the change.
+    card.hass = withStates(hass, { [zoneType]: "Disabled" });
+    await settle(card);
+    expect(text(card)).toContain("Radar settings look good.");
+  });
+
+  it("slider row locks HA's row until the lock row unlocks it, and hands it every hass", async () => {
+    const THRESHOLD = `number.${BASE}_g0_move_threshold`;
+    const states = msr2States();
+    states[THRESHOLD].attributes = { mode: "auto", min: 0, max: 100, step: 1 };
+    const hass = fakeHass(states);
+    const made: any[] = [];
+    (window as any).loadCardHelpers = async () => ({
+      createRowElement: (config: Record<string, unknown>) => {
+        const row: any = document.createElement("div");
+        row.config = config;
+        made.push(row);
+        return row;
+      },
+    });
+    try {
+      const row = await mount(
+        "apollo-radar-slider-row",
+        { entity: THRESHOLD, name: "G0", device_id: "dev1" },
+        hass
+      );
+      const lock = await mount("apollo-radar-slider-lock-row", { device_id: "dev1" }, hass);
+      expect(made).toHaveLength(1);
+      expect(made[0].config).toEqual({ color: "state", entity: THRESHOLD, name: "G0" });
+      expect(made[0].hass).toBe(hass);
+      expect(row.shadowRoot.querySelector(".shield")).not.toBeNull();
+      expect(text(lock)).toContain("Sliders locked");
+
+      // `_config` and the lock (@state, requestUpdate): Unlock lifts the shield.
+      lock.shadowRoot.querySelector("button").click();
+      await settle(row);
+      await settle(lock);
+      expect(row.shadowRoot.querySelector(".shield")).toBeNull();
+      expect(text(lock)).toContain("Sliders unlocked");
+
+      // `hass` (@property): a new hass reaches HA's row.
+      const next = withStates(hass, { [THRESHOLD]: "30" });
+      row.hass = next;
+      await settle(row);
+      expect(made[0].hass).toBe(next);
+    } finally {
+      delete (window as any).loadCardHelpers;
+    }
+  });
+
   it("distance card swaps device not found for its chart once the entities arrive", async () => {
     const bare = fakeHass({});
     const card = await mount("apollo-radar-distance-card", { device_id: "dev1" }, bare);
@@ -335,6 +419,7 @@ describe("tuning bundle evaluated a second time", () => {
       "apollo-radar-distance-card",
       "apollo-radar-gate-energy-card",
       "apollo-radar-calibrate-card",
+      "apollo-radar-setup-card",
     ]);
     expect((window as any).customStrategies).toHaveLength(1);
   });

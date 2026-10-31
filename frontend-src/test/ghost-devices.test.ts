@@ -278,9 +278,11 @@ describe("help card on the sections strategies (dashboard and view)", () => {
     const views = generateViews(offlineMtr(), {});
     expect(views).toHaveLength(1);
     const cards = sectionCards(views[0].sections);
-    expect(cards.some((c) => c.content?.includes("Offline right now"))).toBe(true);
+    const note = cards.findIndex((c) => c.content?.includes("Offline right now"));
+    expect(note).toBeGreaterThanOrEqual(0);
     // The zone map is still there, after the note.
-    expect(cards[cards.length - 1].type).toBe("custom:apollo-radar-zone-map-card");
+    const map = cards.findIndex((c) => c.type === "custom:apollo-radar-zone-map-card");
+    expect(map).toBeGreaterThan(note);
   });
 
   it("carries the offline note for an offline MTR-1 on the view strategy", () => {
@@ -288,22 +290,34 @@ describe("help card on the sections strategies (dashboard and view)", () => {
     expect(cards.some((c) => c.content?.includes("Offline right now"))).toBe(true);
   });
 
-  it("keeps a live MTR-1 tab as just the zone map", () => {
+  it("starts a live MTR-1 tab with its Start here help above the zone map", () => {
     const { states, entities } = mtrFixture("1200");
     const hass = hassWith(states, entities, { mtr: MTR_DEVICE });
     const sections = generateViews(hass, {})[0].sections;
-    expect(sections).toHaveLength(1);
-    expect(sections[0].type).toBe("grid");
-    expect(sections[0].cards).toHaveLength(1);
-    expect(sections[0].cards[0].type).toBe("custom:apollo-radar-zone-map-card");
+    for (const section of sections) expect(section.type).toBe("grid");
+    expect(sections[0].cards.map((c: any) => c.type)).toEqual([
+      "markdown",
+      "custom:apollo-radar-zone-map-card",
+    ]);
+    const help = sections[0].cards[0].content;
+    expect(help).toContain("Apollo mmWave");
+    expect(help).toContain("Start here");
+    expect(help).not.toContain("Offline right now");
+    // The rest are the LD2450's own cards; with only target sensors that is
+    // the zone presence hint, then the Device card's support note.
+    const rest = sectionCards(sections.slice(1));
+    expect(rest.map((c) => c.title)).toEqual(["Zone presence", "Device"]);
   });
 
   it("explains a forced device with nothing detectable on the dashboard strategy", () => {
     const sections = generateViews(mystery(), { devices: ["mystery"] })[0].sections;
     expect(sections).toHaveLength(1);
-    expect(sections[0].cards).toHaveLength(1);
+    // The help card, then the Device card's link to the device page.
+    expect(sections[0].cards).toHaveLength(2);
     expect(sections[0].cards[0].content).toContain("no radar data");
     expect(sections[0].cards[0].content).not.toContain("Offline right now");
+    expect(sections[0].cards[1]).toMatchObject({ type: "markdown", title: "Device" });
+    expect(sections[0].cards[1].content).toContain("/config/devices/device/mystery");
   });
 
   it("explains a forced device with nothing detectable on the view strategy", () => {

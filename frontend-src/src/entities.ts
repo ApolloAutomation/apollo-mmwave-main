@@ -149,6 +149,9 @@ const SCALAR_PATTERNS: ScalarPattern[] = [
   S("zone_1_occupancy", "binary_sensor", "_radar_zone_1_occupancy"),
   S("zone_2_occupancy", "binary_sensor", "_radar_zone_2_occupancy"),
   S("zone_3_occupancy", "binary_sensor", "_radar_zone_3_occupancy"),
+  // The any-zone sensor. The numbered zones above end `_zone_<n>_occupancy`,
+  // so neither pattern matches the other's ids.
+  S("zone_occupancy", "binary_sensor", "_radar_zone_occupancy"),
   // LD2412 (R-PRO) naming.
   S("engineering_mode", "switch", "_ld2412_engineering_mode"),
   S("bluetooth", "switch", "_ld2412_bluetooth"),
@@ -368,4 +371,64 @@ function withOverrides(resolved: EntityMap, overrides: Partial<EntityMap>): Enti
 
 export function exists(hass: HomeAssistant, id?: string): boolean {
   return !!id && id in hass.states;
+}
+
+// ---------------------------------------------------------------------------
+// Whole-device entities for the Device card: versions, the update entity, the
+// Wi-Fi signal and the restart button. Every Apollo radar firmware spells these
+// the same way, apart from the chip firmware sensors, so each slot is matched
+// by suffix within the device's own entities.
+// ---------------------------------------------------------------------------
+
+/** The device-wide entity ids found on one device. Any field may be missing. */
+export interface DeviceInfoEntities {
+  apollo_firmware?: string;
+  /** MSR-1 / MSR-2 "Radar Firmware Version". */
+  ld2410_firmware?: string;
+  /** R PRO-1 "LD2412 Firmware", disabled by default. */
+  ld2412_firmware?: string;
+  /** "LD2450 Firmware": enabled on the MTR-1, disabled by default on the R PRO-1. */
+  ld2450_firmware?: string;
+  /** Apollo's firmware update entity (MSR-1, MSR-2, R PRO-1; none on the MTR-1). */
+  update?: string;
+  rssi?: string;
+  esp_reboot?: string;
+}
+
+/** The platform this integration's own entities carry. Kept local rather than
+ *  imported from `zone-map/api.ts` so that module stays out of this bundle. */
+const OWN_PLATFORM = "apollo_mmwave";
+
+const DEVICE_INFO_PATTERNS: {
+  slot: keyof DeviceInfoEntities;
+  domain: string;
+  re: RegExp;
+}[] = [
+  { slot: "apollo_firmware", domain: "sensor", re: new RegExp(`_apollo_firmware_version${DEDUP}`) },
+  { slot: "ld2410_firmware", domain: "sensor", re: new RegExp(`_radar_firmware_version${DEDUP}`) },
+  { slot: "ld2412_firmware", domain: "sensor", re: new RegExp(`_ld2412_firmware${DEDUP}`) },
+  { slot: "ld2450_firmware", domain: "sensor", re: new RegExp(`_ld2450_firmware${DEDUP}`) },
+  // The update domain only: the firmware's "Firmware Update" template button,
+  // which installs with no dialog, ends the same way and must never match.
+  { slot: "update", domain: "update", re: new RegExp(`_firmware_update${DEDUP}`) },
+  { slot: "rssi", domain: "sensor", re: new RegExp(`_rssi${DEDUP}`) },
+  { slot: "esp_reboot", domain: "button", re: new RegExp(`_esp_reboot${DEDUP}`) },
+];
+
+/** The device-wide entities of one device, first match per slot in registry
+ *  order. This integration's own entities are skipped. */
+export function deviceInfoEntities(hass: HomeAssistant, deviceId: string): DeviceInfoEntities {
+  const out: DeviceInfoEntities = {};
+  for (const [id, entry] of entitiesForDevice(hass.entities, deviceId)) {
+    if (entry.platform === OWN_PLATFORM) continue;
+    const dot = id.indexOf(".");
+    const domain = id.slice(0, dot);
+    const objectId = id.slice(dot + 1);
+    for (const p of DEVICE_INFO_PATTERNS) {
+      if (p.domain === domain && out[p.slot] === undefined && p.re.test(objectId)) {
+        out[p.slot] = id;
+      }
+    }
+  }
+  return out;
 }

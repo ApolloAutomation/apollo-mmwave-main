@@ -354,6 +354,58 @@ async def test_zones_get_reports_input_units_rotation_and_label(
     assert result["label"] == "Office"
 
 
+async def test_zones_payload_carries_the_saved_map_units(
+    hass, hass_ws_client, init_integration, device_id
+) -> None:
+    """display_units is null until saved, then the saved unit, then null again."""
+    _ = init_integration
+    client = await hass_ws_client(hass)
+
+    async def display_units() -> str | None:
+        await client.send_json_auto_id({"type": GET, "device_id": device_id})
+        return (await client.receive_json())["result"]["display_units"]
+
+    assert await display_units() is None
+
+    for unit in ("ft", "m"):
+        await hass.services.async_call(
+            DOMAIN,
+            "update_zone",
+            {"device_id": device_id, "display_units": unit},
+            blocking=True,
+        )
+        assert await display_units() == unit
+
+    await hass.services.async_call(
+        DOMAIN,
+        "update_zone",
+        {"device_id": device_id, "display_units": "auto"},
+        blocking=True,
+    )
+    assert await display_units() is None
+
+
+async def test_zones_subscribe_pushes_a_map_unit_change(
+    hass, hass_ws_client, init_integration, device_id
+) -> None:
+    """Every open card hears about the new unit, not only the one that saved it."""
+    _ = init_integration
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id({"type": SUBSCRIBE, "device_id": device_id})
+    assert (await client.receive_json())["success"] is True
+
+    await hass.services.async_call(
+        DOMAIN,
+        "update_zone",
+        {"device_id": device_id, "display_units": "ft"},
+        blocking=True,
+    )
+
+    pushed = await client.receive_json()
+    assert pushed["type"] == "event"
+    assert pushed["event"]["display_units"] == "ft"
+
+
 async def test_zones_subscribe_ignores_a_change_after_the_store_is_gone(
     hass, hass_ws_client, init_integration, device_id, caplog
 ) -> None:

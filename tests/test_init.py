@@ -39,6 +39,7 @@ from custom_components.apollo_mmwave.const import (
     DASHBOARD_TITLE,
     DASHBOARD_URL_PATH,
     DATA_STORE,
+    DISPLAY_UNITS,
     DOMAIN,
     ENTRY_MINOR_VERSION,
     EVENT_ZONE_UPDATED,
@@ -50,6 +51,7 @@ from custom_components.apollo_mmwave.const import (
     SERVICE_RESTORE_GATE_THRESHOLDS,
     SERVICE_UPDATE_ZONE,
     STORE_DEVICES,
+    STORE_DISPLAY_UNITS,
     STORE_ENTITIES,
     STORE_INPUT_UNITS,
     STORE_LABEL,
@@ -1638,6 +1640,20 @@ def test_zone_id_bounds_accept(zone_id, expected) -> None:
     assert validated["zone_id"] == expected
 
 
+@pytest.mark.parametrize("unit", ["m", "ft", "auto"])
+def test_display_units_schema_accepts(unit) -> None:
+    """The map unit takes m, ft, and auto to forget the saved one."""
+    validated = UPDATE_ZONE_SERVICE_SCHEMA({"device_id": "abc", "display_units": unit})
+    assert validated["display_units"] == unit
+
+
+@pytest.mark.parametrize("unit", ["mm", "in", "yd", "M", "feet", "", 1])
+def test_display_units_schema_rejects(unit) -> None:
+    """Only the two map units the card shows, never a target sensor unit."""
+    with pytest.raises(vol.Invalid):
+        UPDATE_ZONE_SERVICE_SCHEMA({"device_id": "abc", "display_units": unit})
+
+
 @pytest.mark.parametrize("zone_id", [0, 2**53, 2**64, 18446744073709551616.0])
 def test_zone_id_bounds_reject(zone_id) -> None:
     """0 and anything past the serialization limit fail validation."""
@@ -1897,6 +1913,68 @@ async def test_valid_input_units_are_stored(
     assert get_store(hass).device(device_id)[STORE_INPUT_UNITS] == unit
 
 
+@pytest.mark.parametrize("unit", DISPLAY_UNITS)
+async def test_display_units_alone_are_stored(
+    hass, init_integration, device_id, unit, caplog
+) -> None:
+    """A call carrying only the map unit counts as a change and is stored."""
+    _ = init_integration
+    events = []
+    hass.bus.async_listen(EVENT_ZONE_UPDATED, events.append)
+
+    await _update_zone(hass, {"device_id": device_id, STORE_DISPLAY_UNITS: unit})
+
+    assert get_store(hass).devices[device_id][STORE_DISPLAY_UNITS] == unit
+    assert len(events) == 1
+    assert "carried nothing to change" not in caplog.text
+
+
+async def test_display_units_auto_forgets_the_saved_unit(
+    hass, init_integration, device_id
+) -> None:
+    """Saving auto removes the key, so the card follows the unit system again."""
+    _ = init_integration
+    await _update_zone(hass, {"device_id": device_id, STORE_DISPLAY_UNITS: "ft"})
+    events = []
+    hass.bus.async_listen(EVENT_ZONE_UPDATED, events.append)
+
+    await _update_zone(hass, {"device_id": device_id, STORE_DISPLAY_UNITS: "auto"})
+
+    assert STORE_DISPLAY_UNITS not in get_store(hass).devices[device_id]
+    assert len(events) == 1
+
+
+async def test_display_units_auto_with_nothing_saved_changes_nothing(
+    hass, init_integration, device_id, caplog
+) -> None:
+    """Forgetting a unit that was never saved mints no store entry."""
+    _ = init_integration
+    events = []
+    hass.bus.async_listen(EVENT_ZONE_UPDATED, events.append)
+
+    await _update_zone(hass, {"device_id": device_id, STORE_DISPLAY_UNITS: "auto"})
+
+    assert device_id not in get_store(hass).devices
+    assert events == []
+    assert "carried nothing to change" in caplog.text
+
+
+async def test_display_units_leave_zones_and_input_units_alone(
+    hass, init_integration, device_id
+) -> None:
+    """The map unit is display only: geometry and the target unit stay as stored."""
+    _ = init_integration
+    await _create_rect_zone(hass, device_id)
+    await _update_zone(hass, {"device_id": device_id, "input_units": "cm"})
+    before = dict(get_store(hass).devices[device_id][STORE_ZONES])
+
+    await _update_zone(hass, {"device_id": device_id, STORE_DISPLAY_UNITS: "ft"})
+
+    device = get_store(hass).devices[device_id]
+    assert device[STORE_ZONES] == before
+    assert device[STORE_INPUT_UNITS] == "cm"
+
+
 async def test_device_id_wins_over_location(
     hass, init_integration, device_id, caplog
 ) -> None:
@@ -1958,6 +2036,9 @@ async def test_empty_name_clears_the_zone_name(
     [
         {"bogus": 1},
         {"input_units": "furlong"},
+        {"display_units": "in"},
+        {"display_units": "metric"},
+        {"display_units": None},
         {"zone_id": 1, "shape": "triangle", "data": RECT},
         {"entities": [{"x": "not an id", "y": "sensor.b"}]},
         {"zone_id": -1},
@@ -1966,6 +2047,9 @@ async def test_empty_name_clears_the_zone_name(
     ids=[
         "unknown_key",
         "unknown_unit",
+        "display_units_inches",
+        "display_units_unknown",
+        "display_units_null",
         "unknown_shape",
         "pair_not_an_entity_id",
         "negative_zone_id",

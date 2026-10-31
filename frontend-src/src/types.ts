@@ -40,6 +40,9 @@ export interface HomeAssistant {
   /** HA's translator; "" for an unknown key. Used to render a rejected
    *  service call's translated exception message. */
   localize?(key: string, values?: Record<string, any>): string;
+  /** HA's display text for a state, with its unit (the slider rows'
+   *  fallback). */
+  formatEntityState?(stateObj: HassEntity): string;
   /** Loads a translation category for an integration and resolves to the
    *  updated `localize`. */
   loadBackendTranslation?(
@@ -102,6 +105,8 @@ export interface EntityMap {
   zone_1_occupancy?: string;
   zone_2_occupancy?: string;
   zone_3_occupancy?: string;
+  // LD2410 only: on while anyone is in zone 1, 2 or 3 ("Radar Zone Occupancy").
+  zone_occupancy?: string;
 }
 
 export interface Ld2410CardConfig {
@@ -122,10 +127,41 @@ export interface CalibrationOptions {
   margin_pct?: number;
 }
 
+/** Which radar of a device the "Radar setup" card checks: its LD2450, or its
+ *  gate radar (the LD2410 or LD2412, whichever its profile names). */
+export type SetupRadar = "ld2450" | "gate";
+
+/** The "Radar setup" card: checks one device's radar settings. */
+export interface SetupCardConfig {
+  type: string;
+  device_id?: string;
+  title?: string;
+  /** "ld2450" when absent, as before gate radars had checks. */
+  radar?: SetupRadar;
+}
+
 export interface CalibrateCardConfig {
   type: string;
   device_id?: string;
   device_base_name?: string;
   title?: string;
   calibration?: CalibrationOptions;
+}
+
+/** A slider row (`custom:apollo-radar-slider-row`): Home Assistant's own
+ *  number row behind the slider lock. Every key but `type` and `device_id`
+ *  goes to that row. */
+export interface SliderRowConfig {
+  type: string;
+  entity: string;
+  name?: string;
+  /** The lock's key: rows and lock rows with the same value share one lock. */
+  device_id: string;
+  [key: string]: unknown;
+}
+
+/** The lock row (`custom:apollo-radar-slider-lock-row`) above the sliders. */
+export interface SliderLockRowConfig {
+  type: string;
+  device_id: string;
 }
