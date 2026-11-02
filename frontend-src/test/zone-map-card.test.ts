@@ -7446,9 +7446,10 @@ describe("zone map card size readout", () => {
  * Marking a zone's corners by walking to them (Walk).
  *
  * An administrator on an unlocked map presses 🚶 in the drawing modes, walks
- * to each corner of the zone with a phone, stands still and presses Corner
- * here. The corner is where the radar saw them over the last 1.5 s, weighted
- * by time. Two corners save a rectangle and three or more a polygon, through
+ * to each corner of the zone with a phone, stands still for about 3 seconds
+ * (the radar updates each axis about once a second) and presses Corner here.
+ * The corner is where the radar saw them over the last 1.5 s, weighted by
+ * time. Two corners save a rectangle and three or more a polygon, through
  * the same commit a drawn shape takes. Only one person may be in view;
  * targets inside ignore zones do not count. Facing ahead on the 10 m grid,
  * (x, y) mm is canvas (400 + x / 12.5, y / 12.5).
@@ -7476,7 +7477,7 @@ describe("zone map card walk", () => {
     nobody: "Nobody is on the map. Walk into the radar's view.",
     crowd:
       "More than one target is on the map. Only the person marking corners should be in view. If you are alone, a fan or curtain may be moving: add an ignore zone over it.",
-    start: "Stand still in one corner of the zone, then press Corner here.",
+    start: "Stand still in one corner of the zone for about 3 seconds, then press Corner here.",
   };
 
   /**
@@ -7711,7 +7712,7 @@ describe("zone map card walk", () => {
       { x: -700, y: 2000 },
     ]);
     expect($(card, "walkHint").textContent).toBe(
-      "Corner 2 marked. Keep going around the zone in order. Two corners make a rectangle, three or more a polygon. Press Finish when done."
+      "Corner 2 marked. Keep going around the zone in order, and stand still for about 3 seconds at each corner. Two corners make a rectangle, three or more a polygon. Press Finish when done."
     );
   });
 
@@ -7720,7 +7721,7 @@ describe("zone map card walk", () => {
     $(card, "btnModeWalk").click();
     markCorner(card, at, -2000, 2000);
     expect($(card, "walkHint").textContent).toBe(
-      "Corner 1 marked. Walk along the edge to the next corner, stand still, and press Corner here."
+      "Corner 1 marked. Walk along the edge to the next corner, stand still for about 3 seconds, and press Corner here."
     );
     markCorner(card, at, 2000, 2000);
     markCorner(card, at, 2000, 5000);
@@ -7919,7 +7920,7 @@ describe("zone map card walk", () => {
     expect(card._walk.corners).toEqual([{ x: -3000, y: 1000 }]);
     expect($(card, "btnWalkFinish").disabled).toBe(true);
     expect($(card, "walkHint").textContent).toBe(
-      "Corner 1 marked. Walk along the edge to the next corner, stand still, and press Corner here."
+      "Corner 1 marked. Walk along the edge to the next corner, stand still for about 3 seconds, and press Corner here."
     );
     undo.click();
     expect(card._walk.corners).toEqual([]);
