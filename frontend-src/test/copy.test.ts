@@ -34,6 +34,7 @@ import {
 } from "../src/strategy-core";
 import { factoryResetRow, restartRadarRow } from "../src/panels/entity-rows";
 import { ZoneMapCard } from "../src/zone-map/card";
+import * as zoneMapCopy from "../src/zone-map/copy";
 import type { EntityMap, HomeAssistant } from "../src/types";
 
 const EM_DASH = "\u2014";
@@ -369,6 +370,50 @@ describe("controls and zone map copy", () => {
       "Show the map in feet",
     ]);
     expect(copyProblems(texts)).toEqual([]);
+  });
+});
+
+describe("zone map card copy module", () => {
+  /** Words the copy rules keep out of anything a user reads. */
+  const FILLER = /\b(?:simply|just|easy|easily|powerful|seamlessly)\b/i;
+
+  /** Every string copy.ts exports, the functions' output included. */
+  function zoneMapTexts(): string[] {
+    return [
+      ...strings(Object.values(zoneMapCopy)),
+      zoneMapCopy.walkHintNext(1),
+      zoneMapCopy.walkHintNext(2),
+      zoneMapCopy.walkHintNext(5),
+      zoneMapCopy.historyError("Home Assistant is restarting"),
+      zoneMapCopy.replayBadge("10:24:05 AM"),
+      zoneMapCopy.formatAgo(0),
+      zoneMapCopy.formatAgo(120000),
+      zoneMapCopy.formatAgo(3900000),
+    ];
+  }
+
+  it("writes every zone map string in US English without em dashes or filler", () => {
+    const texts = zoneMapTexts();
+    expect(texts.length).toBeGreaterThan(70);
+    expect(texts.every((t) => t.length > 0)).toBe(true);
+    expect(copyProblems(texts)).toEqual([]);
+    expect(texts.filter((t) => FILLER.test(t))).toEqual([]);
+  });
+
+  it("builds the zone map's sentences from their parts", () => {
+    expect(zoneMapCopy.walkHintNext(1)).toBe(
+      "Corner 1 marked. Walk along the edge to the next corner, stand still, and press Corner here."
+    );
+    expect(zoneMapCopy.walkHintNext(3)).toBe(
+      "Corner 3 marked. Keep going around the zone in order. Two corners make a rectangle, three or more a polygon. Press Finish when done."
+    );
+    expect(zoneMapCopy.historyError("timeout")).toBe("Could not load movement history: timeout");
+    expect(zoneMapCopy.replayBadge("22:05:09")).toBe("Replay 22:05:09");
+    expect(zoneMapCopy.formatAgo(59999)).toBe("under a minute ago");
+    expect(zoneMapCopy.formatAgo(-5000)).toBe("under a minute ago");
+    expect(zoneMapCopy.formatAgo(60000)).toBe("1 min ago");
+    expect(zoneMapCopy.formatAgo(3599999)).toBe("59 min ago");
+    expect(zoneMapCopy.formatAgo(3900000)).toBe("1 h 5 min ago");
   });
 });
 

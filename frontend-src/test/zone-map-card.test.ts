@@ -333,8 +333,61 @@ describe("zone map card cone rotation lock", () => {
 
     expect(seen).toEqual([
       "Drawing and cone rotation unlocked. You can edit zones now.",
-      "Drawing and cone rotation locked. Unlock the grid to change them.",
+      "Drawing and cone rotation locked. Unlock the map to change them.",
     ]);
+  });
+
+  it("the lock toasts say map", async () => {
+    // The button says Locked on the map, and the card has called its canvas
+    // the map since the fitted grid; "grid" in a toast named nothing on screen.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      const card = await mountCard(fakeHass(), TEN_METER_GRID);
+      const seen = notifications(card);
+      const btnLock = card.shadowRoot.getElementById("btnLock");
+      btnLock.click();
+      btnLock.click();
+
+      card.canvas.dispatchEvent(new MouseEvent("mousedown", { clientX: 100, clientY: 100 }));
+      vi.advanceTimersByTime(1600);
+      card.shadowRoot.getElementById("clearBtn").click();
+
+      expect(seen).toEqual([
+        "Drawing and cone rotation unlocked. You can edit zones now.",
+        "Drawing and cone rotation locked. Unlock the map to change them.",
+        "Unlock the map to draw zones.",
+        "Unlock the map to clear zones.",
+      ]);
+      expect(seen.filter((message) => /\bgrid\b/i.test(message))).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a lock reminder rings the Locked button", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      const card = await mountCard(fakeHass(), TEN_METER_GRID);
+      expect(card.isLocked).toBe(true);
+      const seen = notifications(card);
+      const btnLock = card.shadowRoot.getElementById("btnLock");
+
+      card.canvas.dispatchEvent(new MouseEvent("mousedown", { clientX: 100, clientY: 100 }));
+
+      expect(seen).toEqual(["Unlock the map to draw zones."]);
+      expect(btnLock.classList.contains("nudge")).toBe(true);
+      vi.advanceTimersByTime(1200);
+      expect(btnLock.classList.contains("nudge")).toBe(false);
+
+      // The draw, clear and cone reminders share one throttle: a clear tried
+      // right after rings the button again but does not toast a second time.
+      vi.advanceTimersByTime(100);
+      card.shadowRoot.getElementById("clearBtn").click();
+      expect(btnLock.classList.contains("nudge")).toBe(true);
+      expect(seen).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -1404,8 +1457,8 @@ describe("zone map card target pairs", () => {
     expect(types).not.toContain("config/entity_registry/list");
   });
 
-  // The presence sensor (binary_sensor.py `_build_point_rotator` and
-  // `_reading_unit_factor`) applies the same rotation and unit conversion
+  // The presence sensor (targets.py `build_point_rotator` and
+  // `reading_unit_factor`) applies the same rotation and unit conversion
   // before its zone test, and test_binary_sensor.py pins the same results
   // there. A slip on either side draws a target inside a zone whose presence
   // sensor reads off.
@@ -2608,6 +2661,78 @@ describe("zone map card polygon double-tap", () => {
     expect(card._polyPoints).toEqual([{ x: 3750, y: 8750 }]);
     expect(polygonSaves(hass)).toHaveLength(1);
   });
+
+  // A finish that saves nothing used to end in silence, so a user who
+  // double-tapped two corners, or forgot to pick a zone, saw the shape vanish
+  // and never learned why.
+  it("finishing a polygon with under 3 points says so", async () => {
+    const { card, hass } = await polygonCard();
+    const toasts = notifications(card);
+    tap(card, 100, 100, 1000);
+    tap(card, 300, 100, 1000);
+
+    // The double-tap keeps the polygon open for its missing corner.
+    tap(card, 300, 100, 150);
+    expect(card.isDrawing).toBe(true);
+    expect(card._polyPoints).toHaveLength(2);
+    expect(toasts).toEqual(["A polygon needs at least 3 different points."]);
+
+    // Finish ends it, as it always did, and says why nothing was saved. Each
+    // message toasts at most once per 1.5 s.
+    now += 2000;
+    card.shadowRoot.getElementById("btnPolyFinish").click();
+    expect(card.isDrawing).toBe(false);
+    expect(card._polyPoints).toEqual([]);
+    expect(hass.callService).not.toHaveBeenCalled();
+    expect(toasts).toEqual([
+      "A polygon needs at least 3 different points.",
+      "A polygon needs at least 3 different points.",
+    ]);
+  });
+
+  it("finishing with no zone selected says so", async () => {
+    const { card, hass } = await polygonCard();
+    const toasts = notifications(card);
+    click(card, 100, 100, 1000);
+    click(card, 300, 100, 1000);
+    click(card, 300, 300, 1000);
+    card.selectedZone = null;
+
+    card.finishPolygon();
+
+    expect(toasts).toEqual(["Select a zone first."]);
+    expect(card.isDrawing).toBe(false);
+    expect(hass.callService).not.toHaveBeenCalled();
+  });
+
+  it("a double-click after a finished polygon says nothing", async () => {
+    const { card, hass } = await polygonCard();
+    const toasts = notifications(card);
+
+    threeSlowCorners(click)(card);
+    click(card, 100, 300, 1000);
+    click(card, 100, 300, 100);
+    // The browser's own dblclick lands after the double-click finished it.
+    card.canvas.dispatchEvent(new MouseEvent("dblclick"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(polygonSaves(hass)).toEqual([SQUARE]);
+    expect(toasts).toEqual(["Zone 1 saved"]);
+  });
+
+  it("a tap with no zone selected says nothing", async () => {
+    const { card, hass } = await polygonCard();
+    const toasts = notifications(card);
+    card._setSelectedZone(null);
+
+    tap(card, 100, 100, 1000);
+    // The mouse events a browser makes of a tap the canvas left alone.
+    click(card, 100, 100, 10);
+
+    expect(toasts).toEqual([]);
+    expect(card.isDrawing).toBe(false);
+    expect(hass.callService).not.toHaveBeenCalled();
+  });
 });
 
 /**
@@ -3221,6 +3346,47 @@ describe("zone map card repaints on hass pushes", () => {
     };
 
     expect(clears(calls)).toBe(0);
+  });
+
+  it("repaints when a zone's presence flips with no target movement", async () => {
+    // A zone lights from its presence sensor, so a flip is a change to the
+    // picture even when no target moved, and a held zone's label changes
+    // with its held attribute.
+    const presence = "binary_sensor.office_zone_1_presence";
+    const hass = fakeHass({
+      ...ZONE_PAYLOAD,
+      zones: { "1": { ...ZONE_PAYLOAD.zones["1"], presence_entity_id: presence } },
+    });
+    const card = await mountCard(hass);
+    let states: Record<string, any> = {
+      "sensor.a_x": { state: "500" },
+      "sensor.a_y": { state: "2000" },
+      [presence]: { state: "off", attributes: {} },
+    };
+    card.hass = { ...hass, states };
+    const { ctx, calls } = recordingContext();
+    card.ctx = ctx;
+    const sampled = vi.spyOn(card, "_onTargetsChanged");
+    const push = (changes: Record<string, any>) => {
+      states = { ...states, ...changes };
+      card.hass = { ...hass, states };
+    };
+
+    push({ [presence]: { state: "on", attributes: {} } });
+    expect(clears(calls)).toBe(1);
+    // Only a target move is sampled.
+    expect(sampled).not.toHaveBeenCalled();
+
+    calls.length = 0;
+    push({ [presence]: { state: "on", attributes: {} } });
+    expect(clears(calls)).toBe(0);
+
+    push({ [presence]: { state: "on", attributes: { held: true } } });
+    expect(clears(calls)).toBe(1);
+
+    push({ "sensor.a_x": { state: "600" } });
+    expect(clears(calls)).toBe(2);
+    expect(sampled).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -3892,6 +4058,132 @@ describe("zone map card multi-touch and touchcancel", () => {
 });
 
 /**
+ * Touches on a map nothing can be drawn on.
+ *
+ * The canvas took every touch (touch-action none and preventDefault), so a
+ * locked map, which most phone users only scroll past, trapped the swipe: the
+ * page would not scroll from it. A map that is locked, in Walk, or has no zone
+ * selected now leaves the touch to the browser, and its canvas carries the
+ * `pans` class that lets the browser scroll. A tap still turns into the
+ * browser's mousedown, which is where a locked map says how to unlock.
+ */
+describe("zone map card touches on a map nothing can be drawn on", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  async function touchCard(config: Record<string, any> = {}, payload: any = ZONE_PAYLOAD) {
+    const hass = fakeHass(payload);
+    const card = await mountCard(hass, { ...TEN_METER_GRID, ...config });
+    vi.spyOn(card.canvas, "getBoundingClientRect").mockReturnValue({
+      left: 0,
+      top: 0,
+      right: 800,
+      bottom: 800,
+      x: 0,
+      y: 0,
+      width: 800,
+      height: 800,
+      toJSON: () => ({}),
+    } as DOMRect);
+    hass.callService.mockClear();
+    const toasts = notifications(card);
+    return { card, hass, toasts };
+  }
+
+  /** Dispatch a cancelable touch event and say whether the card prevented it. */
+  function touch(card: any, type: string, x: number, y: number): boolean {
+    const point = { clientX: x, clientY: y };
+    const event = Object.assign(new Event(type, { cancelable: true }), {
+      touches: type === "touchend" ? [] : [point],
+      changedTouches: [point],
+    });
+    card.canvas.dispatchEvent(event);
+    return event.defaultPrevented;
+  }
+
+  function swipe(card: any): boolean[] {
+    return [
+      touch(card, "touchstart", 400, 600),
+      touch(card, "touchmove", 400, 300),
+      touch(card, "touchend", 400, 300),
+    ];
+  }
+
+  it("a locked canvas does not preventDefault touches", async () => {
+    const { card, toasts } = await touchCard();
+    expect(card.isLocked).toBe(true);
+
+    expect(swipe(card)).toEqual([false, false, false]);
+    // A scroll says nothing; only the mousedown of a tap reminds.
+    expect(toasts).toEqual([]);
+    expect(card.isDrawing).toBe(false);
+  });
+
+  it("an unlocked canvas with a selected zone does", async () => {
+    const { card } = await touchCard({ start_locked: false });
+    expect(card.selectedZone).toBe(1);
+
+    expect(touch(card, "touchstart", 100, 100)).toBe(true);
+    expect(card.isDrawing).toBe(true);
+    expect(touch(card, "touchmove", 300, 300)).toBe(true);
+    expect(touch(card, "touchend", 300, 300)).toBe(true);
+    expect(card.isDrawing).toBe(false);
+    expect(card.canvas.classList.contains("pans")).toBe(false);
+  });
+
+  it("a canvas in Walk does not preventDefault touches", async () => {
+    const { card } = await touchCard({ start_locked: false });
+    card.drawMode = "walk";
+
+    expect(swipe(card)).toEqual([false, false, false]);
+    expect(card.isDrawing).toBe(false);
+  });
+
+  it("a canvas with no zone selected lets a touch scroll", async () => {
+    const { card, toasts } = await touchCard({}, { ...ZONE_PAYLOAD, zones: {} });
+    expect(card.isLocked).toBe(false);
+    expect(card.selectedZone).toBeNull();
+
+    expect(swipe(card)).toEqual([false, false, false]);
+    expect(card.canvas.classList.contains("pans")).toBe(true);
+    expect(toasts).toEqual([]);
+
+    // Add Zone selects the new zone, and the map takes touches for drawing.
+    card.shadowRoot.getElementById("btnAddZone").click();
+    expect(card.selectedZone).toBe(1);
+    expect(card.canvas.classList.contains("pans")).toBe(false);
+    expect(touch(card, "touchstart", 100, 100)).toBe(true);
+  });
+
+  it("a locked canvas carries the pans class", async () => {
+    const { card } = await touchCard();
+    expect(card.canvas.classList.contains("pans")).toBe(true);
+
+    card.shadowRoot.getElementById("btnLock").click();
+    expect(card.canvas.classList.contains("pans")).toBe(false);
+
+    card.shadowRoot.getElementById("btnLock").click();
+    expect(card.canvas.classList.contains("pans")).toBe(true);
+    // A render rebuilds the canvas with the class it needs.
+    card.render();
+    expect(card.canvas.classList.contains("pans")).toBe(true);
+  });
+
+  it("finishes a drag that was under way when the map stopped taking touches", async () => {
+    const { card, hass } = await touchCard({ start_locked: false });
+    touch(card, "touchstart", 100, 100);
+    touch(card, "touchmove", 300, 300);
+    // The selection goes mid-drag (Delete on another device's echo, say).
+    card.selectedZone = null;
+
+    expect(touch(card, "touchend", 300, 300)).toBe(true);
+    expect(card.isDrawing).toBe(false);
+    expect(hass.callService).not.toHaveBeenCalled();
+  });
+});
+
+/**
  * Undoing polygon vertices (Backspace or the undo button).
  *
  * With no vertices placed, the canvas draws a dot at `startPoint`, the last
@@ -4401,6 +4693,291 @@ describe("zone map card drawing", () => {
 });
 
 /**
+ * The map flipped left to right (mirror_x).
+ *
+ * A radar mounted one way round shows a person who steps to its right
+ * stepping left on the map. An administrator flips that radar's map for
+ * everyone who opens it, and nothing stored flips: zones are saved, and
+ * presence tests targets, in the radar's own frame. Every screen to mm
+ * conversion goes through valueToPixels and pixelsToValue, and the drawing
+ * paths that skip them (the grid's step, the cone rings, the range label's
+ * direction) flip the same way. On the 10 m grid, symmetric about x = 0, a
+ * flipped x pixel is 800 minus the unflipped one.
+ */
+describe("zone map card flipped map", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const PLAIN = { ...ZONE_PAYLOAD, rotation_deg: 30 };
+  const FLIPPED = { ...PLAIN, mirror_x: true };
+
+  async function mapCard(payload: any, config: Record<string, any> = {}, isAdmin = true) {
+    const hass = fakeHass(payload);
+    hass.user = { is_admin: isAdmin };
+    const card = await mountCard(hass, { ...TEN_METER_GRID, ...config });
+    hass.callService.mockClear();
+    const toasts = notifications(card);
+    return { card, hass, toasts };
+  }
+
+  const toggle = (card: any) => card.shadowRoot.getElementById("mirrorToggle");
+  const slider = (card: any) => card.shadowRoot.getElementById("coneAngleSlider");
+
+  function check(card: any, checked: boolean) {
+    toggle(card).checked = checked;
+    toggle(card).dispatchEvent(new Event("change"));
+  }
+
+  async function settle() {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  /** The calls one draw makes, on a fresh recording context. */
+  function record(card: any, draw: (card: any) => void): Array<[string, any[]]> {
+    const { ctx, calls } = recordingContext();
+    card.ctx = ctx;
+    draw(card);
+    return calls;
+  }
+
+  const named = (calls: Array<[string, any[]]>, ...names: string[]) =>
+    calls.filter(([name]) => names.includes(name)).map(([, args]) => args);
+
+  it("mirrors zones, targets, cone and grid when mirror_x is on", async () => {
+    const plain = await mapCard(PLAIN, { unit_display: true });
+    const flipped = await mapCard(FLIPPED, { unit_display: true });
+    for (const { hass } of [plain, flipped]) {
+      hass.states = { "sensor.a_x": { state: "500" }, "sensor.a_y": { state: "2000" } };
+    }
+    const mirrored = (x: number) => 800 - x;
+
+    // Grid lines, by value.
+    const lines = (card: any) => card._getGridRenderState().xLines;
+    expect(lines(plain.card).map((l: any) => l.value)).toEqual(
+      lines(flipped.card).map((l: any) => l.value)
+    );
+    lines(plain.card).forEach((line: any, i: number) => {
+      expect(lines(flipped.card)[i].pixel).toBeCloseTo(mirrored(line.pixel), 6);
+    });
+    // The X labels keep their stored values and move with their lines, so
+    // they read high to low across the flipped map.
+    const xLabels = (card: any) =>
+      card._getGridRenderState().labels.x.map((l: any) => [l.text, l.x]);
+    const plainLabels = xLabels(plain.card);
+    expect(plainLabels.length).toBeGreaterThan(4);
+    expect(xLabels(flipped.card)).toEqual(
+      plainLabels.map(([text, x]: [string, number]) => [text, expect.closeTo(mirrored(x), 6)])
+    );
+    const leftToRight = [...xLabels(flipped.card)].sort((a, b) => a[1] - b[1]);
+    expect(leftToRight[0][0]).toBe("4m");
+
+    // The cone, its rings and their labels, point for point.
+    const cone = (card: any) =>
+      named(
+        record(card, (c) => c.drawDeviceCone(c._getGridRenderState().metrics, null)),
+        "moveTo",
+        "lineTo",
+        "fillText"
+      ).map((args) => (typeof args[0] === "string" ? args : [null, ...args]));
+    const plainCone = cone(plain.card);
+    expect(plainCone.length).toBeGreaterThan(50);
+    cone(flipped.card).forEach(([text, x, y], i) => {
+      expect(text).toBe(plainCone[i][0]);
+      expect(x).toBeCloseTo(mirrored(plainCone[i][1]), 6);
+      expect(y).toBeCloseTo(plainCone[i][2], 6);
+    });
+
+    // The range label sits past the arc on the side the cone faces on screen.
+    const plainRange = plain.card._rangeLabel();
+    const flippedRange = flipped.card._rangeLabel();
+    expect(flippedRange.x).toBeCloseTo(mirrored(plainRange.x), 6);
+    expect(flippedRange.y).toBeCloseTo(plainRange.y, 6);
+
+    // The zone and the target dot.
+    const shapes = (card: any) => ({
+      rects: named(
+        record(card, (c) => c.drawZones()),
+        "fillRect"
+      ),
+      dots: named(
+        record(card, (c) => c._drawTrackedTargets()),
+        "arc"
+      ).filter((args) => args[2] === 10),
+    });
+    const plainShapes = shapes(plain.card);
+    const flippedShapes = shapes(flipped.card);
+    expect(plainShapes.rects).toHaveLength(1);
+    const [x, y, w, h] = plainShapes.rects[0];
+    expect(flippedShapes.rects).toEqual([
+      [expect.closeTo(mirrored(x + w), 6), y, expect.closeTo(w, 6), h],
+    ]);
+    expect(plainShapes.dots).toHaveLength(1);
+    expect(flippedShapes.dots[0][0]).toBeCloseTo(mirrored(plainShapes.dots[0][0]), 6);
+    expect(flippedShapes.dots[0][1]).toBeCloseTo(plainShapes.dots[0][1], 6);
+
+    // A pushed flip redraws flipped with no cache left behind.
+    plain.hass.handlers[ZONES_SUBSCRIBE][0](FLIPPED);
+    expect(lines(plain.card)[0].pixel).toBeCloseTo(800, 6);
+  });
+
+  it("pixelsToValue inverts valueToPixels under the flip", async () => {
+    const { card } = await mapCard(FLIPPED);
+
+    expect(card.valueToPixels(5000, "x")).toBe(0);
+    expect(card.valueToPixels(-5000, "x")).toBeCloseTo(800, 9);
+    expect(card.valueToPixels(1000, "x")).toBeCloseTo(320, 9);
+    expect(card.pixelsToValue(0, "x")).toBe(5000);
+    expect(card.pixelsToValue(320, "x")).toBeCloseTo(1000, 9);
+    // Up and down never flip.
+    expect(card.valueToPixels(2500, "y")).toBeCloseTo(200, 9);
+    expect(card.pixelsToValue(200, "y")).toBeCloseTo(2500, 9);
+    for (const value of [-5000, -1234.5, 0, 2500, 5000]) {
+      expect(card.pixelsToValue(card.valueToPixels(value, "x"), "x")).toBeCloseTo(value, 6);
+    }
+  });
+
+  it("saves a rect drawn on a flipped map in unflipped mm", async () => {
+    const { card, hass, toasts } = await mapCard(FLIPPED, { start_locked: false });
+    expect(card.selectedZone).toBe(1);
+    vi.spyOn(card.canvas, "getBoundingClientRect").mockReturnValue({
+      left: 0,
+      top: 0,
+      right: 800,
+      bottom: 800,
+      x: 0,
+      y: 0,
+      width: 800,
+      height: 800,
+      toJSON: () => ({}),
+    } as DOMRect);
+
+    const mouse = (type: string, x: number, y: number) =>
+      card.canvas.dispatchEvent(new MouseEvent(type, { clientX: x, clientY: y }));
+    mouse("mousedown", 100, 100);
+    mouse("mousemove", 300, 250);
+    mouse("mouseup", 300, 250);
+    await settle();
+
+    // Canvas x 100 to 300 is 3750 to 1250 mm on the flipped map, where the
+    // same drag on an unflipped one saves -3750 to -1250.
+    const data = { x_min: 1250, x_max: 3750, y_min: 1250, y_max: 3125 };
+    expect(hass.callService.mock.calls.map((call: any[]) => call[2])).toEqual([
+      { device_id: "dev123", zone_id: 1, shape: "rect", data, input_units: "mm" },
+    ]);
+    expect(card.zones).toEqual([{ id: 1, shape: "rect", data }]);
+    expect(toasts).toEqual(["Doorway saved"]);
+  });
+
+  it("an administrator saves the flip without input_units", async () => {
+    const { card, hass } = await mapCard(PLAIN);
+    expect(toggle(card).disabled).toBe(false);
+    expect(toggle(card).checked).toBe(false);
+    expect(card.shadowRoot.getElementById("mapOptionsNote").hidden).toBe(true);
+
+    check(card, true);
+
+    // Flipped at once, ahead of the save's echo.
+    expect(card._mirrorX).toBe(true);
+    expect(card.valueToPixels(5000, "x")).toBe(0);
+    expect(slider(card).style.direction).toBe("rtl");
+    expect(hass.callService.mock.calls).toEqual([
+      ["apollo_mmwave", "update_zone", { device_id: "dev123", mirror_x: true }, undefined, false],
+    ]);
+
+    // Unticking saves false, which removes the key from the store.
+    hass.handlers[ZONES_SUBSCRIBE][0](FLIPPED);
+    hass.callService.mockClear();
+    check(card, false);
+    expect(card._mirrorX).toBe(false);
+    expect(hass.callService.mock.calls.map((call: any[]) => call[2])).toEqual([
+      { device_id: "dev123", mirror_x: false },
+    ]);
+  });
+
+  it("a viewer cannot change the flip", async () => {
+    const { card, hass } = await mapCard(PLAIN, {}, false);
+    const note = card.shadowRoot.getElementById("mapOptionsNote");
+    expect(toggle(card).disabled).toBe(true);
+    expect(toggle(card).title).toBe("Only an administrator can change this");
+    expect(note.hidden).toBe(false);
+    expect(note.textContent).toBe("Only an administrator can change these.");
+
+    // Nothing that still reaches the disabled checkbox flips or saves.
+    check(card, true);
+    expect(card._mirrorX).toBe(false);
+    expect(toggle(card).checked).toBe(false);
+    expect(hass.callService).not.toHaveBeenCalled();
+
+    // A viewer still sees the flip an administrator saved.
+    hass.handlers[ZONES_SUBSCRIBE][0](FLIPPED);
+    expect(card._mirrorX).toBe(true);
+    expect(toggle(card).checked).toBe(true);
+    expect(toggle(card).disabled).toBe(true);
+
+    // And the checkbox wakes up when the viewer is an administrator.
+    card.hass = { ...hass, user: { is_admin: true } };
+    expect(toggle(card).disabled).toBe(false);
+    expect(toggle(card).title).toBe("");
+    expect(note.hidden).toBe(true);
+  });
+
+  it("reverts the flip when the save is refused", async () => {
+    const { card, hass, toasts } = await mapCard(PLAIN);
+    hass.callService.mockRejectedValue(new Error("Home Assistant is restarting"));
+
+    check(card, true);
+    expect(card._mirrorX).toBe(true);
+    await settle();
+
+    expect(card._mirrorX).toBe(false);
+    expect(toggle(card).checked).toBe(false);
+    expect(slider(card).style.direction).toBe("");
+    expect(card.valueToPixels(-5000, "x")).toBe(0);
+    expect(toasts).toEqual(["Could not save: Home Assistant is restarting"]);
+  });
+
+  it("flips the cone slider's drag direction", async () => {
+    // Flipped, +X is on the left, so a slider dragged right would turn the
+    // cone left on screen. It runs right to left instead.
+    const { card, hass } = await mapCard(FLIPPED);
+    expect(slider(card).style.direction).toBe("rtl");
+    expect(toggle(card).checked).toBe(true);
+
+    hass.handlers[ZONES_SUBSCRIBE][0](PLAIN);
+
+    expect(slider(card).style.direction).toBe("");
+    expect(toggle(card).checked).toBe(false);
+  });
+
+  it("keeps the flipped slider direction after a render", async () => {
+    const { card, hass } = await mapCard(FLIPPED);
+
+    card.render();
+    expect(slider(card).style.direction).toBe("rtl");
+    expect(toggle(card).checked).toBe(true);
+
+    // A theme flip renders the whole card again too.
+    card.hass = { ...hass, themes: { darkMode: true } };
+    expect(card.shadowRoot.querySelector(".container.dark")).not.toBeNull();
+    expect(slider(card).style.direction).toBe("rtl");
+    expect(toggle(card).checked).toBe(true);
+    expect(card.valueToPixels(5000, "x")).toBe(0);
+  });
+
+  it("forgets the flip when pointed at another radar", async () => {
+    const { card, hass } = await mapCard(FLIPPED);
+    hass.payload = PLAIN;
+
+    card.setConfig({ device_id: "other", ...TEN_METER_GRID });
+    expect(card._mirrorX).toBe(false);
+    await vi.waitFor(() => expect(card._zoneConfigPayload).toBeTruthy());
+    expect(card._mirrorX).toBe(false);
+    expect(slider(card).style.direction).toBe("");
+  });
+});
+
+/**
  * Clearing zones from the chips, and undoing it.
  *
  * A double-click on a zone chip clears that zone and Clear All Zones clears
@@ -4530,6 +5107,74 @@ describe("zone map card clearing zones", () => {
 
     expect(zoneSaves(hass)).toEqual([restored(1, DOORWAY), restored(2, WINDOW)]);
     expect(toasts).toEqual(["All zones cleared", "Could not save: zone 1 is busy"]);
+  });
+});
+
+/**
+ * The one-gesture clears on a locked map.
+ *
+ * The lock used to guard drawing only, so a stray double tap on a zone chip,
+ * or a press on Clear All Zones, still wiped zones on a map the user had
+ * locked against exactly that. Both now refuse with a toast and ring the
+ * Locked button. Clear All stays enabled: a disabled button takes no tap, and
+ * a phone user would see a dim chip that does nothing and never learn why.
+ */
+describe("zone map card clearing zones on a locked map", () => {
+  async function lockedCard() {
+    const hass = fakeHass();
+    const card = await mountCard(hass);
+    expect(card.isLocked).toBe(true);
+    hass.callService.mockClear();
+    const toasts = notifications(card);
+    return { card, hass, toasts };
+  }
+
+  it("a locked map refuses a chip double-click clear with a toast", async () => {
+    const { card, hass, toasts } = await lockedCard();
+    const zonesBefore = structuredClone(card.zones);
+    const chip = card.shadowRoot.querySelector('#zone-buttons .zone-btn[data-zone-id="1"]');
+
+    chip.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
+
+    expect(hass.callService).not.toHaveBeenCalled();
+    expect(card.zones).toEqual(zonesBefore);
+    expect(card._undoSnapshot).toBeNull();
+    expect(toasts).toEqual(["Unlock the map to clear zones."]);
+    expect(card.shadowRoot.getElementById("btnLock").classList.contains("nudge")).toBe(true);
+  });
+
+  it("Clear All on a locked map toasts and clears nothing", async () => {
+    const { card, hass, toasts } = await lockedCard();
+    const zonesBefore = structuredClone(card.zones);
+    const clearBtn = () => card.shadowRoot.getElementById("clearBtn");
+    expect(clearBtn().disabled).toBe(false);
+    expect(clearBtn().classList.contains("locked-action")).toBe(true);
+    expect(clearBtn().getAttribute("aria-disabled")).toBe("true");
+
+    clearBtn().click();
+
+    expect(hass.callService).not.toHaveBeenCalled();
+    expect(card.zones).toEqual(zonesBefore);
+    expect(card._undoSnapshot).toBeNull();
+    expect(toasts).toEqual(["Unlock the map to clear zones."]);
+
+    // Unlocked, it looks and acts as it always did.
+    card.shadowRoot.getElementById("btnLock").click();
+    expect(clearBtn().classList.contains("locked-action")).toBe(false);
+    expect(clearBtn().hasAttribute("aria-disabled")).toBe(false);
+    clearBtn().click();
+    expect(card.zones).toEqual([]);
+    expect(hass.callService.mock.calls.map((call: any[]) => call[2].shape)).toEqual(["none"]);
+  });
+
+  it("dims Clear All again when a payload rebuilds the chips on a locked map", async () => {
+    const { card, hass } = await lockedCard();
+
+    hass.handlers[ZONES_SUBSCRIBE][0]({ ...ZONE_PAYLOAD, label: "Renamed radar" });
+
+    const clearBtn = card.shadowRoot.getElementById("clearBtn");
+    expect(clearBtn.classList.contains("locked-action")).toBe(true);
+    expect(clearBtn.getAttribute("aria-disabled")).toBe("true");
   });
 });
 

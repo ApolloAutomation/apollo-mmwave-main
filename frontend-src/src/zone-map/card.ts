@@ -16,7 +16,21 @@
 
 import { registerElement } from '../register';
 import { connectZones } from './api';
+import {
+  ADMIN_ONLY_NOTE,
+  ADMIN_ONLY_TITLE,
+  CLEAR_LOCKED_TOAST,
+  DRAW_LOCKED_TOAST,
+  LOCK_OFF_TOAST,
+  LOCK_ON_TOAST,
+  MIRROR_HINT,
+  MIRROR_LABEL,
+  POLY_TOO_FEW_TOAST,
+  SELECT_ZONE_TOAST,
+} from './copy';
 import { ZONE_MAP_EDITOR_TAG, firstLd2450DeviceId } from './editor';
+import { pointInZone, rotateToMap } from './geometry';
+import { fallbackPresenceId } from './presence';
 
 const COLOR = Object.freeze({
   ui: {
@@ -78,6 +92,8 @@ const DRAW_MODES = Object.freeze({
   RECT: 'rect',
   ELLIPSE: 'ellipse',
   POLYGON: 'polygon',
+  // Corners are marked by walking to them, not drawn, so the canvas pans.
+  WALK: 'walk',
 });
 
 const DEFAULT_GRID = Object.freeze({
@@ -167,6 +183,9 @@ const POLY_DOUBLE_TAP_SLOP_PX = 24;
 const CONE_TRY_PX = 10;
 // How long a try at the locked slider rings the Locked button.
 const LOCK_NUDGE_MS = 1200;
+// The lock reminders and the drawing toasts say each thing at most this
+// often, so a burst of taps does not stack copies of one message.
+const TOAST_THROTTLE_MS = 1500;
 
 const CONE_LOCKED_HINT = 'Locked with the map. Press Locked on the map to change it.';
 const CONE_LOCKED_TOAST = 'Cone rotation is locked. Press Locked on the map to change it.';
@@ -292,6 +311,21 @@ export class ZoneMapCard extends HTMLElement {
     // What `set hass` last painted the tracked targets from (see
     // _trackedStatesKey). null until it first paints, so that one always does.
     this._paintedTrackedKey = null;
+    // The same for the zones' presence states (see _zoneStatesKey).
+    this._paintedZoneKey = null;
+    // Per zone id, what the payload says beyond the geometry:
+    // { presence: entity id or null, type: 'detect' | 'ignore', holdS }.
+    this._zoneMeta = new Map();
+    // The radar's map is drawn mirrored left to right (mirror_x).
+    this._mirrorX = false;
+    // An administrator keeps this radar's movement history (movement_history).
+    this._movementHistory = false;
+    // When _notifyThrottled last showed each message, by message.
+    this._toastAt = new Map();
+    // Canvas backing px per CSS px, read once at the top of each frame.
+    this._frameScale = 1;
+    // When the canvas was last painted, on the _now() clock.
+    this._lastDrawAt = 0;
     this.showZones = false;
     this.showConfig = false;
     this._polyPoints = [];
@@ -547,6 +581,16 @@ export class ZoneMapCard extends HTMLElement {
     // switch flipped on one radar's map says nothing about another's.
     this._storedDisplayUnits = null;
     this._viewDisplayUnits = null;
+    // The zones, their sensors and the device-wide flags are the old radar's
+    // too, and the new one's first payload brings its own.
+    this._zoneMeta = new Map();
+    this._paintedZoneKey = null;
+    this._mirrorX = false;
+    this._movementHistory = false;
+    this._toastAt = new Map();
+    this._frameScale = 1;
+    this._lastDrawAt = 0;
+    this._closeHistory();
   }
 
   set hass(hass) {
@@ -554,7 +598,8 @@ export class ZoneMapCard extends HTMLElement {
     // The automatic map unit reads Home Assistant's unit system off hass, so
     // the first hass, or a change of that setting, can change the unit.
     const unitBefore = this._displayUnit();
-    // The m / ft switch's tooltips say whether a press saves for everyone.
+    // Who is viewing decides the m / ft switch's tooltips (whether a press
+    // saves for everyone) and which controls can be used.
     const adminBefore = this._isAdmin();
     this._hass = hass;
     // hass is set repeatedly, several times a second while the LD2450 pushes
@@ -581,17 +626,30 @@ export class ZoneMapCard extends HTMLElement {
       }
     }
     if (this._displayUnit() !== unitBefore) this._displayUnitChanged();
-    else if (this._isAdmin() !== adminBefore) this._renderUnitSwitch();
+    if (this._isAdmin() !== adminBefore) {
+      // The switch's tooltips, the controls only an administrator can use and
+      // the zone list's settings all depend on who is viewing.
+      this._renderUnitSwitch();
+      this._renderAdminControls();
+      this._renderZoneManager();
+    }
     // Home Assistant assigns a new hass on every state change in the whole
-    // instance, and the tracked targets are the only part of the picture drawn
-    // from it. Everything else (zones, rotation, mode, lock, theme, config)
-    // repaints itself when it changes, so a push that moved no tracked target
+    // instance, and the tracked targets and the zones' presence sensors are
+    // the only parts of the picture drawn from it. Everything else (zone
+    // shapes, rotation, mode, lock, theme, config) repaints itself when it
+    // changes, so a push that moved no tracked target and flipped no zone
     // leaves the canvas as it is.
     if (this.canvas) {
       const trackedKey = this._trackedStatesKey();
-      if (trackedKey !== this._paintedTrackedKey) {
+      const zoneKey = this._zoneStatesKey();
+      const trackedChanged = trackedKey !== this._paintedTrackedKey;
+      if (trackedChanged || zoneKey !== this._paintedZoneKey) {
         this._paintedTrackedKey = trackedKey;
-        this.drawGrid();
+        this._paintedZoneKey = zoneKey;
+        // Only a target move is sampled: a presence flip moved nobody.
+        if (trackedChanged) this._onTargetsChanged(this._now());
+        // A replay paints on its own timer and hides live dots and lit zones.
+        if (!this._replayShowing()) this.drawGrid();
       }
     }
     if (firstTime && this._hass) {
@@ -618,6 +676,101 @@ export class ZoneMapCard extends HTMLElement {
         states?.[pair.y]?.state,
         states?.[pair.y]?.attributes?.unit_of_measurement,
       ]),
+    );
+  }
+
+  /**
+   * Everything a zone's look reads from hass: each zone's presence sensor,
+   * its state and whether it is holding. Two hass objects with the same key
+   * draw the same zones.
+   */
+  _zoneStatesKey() {
+    const states = this._hass?.states;
+    const parts = [];
+    this._zoneMeta.forEach((_meta, id) => {
+      const entityId = this._presenceEntityFor(id);
+      if (!entityId) return;
+      const stateObj = states?.[entityId];
+      parts.push([id, entityId, stateObj?.state, stateObj?.attributes?.held === true]);
+    });
+    return JSON.stringify(parts);
+  }
+
+  /**
+   * The presence sensor whose state lights zone `zoneId`: the one the payload
+   * names, else the one the integration's naming points at in the registry,
+   * which covers a 2.3.0 backend and a push that came in before the registry
+   * had the entity. null when there is neither.
+   */
+  _presenceEntityFor(zoneId) {
+    const presence = this._zoneMeta.get(Number(zoneId))?.presence;
+    if (typeof presence === 'string' && presence) return presence;
+    return fallbackPresenceId(this._hass?.entities, this.deviceId, zoneId);
+  }
+
+  /** The clock trails, the fade timer's frame gate and Walk run on. Toast
+   *  throttles keep Date.now(), and history runs on the server's clock. */
+  _now() {
+    return performance.now();
+  }
+
+  /**
+   * Whether a movement replay is on the map. While one is, its own timer is
+   * the only painter, and live target moves and presence flips leave the
+   * canvas alone. The card shows no replay yet, so live data always paints.
+   */
+  _replayShowing() {
+    return false;
+  }
+
+  /**
+   * The live targets moved (or appeared, or went). Everything that follows
+   * them between paints samples here, once per move, before the repaint.
+   * Nothing does yet.
+   */
+  _onTargetsChanged(now) {}
+
+  /**
+   * Each live target with a reading, in mm in the radar's own frame (unit
+   * converted, not rotated): `{ slot, x, y }`, where `slot` is the pair's
+   * index in the tracked list. A reading that is not a number, or the (0, 0)
+   * an LD2450 reports for an empty slot, is no target.
+   */
+  _currentTargets() {
+    const states = this._hass?.states;
+    if (!states) return [];
+    const targets = [];
+    this.trackedEntities.forEach((pair, slot) => {
+      if (!pair.x || !pair.y) return;
+      const stateX = states[pair.x];
+      const stateY = states[pair.y];
+      if (!stateX || !stateY) return;
+      const xRaw = parseFloat(stateX.state);
+      const yRaw = parseFloat(stateY.state);
+      if (Number.isNaN(xRaw) || Number.isNaN(yRaw)) return;
+      if (Math.abs(xRaw) < 1e-6 && Math.abs(yRaw) < 1e-6) return;
+      targets.push({
+        slot,
+        x: xRaw * this._readingUnitFactor(stateX),
+        y: yRaw * this._readingUnitFactor(stateY),
+      });
+    });
+    return targets;
+  }
+
+  /** A point in the radar's own frame, in the map frame the zones are drawn
+   *  in: turned by the rotation, as the presence sensors turn it. */
+  _toMap(x, y) {
+    return rotateToMap(x, y, this.coneAngleDeg || 0);
+  }
+
+  /** Whether a map-frame point is inside one of this radar's ignore zones,
+   *  where presence drops a target before any detect zone sees it. */
+  _isIgnored(mx, my) {
+    return (this.zones || []).some(
+      (zone) =>
+        this._zoneMeta.get(Number(zone.id))?.type === 'ignore' &&
+        pointInZone(zone.shape, zone.data, mx, my),
     );
   }
 
@@ -677,13 +830,16 @@ export class ZoneMapCard extends HTMLElement {
     }
     this._applyZones(config);
     this._applyRotation(config);
+    this._applyMirror(config);
     this._applyDisplayUnits(config);
     this._applyTrackedEntities(config);
+    this._movementHistory = config.movement_history === true;
     this._deviceLabel = typeof config.label === 'string' ? config.label : null;
     this._renderTitle();
     this._applyAutoLock();
     this.renderZoneButtons();
     this._renderZoneManager();
+    this._renderAdminControls();
     // After the zones, rotation and unit a fitted grid is drawn around.
     this._refitGrid();
     this._renderUnitSwitch();
@@ -705,11 +861,23 @@ export class ZoneMapCard extends HTMLElement {
       .sort((a, b) => a - b);
 
     this.zones = [];
+    // Kept apart from this.zones, whose entries _upsertZone and _performUndo
+    // rebuild as { id, shape, data }: a redraw must not lose a zone's type or
+    // its presence sensor. Every stored zone gets an entry, geometry or not.
+    this._zoneMeta = new Map();
     ids.forEach((id) => {
       const entry = zones[String(id)] || {};
       if (entry.shape && entry.shape !== 'none' && entry.data) {
         this.zones.push({ id, shape: entry.shape, data: entry.data });
       }
+      // The backend sends only valid non-defaults, but a 2.3.0 backend sends
+      // none of these, and an absent key is the default.
+      const hold = entry.hold_s;
+      this._zoneMeta.set(id, {
+        presence: typeof entry.presence_entity_id === 'string' ? entry.presence_entity_id : null,
+        type: entry.zone_type === 'ignore' ? 'ignore' : 'detect',
+        holdS: Number.isInteger(hold) && hold >= 1 && hold <= 3600 ? hold : 0,
+      });
     });
 
     // The zone list the buttons and the manager render. The store is
@@ -753,6 +921,32 @@ export class ZoneMapCard extends HTMLElement {
     const angleLabel = this.shadowRoot.getElementById('coneAngleLabel');
     if (angleSlider) angleSlider.value = String(this.coneAngleDeg);
     if (angleLabel) angleLabel.textContent = `${this.coneAngleDeg}°`;
+  }
+
+  /** Take the flip the store holds for the radar's map (mirror_x). */
+  _applyMirror(config) {
+    this._setMirror(config?.mirror_x === true);
+  }
+
+  /**
+   * Draw the map mirrored left to right, or not. Display only: zones are
+   * saved, and presence tests targets, in the radar's own frame, and every
+   * screen to mm conversion goes through valueToPixels and pixelsToValue.
+   */
+  _setMirror(on) {
+    if (on !== this._mirrorX) {
+      this._mirrorX = on;
+      // Every x on the canvas moves. The extents do not, so nothing refits.
+      this._invalidateGridCache();
+      this._invalidateConeCache();
+    }
+    // On every call, the way _applyRotation sets the slider's value: render()
+    // rebuilds both from the template. Flipped, +X is on the left, so the
+    // slider runs right to left and drags the way the cone turns on screen.
+    const angleSlider = this.shadowRoot?.getElementById('coneAngleSlider');
+    if (angleSlider) angleSlider.style.direction = this._mirrorX ? 'rtl' : '';
+    const toggle = this.shadowRoot?.getElementById('mirrorToggle');
+    if (toggle) toggle.checked = this._mirrorX;
   }
 
   /** Take the store's answer. Nothing in the card edits the pair list, so
@@ -855,10 +1049,17 @@ export class ZoneMapCard extends HTMLElement {
           --zm-chip-color: var(--primary-text-color);
         }
         .container { background: var(--card-background-color); border-radius: var(--ha-card-border-radius, 12px); box-shadow: var(--ha-card-box-shadow); padding: 16px; }
-        .container.dark { background: ${COLOR.ui.darkContainerBackground}; color: ${COLOR.ui.darkContainerText}; }
+        /* color-scheme: the native checkboxes, selects and sliders follow the
+           card's dark_mode, which can differ from the page's theme. */
+        .container.dark { background: ${COLOR.ui.darkContainerBackground}; color: ${COLOR.ui.darkContainerText}; color-scheme: dark; }
+        .container input { accent-color: var(--primary-color); }
         .container.dark .canvas-container { border-color: ${COLOR.ui.darkCanvasBorder}; background: ${COLOR.ui.darkCanvasBackground}; }
         .canvas-container { position: relative; width: 100%; aspect-ratio: 1; border: 1px solid var(--divider-color); border-radius: var(--zm-radius); overflow: hidden; background: ${COLOR.ui.lightCanvasBackground}; isolation: isolate; container-type: size; }
         canvas { width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
+        /* A map that cannot be drawn on (locked, in Walk, or with no zone
+           selected) lets a vertical swipe scroll the page. Two declarations:
+           iOS 14 does not know pinch-zoom and keeps the first. */
+        canvas.pans { touch-action: pan-y; touch-action: pan-y pinch-zoom; }
         .overlay-controls { position: absolute; bottom: 4px; display: flex; gap: 4px; z-index: 1; }
         .overlay-controls-left { left: 4px; flex-direction: column; align-items: flex-start; }
         .overlay-controls-right { right: 4px; }
@@ -893,6 +1094,12 @@ export class ZoneMapCard extends HTMLElement {
         #cone-controls.locked input[type="range"] { pointer-events: none; }
         #cone-controls .cone-lock-hint { flex-basis: 100%; font-size: 0.85em; opacity: 0.75; }
         #coneAngleSlider { flex: 1; min-width: 160px; }
+        .map-options { display: flex; flex-direction: column; gap: 4px; padding: 4px 0 8px; }
+        .map-option { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+        .map-option input { margin: 0; flex: none; }
+        .map-option input:disabled { cursor: not-allowed; }
+        .map-option input:disabled + span { opacity: 0.6; }
+        .map-option-hint { font-size: 0.85em; opacity: 0.75; }
         button { padding: 8px 16px; background: var(--primary-color); color: ${COLOR.ui.primaryButtonText}; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; }
         .container.dark button { background: ${COLOR.ui.darkPrimaryButton}; }
         button:hover { opacity: 0.9; }
@@ -919,6 +1126,9 @@ export class ZoneMapCard extends HTMLElement {
           color: ${COLOR.ui.overlayButtonText};
           border-color: ${COLOR.ui.darkZoneButtonActiveBorder};
         }
+        /* Dimmed, not disabled, while the map is locked: a disabled button
+           takes no tap, so a phone user would get no word of why. */
+        button.zone-btn.locked-action { opacity: 0.5; cursor: not-allowed; }
         .info { margin-top: 12px; font-size: 14px; color: var(--secondary-text-color); }
         .container.dark .info { color: ${COLOR.ui.infoDarkText}; }
         .container.dark .zone-item { background: ${COLOR.ui.zoneItemDarkBg}; color: ${COLOR.ui.zoneItemDarkText}; }
@@ -979,6 +1189,15 @@ export class ZoneMapCard extends HTMLElement {
               <span id="coneAngleLabel">${this.coneAngleDeg}°</span>
               <span id="coneLockHint" class="cone-lock-hint" hidden>${CONE_LOCKED_HINT}</span>
             </div>
+            <!-- _renderAdminControls sets what depends on the viewer. -->
+            <div class="map-options" id="mapOptions">
+              <label class="map-option" id="mirrorOption">
+                <input type="checkbox" id="mirrorToggle" />
+                <span>${MIRROR_LABEL}</span>
+              </label>
+              <div class="map-option-hint">${MIRROR_HINT}</div>
+              <div class="map-option-hint" id="mapOptionsNote" hidden>${ADMIN_ONLY_NOTE}</div>
+            </div>
             <!-- Read only. The radar's X/Y targets are resolved by the
                  integration, and the DIY override is the update_zone
                  service, not a second pair picker in here. -->
@@ -1010,6 +1229,10 @@ export class ZoneMapCard extends HTMLElement {
   render() {
     // TODO(REVIEW_REPORT.md X47): with a cached payload, chips, manager, status and drawGrid run
     // twice. Skipping the first pass changes selection on a same-device setConfig; decide first.
+    // The old template's lock closure would otherwise set a cursor and a
+    // slider that are about to go, from _applyAutoLock, on a template that
+    // has no Locked button to make a new one.
+    this._updateLockVisual = null;
     this._detachGlobalListeners();
     this.shadowRoot.innerHTML = this._template();
     this._renderTitle();
@@ -1036,6 +1259,11 @@ export class ZoneMapCard extends HTMLElement {
       // has to be laid back over the new one.
       this._applyZoneConfig(this._zoneConfigPayload);
     }
+    // The rest of the DOM state lives on `this`, which outlives a render.
+    this._renderAdminControls();
+    this._renderWalkPanel();
+    this._renderHistoryPanel();
+    this._updateCanvasTouchMode();
   }
 
   renderZoneButtons() {
@@ -1043,7 +1271,7 @@ export class ZoneMapCard extends HTMLElement {
     if (!container) return;
     container.innerHTML = '';
     if (!this.zoneConfig || this.zoneConfig.length === 0) {
-      this.selectedZone = null;
+      this._setSelectedZone(null);
     }
     this.zoneConfig.forEach((zone) => {
       const btn = document.createElement('button');
@@ -1053,6 +1281,12 @@ export class ZoneMapCard extends HTMLElement {
       btn.addEventListener('click', () => this._setSelectedZone(zone.id));
       btn.addEventListener('dblclick', (e) => {
         e.preventDefault();
+        // One quick gesture, which a stray double tap on a phone makes too,
+        // so the lock guards it like drawing.
+        if (this.isLocked) {
+          this._remindLocked(CLEAR_LOCKED_TOAST);
+          return;
+        }
         this._clearZone(zone.id, true);
       });
       container.appendChild(btn);
@@ -1062,6 +1296,7 @@ export class ZoneMapCard extends HTMLElement {
     clearBtn.id = 'clearBtn';
     clearBtn.className = 'zone-btn clear-all';
     clearBtn.textContent = 'Clear All Zones';
+    this._renderClearAllLock(clearBtn);
     container.appendChild(clearBtn);
 
     const firstZone = container.querySelector('.zone-btn[data-zone-id]');
@@ -1103,6 +1338,7 @@ export class ZoneMapCard extends HTMLElement {
     this._attachDrawingModeControls();
     this._attachUnitSwitch();
     this._attachConfigEvents();
+    this._attachMapOptions();
   }
 
   _attachUnitSwitch() {
@@ -1140,6 +1376,74 @@ export class ZoneMapCard extends HTMLElement {
   /** Whether this page's viewer can save, as update_zone is admin-only. */
   _isAdmin() {
     return !!this._hass?.user?.is_admin;
+  }
+
+  /**
+   * The controls whose state depends on who is viewing. The template is built
+   * before the first hass, and the user behind hass can change, so this runs
+   * after every render, every payload and every change of viewer.
+   */
+  _renderAdminControls() {
+    const admin = this._isAdmin();
+    // The flip stays visible, so a viewer can see the map is flipped on
+    // purpose, but update_zone is admin-only and would refuse the save. A
+    // disabled checkbox's title never reaches touch or keyboard users, so
+    // the note under it says the same.
+    const mirror = this.shadowRoot?.getElementById('mirrorToggle');
+    if (mirror) {
+      mirror.disabled = !admin;
+      mirror.title = admin ? '' : ADMIN_ONLY_TITLE;
+    }
+    const mirrorOption = this.shadowRoot?.getElementById('mirrorOption');
+    if (mirrorOption) mirrorOption.title = admin ? '' : ADMIN_ONLY_TITLE;
+    const note = this.shadowRoot?.getElementById('mapOptionsNote');
+    if (note) note.hidden = admin;
+    // Movement history is an administrator's, on a radar that keeps it.
+    if (!admin || !this._movementHistory) this._closeHistory();
+  }
+
+  /** Lay the Walk panel back over a rebuilt DOM from the state on `this`.
+   *  The card has no Walk panel yet, so there is nothing to lay back. */
+  _renderWalkPanel() {}
+
+  /** Lay the History panel back over a rebuilt DOM from the state on `this`.
+   *  The card has no History panel yet, so there is nothing to lay back. */
+  _renderHistoryPanel() {}
+
+  /** Close the History panel and stop its replay. The card has no History
+   *  panel yet, so there is nothing to close. */
+  _closeHistory() {}
+
+  _attachMapOptions() {
+    const mirror = this.shadowRoot.getElementById('mirrorToggle');
+    if (mirror) mirror.addEventListener('change', () => this._chooseMirror(mirror.checked));
+  }
+
+  /**
+   * Flip this radar's map for everyone who opens it, as an administrator.
+   * The map flips at once and flips back if Home Assistant refuses the save;
+   * the save's own echo confirms it.
+   */
+  async _chooseMirror(on) {
+    if (!this._isAdmin()) {
+      // A disabled checkbox gets no change event, but nothing that still
+      // reaches it (a screen reader, say) flips the map or saves.
+      this._applyMirror(this._zoneConfigPayload);
+      return;
+    }
+    if (on === this._mirrorX) return;
+    this._setMirror(on);
+    this.drawGrid();
+    // A display setting, so input_units, which rescales presence for sensors
+    // without a unit, stays out of it, as with the m / ft switch.
+    const saved = await this._saveZoneUpdate({ device_id: this.deviceId, mirror_x: on }, null, {
+      withInputUnits: false,
+    });
+    if (!saved) {
+      // Back to what the store holds, which the refused save did not change.
+      this._applyMirror(this._zoneConfigPayload);
+      this.drawGrid();
+    }
   }
 
   /**
@@ -1224,8 +1528,25 @@ export class ZoneMapCard extends HTMLElement {
       if (!target || target.id !== 'clearBtn') {
         return;
       }
+      // One press wipes every zone, so the lock guards it like drawing. The
+      // button stays enabled (see _renderClearAllLock) so the press can say why.
+      if (this.isLocked) {
+        this._remindLocked(CLEAR_LOCKED_TOAST);
+        return;
+      }
       this._clearAllZones();
     });
+  }
+
+  /** Dim Clear All Zones while the map is locked, and tell assistive tech it
+   *  will not act. It stays enabled: a disabled button takes no tap and shows
+   *  no tooltip on touch, so a phone user would see a dim chip that does
+   *  nothing and not know why. */
+  _renderClearAllLock(clearBtn) {
+    if (!clearBtn) return;
+    clearBtn.classList.toggle('locked-action', !!this.isLocked);
+    if (this.isLocked) clearBtn.setAttribute('aria-disabled', 'true');
+    else clearBtn.removeAttribute('aria-disabled');
   }
 
   _attachCanvasEvents() {
@@ -1239,11 +1560,16 @@ export class ZoneMapCard extends HTMLElement {
     this.canvas.addEventListener('mousemove', handleMouseMove);
     this.canvas.addEventListener('mouseup', handleMouseUp);
 
-    // TODO(REVIEW_REPORT.md X46): a locked canvas still preventDefaults every touch (touch-action
-    // none), blocking page scroll. Consider skipping it and using pan-y while locked, with a test.
+    // A map nothing can be drawn on (see _canvasPans) leaves the touch to the
+    // browser, so a swipe that starts on it scrolls the page instead of
+    // trapping a phone user in the card. A tap still reaches startDrawing
+    // through the mousedown the browser makes of it, so a locked map still
+    // says how to unlock. Read at event time, and a gesture already drawing
+    // finishes or cancels as before.
     this.canvas.addEventListener(
       'touchstart',
       (event) => {
+        if (this._canvasPans() && !this.isDrawing) return;
         event.preventDefault();
         this.startDrawing(event);
       },
@@ -1252,6 +1578,7 @@ export class ZoneMapCard extends HTMLElement {
     this.canvas.addEventListener(
       'touchmove',
       (event) => {
+        if (this._canvasPans() && !this.isDrawing) return;
         event.preventDefault();
         this.draw(event);
       },
@@ -1260,6 +1587,7 @@ export class ZoneMapCard extends HTMLElement {
     this.canvas.addEventListener(
       'touchend',
       (event) => {
+        if (this._canvasPans() && !this.isDrawing) return;
         event.preventDefault();
         this.endDrawing(event);
       },
@@ -1427,23 +1755,27 @@ export class ZoneMapCard extends HTMLElement {
       const dx = Math.abs(e.clientX - press.x);
       if (dx > CONE_TRY_PX && dx > Math.abs(e.clientY - press.y)) {
         press.tried = true;
-        this._remindConeLocked();
+        this._remindLocked(CONE_LOCKED_TOAST);
       }
     });
     row.addEventListener('pointerup', (e) => {
       if (!press || e.pointerId !== press.id) return;
       const { tried, y } = press;
       press = null;
-      if (!tried && Math.abs(e.clientY - y) <= CONE_TRY_PX) this._remindConeLocked();
+      if (!tried && Math.abs(e.clientY - y) <= CONE_TRY_PX) this._remindLocked(CONE_LOCKED_TOAST);
     });
     row.addEventListener('pointercancel', () => {
       press = null;
     });
   }
 
-  /** Ring the Locked button and, at most once per 1.5 s like the drawing
-   *  reminder, say how to unlock. */
-  _remindConeLocked() {
+  /**
+   * Something the lock guards was tried: ring the Locked button, so the way
+   * out is in view, and say `message`. The draw, clear and cone reminders
+   * share one throttle, so a burst of tries on a locked map toasts once per
+   * 1.5 s whichever control was tried.
+   */
+  _remindLocked(message) {
     const btnLock = this.shadowRoot?.getElementById('btnLock');
     if (btnLock) {
       btnLock.classList.add('nudge');
@@ -1451,9 +1783,19 @@ export class ZoneMapCard extends HTMLElement {
       this._lockNudgeTimer = setTimeout(() => btnLock.classList.remove('nudge'), LOCK_NUDGE_MS);
     }
     const now = Date.now();
-    if (this._lastLockWarningTs && now - this._lastLockWarningTs <= 1500) return;
+    if (this._lastLockWarningTs && now - this._lastLockWarningTs <= TOAST_THROTTLE_MS) return;
     this._lastLockWarningTs = now;
-    this._notify(CONE_LOCKED_TOAST);
+    this._notify(message);
+  }
+
+  /** Say `message`, unless it was said in the last 1.5 s: a repeated gesture
+   *  (a double tap that keeps landing on too few points) gets one toast. */
+  _notifyThrottled(message) {
+    const now = Date.now();
+    const last = this._toastAt.get(message);
+    if (last !== undefined && now - last <= TOAST_THROTTLE_MS) return;
+    this._toastAt.set(message, now);
+    this._notify(message);
   }
 
   _attachDrawingModeControls() {
@@ -1511,6 +1853,8 @@ export class ZoneMapCard extends HTMLElement {
         if (coneControls) coneControls.classList.toggle('locked', this.isLocked);
         const hint = this.shadowRoot.getElementById('coneLockHint');
         if (hint) hint.hidden = !this.isLocked;
+        this._renderClearAllLock(this.shadowRoot.getElementById('clearBtn'));
+        this._updateCanvasTouchMode();
       };
       btnLock.addEventListener('click', () => {
         this.isLocked = !this.isLocked;
@@ -1519,11 +1863,9 @@ export class ZoneMapCard extends HTMLElement {
         this._lastLockWarningTs = 0;
         if (this.isLocked) {
           if (this.isDrawing) this.cancelDrawing();
-          // TODO(REVIEW_REPORT.md X06): the lock gates only drawing; chip double-click clear,
-          // Clear All, Undo and the manager still write. Gate the two clears or say "draw".
-          this._notify('Drawing and cone rotation locked. Unlock the grid to change them.');
+          this._notify(LOCK_ON_TOAST);
         } else {
-          this._notify('Drawing and cone rotation unlocked. You can edit zones now.');
+          this._notify(LOCK_OFF_TOAST);
         }
       });
       this._updateLockVisual = updateLockVisual;
@@ -1995,7 +2337,9 @@ export class ZoneMapCard extends HTMLElement {
       pixelStartY: this.valueToPixels(startY, 'y'),
       skipTolX: stepX * 0.001,
       skipTolY: stepY * 0.001,
-      pixelStepX: stepX * pxPerMmX,
+      // A flipped map runs x right to left (valueToPixels), so each step
+      // along it moves left.
+      pixelStepX: (this._mirrorX ? -stepX : stepX) * pxPerMmX,
       pixelStepY: stepY * pxPerMmY,
     };
   }
@@ -2019,6 +2363,7 @@ export class ZoneMapCard extends HTMLElement {
       this.unitDisplay ? 1 : 0,
       this.unitLabelSize,
       this._roundKeyValue(labelGap, 1e3),
+      this._mirrorX ? 1 : 0,
     ];
     const key = keyParts.join('|');
     if (this._gridCache && this._gridCache.key === key) {
@@ -2353,15 +2698,39 @@ export class ZoneMapCard extends HTMLElement {
   _setSelectedZone(zoneId) {
     if (zoneId === null || zoneId === undefined) {
       this.selectedZone = null;
+      this._updateCanvasTouchMode();
       return;
     }
     this.selectedZone = Number(zoneId);
+    this._updateCanvasTouchMode();
     const buttons = this.shadowRoot?.querySelectorAll('.zone-btn[data-zone-id]');
     if (!buttons) return;
     buttons.forEach((btn) => {
       const targetId = Number(btn.dataset.zoneId);
       btn.classList.toggle('active', targetId === this.selectedZone);
     });
+  }
+
+  /**
+   * Whether a touch on the canvas belongs to the page rather than to drawing:
+   * the map is locked, Walk is on (corners come from the radar, not the
+   * finger), or no zone is selected, so nothing could be drawn. A new radar's
+   * map starts unlocked with no zones, and a phone must still scroll past it.
+   */
+  _canvasPans() {
+    return (
+      !!this.isLocked ||
+      this.drawMode === DRAW_MODES.WALK ||
+      this.selectedZone === null ||
+      this.selectedZone === undefined
+    );
+  }
+
+  /** The canvas's touch-action follows _canvasPans (CSS `canvas.pans`). The
+   *  touch handlers leave such a touch alone, but under the canvas's own
+   *  touch-action: none the browser still would not scroll for it. */
+  _updateCanvasTouchMode() {
+    if (this.canvas) this.canvas.classList.toggle('pans', this._canvasPans());
   }
 
   /** Undo the last polygon vertex (Backspace or the undo button). Popping
@@ -2489,6 +2858,9 @@ export class ZoneMapCard extends HTMLElement {
       // The second tap is the gesture, not a vertex, so it is never pushed.
       if (this._isPolyFinishTap(p, now)) {
         if (this._polyPoints.length >= 3) this.finishPolygon();
+        // The polygon stays open for the corners it still needs, but a finish
+        // that does nothing has to say why.
+        else this._notifyThrottled(POLY_TOO_FEW_TOAST);
         return;
       }
       // Add a vertex on each other mouse/touch end
@@ -2518,64 +2890,85 @@ export class ZoneMapCard extends HTMLElement {
       this.cancelDrawing();
       return;
     }
-    // Convert drawn zones to mm
-    let payload = null;
-    if (this.drawMode === DRAW_MODES.RECT) {
-      const x1 = this.pixelsToValue(this.startPoint.x, 'x');
-      const x2 = this.pixelsToValue(endPoint.x, 'x');
-      const y1 = this.pixelsToValue(this.startPoint.y, 'y');
-      const y2 = this.pixelsToValue(endPoint.y, 'y');
-      const xMinRounded = this._clampAndRound(Math.min(x1, x2), this.xMin, this.xMax);
-      const xMaxRounded = this._clampAndRound(Math.max(x1, x2), this.xMin, this.xMax);
-      const yMinRounded = this._clampAndRound(Math.min(y1, y2), this.yMin, this.yMax);
-      const yMaxRounded = this._clampAndRound(Math.max(y1, y2), this.yMin, this.yMax);
+    const payload = this._shapeFromDrag(this.startPoint, endPoint, this.drawMode);
+    if (!payload) {
       // A click, a tap or a perfectly straight drag has no area. The backend
       // only keeps a rect with x_min < x_max and y_min < y_max and clears the
       // zone for anything else, so saving this would wipe the zone's current
       // shape. Drop the gesture silently, like a drag that leaves the canvas.
-      if (xMinRounded === xMaxRounded || yMinRounded === yMaxRounded) {
-        this.cancelDrawing();
-        return;
-      }
-      payload = {
-        shape: DRAW_MODES.RECT,
-        data: {
-          x_min: xMinRounded,
-          x_max: xMaxRounded,
-          y_min: yMinRounded,
-          y_max: yMaxRounded,
-        },
-      };
-    } else if (this.drawMode === DRAW_MODES.ELLIPSE) {
+      this.cancelDrawing();
+      return;
+    }
+    this._commitZoneShape(this.selectedZone, payload);
+    this._activeInput = null;
+    this.startPoint = null;
+    this._cursorPoint = null;
+  }
+
+  /**
+   * The `{ shape, data }` a rect or ellipse drag from canvas point `startPx`
+   * to `endPx` (backing px) saves, in whole mm clamped to the map, or null
+   * for a rect with no area. Anything that shows a drag's result (the size
+   * readout) reads it from here, so it always matches what is saved.
+   */
+  _shapeFromDrag(startPx, endPx, mode) {
+    if (mode === DRAW_MODES.RECT) {
+      return this._rectFromMm(
+        this.pixelsToValue(startPx.x, 'x'),
+        this.pixelsToValue(startPx.y, 'y'),
+        this.pixelsToValue(endPx.x, 'x'),
+        this.pixelsToValue(endPx.y, 'y'),
+      );
+    }
+    if (mode === DRAW_MODES.ELLIPSE) {
       // Bounding box -> ellipse center/radii. The corners are clamped to the
       // grid first, like the rect's: a touch keeps reporting after the finger
       // leaves the canvas, and an unclamped corner gave an edge-pinned center
       // with a radius reaching past the grid.
-      const x1 = this._clampValue(this.pixelsToValue(this.startPoint.x, 'x'), this.xMin, this.xMax);
-      const y1 = this._clampValue(this.pixelsToValue(this.startPoint.y, 'y'), this.yMin, this.yMax);
-      const x2 = this._clampValue(this.pixelsToValue(endPoint.x, 'x'), this.xMin, this.xMax);
-      const y2 = this._clampValue(this.pixelsToValue(endPoint.y, 'y'), this.yMin, this.yMax);
+      const x1 = this._clampValue(this.pixelsToValue(startPx.x, 'x'), this.xMin, this.xMax);
+      const y1 = this._clampValue(this.pixelsToValue(startPx.y, 'y'), this.yMin, this.yMax);
+      const x2 = this._clampValue(this.pixelsToValue(endPx.x, 'x'), this.xMin, this.xMax);
+      const y2 = this._clampValue(this.pixelsToValue(endPx.y, 'y'), this.yMin, this.yMax);
       const cx = this._clampAndRound((x1 + x2) / 2, this.xMin, this.xMax);
       const cy = this._clampAndRound((y1 + y2) / 2, this.yMin, this.yMax);
       const rx = Math.max(1, Math.round(Math.abs(x2 - x1) / 2));
       const ry = Math.max(1, Math.round(Math.abs(y2 - y1) / 2));
-      payload = { shape: DRAW_MODES.ELLIPSE, data: { cx, cy, rx, ry } };
-    } else if (this.drawMode === DRAW_MODES.POLYGON) {
-      // polygon finalization is handled by dblclick -> finishPolygon()
+      return { shape: DRAW_MODES.ELLIPSE, data: { cx, cy, rx, ry } };
     }
+    // A polygon is saved by finishPolygon, from its vertices.
+    return null;
+  }
 
-    if (!payload) return;
-    const zoneId = this.selectedZone;
+  /**
+   * The rect two corners in mm span, in whole mm clamped to the map, as the
+   * `{ shape, data }` a save carries, or null when it has no area. Shared by
+   * a dragged rect and one marked by walking to two corners.
+   */
+  _rectFromMm(x1, y1, x2, y2) {
+    const xMin = this._clampAndRound(Math.min(x1, x2), this.xMin, this.xMax);
+    const xMax = this._clampAndRound(Math.max(x1, x2), this.xMin, this.xMax);
+    const yMin = this._clampAndRound(Math.min(y1, y2), this.yMin, this.yMax);
+    const yMax = this._clampAndRound(Math.max(y1, y2), this.yMin, this.yMax);
+    if (xMin === xMax || yMin === yMax) return null;
+    return {
+      shape: DRAW_MODES.RECT,
+      data: { x_min: xMin, x_max: xMax, y_min: yMin, y_max: yMax },
+    };
+  }
+
+  /**
+   * Save a finished rect or ellipse as zone `zoneId`'s shape: an undo
+   * snapshot of what it replaces, the new shape on the map at once, and the
+   * write, which toasts "<label> saved" once Home Assistant takes it.
+   */
+  _commitZoneShape(zoneId, payload) {
     this._setUndoSnapshot(this._snapshotZones([zoneId]));
     this._upsertZone(zoneId, payload.shape, payload.data);
     // The save's echo fits the map again, but a refused save sends none.
     this._refitAndDraw();
     const savedMessage =
       zoneId === null || zoneId === undefined ? null : `${this._zoneLabel(zoneId)} saved`;
-    this.updateHomeAssistantShape(zoneId, payload.shape, payload.data, savedMessage);
-    this._activeInput = null;
-    this.startPoint = null;
-    this._cursorPoint = null;
+    return this.updateHomeAssistantShape(zoneId, payload.shape, payload.data, savedMessage);
   }
 
   /** Whether a polygon tap at canvas point `p` (backing px) finishes the
@@ -2936,9 +3329,15 @@ export class ZoneMapCard extends HTMLElement {
     const pts = this._polyPoints.filter(
       (p, i, a) => i === 0 || p.x !== a[i - 1].x || p.y !== a[i - 1].y,
     );
-    // TODO(REVIEW_REPORT.md X44): too few points (or no zone selected) cancels silently. Suggest
-    // a toast ("A polygon needs at least 3 points", "Select a zone first"), with a test.
-    if (pts.length >= 3 && this.selectedZone !== null) {
+    // Either way the polygon ends, as it always did. Only a polygon that was
+    // in progress says why nothing was saved: the dblclick that follows a
+    // double-tap finish, or Finish on an empty canvas, has nothing to report.
+    const inProgress = this._polyPoints.length > 0;
+    if (this.selectedZone === null || this.selectedZone === undefined) {
+      if (inProgress) this._notifyThrottled(SELECT_ZONE_TOAST);
+    } else if (pts.length < 3) {
+      if (inProgress) this._notifyThrottled(POLY_TOO_FEW_TOAST);
+    } else {
       const zoneId = this.selectedZone;
       // Enforce max points on commit
       const points = pts.slice(0, this.polyMaxPoints).map((pt) => ({
@@ -2966,6 +3365,8 @@ export class ZoneMapCard extends HTMLElement {
   drawGrid() {
     if (!this.ctx || !this.canvas) return;
     const ctx = this.ctx;
+    // One layout read per frame; what is sized in CSS px reads it from here.
+    this._frameScale = this._canvasScale();
     ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
 
     const gridState = this._getGridRenderState();
@@ -2997,6 +3398,7 @@ export class ZoneMapCard extends HTMLElement {
     this.drawZones();
     this._drawInProgress();
     this._drawTrackedTargets();
+    this._lastDrawAt = this._now();
   }
 
   /**
@@ -3027,8 +3429,8 @@ export class ZoneMapCard extends HTMLElement {
     const arcX = this.valueToPixels(this.coneYMax * Math.sin(facing), 'x');
     const arcY = this.valueToPixels(this.coneYMax * Math.cos(facing), 'y');
     // The facing direction in canvas px, where a YAML grid can scale X and Y
-    // apart, as a unit vector.
-    let dirX = Math.sin(facing) * (this.pxPerX || 0);
+    // apart, as a unit vector. A flipped map runs x right to left.
+    let dirX = Math.sin(facing) * (this.pxPerX || 0) * (this._mirrorX ? -1 : 1);
     let dirY = Math.cos(facing) * (this.pxPerY || 0);
     const length = Math.hypot(dirX, dirY) || 1;
     dirX /= length;
@@ -3160,26 +3562,9 @@ export class ZoneMapCard extends HTMLElement {
   _drawTrackedTargets() {
     if (!this._hass) return;
     const colors = COLOR.canvas.targetPalette;
-    const theta = ((this.coneAngleDeg || 0) * Math.PI) / 180;
-    const cosTheta = Math.cos(theta);
-    const sinTheta = Math.sin(theta);
-    const rotatePoint = (x, y) => ({
-      x: x * cosTheta + y * sinTheta,
-      y: -x * sinTheta + y * cosTheta,
-    });
-    this.trackedEntities.forEach((pair, idx) => {
-      if (!pair.x || !pair.y) return;
-      const stateX = this._hass.states[pair.x];
-      const stateY = this._hass.states[pair.y];
-      if (!stateX || !stateY) return;
-      const xRaw = parseFloat(stateX.state);
-      const yRaw = parseFloat(stateY.state);
-      if (Number.isNaN(xRaw) || Number.isNaN(yRaw)) return;
-      if (Math.abs(xRaw) < 1e-6 && Math.abs(yRaw) < 1e-6) return;
-      const xVal = xRaw * this._readingUnitFactor(stateX);
-      const yVal = yRaw * this._readingUnitFactor(stateY);
-      const rotated = rotatePoint(xVal, yVal);
-      this.drawCurrentPosition(rotated.x, rotated.y, colors[idx % colors.length]);
+    this._currentTargets().forEach(({ slot, x, y }) => {
+      const m = this._toMap(x, y);
+      this.drawCurrentPosition(m.x, m.y, colors[slot % colors.length]);
     });
   }
 
@@ -3190,7 +3575,7 @@ export class ZoneMapCard extends HTMLElement {
    * picked in the entity's settings. X and Y are separate entities, so each is
    * read by its own unit. A sensor with no length unit, such as a DIY template
    * sensor, is scaled by the YAML input_units as before. Must match
-   * `_reading_unit_factor` in binary_sensor.py.
+   * `reading_unit_factor` in targets.py.
    */
   _readingUnitFactor(stateObj) {
     const unit = stateObj?.attributes?.unit_of_measurement;
@@ -3502,6 +3887,7 @@ export class ZoneMapCard extends HTMLElement {
     const pxPerMmY = gridMetrics ? gridMetrics.pxPerMmY : this.pxPerY || 0;
     if (!pxPerMmX || !pxPerMmY) return null;
 
+    const mirror = this._mirrorX;
     const keyParts = [
       this._roundKeyValue(thetaStart),
       this._roundKeyValue(thetaEnd),
@@ -3509,11 +3895,13 @@ export class ZoneMapCard extends HTMLElement {
       this._roundKeyValue(pxPerMmX),
       this._roundKeyValue(pxPerMmY),
       this._roundKeyValue(this.xMin),
+      this._roundKeyValue(this.xMax),
       this._roundKeyValue(this.yMin),
       labelUnit,
       stepMm,
       this.canvas?.width || 0,
       this.canvas?.height || 0,
+      mirror ? 1 : 0,
     ];
     const key = keyParts.join('|');
     if (this._coneRingsCache && this._coneRingsCache.key === key) {
@@ -3531,7 +3919,10 @@ export class ZoneMapCard extends HTMLElement {
     const cosStep = Math.cos(angStep);
     const sinStart = Math.sin(thetaStart);
     const cosStart = Math.cos(thetaStart);
-    const offsetX = -this.xMin * pxPerMmX;
+    // The rings skip valueToPixels for speed, so they repeat its x mapping:
+    // (x - xMin) * px, or (xMax - x) * px on a flipped map.
+    const signX = mirror ? -1 : 1;
+    const offsetX = mirror ? this.xMax * pxPerMmX : -this.xMin * pxPerMmX;
     const offsetY = -this.yMin * pxPerMmY;
 
     // TODO(REVIEW_REPORT.md X45): rings run out to cone.y_max (no ceiling), even past the grid.
@@ -3543,7 +3934,7 @@ export class ZoneMapCard extends HTMLElement {
       for (let i = 0; i <= segments; i++) {
         const x = r * sinAng;
         const y = r * cosAng;
-        const px = x * pxPerMmX + offsetX;
+        const px = signX * x * pxPerMmX + offsetX;
         const py = y * pxPerMmY + offsetY;
         points.push([px, py]);
         if (i < segments) {
@@ -3562,7 +3953,7 @@ export class ZoneMapCard extends HTMLElement {
       rings.push(points);
 
       const mid = (thetaStart + thetaEnd) / 2;
-      const lx = r * Math.sin(mid) * pxPerMmX + offsetX;
+      const lx = signX * r * Math.sin(mid) * pxPerMmX + offsetX;
       const ly = r * Math.cos(mid) * pxPerMmY + offsetY;
       labels.push({
         x: lx,
@@ -3665,11 +4056,7 @@ export class ZoneMapCard extends HTMLElement {
     // either finger committed a collapsed or truncated shape over the zone.
     if (isTouch && e.touches.length > 1) return;
     if (this.isLocked) {
-      const now = Date.now();
-      if (!this._lastLockWarningTs || now - this._lastLockWarningTs > 1500) {
-        this._notify('Unlock the grid before drawing.');
-        this._lastLockWarningTs = now;
-      }
+      this._remindLocked(DRAW_LOCKED_TOAST);
       return;
     }
     if (this.selectedZone === null) return;
@@ -3707,7 +4094,12 @@ export class ZoneMapCard extends HTMLElement {
 
   valueToPixels(val, axis) {
     if (axis === 'x') {
-      return (val - this.xMin) * (this.pxPerX || 0);
+      // A flipped map (mirror_x) puts xMax on the left edge. Only these two
+      // transforms flip, never the context (ctx.scale(-1, 1) or a CSS
+      // scaleX(-1) would mirror the text and the pointer math too).
+      return this._mirrorX
+        ? (this.xMax - val) * (this.pxPerX || 0)
+        : (val - this.xMin) * (this.pxPerX || 0);
     } else {
       // Y increases downward: map directly without flipping
       return (val - this.yMin) * (this.pxPerY || 0);
@@ -3716,8 +4108,8 @@ export class ZoneMapCard extends HTMLElement {
 
   pixelsToValue(pix, axis) {
     if (axis === 'x') {
-      if (!this.pxPerX) return this.xMin;
-      return pix / this.pxPerX + this.xMin;
+      if (!this.pxPerX) return this._mirrorX ? this.xMax : this.xMin;
+      return this._mirrorX ? this.xMax - pix / this.pxPerX : pix / this.pxPerX + this.xMin;
     } else {
       // Inverse of valueToPixels when Y increases downward
       if (!this.pxPerY) return this.yMin;
