@@ -35,6 +35,8 @@ import {
 import { factoryResetRow, restartRadarRow } from "../src/panels/entity-rows";
 import { ZoneMapCard } from "../src/zone-map/card";
 import * as zoneMapCopy from "../src/zone-map/copy";
+import { decodeMovement } from "../src/zone-map/history";
+import type { MovementPayload } from "../src/zone-map/api";
 import type { EntityMap, HomeAssistant } from "../src/types";
 
 const EM_DASH = "\u2014";
@@ -421,6 +423,44 @@ describe("zone map card copy module", () => {
     expect(copyProblems(texts)).toEqual([]);
     expect(texts.filter((t) => FILLER.test(t))).toEqual([]);
     expect(texts.filter((t) => BRITISH.test(t))).toEqual([]);
+  });
+
+  it("words movement history's decode errors by the same rules", () => {
+    // Not copy.ts constants: like a websocket error's own message, each is
+    // the technical end of historyError's sentence, thrown by history.ts.
+    const answer = {
+      enabled: true,
+      now: 1767229200000,
+      since: 1767225600000,
+      retention_s: 86400,
+      n: 4,
+      t0: 1767225590000,
+      dt: "AAAAAPQBAAAAAgAAjDoAAA==",
+      s: "AAAAAAEA//8=",
+      x: "eACqAOD8AAA=",
+      y: "YAlqCRwMAAA=",
+    };
+    expect(decodeMovement(answer).count).toBe(4);
+    const broken: Record<string, unknown>[] = [
+      { n: 3 },
+      { n: 1 },
+      { x: btoa("\u0001") },
+      { s: "not base64!" },
+      { t0: null },
+      { n: 1.5 },
+      { y: undefined },
+    ];
+    const texts = broken.map((fields) => {
+      try {
+        decodeMovement({ ...answer, ...fields } as MovementPayload);
+      } catch (error) {
+        return zoneMapCopy.historyError((error as Error).message);
+      }
+      return "decoded";
+    });
+    expect(texts).not.toContain("decoded");
+    expect(copyProblems(texts)).toEqual([]);
+    expect(texts.filter((t) => FILLER.test(t) || BRITISH.test(t))).toEqual([]);
   });
 
   it("builds the zone map's sentences from their parts", () => {

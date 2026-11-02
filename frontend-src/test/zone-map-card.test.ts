@@ -4641,6 +4641,39 @@ describe("zone map card coverage", () => {
     ]);
   });
 
+  it("keeps the first write of a vanish out of the trail and the cells", async () => {
+    const { card, set, move } = await coverageCard();
+    document.body.appendChild(card);
+    move(-2000, 2000);
+    vi.advanceTimersByTime(200);
+    move(-1000, 2000);
+    vi.advanceTimersByTime(200);
+
+    // The target leaves, and its X turns 0 a push before its Y does.
+    // (0, 2000) is a point nobody stood at: a real move to x = 0 is
+    // followed by more readings, not by an empty slot.
+    set({ "sensor.a_x": { state: "0" } });
+    vi.advanceTimersByTime(20);
+    set({ "sensor.a_y": { state: "0" } });
+    vi.advanceTimersByTime(1000);
+
+    expect(card._trails.samples(0).map((s: any) => [s.x, s.y])).toEqual([
+      [-2000, 2000],
+      [-1000, 2000],
+    ]);
+    expect(cells(card)).toEqual([
+      [-10, 10, 1],
+      [-5, 10, 1],
+    ]);
+
+    // A target that stops at x = 0 is a real position, and counts.
+    move(1000, 3000);
+    vi.advanceTimersByTime(200);
+    move(0, 3000);
+    vi.advanceTimersByTime(1000);
+    expect(cells(card)).toContainEqual([0, 15, 1]);
+  });
+
   it("counts a still target once while another one moves", async () => {
     // Every push carries both pairs' states, but only the target that moved
     // is sampled: the still one would otherwise be counted again for each
@@ -8579,6 +8612,44 @@ describe("zone map card movement history", () => {
     expect(draw).toHaveBeenCalledTimes(3);
     expect(dots(frame(card))).toEqual([["1", 400, 160]]);
     expect(segments(frame(card))).toHaveLength(2);
+  });
+
+  it("fades the live trails on while another range loads, and after it fails", async () => {
+    const { card, hass } = await historyCard();
+    document.body.appendChild(card);
+    const move = (x: number) => {
+      const states = { "sensor.a_x": { state: String(x) }, "sensor.a_y": { state: "2000" } };
+      card.hass = { ...hass, states };
+    };
+    move(-2000);
+    vi.advanceTimersByTime(200);
+    move(-1000);
+    await openHistory(card);
+    expect(card._replayShowing()).toBe(true);
+    // The fade frame that was due stands down under the replay.
+    vi.advanceTimersByTime(200);
+    expect(card._trailTimer).toBeNull();
+    let fail: (error: unknown) => void = () => {};
+    hass.movement = () =>
+      new Promise((_resolve, reject) => {
+        fail = reject;
+      });
+    rangeChip(card, 6).click();
+    const draw = vi.spyOn(card, "drawGrid");
+
+    // The radar sends nothing new, so only the fade timer paints the live
+    // trail, which the range change put back on the map.
+    vi.advanceTimersByTime(100);
+    expect(draw).toHaveBeenCalledTimes(1);
+    fail({ code: "unknown_error", message: "Timeout" });
+    await settle();
+    expect($(card, "historyStatus").textContent).toBe("Could not load movement history: Timeout");
+    vi.advanceTimersByTime(100);
+    expect(draw).toHaveBeenCalledTimes(2);
+    // Until the trail is gone, then the timer stops.
+    vi.advanceTimersByTime(3000);
+    expect(segments(frame(card))).toEqual([]);
+    expect(card._trailTimer).toBeNull();
   });
 
   it("closes History from Back to live, the chip, a load error, another radar and view_only", async () => {

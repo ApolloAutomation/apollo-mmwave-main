@@ -92,6 +92,21 @@ export class TrailBuffer {
   }
 
   /**
+   * Take back the slot's newest sample while it is not final, that is while
+   * `takeFinal` has not handed it out. For the first of the two writes of a
+   * target that vanishes, (0, old y) or (old x, 0): a point nobody stood at,
+   * which shows only when the next push finds the target gone. Returns
+   * whether a sample was taken back.
+   */
+  retract(slot: number): boolean {
+    const trail = this._slots.get(slot);
+    if (!trail || trail.samples.length <= trail.taken) return false;
+    trail.samples.pop();
+    if (trail.samples.length === 0) this._slots.delete(slot);
+    return true;
+  }
+
+  /**
    * Drop the samples TRAIL_MS old or older, and every slot left empty. The
    * cut is the one `hasTrail` uses, so once it reports no trail, nothing is
    * left that the card could still draw.

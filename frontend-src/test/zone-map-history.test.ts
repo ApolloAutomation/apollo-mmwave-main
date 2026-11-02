@@ -186,6 +186,14 @@ describe("decodeMovement", () => {
     );
     expect(() => decodeMovement({ ...EXAMPLE, y: "" })).toThrow(/y column/);
     expect(() => decodeMovement({ ...EXAMPLE, s: EXAMPLE.x + "AAAA" })).toThrow(/s column/);
+    // The card shows these as a sentence, so one byte and one record read
+    // as one.
+    expect(() => decodeMovement({ ...EXAMPLE, n: 1 })).toThrow(
+      "the dt column has 16 bytes where 1 record needs 4"
+    );
+    expect(() => decodeMovement({ ...EXAMPLE, x: btoa("\u0001") })).toThrow(
+      "the x column has 1 byte where 4 records need 8"
+    );
   });
 
   it("rejects an answer it cannot decode", () => {

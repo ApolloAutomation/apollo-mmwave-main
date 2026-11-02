@@ -384,6 +384,18 @@ function findTouch(list, identifier) {
 }
 
 /**
+ * Whether a target's reading (x, y) may be the first of the two writes of a
+ * target that vanishes: exactly one coordinate turned 0 since `last`, the
+ * slot's previous reading. The second write, the other coordinate
+ * turning 0, then shows the slot empty. The same rule as `half_vanished` in
+ * hold.py, by which the hold and the movement recorder skip such a point.
+ */
+function halfVanished(last, x, y) {
+  if (!last || (x === 0) === (y === 0)) return false;
+  return x === 0 ? last.x !== 0 : last.y !== 0;
+}
+
+/**
  * A clock time with seconds in `language`, on a 12-hour clock when `hour12`
  * is true, a 24-hour one when false, the language's own when undefined, in
  * `timeZone` or this browser's. A 24-hour clock writes 09:05:00, as Home
@@ -993,9 +1005,22 @@ export class ZoneMapCard extends HTMLElement {
     // one's cell again for every move the other made.
     const readings = new Map();
     this._currentTargets().forEach(({ slot, x, y }) => {
-      readings.set(slot, { x, y });
       const last = this._trailReadings.get(slot);
-      if (!last || last.x !== x || last.y !== y) this._trails.push(slot, now, x, y);
+      if (last && last.x === x && last.y === y) {
+        readings.set(slot, last);
+        return;
+      }
+      this._trails.push(slot, now, x, y);
+      readings.set(slot, { x, y, halfVanished: halfVanished(last, x, y) });
+    });
+    // A target gone right after one coordinate turned 0 left a point nobody
+    // stood at, (0, old y) or (old x, 0), where its X and Y writes came in
+    // two pushes. Taken back while it is too new for Coverage to have
+    // counted, so no trail runs out to the line x = 0 or y = 0 and no cell
+    // there is painted. A real reading with a 0 in it is followed by more
+    // readings and stays.
+    this._trailReadings.forEach((last, slot) => {
+      if (last.halfVanished && !readings.has(slot)) this._trails.retract(slot);
     });
     this._trailReadings = readings;
     // Before the prune, so a position is counted before it ages out.
@@ -2488,8 +2513,13 @@ export class ZoneMapCard extends HTMLElement {
     h.loading = true;
     h.error = null;
     this._renderHistoryPanel();
-    // The live map while the range loads.
-    if (showing) this.drawGrid();
+    if (showing) {
+      // The live map while the range loads, or after it failed to. Its
+      // trails fade on: the replay stood the fade timer down, and a radar
+      // with nobody moving sends no push to start it again.
+      this.drawGrid();
+      this._kickTrailTimer();
+    }
     const fail = (message) => {
       // Nothing older may land on top of what this says.
       this._historyReq += 1;

@@ -181,6 +181,28 @@ describe("TrailBuffer", () => {
     ]);
   });
 
+  it("takes back the newest sample only while it is not final", () => {
+    const trails = new TrailBuffer();
+    trails.push(0, 0, -1000, 2000);
+    trails.push(0, 200, 0, 2000);
+    trails.takeFinal(100);
+
+    // The first of a vanish's two writes, under 60 ms old: taken back, so
+    // takeFinal never hands it out.
+    expect(trails.retract(0)).toBe(true);
+    expect(trails.samples(0)).toEqual([{ t: 0, x: -1000, y: 2000 }]);
+    expect(trails.takeFinal(1000)).toEqual([]);
+    // A final sample stays, and so does a slot that has nothing to take back.
+    expect(trails.retract(0)).toBe(false);
+    expect(trails.samples(0)).toHaveLength(1);
+    expect(trails.retract(5)).toBe(false);
+
+    // Taking back a slot's only sample forgets the slot.
+    trails.push(1, 300, 500, 1500);
+    expect(trails.retract(1)).toBe(true);
+    expect(trails.slots()).toEqual([0]);
+  });
+
   it("ignores a position that is not a number", () => {
     const trails = new TrailBuffer();
     expect(trails.push(0, 0, NaN, 1000)).toBe(false);

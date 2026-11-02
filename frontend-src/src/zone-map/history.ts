@@ -61,9 +61,10 @@ function columnView(name: string, column: unknown, expected: number, n: number):
     throw new Error(`the ${name} column is not base64`);
   }
   if (binary.length !== expected) {
-    throw new Error(
-      `the ${name} column has ${binary.length} bytes where ${n} records need ${expected}`
-    );
+    // The card shows this after "Could not load movement history: ".
+    const bytes = binary.length === 1 ? "1 byte" : `${binary.length} bytes`;
+    const records = n === 1 ? "1 record needs" : `${n} records need`;
+    throw new Error(`the ${name} column has ${bytes} where ${records} ${expected}`);
   }
   const bytes = new Uint8Array(expected);
   for (let i = 0; i < expected; i += 1) bytes[i] = binary.charCodeAt(i);
