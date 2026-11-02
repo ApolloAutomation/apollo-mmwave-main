@@ -11,8 +11,9 @@ targets.py, which the movement recorder shares, so the two can never read a
 target differently.
 A detect zone with a hold time stays on after someone inside it is lost
 without being seen to leave, until that time has passed since it emptied.
-hold.py has the rules; the hold lives in memory only, so a restart or a
-reload ends it.
+hold.py has the rules, and a timer reads a held zone again when a
+half-written reading can count as real; the hold lives in memory only, so a
+restart or a reload ends it.
 Identity is the radar's Home Assistant device id plus the zone id, and the
 entity is registered against that device, so zone presence shows up on the
 radar's device page where automations are built from, and renaming it is safe.
@@ -237,9 +238,9 @@ class ZonePresenceBinarySensor(ZoneEntityMixin, BinarySensorEntity):
         # X with the old Y) and can pulse presence on and off. Scheduling one
         # evaluation with call_soon lets both writes land first. This is
         # best-effort coalescing: it removes the pulse when X and Y arrive in one
-        # event-loop turn, which is how the ESPHome API normally delivers a
-        # batched pair, but not when they arrive in separate turns. It adds no
-        # timed window.
+        # event-loop turn, but an R PRO-1 often writes Y about 0.45 s after X,
+        # and presence, unchanged since 2.3.0, then tests the new X with the old
+        # Y for that long. It adds no timed window.
         if self._pending_eval is None:
             self._pending_eval = self.hass.loop.call_soon(self._flush_evaluation)
 

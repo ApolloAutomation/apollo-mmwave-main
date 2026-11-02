@@ -9,16 +9,35 @@ held for each of those would stay on long after the room emptied. A person is
 accounted for by either of two rules, and the zone turns off once nobody is
 left unaccounted for:
 
-1. Seen outside: during the first 3 s, a tracked target outside the zone
-   within 600 mm, plus 1.6 mm for each millisecond since the zone emptied, of
-   where the person was last seen inside. LD2450 slots swap between people,
-   so this goes by position, not by slot, and each outside target accounts
-   for one person.
-2. Walked out: the person was moving when the zone emptied and was last seen
-   within 300 mm of the zone's edge or of the edge of the radar's view.
+1. Seen outside: during the first 3 s, a target outside the zone within
+   600 mm of where the person was last seen inside, plus 1.6 mm for each
+   millisecond since the zone emptied, and for each millisecond, up to
+   1.2 s, from their last report until then. LD2450 slots swap between
+   people, so this goes by position, and each outside target accounts for
+   one person.
+   Only the person's own slot, or one that had no reading when the zone
+   emptied, gets the growing radius: a target the radar was already
+   tracking elsewhere then, someone else or a still object, counts only
+   within 600 mm.
+2. Walked out: the person was walking when the zone emptied and was last
+   seen near the zone's edge or the edge of the radar's view: within
+   300 mm, plus what their speed covers from their last report to the loss
+   and 0.75 s more, up to 1.5 m. Walking means two steps in a row of at
+   least 250 mm between their own reports 0.9 s or more apart, or one step
+   at 850 mm/s or more. The LD2450's jump of about 0.5 m in its last report
+   before it loses someone sitting still is one slower step, so it holds.
 
-Someone inside again ends the hold: only the people of the last evaluation
-that found anyone inside are carried into the next emptying.
+The numbers are tuned for the LD2450 of an R PRO-1 on firmware 26.10.21.1,
+which writes each axis about once a second, Y usually about 0.45 s after X,
+so someone needs about two reports of walking in view, or one brisk one, to
+count as walking out. Someone inside again ends the hold: only the people of
+the last evaluation that found anyone inside are carried into the next
+emptying.
+
+On firmware that empties a slot as 0/0, a target vanishes, or appears, with
+one axis written before the other. The point in between is nobody's
+position, so the slot's last good reading stands in for it, or for an
+appearance nothing does (see half_vanished and HoldTracker.usable).
 
 The rules work on ``Reading`` objects: one tracked target as presence and the
 movement recorder see it, with its slot in the radar's pair list, its position
@@ -126,7 +145,7 @@ def half_vanished(prev: tuple[float, float] | None, raw: tuple[float, float]) ->
     """Report whether raw is the first of the two writes of a vanishing target."""
     # A target that vanishes reports X = 0 and Y = 0 as two writes, which
     # sometimes land in separate loop turns. The first gives a phantom point,
-    # (0, old y) or (old x, 0), that no person occupied: as a hold anchor it
+    # (0, old y) or (old x, 0), that no person occupied: as a report it
     # fakes motion, and as an outside target it can release the hold at once.
     # So: exactly one coordinate is exactly 0, and that coordinate was not 0
     # in the slot's previous reading. A slot with no previous reading (it
