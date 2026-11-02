@@ -1,23 +1,30 @@
-"""Zone presence sensors: device attachment, tracked pairs, and the fallback."""
+"""Zone presence sensors: device attachment, tracked pairs, masking, offline, hold."""
 
 from __future__ import annotations
 
 import logging
 import math
+from datetime import timedelta
+from typing import Any
 
 import pytest
-from homeassistant.const import ATTR_UNIT_OF_MEASUREMENT, UnitOfLength
+from homeassistant.const import (
+    ATTR_UNIT_OF_MEASUREMENT,
+    STATE_UNAVAILABLE,
+    UnitOfLength,
+)
 from homeassistant.core import callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.util.unit_conversion import DistanceConverter
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    async_fire_time_changed,
+)
 
 from custom_components.apollo_mmwave import get_store, ld2450
-from custom_components.apollo_mmwave.binary_sensor import (
-    ZonePresenceBinarySensor,
-    _build_point_rotator,
-)
+from custom_components.apollo_mmwave.binary_sensor import ZonePresenceBinarySensor
 from custom_components.apollo_mmwave.const import (
     ATTR_ROTATION_DEG,
     DOMAIN,
@@ -28,6 +35,7 @@ from custom_components.apollo_mmwave.const import (
     STORE_INPUT_UNITS,
     STORE_ZONES,
 )
+from custom_components.apollo_mmwave.targets import build_point_rotator
 
 from .conftest import RECT_ZONE
 
@@ -45,9 +53,9 @@ TARGET_3 = {
 }
 
 
-def _presence_id(entity_registry, device_id: str) -> str:
+def _presence_id(entity_registry, device_id: str, zone_id: int = 1) -> str:
     return entity_registry.async_get_entity_id(
-        "binary_sensor", DOMAIN, f"{device_id}_zone_1_presence"
+        "binary_sensor", DOMAIN, f"{device_id}_zone_{zone_id}_presence"
     )
 
 
@@ -250,7 +258,7 @@ def test_point_rotator_matches_the_cards_rotation(rotation, expected) -> None:
     """The card draws targets with the same formula, so both must agree."""
     # frontend-src/src/zone-map/card.ts `_drawTrackedTargets` is the twin, and
     # zone-map-card.test.ts pins the same 90 and 45 degree results there.
-    rotate = _build_point_rotator(rotation)
+    rotate = build_point_rotator(rotation)
 
     assert rotate(1000, 0) == pytest.approx(expected, abs=1e-6)
 
@@ -792,8 +800,8 @@ async def test_a_pending_evaluation_is_cancelled_on_removal(
     assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
 
 
-def _draw_zone(hass, device_id: str, zone: dict) -> None:
-    get_store(hass).device(device_id)[STORE_ZONES][1] = zone
+def _draw_zone(hass, device_id: str, zone: dict, *, zone_id: int = 1) -> None:
+    get_store(hass).device(device_id)[STORE_ZONES][zone_id] = zone
     async_dispatcher_send(hass, SIGNAL_ZONES_UPDATED, device_id)
 
 
@@ -1018,3 +1026,1179 @@ async def test_input_units_survive_a_reload(
     _set_target(hass, TARGET_1, 0, 150)
     await hass.async_block_till_done()
     assert hass.states.get(presence_id).state == "on"
+
+
+# Ignore zones are seeded straight into the store, the way the fixtures seed
+# zones. This one sits in the middle of zone 1 (RECT_ZONE), where a fan or a
+# curtain would be.
+IGNORE_ZONE = {
+    "shape": "rect",
+    "data": {"x_min": -500, "x_max": 500, "y_min": 500, "y_max": 1500},
+    "zone_type": "ignore",
+}
+
+
+def _take_radar_offline(hass) -> None:
+    """Mark every target sensor unavailable, as ESPHome does when a radar drops."""
+    for pair in (TARGET_1, TARGET_2, TARGET_3):
+        for entity_id in pair.values():
+            hass.states.async_set(entity_id, STATE_UNAVAILABLE)
+
+
+async def test_targets_inside_an_ignore_zone_do_not_turn_a_detect_zone_on(
+    hass, entity_registry, setup_entry_with_zone
+) -> None:
+    """A target an ignore zone covers is dropped before any detect zone sees it."""
+    device_id, _ = setup_entry_with_zone
+    _draw_zone(hass, device_id, dict(IGNORE_ZONE), zone_id=2)
+    await hass.async_block_till_done()
+    presence_id = _presence_id(entity_registry, device_id)
+
+    # Inside both zones.
+    _set_target(hass, TARGET_1, 0, 1000)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "off"
+
+    # Out of the ignore zone, still inside zone 1.
+    _set_target(hass, TARGET_1, 800, 1000)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "on"
+
+    # Masking drops a target, not the radar: a second target in the ignore
+    # zone leaves the first one counting.
+    _set_target(hass, TARGET_2, 0, 1000)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "on"
+
+    # Any ignore zone of the radar masks, not only the first one.
+    _draw_zone(
+        hass,
+        device_id,
+        {
+            "shape": "ellipse",
+            "data": {"cx": 800, "cy": 1000, "rx": 150, "ry": 150},
+            "zone_type": "ignore",
+        },
+        zone_id=3,
+    )
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "off"
+
+
+async def test_ignore_zones_mask_the_point_in_the_map_frame(
+    hass, entity_registry, setup_entry_with_zone
+) -> None:
+    """The mask tests the converted, rotated point, the one zones are drawn in."""
+    device_id, _ = setup_entry_with_zone
+    get_store(hass).device(device_id)[ATTR_ROTATION_DEG] = 90
+    _draw_zone(hass, device_id, dict(IGNORE_ZONE), zone_id=2)
+    await hass.async_block_till_done()
+    presence_id = _presence_id(entity_registry, device_id)
+
+    # (-1000, 0) rotates to (0, 1000), inside the ignore zone.
+    _set_target(hass, TARGET_1, -1000, 0)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "off"
+
+    # (-300, 800) rotates to (800, 300): inside zone 1 and outside the ignore
+    # zone, though the raw reading lies inside it.
+    _set_target(hass, TARGET_1, -300, 800)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "on"
+
+    # -1000 mm in inches rotates to (0, 1000) again. Taken as millimeters it
+    # would land at (0, 39), inside zone 1 and outside the ignore zone.
+    _set_target(hass, TARGET_1, -1000 / 25.4, 0, ("in", "in"))
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "off"
+
+
+async def test_ignore_zone_presence_reads_off_with_zone_type_attribute(
+    hass, entity_registry, setup_entry_with_zone
+) -> None:
+    """An ignore zone is a mask: its own sensor reads off with zone_type: ignore."""
+    device_id, _ = setup_entry_with_zone
+    _draw_zone(hass, device_id, dict(IGNORE_ZONE), zone_id=2)
+    await hass.async_block_till_done()
+    ignore_id = _presence_id(entity_registry, device_id, zone_id=2)
+
+    state = hass.states.get(ignore_id)
+    assert state.state == "off"
+    assert state.attributes["zone_type"] == "ignore"
+
+    _set_target(hass, TARGET_1, 0, 1000)  # inside it
+    await hass.async_block_till_done()
+
+    state = hass.states.get(ignore_id)
+    assert state.state == "off"
+    assert state.attributes["zone_type"] == "ignore"
+    detect = hass.states.get(_presence_id(entity_registry, device_id))
+    assert "zone_type" not in detect.attributes
+
+
+async def test_ignore_zone_reads_off_even_while_the_radar_is_offline(
+    hass, entity_registry, setup_entry_with_zone
+) -> None:
+    """An ignore zone never goes unavailable, so its zone_type stays readable."""
+    device_id, _ = setup_entry_with_zone
+    _draw_zone(hass, device_id, dict(IGNORE_ZONE), zone_id=2)
+    await hass.async_block_till_done()
+
+    _take_radar_offline(hass)
+    await hass.async_block_till_done()
+
+    detect = hass.states.get(_presence_id(entity_registry, device_id))
+    assert detect.state == STATE_UNAVAILABLE
+    ignore = hass.states.get(_presence_id(entity_registry, device_id, zone_id=2))
+    assert ignore.state == "off"
+    assert ignore.attributes["zone_type"] == "ignore"
+
+
+async def test_switching_a_zone_to_ignore_and_back_reevaluates(
+    hass, entity_registry, setup_entry_with_zone
+) -> None:
+    """A type switch takes effect on the zone signal, with no new reading."""
+    device_id, _ = setup_entry_with_zone
+    around_target = {
+        "shape": "rect",
+        "data": {"x_min": -200, "x_max": 200, "y_min": 800, "y_max": 1200},
+    }
+    _draw_zone(hass, device_id, dict(around_target), zone_id=2)
+    _set_target(hass, TARGET_1, 0, 1000)
+    await hass.async_block_till_done()
+    zone_1 = _presence_id(entity_registry, device_id)
+    zone_2 = _presence_id(entity_registry, device_id, zone_id=2)
+    assert hass.states.get(zone_1).state == "on"
+    assert hass.states.get(zone_2).state == "on"
+
+    # Zone 2 becomes a mask: it reads off, and so does zone 1, which the
+    # same signal re-evaluates.
+    _draw_zone(hass, device_id, {**around_target, "zone_type": "ignore"}, zone_id=2)
+    await hass.async_block_till_done()
+    assert hass.states.get(zone_1).state == "off"
+    state = hass.states.get(zone_2)
+    assert state.state == "off"
+    assert state.attributes["zone_type"] == "ignore"
+
+    _draw_zone(hass, device_id, dict(around_target), zone_id=2)
+    await hass.async_block_till_done()
+    assert hass.states.get(zone_1).state == "on"
+    state = hass.states.get(zone_2)
+    assert state.state == "on"
+    assert "zone_type" not in state.attributes
+
+
+async def test_unhashable_shape_on_an_ignore_zone_does_not_break_presence(
+    hass, entity_registry, setup_entry_with_zone, caplog
+) -> None:
+    """A hand-edited list shape masks nothing and breaks no zone of the radar."""
+    device_id, _ = setup_entry_with_zone
+    _draw_zone(hass, device_id, {**IGNORE_ZONE, "shape": ["rect"]}, zone_id=2)
+    await hass.async_block_till_done()
+
+    _set_target(hass, TARGET_1, 0, 1000)
+    await hass.async_block_till_done()
+
+    assert hass.states.get(_presence_id(entity_registry, device_id)).state == "on"
+    state = hass.states.get(_presence_id(entity_registry, device_id, zone_id=2))
+    assert state.state == "off"
+    assert state.attributes["zone_type"] == "ignore"
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+async def test_tiny_ellipse_radius_on_an_ignore_zone_does_not_break_presence(
+    hass, entity_registry, setup_entry_with_zone, caplog
+) -> None:
+    """A hand-edited radius too small to square masks nothing and breaks no zone."""
+    device_id, _ = setup_entry_with_zone
+    _draw_zone(
+        hass,
+        device_id,
+        {
+            "shape": "ellipse",
+            "data": {"cx": 0, "cy": 1000, "rx": 1e-200, "ry": 500},
+            "zone_type": "ignore",
+        },
+        zone_id=2,
+    )
+    await hass.async_block_till_done()
+
+    _set_target(hass, TARGET_1, 0, 1000)
+    await hass.async_block_till_done()
+
+    assert hass.states.get(_presence_id(entity_registry, device_id)).state == "on"
+    state = hass.states.get(_presence_id(entity_registry, device_id, zone_id=2))
+    assert state.state == "off"
+    assert state.attributes["zone_type"] == "ignore"
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+async def test_presence_reads_unavailable_when_every_tracked_state_is_unavailable(
+    hass, entity_registry, setup_entry_with_zone
+) -> None:
+    """An offline radar says nothing about the zone, so presence is unavailable."""
+    device_id, _ = setup_entry_with_zone
+    presence_id = _presence_id(entity_registry, device_id)
+    _set_target(hass, TARGET_1, 0, 1000)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "on"
+
+    # One target still reporting, even an empty slot, keeps the radar online.
+    _set_target(hass, TARGET_1, STATE_UNAVAILABLE, STATE_UNAVAILABLE)
+    _set_target(hass, TARGET_2, 0, 0)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "off"
+
+    # Every tracked id that has a state is unavailable. Target 3 has never
+    # reported, which says nothing either way.
+    _set_target(hass, TARGET_2, STATE_UNAVAILABLE, STATE_UNAVAILABLE)
+    await hass.async_block_till_done()
+    assert hass.states.get(TARGET_3["x"]) is None
+    assert hass.states.get(presence_id).state == STATE_UNAVAILABLE
+
+
+async def test_presence_stays_off_when_tracked_ids_have_no_state(
+    hass, entity_registry, setup_entry_with_zone
+) -> None:
+    """Ids with no state at all are no sign of an offline radar."""
+    device_id, _ = setup_entry_with_zone
+    presence_id = _presence_id(entity_registry, device_id)
+    # The fixture's target sensors are registered but have never reported.
+    assert hass.states.get(TARGET_1["x"]) is None
+    assert hass.states.get(presence_id).state == "off"
+
+    # A configured pair whose sensors no longer exist.
+    get_store(hass).device(device_id)[STORE_ENTITIES] = [
+        {"x": "sensor.removed_x", "y": "sensor.removed_y"}
+    ]
+    async_dispatcher_send(hass, SIGNAL_ZONES_UPDATED, device_id)
+    await hass.async_block_till_done()
+
+    assert hass.states.get(presence_id).state == "off"
+
+
+async def test_presence_stays_off_with_a_cleared_pair_list(
+    hass, entity_registry, setup_entry_with_zone
+) -> None:
+    """Tracking nothing leaves no radar to be offline, whatever its sensors say."""
+    device_id, _ = setup_entry_with_zone
+    presence_id = _presence_id(entity_registry, device_id)
+    _take_radar_offline(hass)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == STATE_UNAVAILABLE
+
+    get_store(hass).device(device_id)[STORE_ENTITIES] = []
+    async_dispatcher_send(hass, SIGNAL_ZONES_UPDATED, device_id)
+    await hass.async_block_till_done()
+
+    assert hass.states.get(presence_id).state == "off"
+
+
+async def test_presence_recovers_when_the_radar_comes_back(
+    hass, entity_registry, setup_entry_with_zone
+) -> None:
+    """The first readings after a reconnect bring presence back at once."""
+    device_id, _ = setup_entry_with_zone
+    presence_id = _presence_id(entity_registry, device_id)
+    _take_radar_offline(hass)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == STATE_UNAVAILABLE
+
+    # ESPHome reports every sensor again: two empty slots and a target inside.
+    _set_target(hass, TARGET_1, 0, 1000)
+    _set_target(hass, TARGET_2, 0, 0)
+    _set_target(hass, TARGET_3, 0, 0)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "on"
+
+    # Back from another drop, one target reporting an empty slot is enough
+    # to read off rather than unavailable.
+    _take_radar_offline(hass)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == STATE_UNAVAILABLE
+    _set_target(hass, TARGET_1, 0, 0)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "off"
+
+
+async def test_unknown_states_do_not_count_as_offline(
+    hass, entity_registry, setup_entry_with_zone
+) -> None:
+    """An unknown state is live: no reading, but the radar is there."""
+    device_id, _ = setup_entry_with_zone
+    presence_id = _presence_id(entity_registry, device_id)
+    for pair in (TARGET_1, TARGET_2, TARGET_3):
+        _set_target(hass, pair, "unknown", "unknown")
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "off"
+
+    # Beside unavailable ones too.
+    _set_target(hass, TARGET_1, STATE_UNAVAILABLE, STATE_UNAVAILABLE)
+    _set_target(hass, TARGET_2, STATE_UNAVAILABLE, STATE_UNAVAILABLE)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "off"
+
+
+# Exit-aware hold. Hold times are seeded straight into the store, as the
+# fixtures seed zones. The frozen clock is both Home Assistant's timer clock
+# and the hold's time.monotonic(), so _advance moves both.
+HOLD_S = 60
+# Readings 0.35 s apart, 150 mm a step: slow walking, which hold rule 2 reads
+# as moving.
+WALK_STEP_S = 0.35
+# Toward zone 1's right edge at x = 1000, ending 50 mm from it.
+WALK_TO_RIGHT_EDGE = [(200 + 150 * step, 1000) for step in range(6)]
+# Zones that reach the edge of the radar's view, 6 m out and 60 degrees
+# either side of straight ahead, away from their own edges.
+FAR_ZONE = {
+    "shape": "rect",
+    "data": {"x_min": -1000, "x_max": 1000, "y_min": 3000, "y_max": 7000},
+}
+RIGHT_ZONE = {
+    "shape": "rect",
+    "data": {"x_min": 1000, "x_max": 4000, "y_min": 0, "y_max": 3000},
+}
+LEFT_ZONE = {
+    "shape": "rect",
+    "data": {"x_min": -4000, "x_max": -1000, "y_min": 0, "y_max": 3000},
+}
+# Walks that end near an edge, each with the zone it is drawn in. The first
+# ends 50 mm from zone 1's right edge. The others end at least 1.2 m from
+# their zone's edges but near the edge of the view: 200 mm short of 6 m, or
+# about 57 degrees to one side, 135 mm from the 60 degree line.
+EDGE_WALKS = {
+    "zone-edge": (RECT_ZONE, WALK_TO_RIGHT_EDGE),
+    "range": (FAR_ZONE, [(0, 5050 + 150 * step) for step in range(6)]),
+    "angle-right": (RIGHT_ZONE, [(2500, 2350 - 150 * step) for step in range(6)]),
+    "angle-left": (LEFT_ZONE, [(-2500, 2350 - 150 * step) for step in range(6)]),
+}
+
+
+def _hold_zone(
+    zone: dict[str, Any] = RECT_ZONE, hold_s: int = HOLD_S, **settings: Any
+) -> dict[str, Any]:
+    return {**zone, "hold_s": hold_s, **settings}
+
+
+def _hold_state(hass, entity_id: str) -> tuple[str, bool | None]:
+    """Return a presence sensor's state and its held attribute, None if absent."""
+    state = hass.states.get(entity_id)
+    return state.state, state.attributes.get("held")
+
+
+async def _advance(hass, freezer, seconds: float) -> None:
+    """Move the frozen clock on, then run every timer that came due."""
+    freezer.tick(timedelta(seconds=seconds))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+
+
+async def _sit(hass, freezer, pair: dict[str, str], x: float, y: float) -> None:
+    """Report a target that then sits still, so the radar reports nothing new."""
+    _set_target(hass, pair, x, y)
+    await hass.async_block_till_done()
+    await _advance(hass, freezer, 10)
+
+
+async def _walk(
+    hass, freezer, pair: dict[str, str], points: list[tuple[float, float]]
+) -> None:
+    """Report a target at each point in turn, WALK_STEP_S apart."""
+    for index, (x, y) in enumerate(points):
+        if index:
+            await _advance(hass, freezer, WALK_STEP_S)
+        _set_target(hass, pair, x, y)
+        await hass.async_block_till_done()
+
+
+async def _vanish(hass, pair: dict[str, str]) -> None:
+    """Report the target gone: X and Y both 0, in one loop turn."""
+    _set_target(hass, pair, 0, 0)
+    await hass.async_block_till_done()
+
+
+async def _store_zone(hass, device_id: str, zone: dict[str, Any] | None = None) -> None:
+    """Store zone 1, held unless a zone is given, and let every zone re-evaluate."""
+    _draw_zone(hass, device_id, zone or _hold_zone())
+    await hass.async_block_till_done()
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [{}, {"hold_s": 0}, {"hold_s": "60"}, {"hold_s": True}],
+    ids=["absent", "zero", "text", "bool"],
+)
+async def test_hold_zero_turns_off_at_once_like_before(
+    hass, freezer, entity_registry, setup_entry_with_zone, settings
+) -> None:
+    """With no hold time, a zone turns off the moment nobody is in it."""
+    device_id, _ = setup_entry_with_zone
+    await _store_zone(hass, device_id, {**RECT_ZONE, **settings})
+    presence_id = _presence_id(entity_registry, device_id)
+    await _sit(hass, freezer, TARGET_1, 500, 1000)
+    assert _hold_state(hass, presence_id) == ("on", None)
+
+    # The X of a vanish landing alone reads as (0, 1000), still inside. With
+    # no hold, presence reads it as it always has.
+    hass.states.async_set(TARGET_1["x"], "0")
+    await hass.async_block_till_done()
+    assert _hold_state(hass, presence_id) == ("on", None)
+
+    hass.states.async_set(TARGET_1["y"], "0")
+    await hass.async_block_till_done()
+    assert _hold_state(hass, presence_id) == ("off", None)
+
+
+async def test_held_attribute_only_when_hold_is_set(
+    hass, freezer, entity_registry, setup_entry_with_zone
+) -> None:
+    """A zone with a hold time says whether it is held; others say nothing."""
+    device_id, _ = setup_entry_with_zone
+    presence_id = _presence_id(entity_registry, device_id)
+    assert _hold_state(hass, presence_id) == ("off", None)
+
+    await _store_zone(hass, device_id)
+    assert _hold_state(hass, presence_id) == ("off", False)
+
+    await _sit(hass, freezer, TARGET_1, 0, 1000)
+    assert _hold_state(hass, presence_id) == ("on", False)
+    await _vanish(hass, TARGET_1)
+    assert _hold_state(hass, presence_id) == ("on", True)
+
+    await _store_zone(hass, device_id, dict(RECT_ZONE))
+    assert _hold_state(hass, presence_id) == ("off", None)
+
+
+async def test_still_person_lost_mid_zone_holds_until_hold_s(
+    hass, freezer, entity_registry, setup_entry_with_zone
+) -> None:
+    """Someone who sat still and was lost keeps the zone on for the hold time."""
+    device_id, _ = setup_entry_with_zone
+    await _store_zone(hass, device_id)
+    presence_id = _presence_id(entity_registry, device_id)
+
+    await _sit(hass, freezer, TARGET_1, 0, 1000)
+    await _vanish(hass, TARGET_1)
+    assert _hold_state(hass, presence_id) == ("on", True)
+
+    await _advance(hass, freezer, HOLD_S - 1)
+    assert _hold_state(hass, presence_id) == ("on", True)
+
+    await _advance(hass, freezer, 2)
+    assert _hold_state(hass, presence_id) == ("off", False)
+
+
+async def test_hold_expires_hold_s_after_the_zone_emptied(
+    hass, freezer, entity_registry, setup_entry_with_zone
+) -> None:
+    """The hold time counts from when the zone emptied, not the last reading."""
+    device_id, _ = setup_entry_with_zone
+    await _store_zone(hass, device_id, _hold_zone(hold_s=30))
+    presence_id = _presence_id(entity_registry, device_id)
+    _set_target(hass, TARGET_1, 0, 1000)
+    await hass.async_block_till_done()
+
+    # A reading stays current until it changes: they were inside all along.
+    await _advance(hass, freezer, 20)
+    await _vanish(hass, TARGET_1)
+
+    await _advance(hass, freezer, 25)  # 45 s after their last reading
+    assert _hold_state(hass, presence_id) == ("on", True)
+
+    await _advance(hass, freezer, 6)
+    assert _hold_state(hass, presence_id) == ("off", False)
+
+
+async def test_person_seen_just_outside_releases_at_once(
+    hass, freezer, entity_registry, setup_entry_with_zone
+) -> None:
+    """A target outside the zone, close to where they were, accounts for them."""
+    device_id, _ = setup_entry_with_zone
+    await _store_zone(hass, device_id)
+    presence_id = _presence_id(entity_registry, device_id)
+    # Still for 10 s, so the walking-out rule alone would hold.
+    await _sit(hass, freezer, TARGET_1, 900, 1000)
+
+    _set_target(hass, TARGET_1, 1300, 1000)  # 400 mm on, outside
+    await hass.async_block_till_done()
+
+    assert _hold_state(hass, presence_id) == ("off", False)
+
+
+async def test_person_reacquired_in_another_slot_just_outside_releases(
+    hass, freezer, entity_registry, setup_entry_with_zone
+) -> None:
+    """LD2450 slots swap between people, so a match goes by position."""
+    device_id, _ = setup_entry_with_zone
+    await _store_zone(hass, device_id)
+    presence_id = _presence_id(entity_registry, device_id)
+    await _sit(hass, freezer, TARGET_1, 900, 1000)
+    await _vanish(hass, TARGET_1)
+    assert _hold_state(hass, presence_id) == ("on", True)
+
+    await _advance(hass, freezer, 1)
+    _set_target(hass, TARGET_2, 1300, 1000)  # the same person, as target 2
+    await hass.async_block_till_done()
+
+    assert _hold_state(hass, presence_id) == ("off", False)
+
+
+async def test_outside_target_too_far_does_not_release(
+    hass, freezer, entity_registry, setup_entry_with_zone
+) -> None:
+    """A target farther than a person could have walked accounts for nobody."""
+    device_id, _ = setup_entry_with_zone
+    await _store_zone(hass, device_id)
+    presence_id = _presence_id(entity_registry, device_id)
+    await _sit(hass, freezer, TARGET_1, 0, 1000)
+    await _vanish(hass, TARGET_1)
+
+    # 1.5 m away 0.5 s after the zone emptied, past the 1.4 m reach then.
+    await _advance(hass, freezer, 0.5)
+    _set_target(hass, TARGET_2, 1500, 1000)
+    await hass.async_block_till_done()
+    assert _hold_state(hass, presence_id) == ("on", True)
+
+    # Within the reach of a later moment, but only after the first 3 s.
+    await _advance(hass, freezer, 3)
+    _set_target(hass, TARGET_2, 1450, 1000)
+    await hass.async_block_till_done()
+    assert _hold_state(hass, presence_id) == ("on", True)
+
+
+async def test_outside_target_after_three_seconds_does_not_release(
+    hass, freezer, entity_registry, setup_entry_with_zone
+) -> None:
+    """After the first 3 s, a target outside accounts for nobody, however near."""
+    device_id, _ = setup_entry_with_zone
+    await _store_zone(hass, device_id)
+    presence_id = _presence_id(entity_registry, device_id)
+    await _sit(hass, freezer, TARGET_1, 900, 1000)
+    await _vanish(hass, TARGET_1)
+
+    await _advance(hass, freezer, 3.5)
+    _set_target(hass, TARGET_2, 1100, 1000)  # 200 mm from where they were
+    await hass.async_block_till_done()
+
+    assert _hold_state(hass, presence_id) == ("on", True)
+
+
+async def test_another_tracked_person_4_m_away_releases_within_3_s(
+    hass, freezer, entity_registry, setup_entry_with_zone
+) -> None:
+    """The reach grows to 5.4 m in 3 s, so anyone the radar tracks nearby counts."""
+    # Rule 1 as specified, pinned on purpose: a narrower reach for targets
+    # tracked elsewhere is an open question.
+    device_id, _ = setup_entry_with_zone
+    await _store_zone(hass, device_id)
+    presence_id = _presence_id(entity_registry, device_id)
+    _set_target(hass, TARGET_2, 4000, 1000)  # someone else, outside the zone
+    await _sit(hass, freezer, TARGET_1, 0, 1000)
+    await _vanish(hass, TARGET_1)
+    assert _hold_state(hass, presence_id) == ("on", True)
+
+    await _advance(hass, freezer, 1)
+    _set_target(hass, TARGET_2, 4000, 1100)  # 4 m, past the 2.2 m of 1 s
+    await hass.async_block_till_done()
+    assert _hold_state(hass, presence_id) == ("on", True)
+
+    await _advance(hass, freezer, 1.5)
+    _set_target(hass, TARGET_2, 4000, 1000)  # within the 4.6 m of 2.5 s
+    await hass.async_block_till_done()
+    assert _hold_state(hass, presence_id) == ("off", False)
+
+
+async def test_one_outside_target_accounts_for_one_person(
+    hass, freezer, entity_registry, setup_entry_with_zone
+) -> None:
+    """Two people lost together need two targets outside to release the zone."""
+    device_id, _ = setup_entry_with_zone
+    await _store_zone(hass, device_id)
+    presence_id = _presence_id(entity_registry, device_id)
+    _set_target(hass, TARGET_1, 0, 1000)
+    await _sit(hass, freezer, TARGET_2, 300, 1000)
+    _set_target(hass, TARGET_1, 0, 0)
+    _set_target(hass, TARGET_2, 0, 0)
+    await hass.async_block_till_done()
+    assert _hold_state(hass, presence_id) == ("on", True)
+
+    # Within reach of both, it accounts for the nearer one.
+    await _advance(hass, freezer, 0.5)
+    _set_target(hass, TARGET_3, 100, 2100)
+    await hass.async_block_till_done()
+    assert _hold_state(hass, presence_id) == ("on", True)
+
+    # Seen again, the same target accounts for nobody else.
+    await _advance(hass, freezer, 0.5)
+    _set_target(hass, TARGET_3, 150, 2150)
+    await hass.async_block_till_done()
+    assert _hold_state(hass, presence_id) == ("on", True)
+
+    _set_target(hass, TARGET_1, 1200, 1000)  # 900 mm from the other one
+    await hass.async_block_till_done()
+    assert _hold_state(hass, presence_id) == ("off", False)
+
+
+async def test_an_outside_target_goes_to_the_nearest_vanished_person(
+    hass, freezer, entity_registry, setup_entry_with_zone
+) -> None:
+    """A person who walked out keeps their own reading; the one sitting is held."""
+    device_id, _ = setup_entry_with_zone
+    await _store_zone(hass, device_id)
+    presence_id = _presence_id(entity_registry, device_id)
+    await _sit(hass, freezer, TARGET_1, 600, 1000)
+    await _walk(hass, freezer, TARGET_2, WALK_TO_RIGHT_EDGE)
+
+    # In one report the sitter is lost, and the walker steps out 150 mm past
+    # where they were. That reading is within reach of the sitter too (500
+    # mm). Given to the sitter, it would leave the walker to the walking-out
+    # rule, which releases them at the edge, and the zone would turn off.
+    _set_target(hass, TARGET_1, 0, 0)
+    _set_target(hass, TARGET_2, 1100, 1000)
+    await hass.async_block_till_done()
+
+    assert _hold_state(hass, presence_id) == ("on", True)
+
+
+async def test_moving_person_lost_near_the_zone_edge_releases(
+    hass, freezer, entity_registry, setup_entry_with_zone
+) -> None:
+    """Lost mid-stride at the zone's edge, a person walked out: no hold."""
+    device_id, _ = setup_entry_with_zone
+    await _store_zone(hass, device_id)
+    presence_id = _presence_id(entity_registry, device_id)
+    await _walk(hass, freezer, TARGET_1, WALK_TO_RIGHT_EDGE)
+
+    await _vanish(hass, TARGET_1)
+
+    assert _hold_state(hass, presence_id) == ("off", False)
+
+
+async def test_moving_person_lost_mid_zone_holds(
+    hass, freezer, entity_registry, setup_entry_with_zone
+) -> None:
+    """Moving is not enough to have walked out: it takes an edge nearby too."""
+    device_id, _ = setup_entry_with_zone
+    await _store_zone(hass, device_id)
+    presence_id = _presence_id(entity_registry, device_id)
+    # The same walk 575 mm to the left, ending 625 mm from the nearest edge.
+    await _walk(hass, freezer, TARGET_1, [(x - 575, y) for x, y in WALK_TO_RIGHT_EDGE])
+
+    await _vanish(hass, TARGET_1)
+
+    assert _hold_state(hass, presence_id) == ("on", True)
+
+
+@pytest.mark.parametrize("edge", ["range", "angle-right", "angle-left"])
+async def test_moving_person_lost_near_the_coverage_edge_releases(
+    hass, freezer, entity_registry, setup_entry_with_zone, edge
+) -> None:
+    """Lost mid-stride where the radar's view ends, a person walked out of it."""
+    zone, walk = EDGE_WALKS[edge]
+    device_id, _ = setup_entry_with_zone
+    await _store_zone(hass, device_id, _hold_zone(zone))
+    presence_id = _presence_id(entity_registry, device_id)
+    await _walk(hass, freezer, TARGET_1, walk)
+
+    await _vanish(hass, TARGET_1)
+
+    assert _hold_state(hass, presence_id) == ("off", False)
+
+
+@pytest.mark.parametrize("edge", list(EDGE_WALKS))
+async def test_still_person_lost_near_the_edge_holds(
+    hass, freezer, entity_registry, setup_entry_with_zone, edge
+) -> None:
+    """Near an edge but sitting still, a lost person did not walk out."""
+    zone, walk = EDGE_WALKS[edge]
+    device_id, _ = setup_entry_with_zone
+    await _store_zone(hass, device_id, _hold_zone(zone))
+    presence_id = _presence_id(entity_registry, device_id)
+    await _sit(hass, freezer, TARGET_1, *walk[-1])
+
+    await _vanish(hass, TARGET_1)
+
+    assert _hold_state(hass, presence_id) == ("on", True)
+
+
+async def test_stale_motion_does_not_count_as_moving(
+    hass, freezer, entity_registry, setup_entry_with_zone
+) -> None:
+    """A walk that ended 2 s before the loss is no sign of walking out."""
+    device_id, _ = setup_entry_with_zone
+    await _store_zone(hass, device_id)
+    presence_id = _presence_id(entity_registry, device_id)
+    await _walk(hass, freezer, TARGET_1, WALK_TO_RIGHT_EDGE)
+
+    # They stop by the edge, and the radar reports nothing new for 2 s.
+    await _advance(hass, freezer, 2)
+    await _vanish(hass, TARGET_1)
+
+    assert _hold_state(hass, presence_id) == ("on", True)
+
+
+async def test_transient_target_vanishing_mid_zone_holds(
+    hass, freezer, entity_registry, setup_entry_with_zone
+) -> None:
+    """A ghost seen mid-zone for half a second holds the zone: a known limit."""
+    # Seen for under 1.2 s, a target counts as moving, but it was lost far
+    # from every edge, so nothing accounts for it. An ignore zone over the
+    # ghost's source is the remedy.
+    device_id, _ = setup_entry_with_zone
+    await _store_zone(hass, device_id)
+    presence_id = _presence_id(entity_registry, device_id)
+    _set_target(hass, TARGET_1, 0, 1000)
+    await hass.async_block_till_done()
+
+    await _advance(hass, freezer, 0.5)
+    await _vanish(hass, TARGET_1)
+    assert _hold_state(hass, presence_id) == ("on", True)
+
+    await _advance(hass, freezer, HOLD_S + 1)
+    assert _hold_state(hass, presence_id) == ("off", False)
+
+
+async def test_someone_inside_again_ends_the_hold(
+    hass, freezer, entity_registry, setup_entry_with_zone
+) -> None:
+    """Someone coming in ends the hold, and the person lost before is forgotten."""
+    device_id, _ = setup_entry_with_zone
+    await _store_zone(hass, device_id)
+    presence_id = _presence_id(entity_registry, device_id)
+    await _sit(hass, freezer, TARGET_1, 0, 1000)
+    await _vanish(hass, TARGET_1)
+    assert _hold_state(hass, presence_id) == ("on", True)
+
+    await _advance(hass, freezer, 5)
+    _set_target(hass, TARGET_2, 800, 1000)
+    await hass.async_block_till_done()
+    assert _hold_state(hass, presence_id) == ("on", False)
+
+    # They walk out and are accounted for, and nothing is left to hold.
+    await _advance(hass, freezer, 1)
+    _set_target(hass, TARGET_2, 1200, 1000)
+    await hass.async_block_till_done()
+    assert _hold_state(hass, presence_id) == ("off", False)
+
+
+async def test_still_person_lost_while_another_is_inside_is_forgotten(
+    hass, freezer, entity_registry, setup_entry_with_zone
+) -> None:
+    """Only the people of the last evaluation that found anyone inside are held."""
+    # A known limit, pinned on purpose: carrying such a person into the hold
+    # instead is an open question.
+    device_id, _ = setup_entry_with_zone
+    await _store_zone(hass, device_id)
+    presence_id = _presence_id(entity_registry, device_id)
+    _set_target(hass, TARGET_1, -500, 1000)
+    await _sit(hass, freezer, TARGET_2, 800, 1000)
+
+    await _vanish(hass, TARGET_1)  # lost while the other is still inside
+    assert _hold_state(hass, presence_id) == ("on", False)
+
+    await _advance(hass, freezer, 2)
+    _set_target(hass, TARGET_2, 1200, 1000)  # the other walks out
+    await hass.async_block_till_done()
+    assert _hold_state(hass, presence_id) == ("off", False)
+
+
+async def test_two_people_swapping_slots_inside_keep_the_zone_on(
+    hass, freezer, entity_registry, setup_entry_with_zone
+) -> None:
+    """A slot swap inside the zone changes who is where, not whether it is on."""
+    device_id, _ = setup_entry_with_zone
+    await _store_zone(hass, device_id)
+    presence_id = _presence_id(entity_registry, device_id)
+    _set_target(hass, TARGET_1, -500, 1000)
+    await _sit(hass, freezer, TARGET_2, 500, 1000)
+    changes = _record_state_changes(hass, presence_id)
+
+    _set_target(hass, TARGET_1, 500, 1000)
+    _set_target(hass, TARGET_2, -500, 1000)
+    await hass.async_block_till_done()
+
+    assert changes == []
+    assert _hold_state(hass, presence_id) == ("on", False)
+
+
+# Off the radar's axes, so that the half-written vanish of a target sitting
+# near this zone's corner at (400, 500) lands outside it, 400 or 500 mm from
+# the target: close enough to account for them if it were a reading.
+CORNER_ZONE = {
+    "shape": "rect",
+    "data": {"x_min": 200, "x_max": 2000, "y_min": 300, "y_max": 2000},
+}
+
+
+@pytest.mark.parametrize("first", ["x", "y"], ids=["x-first", "y-first"])
+async def test_vanish_reported_in_two_turns_still_holds(
+    hass, freezer, entity_registry, setup_entry_with_zone, first
+) -> None:
+    """The first half of a vanish is nobody's position, so it releases nothing."""
+    device_id, _ = setup_entry_with_zone
+    await _store_zone(hass, device_id, _hold_zone(CORNER_ZONE))
+    presence_id = _presence_id(entity_registry, device_id)
+    await _sit(hass, freezer, TARGET_1, 400, 500)
+
+    # (0, 500) or (400, 0), with a loop turn before the other write lands.
+    hass.states.async_set(TARGET_1[first], "0")
+    await hass.async_block_till_done()
+    assert _hold_state(hass, presence_id) == ("on", True)
+
+    hass.states.async_set(TARGET_1["y" if first == "x" else "x"], "0")
+    await hass.async_block_till_done()
+    assert _hold_state(hass, presence_id) == ("on", True)
+
+
+async def test_ignored_target_does_not_release_a_hold(
+    hass, freezer, entity_registry, setup_entry_with_zone
+) -> None:
+    """A fan or a curtain inside an ignore zone accounts for nobody."""
+    device_id, _ = setup_entry_with_zone
+    await _store_zone(hass, device_id)
+    _draw_zone(
+        hass,
+        device_id,
+        {
+            "shape": "rect",
+            "data": {"x_min": 1100, "x_max": 1700, "y_min": 700, "y_max": 1300},
+            "zone_type": "ignore",
+        },
+        zone_id=2,
+    )
+    await hass.async_block_till_done()
+    presence_id = _presence_id(entity_registry, device_id)
+    await _sit(hass, freezer, TARGET_1, 700, 1000)
+    await _vanish(hass, TARGET_1)
+
+    await _advance(hass, freezer, 0.5)
+    _set_target(hass, TARGET_2, 1200, 1000)  # 500 mm away, in the ignore zone
+    await hass.async_block_till_done()
+    assert _hold_state(hass, presence_id) == ("on", True)
+
+    # Out of the ignore zone, 350 mm away, the same target does.
+    await _advance(hass, freezer, 0.5)
+    _set_target(hass, TARGET_2, 1050, 1000)
+    await hass.async_block_till_done()
+    assert _hold_state(hass, presence_id) == ("off", False)
+
+
+async def test_offline_radar_drops_the_hold(
+    hass, freezer, entity_registry, setup_entry_with_zone
+) -> None:
+    """A radar that drops off says nothing about who it lost, so the hold ends."""
+    device_id, _ = setup_entry_with_zone
+    await _store_zone(hass, device_id)
+    presence_id = _presence_id(entity_registry, device_id)
+    await _sit(hass, freezer, TARGET_1, 0, 1000)
+    await _vanish(hass, TARGET_1)
+    assert _hold_state(hass, presence_id) == ("on", True)
+
+    _take_radar_offline(hass)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == STATE_UNAVAILABLE
+
+    # Back with nobody in view: the hold does not come back with it.
+    for pair in (TARGET_1, TARGET_2, TARGET_3):
+        _set_target(hass, pair, 0, 0)
+    await hass.async_block_till_done()
+    assert _hold_state(hass, presence_id) == ("off", False)
+
+    await _advance(hass, freezer, HOLD_S + 1)
+    assert _hold_state(hass, presence_id) == ("off", False)
+
+
+async def test_zone_deletion_cancels_the_hold_timer(
+    hass, freezer, setup_entry_with_zone, monkeypatch, caplog
+) -> None:
+    """A deleted zone's hold never fires into the entity that left with it."""
+    device_id, _ = setup_entry_with_zone
+    await _store_zone(hass, device_id)
+    presence_id = _presence_id(er.async_get(hass), device_id)
+    await _sit(hass, freezer, TARGET_1, 0, 1000)
+    await _vanish(hass, TARGET_1)
+    assert _hold_state(hass, presence_id) == ("on", True)
+    evaluated: list[str] = []
+    real = ZonePresenceBinarySensor._evaluate_and_write  # noqa: SLF001 - the subject
+
+    def _spy(self, *, write: bool = True) -> None:
+        evaluated.append(self.entity_id)
+        real(self, write=write)
+
+    monkeypatch.setattr(ZonePresenceBinarySensor, "_evaluate_and_write", _spy)
+
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_UPDATE_ZONE,
+        {"device_id": device_id, "zone_id": 1, "delete": True},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id) is None
+
+    await _advance(hass, freezer, HOLD_S + 1)
+
+    assert evaluated == []
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+async def test_hold_s_change_reschedules_from_when_the_zone_emptied(
+    hass, freezer, entity_registry, setup_entry_with_zone
+) -> None:
+    """A new hold time keeps the hold and counts from when the zone emptied."""
+    device_id, _ = setup_entry_with_zone
+    await _store_zone(hass, device_id)
+    presence_id = _presence_id(entity_registry, device_id)
+    await _sit(hass, freezer, TARGET_1, 0, 1000)
+    await _vanish(hass, TARGET_1)
+
+    await _advance(hass, freezer, 10)
+    await _store_zone(hass, device_id, _hold_zone(hold_s=120))
+    await _advance(hass, freezer, 51)  # past the first 60 s
+    assert _hold_state(hass, presence_id) == ("on", True)
+
+    await _advance(hass, freezer, 9)  # 70 s after the zone emptied
+    await _store_zone(hass, device_id, _hold_zone(hold_s=80))
+    await _advance(hass, freezer, 9)
+    assert _hold_state(hass, presence_id) == ("on", True)
+
+    await _advance(hass, freezer, 2)
+    assert _hold_state(hass, presence_id) == ("off", False)
+
+
+async def test_hold_s_lowered_below_the_time_empty_releases_at_once(
+    hass, freezer, entity_registry, setup_entry_with_zone
+) -> None:
+    """A hold time shorter than the zone has been empty is already over."""
+    device_id, _ = setup_entry_with_zone
+    await _store_zone(hass, device_id)
+    presence_id = _presence_id(entity_registry, device_id)
+    await _sit(hass, freezer, TARGET_1, 0, 1000)
+    await _vanish(hass, TARGET_1)
+
+    await _advance(hass, freezer, 40)
+    await _store_zone(hass, device_id, _hold_zone(hold_s=30))
+
+    assert _hold_state(hass, presence_id) == ("off", False)
+
+
+async def test_hold_s_to_zero_releases_at_once(
+    hass, freezer, entity_registry, setup_entry_with_zone
+) -> None:
+    """Taking the hold time away ends the hold there and then."""
+    device_id, _ = setup_entry_with_zone
+    await _store_zone(hass, device_id)
+    presence_id = _presence_id(entity_registry, device_id)
+    await _sit(hass, freezer, TARGET_1, 0, 1000)
+    await _vanish(hass, TARGET_1)
+
+    await _advance(hass, freezer, 5)
+    await _store_zone(hass, device_id, dict(RECT_ZONE))
+    assert _hold_state(hass, presence_id) == ("off", None)
+
+    # Given a hold time again, the zone does not pick the old hold back up.
+    await _store_zone(hass, device_id)
+    assert _hold_state(hass, presence_id) == ("off", False)
+    await _advance(hass, freezer, HOLD_S)
+    assert _hold_state(hass, presence_id) == ("off", False)
+
+
+@pytest.mark.parametrize(
+    "zone",
+    [
+        {
+            "shape": "rect",
+            "data": {"x_min": -1500, "x_max": 1500, "y_min": 0, "y_max": 2500},
+        },
+        {"shape": "ellipse", "data": {"cx": 0, "cy": 1000, "rx": 1000, "ry": 1000}},
+    ],
+    ids=["resized", "reshaped"],
+)
+async def test_geometry_change_drops_the_hold(
+    hass, freezer, entity_registry, setup_entry_with_zone, zone
+) -> None:
+    """Where a person was lost means nothing in a zone drawn somewhere else."""
+    device_id, _ = setup_entry_with_zone
+    await _store_zone(hass, device_id)
+    presence_id = _presence_id(entity_registry, device_id)
+    await _sit(hass, freezer, TARGET_1, 0, 1000)
+    await _vanish(hass, TARGET_1)
+
+    await _store_zone(hass, device_id, _hold_zone(zone))
+
+    assert _hold_state(hass, presence_id) == ("off", False)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {ATTR_ROTATION_DEG: 15},
+        {STORE_INPUT_UNITS: "cm"},
+        {STORE_ENTITIES: [TARGET_1, TARGET_2]},
+    ],
+    ids=["rotation", "input-units", "pairs"],
+)
+async def test_a_change_in_how_targets_are_read_drops_the_hold(
+    hass, freezer, entity_registry, setup_entry_with_zone, change
+) -> None:
+    """The hold ends when the rotation, the units or the tracked pairs change."""
+    device_id, _ = setup_entry_with_zone
+    await _store_zone(hass, device_id)
+    presence_id = _presence_id(entity_registry, device_id)
+    await _sit(hass, freezer, TARGET_1, 0, 1000)
+    await _vanish(hass, TARGET_1)
+
+    get_store(hass).device(device_id).update(change)
+    async_dispatcher_send(hass, SIGNAL_ZONES_UPDATED, device_id)
+    await hass.async_block_till_done()
+
+    assert _hold_state(hass, presence_id) == ("off", False)
+
+
+async def test_drawing_an_ignore_zone_drops_the_hold(
+    hass, freezer, entity_registry, setup_entry_with_zone
+) -> None:
+    """A new mask changes what every zone of the radar sees, so the hold ends."""
+    device_id, _ = setup_entry_with_zone
+    await _store_zone(hass, device_id)
+    presence_id = _presence_id(entity_registry, device_id)
+    await _sit(hass, freezer, TARGET_1, 0, 1000)
+    await _vanish(hass, TARGET_1)
+
+    _draw_zone(hass, device_id, {**RIGHT_ZONE, "zone_type": "ignore"}, zone_id=2)
+    await hass.async_block_till_done()
+
+    assert _hold_state(hass, presence_id) == ("off", False)
+
+
+async def test_rename_keeps_the_hold(
+    hass, freezer, entity_registry, setup_entry_with_zone
+) -> None:
+    """A zone's name has nothing to do with who is in it."""
+    device_id, _ = setup_entry_with_zone
+    await _store_zone(hass, device_id)
+    presence_id = _presence_id(entity_registry, device_id)
+    await _sit(hass, freezer, TARGET_1, 0, 1000)
+    await _vanish(hass, TARGET_1)
+
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_UPDATE_ZONE,
+        {"device_id": device_id, "zone_id": 1, "name": "Couch"},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+    assert _hold_state(hass, presence_id) == ("on", True)
+
+    await _advance(hass, freezer, HOLD_S + 1)
+    assert _hold_state(hass, presence_id) == ("off", False)
+
+
+async def test_changes_presence_does_not_read_keep_the_hold(
+    hass, freezer, entity_registry, setup_entry_with_zone
+) -> None:
+    """Display settings and another detect zone's edits leave a hold standing."""
+    device_id, _ = setup_entry_with_zone
+    await _store_zone(hass, device_id)
+    presence_id = _presence_id(entity_registry, device_id)
+    await _sit(hass, freezer, TARGET_1, 0, 1000)
+    await _vanish(hass, TARGET_1)
+
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_UPDATE_ZONE,
+        {"device_id": device_id, "display_units": "ft"},
+        blocking=True,
+    )
+    device = get_store(hass).device(device_id)
+    device["mirror_x"] = True
+    device["movement_history"] = True
+    _draw_zone(hass, device_id, dict(RIGHT_ZONE), zone_id=2)
+    await hass.async_block_till_done()
+    _draw_zone(hass, device_id, dict(LEFT_ZONE), zone_id=2)
+    await hass.async_block_till_done()
+
+    assert _hold_state(hass, presence_id) == ("on", True)
+
+
+async def test_first_zone_signal_after_add_keeps_the_hold(
+    hass, freezer, entity_registry, setup_entry_with_zone
+) -> None:
+    """After a reload, the first zone signal compares against what the add read."""
+    device_id, entry = setup_entry_with_zone
+    await _store_zone(hass, device_id)
+    _draw_zone(hass, device_id, dict(RIGHT_ZONE), zone_id=2)
+    await hass.async_block_till_done()
+    # A reload while Home Assistant runs: no STARTED nudge follows it, so the
+    # first zone signal the new entity sees can come long after a hold began.
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    presence_id = _presence_id(entity_registry, device_id)
+    await _sit(hass, freezer, TARGET_1, 0, 1000)
+    await _vanish(hass, TARGET_1)
+    assert _hold_state(hass, presence_id) == ("on", True)
+
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_UPDATE_ZONE,
+        {"device_id": device_id, "zone_id": 2, "name": "Hall"},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+
+    assert _hold_state(hass, presence_id) == ("on", True)
+
+
+async def test_hold_is_not_restored_after_a_reload(
+    hass, freezer, entity_registry, setup_entry_with_zone, caplog
+) -> None:
+    """The hold lives in memory only: a reload reads the zone from live readings."""
+    device_id, entry = setup_entry_with_zone
+    await _store_zone(hass, device_id)
+    presence_id = _presence_id(entity_registry, device_id)
+    await _sit(hass, freezer, TARGET_1, 0, 1000)
+    await _vanish(hass, TARGET_1)
+    assert _hold_state(hass, presence_id) == ("on", True)
+
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert _hold_state(hass, presence_id) == ("off", False)
+
+    await _advance(hass, freezer, HOLD_S + 1)
+    assert _hold_state(hass, presence_id) == ("off", False)
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+async def test_ignore_zone_never_holds(
+    hass, freezer, entity_registry, setup_entry_with_zone
+) -> None:
+    """An ignore zone has nothing to hold, whatever hold time its dict carries."""
+    device_id, _ = setup_entry_with_zone
+    await _store_zone(hass, device_id)
+    # A hold time on an ignore zone, as a hand edit could leave it.
+    _draw_zone(hass, device_id, {**IGNORE_ZONE, "hold_s": HOLD_S}, zone_id=2)
+    await hass.async_block_till_done()
+    zone_1 = _presence_id(entity_registry, device_id)
+    zone_2 = _presence_id(entity_registry, device_id, zone_id=2)
+
+    await _sit(hass, freezer, TARGET_2, 0, 1000)  # inside the ignore zone
+    await _vanish(hass, TARGET_2)
+    state = hass.states.get(zone_2)
+    assert state.state == "off"
+    assert state.attributes["zone_type"] == "ignore"
+    assert "held" not in state.attributes
+
+    # A held detect zone switched to ignore lets go, and switched back it
+    # does not pick the hold up again.
+    await _sit(hass, freezer, TARGET_1, 800, 1000)
+    await _vanish(hass, TARGET_1)
+    assert _hold_state(hass, zone_1) == ("on", True)
+
+    await _store_zone(hass, device_id, _hold_zone(zone_type="ignore"))
+    state = hass.states.get(zone_1)
+    assert state.state == "off"
+    assert state.attributes["zone_type"] == "ignore"
+    assert "held" not in state.attributes
+
+    await _store_zone(hass, device_id)
+    assert _hold_state(hass, zone_1) == ("off", False)

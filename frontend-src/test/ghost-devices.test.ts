@@ -203,8 +203,10 @@ describe("ghost/offline device filtering", () => {
   });
 
   describe("renamed beyond recognition, with a drawn zone", () => {
-    // The integration attaches its own zone sensors to the radar's device and
-    // they never go unavailable, so they must not stand in for the radar.
+    // The integration attaches its own zone sensors to the radar's device. The
+    // geometry sensors never go unavailable and a detect zone's presence only
+    // echoes the radar's target sensors, so they must not stand in for the
+    // radar.
     const renamed = "sensor.den_motion_distance";
     const zone = "sensor.den_zone_1";
     const presence = "binary_sensor.den_zone_1_presence";

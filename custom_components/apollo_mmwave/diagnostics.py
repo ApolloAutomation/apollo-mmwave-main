@@ -8,8 +8,9 @@ versions, and this integration's manifest. This adds what answering a support
 question takes: the integration and Home Assistant versions, the unit system,
 the entry's dashboard options, the Lovelace resource rows this integration
 owns, and per Apollo radar its model, firmware, which radars were found, the
-LD2450 target pairs with their readings, the zone store entry and the
-calibration results.
+LD2450 target pairs with their readings, the zone store entry, the
+calibration results, and whether movement history is on and how many records
+it holds. Never a record: the history's positions stay out of this file.
 
 Read only. Nothing here writes a device setting, a store, a dashboard or a
 resource row, and no cache is filled: the tracked LD2450 pairs are read the
@@ -49,23 +50,27 @@ from .const import (
     CONF_DASHBOARD_ID,
     CONF_DASHBOARD_URL_PATH,
     DATA_CALIBRATION_STORE,
+    DATA_MOVEMENT,
     DATA_PAIR_CACHE,
     DATA_RESOURCE_URLS,
     DATA_STORE,
     DOMAIN,
     STATIC_URL_BASE,
     STORE_ENTITIES,
+    STORE_MOVEMENT_HISTORY,
     STORE_ZONES,
 )
 from .frontend import async_dashboard_owned
 from .gates import resolve_gate_entities
 from .ld2450 import resolve_target_pairs
+from .store import device_flag
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
 
     from .calibration_store import CalibrationStore
+    from .movement import MovementHistory
     from .store import ZoneStore
 
 _LOGGER = logging.getLogger(__name__)
@@ -334,6 +339,7 @@ def _device(
     hass: HomeAssistant,
     device_id: str,
     store: ZoneStore | None,
+    movement: MovementHistory | None,
     dashboard_devices: list[str],
 ) -> dict[str, Any]:
     """Return everything support reads about one radar."""
@@ -365,6 +371,12 @@ def _device(
         "ld2450": ld2450,
         "calibration": calibration_payload(hass, device_id),
         "zone_store": _zone_entry(zone_entry),
+        # Whether history is kept and how much, never what: the count is read
+        # without trimming, saving or scheduling anything.
+        "movement_history": {
+            "enabled": device_flag(zone_entry, STORE_MOVEMENT_HISTORY),
+            "points": movement.count(device_id) if movement is not None else 0,
+        },
         "zone_entities": sorted(
             (
                 _entity(hass, entry.entity_id)
@@ -449,6 +461,7 @@ async def async_get_config_entry_diagnostics(
     data = hass.data.get(DOMAIN, {})
     store: ZoneStore | None = data.get(DATA_STORE)
     calibration_store: CalibrationStore | None = data.get(DATA_CALIBRATION_STORE)
+    movement: MovementHistory | None = data.get(DATA_MOVEMENT)
     options = dict(entry.options)
     dashboard_devices = [
         device_id
@@ -481,12 +494,13 @@ async def async_get_config_entry_diagnostics(
         # False while the entry is not loaded: the stores are then not read.
         "zone_store_loaded": store is not None,
         "calibration_store_loaded": calibration_store is not None,
+        "movement_store_loaded": movement is not None,
         "orphans": {
             location: _zone_entry(orphan)
             for location, orphan in (store.orphans if store is not None else {}).items()
         },
         "devices": [
-            _device(hass, device_id, store, dashboard_devices)
+            _device(hass, device_id, store, movement, dashboard_devices)
             for device_id in _device_ids(
                 hass, store, calibration_store, dashboard_devices
             )

@@ -229,3 +229,50 @@ async def test_zones_on_two_devices_do_not_collide(
         entity_registry.async_get_entity_id("sensor", DOMAIN, f"{other.id}_zone_1")
         == "sensor.apollo_mtr_1_def456_zone_1"
     )
+
+
+async def test_geometry_sensor_publishes_zone_type_and_hold_only_when_set(
+    hass, entity_registry, init_integration, device_id
+) -> None:
+    """zone_type and hold_s show only on a zone that has them, read as presence does."""
+    _ = init_integration
+
+    async def update(**fields: object) -> None:
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_UPDATE_ZONE,
+            {"device_id": device_id, "zone_id": 1, **fields},
+            blocking=True,
+        )
+        await hass.async_block_till_done()
+
+    await update(**RECT_ZONE)
+    sensor_id = entity_registry.async_get_entity_id(
+        "sensor", DOMAIN, f"{device_id}_zone_1"
+    )
+
+    def settings() -> dict[str, object]:
+        attributes = hass.states.get(sensor_id).attributes
+        return {
+            key: attributes[key] for key in ("zone_type", "hold_s") if key in attributes
+        }
+
+    assert settings() == {}
+
+    await update(zone_type="ignore", hold_s=45)
+    assert settings() == {"zone_type": "ignore", "hold_s": 45}
+
+    await update(zone_type="detect", hold_s=0)
+    assert settings() == {}
+
+    # Hand edits: what presence reads as the default is published as one.
+    zones = get_store(hass).device(device_id)[STORE_ZONES]
+    zones[1] = {**RECT_ZONE, "zone_type": "IGNORE", "hold_s": "60"}
+    async_dispatcher_send(hass, SIGNAL_ZONES_UPDATED, device_id)
+    await hass.async_block_till_done()
+    assert settings() == {}
+
+    zones[1] = {**RECT_ZONE, "hold_s": 99999.5}
+    async_dispatcher_send(hass, SIGNAL_ZONES_UPDATED, device_id)
+    await hass.async_block_till_done()
+    assert settings() == {"hold_s": 3600}

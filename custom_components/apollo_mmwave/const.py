@@ -16,6 +16,11 @@ EVENT_CALIBRATION_FINISHED = f"{DOMAIN}_calibration_finished"
 
 # Internal dispatcher signal fired with the device id on any zone change.
 SIGNAL_ZONES_UPDATED = f"{DOMAIN}_zones_updated"
+# Internal dispatcher signal fired with the device id when only the zones
+# payload changed, such as a renamed presence entity id. Only the websocket
+# zone subscribers listen: the platforms and the movement recorder have
+# nothing to redo, so they stay on SIGNAL_ZONES_UPDATED.
+SIGNAL_ZONES_PAYLOAD = f"{DOMAIN}_zones_payload"
 # Internal dispatcher signal fired with the device id on every calibration
 # job status change and once per sampling tick.
 SIGNAL_CALIBRATION_UPDATED = f"{DOMAIN}_calibration_updated"
@@ -31,6 +36,9 @@ DATA_RESOURCES_REMOVED = "resources_removed"
 DATA_PAIR_CACHE = "ld2450_pair_cache"
 DATA_CALIBRATION_STORE = "calibration_store"
 DATA_CALIBRATION_JOBS = "calibration_jobs"
+# The live MovementHistory: the recorder of every radar with movement history
+# on, and the store of their positions.
+DATA_MOVEMENT = "movement"
 
 # Store keys (v2). Zones are keyed by Home Assistant device id, which survives
 # renames. `label` is display only and never used to build an identifier.
@@ -97,6 +105,28 @@ SENSOR_UNIT_FACTORS = {
     "mi": 1_609_344.0,
     "nmi": 1_852_000.0,
 }
+# Zone settings, kept in the zone's own dict beside shape, data and name. A
+# default is never stored: absent means a detect zone with no hold, and
+# update_zone pops the key instead of writing "detect" or 0. Zone dicts load
+# verbatim, so read them through store.zone_type_of and store.zone_hold_s.
+STORE_ZONE_TYPE = "zone_type"
+# An ignore zone is a mask in Home Assistant: a target inside it is dropped
+# before the radar's detect zones are checked. It is not the LD2450 Zone Type
+# setting of the R PRO-1 or MTR-1, and nothing is written to the radar.
+ZONE_TYPE_DETECT = "detect"
+ZONE_TYPE_IGNORE = "ignore"
+ZONE_TYPES = (ZONE_TYPE_DETECT, ZONE_TYPE_IGNORE)
+# Seconds a detect zone stays on after someone inside it is lost without
+# being seen to leave; the service takes 0 to HOLD_S_MAX.
+STORE_HOLD_S = "hold_s"
+HOLD_S_MAX = 3600
+# Radar flags, device-wide like display_units and stored only as True, so
+# absent means off. mirror_x draws the radar's map mirrored left to right for
+# every viewer and is display only: zone geometry and presence never read it.
+# movement_history keeps up to 24 hours of target positions that an
+# administrator can replay.
+STORE_MIRROR_X = "mirror_x"
+STORE_MOVEMENT_HISTORY = "movement_history"
 
 # Attribute / data keys. Persisted coordinates are rounded to whole mm
 ATTR_SHAPE = "shape"
@@ -112,6 +142,14 @@ ATTR_RX = "rx"
 ATTR_RY = "ry"
 ATTR_ROTATION_DEG = "rotation_deg"
 ATTR_NAME = "name"
+# Zone presence attributes. `held` is on zones with a hold time only, and
+# `zone_type` (the store key's string) marks an ignore zone on its presence
+# and geometry sensors.
+ATTR_HELD = "held"
+ATTR_ZONE_TYPE = "zone_type"
+# Zones payload, per zone: the presence entity's current id, so the card can
+# light a zone from its state whatever the entity was renamed to.
+KEY_PRESENCE_ENTITY_ID = "presence_entity_id"
 
 # Shapes
 SHAPE_RECT = "rect"

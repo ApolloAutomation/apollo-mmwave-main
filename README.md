@@ -22,6 +22,11 @@ draw presence zones.
 - The radar tuning charts were inspired by MirkoP's MSR tuning dashboard.
   That dashboard needed two extra HACS cards and about 950 lines of pasted
   YAML. This integration builds the dashboard for you.
+- Several zone map features, such as hold time and movement replay, build on
+  ideas from
+  [bb12ett/esphome-radar-suite](https://github.com/bb12ett/esphome-radar-suite)
+  and [baes-cloud/ha-rmm-replay](https://github.com/baes-cloud/ha-rmm-replay),
+  both MIT licensed. They were reimplemented here, and no code was copied.
 
 ## What you get
 
@@ -34,6 +39,9 @@ draw presence zones.
   radar sees, and each zone gets a presence sensor for your automations. The
   map is in feet or meters to match Home Assistant, and a **Radar setup**
   card above it checks the radar's settings and fixes them with one tap.
+- **Zones you can watch.** Zones light up while someone is in them, a zone
+  can stay on for someone sitting still or ignore a fan, and administrators
+  can turn on movement history to replay up to 24 hours on the map.
 - **Setup checks and plain help on every tab.** A **Radar setup** card flags
   radar settings that are off, a **Start here** list walks you through the
   rest, and an occupancy history shows the last 24 hours. A **Device** card

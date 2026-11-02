@@ -34,6 +34,9 @@ import {
 } from "../src/strategy-core";
 import { factoryResetRow, restartRadarRow } from "../src/panels/entity-rows";
 import { ZoneMapCard } from "../src/zone-map/card";
+import * as zoneMapCopy from "../src/zone-map/copy";
+import { decodeMovement } from "../src/zone-map/history";
+import type { MovementPayload } from "../src/zone-map/api";
 import type { EntityMap, HomeAssistant } from "../src/types";
 
 const EM_DASH = "\u2014";
@@ -369,6 +372,117 @@ describe("controls and zone map copy", () => {
       "Show the map in feet",
     ]);
     expect(copyProblems(texts)).toEqual([]);
+  });
+});
+
+describe("zone map card copy module", () => {
+  /** Words the copy rules keep out of anything a user reads. */
+  const FILLER = /\b(?:simply|just|easy|easily|powerful|seamlessly)\b/i;
+  /** British spellings a zone map string could pick up. */
+  const BRITISH =
+    /\b(?:colou?rs?|behaviours?|favourite|centres?|metres?|litres?|grey(?:ed)?|organised?|recognised?|realised?|customised?|minimised?|maximised?|optimised?|cancelled|cancelling|labelled|labelling|travelled|travelling|modelled|licence|catalogue|dialogue|programme|whilst|amongst)\b/i;
+
+  /** Each function copy.ts exports, with the arguments its output is
+   *  checked with: every case it words differently. */
+  const CALLS: Record<string, unknown[][]> = {
+    walkHintNext: [[1], [2], [5]],
+    historyError: [["Home Assistant is restarting"]],
+    historyClearError: [["Home Assistant is restarting"]],
+    replayBadge: [["10:24:05 AM"]],
+    formatAgo: [[0], [120000], [3900000]],
+  };
+
+  /** Every string copy.ts exports, the functions' output included. */
+  function zoneMapTexts(): string[] {
+    const exports = zoneMapCopy as Record<string, unknown>;
+    return [
+      ...strings(Object.values(zoneMapCopy)),
+      ...Object.entries(CALLS).flatMap(([name, calls]) =>
+        calls.map((args) => (exports[name] as (...a: unknown[]) => string)(...args))
+      ),
+    ];
+  }
+
+  it("checks every export, the functions through their output", () => {
+    const functions = Object.entries(zoneMapCopy)
+      .filter(([, value]) => typeof value === "function")
+      .map(([name]) => name);
+    expect(functions.sort()).toEqual(Object.keys(CALLS).sort());
+    // Everything else is a string or a list the string checks reach (the
+    // hold seconds are numbers, labeled through formatHold).
+    for (const [name, value] of Object.entries(zoneMapCopy)) {
+      if (typeof value === "function") continue;
+      expect(typeof value === "string" || Array.isArray(value), name).toBe(true);
+    }
+  });
+
+  it("writes every zone map string in US English without em dashes or filler", () => {
+    const texts = zoneMapTexts();
+    expect(texts.length).toBeGreaterThan(70);
+    expect(texts.every((t) => typeof t === "string" && t.length > 0)).toBe(true);
+    expect(copyProblems(texts)).toEqual([]);
+    expect(texts.filter((t) => FILLER.test(t))).toEqual([]);
+    expect(texts.filter((t) => BRITISH.test(t))).toEqual([]);
+  });
+
+  it("words movement history's decode errors by the same rules", () => {
+    // Not copy.ts constants: like a websocket error's own message, each is
+    // the technical end of historyError's sentence, thrown by history.ts.
+    const answer = {
+      enabled: true,
+      now: 1767229200000,
+      since: 1767225600000,
+      retention_s: 86400,
+      n: 4,
+      t0: 1767225590000,
+      dt: "AAAAAPQBAAAAAgAAjDoAAA==",
+      s: "AAAAAAEA//8=",
+      x: "eACqAOD8AAA=",
+      y: "YAlqCRwMAAA=",
+    };
+    expect(decodeMovement(answer).count).toBe(4);
+    const broken: Record<string, unknown>[] = [
+      { n: 3 },
+      { n: 1 },
+      { x: btoa("\u0001") },
+      { s: "not base64!" },
+      { t0: null },
+      { n: 1.5 },
+      { y: undefined },
+    ];
+    const texts = broken.map((fields) => {
+      try {
+        decodeMovement({ ...answer, ...fields } as MovementPayload);
+      } catch (error) {
+        return zoneMapCopy.historyError((error as Error).message);
+      }
+      return "decoded";
+    });
+    expect(texts).not.toContain("decoded");
+    expect(copyProblems(texts)).toEqual([]);
+    expect(texts.filter((t) => FILLER.test(t) || BRITISH.test(t))).toEqual([]);
+  });
+
+  it("builds the zone map's sentences from their parts", () => {
+    expect(zoneMapCopy.walkHintNext(1)).toBe(
+      "Corner 1 marked. Walk along the edge to the next corner, stand still, and press Corner here."
+    );
+    expect(zoneMapCopy.walkHintNext(3)).toBe(
+      "Corner 3 marked. Keep going around the zone in order. Two corners make a rectangle, three or more a polygon. Press Finish when done."
+    );
+    expect(zoneMapCopy.historyError("timeout")).toBe("Could not load movement history: timeout");
+    expect(zoneMapCopy.historyError(zoneMapCopy.HISTORY_UNREADABLE)).toBe(
+      "Could not load movement history: Home Assistant sent an answer this card cannot read."
+    );
+    expect(zoneMapCopy.historyClearError("timeout")).toBe(
+      "Could not clear movement history: timeout"
+    );
+    expect(zoneMapCopy.replayBadge("22:05:09")).toBe("Replay 22:05:09");
+    expect(zoneMapCopy.formatAgo(59999)).toBe("under a minute ago");
+    expect(zoneMapCopy.formatAgo(-5000)).toBe("under a minute ago");
+    expect(zoneMapCopy.formatAgo(60000)).toBe("1 min ago");
+    expect(zoneMapCopy.formatAgo(3599999)).toBe("59 min ago");
+    expect(zoneMapCopy.formatAgo(3900000)).toBe("1 h 5 min ago");
   });
 });
 

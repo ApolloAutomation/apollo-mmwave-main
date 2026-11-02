@@ -23,6 +23,7 @@ from custom_components.apollo_mmwave import diagnostics, get_store
 from custom_components.apollo_mmwave.calibration_store import CalibrationStore
 from custom_components.apollo_mmwave.const import (
     CONF_DASHBOARD_DEVICES,
+    DATA_MOVEMENT,
     DATA_PAIR_CACHE,
     DOMAIN,
     JS_BUNDLES,
@@ -470,6 +471,7 @@ async def test_support_file_writes_nothing(
     events: list[str] = []
     for event_type in (EVENT_CALL_SERVICE, EVENT_STATE_CHANGED):
         hass.bus.async_listen(event_type, lambda event: events.append(event.event_type))
+    movement_store = hass.data[DOMAIN][DATA_MOVEMENT]._store  # noqa: SLF001
 
     with (
         record_dashboard_writes(hass) as dashboard_writes,
@@ -477,6 +479,8 @@ async def test_support_file_writes_nothing(
         patch.object(ZoneStore, "async_delay_save") as zone_delay_save,
         patch.object(CalibrationStore, "async_save") as calibration_save,
         patch.object(CalibrationStore, "async_delay_save") as calibration_delay_save,
+        patch.object(movement_store, "async_save") as movement_save,
+        patch.object(movement_store, "async_delay_save") as movement_delay_save,
     ):
         result = await _support_file(hass, hass_client, init_integration)
         await hass.async_block_till_done()
@@ -487,6 +491,8 @@ async def test_support_file_writes_nothing(
     zone_delay_save.assert_not_called()
     calibration_save.assert_not_called()
     calibration_delay_save.assert_not_called()
+    movement_save.assert_not_called()
+    movement_delay_save.assert_not_called()
     assert events == []
     assert cache == {}
     assert [dict(item) for item in resources.async_items()] == rows_before
@@ -510,6 +516,54 @@ async def test_support_file_works_while_the_entry_is_not_loaded(
     assert section["zone_store"] is None
     assert section["calibration"]["last_result"] is None
     assert section["firmware"]["apollo"]["state"] == "26.3.2.1"
+
+
+async def test_diagnostics_reports_the_movement_flag_and_count_never_points(
+    hass, hass_client, init_integration, rpro, msr
+) -> None:
+    """Per radar, whether history is kept and how many records: never a record."""
+    target = f"sensor.{LD2412_SERIAL}_ld2450_target_1"
+    # Target 1 somewhere nothing else in the file says; targets 2 and 3 at
+    # 120 mm, as the fixture reports them.
+    for axis, value in (("x", "1371"), ("y", "2903")):
+        hass.states.async_set(f"{target}_{axis}", value, TARGET_ATTRS)
+    await hass.services.async_call(
+        DOMAIN,
+        "update_zone",
+        {"device_id": rpro.id, "movement_history": True},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+    # Target 1 leaves: a gone marker, and its live reading no longer says
+    # where it was.
+    for axis in ("x", "y"):
+        hass.states.async_set(f"{target}_{axis}", "0", TARGET_ATTRS)
+    await hass.async_block_till_done()
+
+    result = await _support_file(hass, hass_client, init_integration)
+
+    assert result["movement_store_loaded"] is True
+    assert _section(result, rpro.id)["movement_history"] == {
+        "enabled": True,
+        "points": 4,
+    }
+    assert _section(result, msr.id)["movement_history"] == {
+        "enabled": False,
+        "points": 0,
+    }
+    dumped = json.dumps(result["devices"]).replace(rpro.id, "").replace(msr.id, "")
+    assert "1371" not in dumped
+    assert "2903" not in dumped
+
+    # Unloaded, nothing is read: no count and no flag.
+    assert await hass.config_entries.async_unload(init_integration.entry_id)
+    await hass.async_block_till_done()
+    result = await _support_file(hass, hass_client, init_integration)
+    assert result["movement_store_loaded"] is False
+    assert _section(result, rpro.id)["movement_history"] == {
+        "enabled": False,
+        "points": 0,
+    }
 
 
 def test_model_radars_match_the_frontend() -> None:

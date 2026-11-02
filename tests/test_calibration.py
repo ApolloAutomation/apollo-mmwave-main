@@ -1640,8 +1640,9 @@ async def test_unload_twice_does_not_stack_stop_listeners(
     listeners_after_first_setup = hass.bus.async_listeners()[EVENT_HOMEASSISTANT_STOP]
     assert await hass.config_entries.async_unload(init_integration.entry_id)
     await hass.async_block_till_done()
+    # The calibration jobs' listener and the movement history's.
     assert hass.bus.async_listeners().get(EVENT_HOMEASSISTANT_STOP, 0) == (
-        listeners_after_first_setup - 1
+        listeners_after_first_setup - 2
     )
     assert await hass.config_entries.async_setup(init_integration.entry_id)
     await hass.async_block_till_done()

@@ -11,15 +11,15 @@ import {
 
 /** Stable key for the devices this strategy config would render. Includes
  *  detected capabilities so a forced (explicitly selected) device whose
- *  entities register late still triggers a rebuild, liveness so the offline
- *  note on a tab tracks the radar, and the name and base so a rename
- *  refreshes the tab title, help-card heading, zone-map title and view path.
- *  Each entry is JSON so no name can run into the next field. */
+ *  entities register late still triggers a rebuild, and the name and base so
+ *  a rename refreshes the tab title, help-card heading, zone-map title and
+ *  view path. Liveness is left out: a radar dropping off Wi-Fi for a moment
+ *  must not rebuild every tab and throw away a zone being drawn, so a tab
+ *  keeps the offline note it was built with until the page reloads. Each
+ *  entry is JSON so no name can run into the next field. */
 function radarDeviceKey(hass: HomeAssistant, config: StrategyConfig): string {
   return strategyDevices(hass, config)
-    .map((d) =>
-      JSON.stringify([d.deviceId, d.profile?.key ?? "", d.ld2450, d.online, d.name, d.base])
-    )
+    .map((d) => JSON.stringify([d.deviceId, d.profile?.key ?? "", d.ld2450, d.name, d.base]))
     .sort()
     .join(",");
 }
@@ -55,18 +55,18 @@ function isLegacyOptions(
  * detected-device key keeps "add a device, a tab appears" while ignoring that
  * churn. The zone sensors are attached to the radar device, but their ids
  * (`<base>_zone_N`, `<base>_zone_N_presence`) match no radar entity pattern, so
- * the device's base, capabilities and liveness, and with them the key, are
- * unchanged.
+ * the device's base and capabilities, and with them the key, are unchanged.
+ *
+ * A radar going offline or coming back changes no key either, so a flapping
+ * radar rebuilds no tab and never drops a zone being drawn on another one.
+ * Only a device that enters or leaves the rendered set does. The cost: a tab
+ * keeps the offline note it was built with until the page reloads.
  *
  * The fast path must include `entities`: a freshly added ESPHome device lands
  * in the device registry *before* its entities/states register, so detection
- * fails at that moment. The follow-up updates only touch `hass.entities` — if
+ * fails at that moment. The follow-up updates only touch `hass.entities`: if
  * we short-circuited on `devices` alone, the new device's tab would never
  * appear until a manual page reload.
- *
- * TODO(REVIEW_REPORT.md X31): cost: any radar's online flip rebuilds every tab and drops
- * an unfinished zone drawing; regenerate on liveness only when the rendered device set
- * changes, or debounce liveness-only changes, with a flap test.
  */
 export function shouldRegenerate(
   config: StrategyConfig | LegacyStrategyConfig,
@@ -76,12 +76,14 @@ export function shouldRegenerate(
   // Fast path: registry objects are replaced (not mutated) on registry
   // changes, so routine state churn (moving targets) short-circuits here.
   //
-  // With one exception. A tab needs LIVE radar evidence, and liveness lives in
-  // `hass.states`, which the registries never reflect. A dashboard opened
-  // while the radars were still reconnecting after a Home Assistant restart
-  // saw every one of them `unavailable`, drew none, and then never looked
-  // again: the devices coming online touched states only. So an entity
-  // crossing the available/unavailable line falls through to the full key.
+  // With one exception. A device with no registry model gets a tab only on
+  // LIVE radar evidence, and liveness lives in `hass.states`, which the
+  // registries never reflect. A dashboard opened while such radars were still
+  // reconnecting after a Home Assistant restart saw every one of them
+  // `unavailable`, drew none, and then never looked again: the devices coming
+  // online touched states only. So an entity crossing the available/unavailable
+  // line falls through to the full key, which changes only when that moves a
+  // device into or out of the rendered set.
   if (oldHass.devices === newHass.devices && oldHass.entities === newHass.entities) {
     if (!availabilityChanged(oldHass, newHass)) return false;
   }

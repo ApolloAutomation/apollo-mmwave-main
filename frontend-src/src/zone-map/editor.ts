@@ -22,6 +22,7 @@ import { registerElement } from "../register";
 import { hasLd2450Device } from "../ld2450";
 import { apolloModelInfo, isEsphomeDevice } from "../profiles";
 import type { HomeAssistant } from "../types";
+import { VIEW_ONLY_LABEL } from "./copy";
 
 export const ZONE_MAP_CARD_TYPE = "custom:apollo-radar-zone-map-card";
 export const ZONE_MAP_EDITOR_TAG = "apollo-radar-zone-map-card-editor";
@@ -35,6 +36,8 @@ export interface ZoneMapCardConfig {
   /** Absent: start locked once the radar has zones, and remember the toggle.
    *  true/false: always start locked/unlocked. */
   start_locked?: boolean;
+  /** true: the map alone, with no drawing tools. Absent: the full card. */
+  view_only?: boolean;
   [key: string]: unknown;
 }
 
@@ -58,7 +61,7 @@ export function lockChoiceFromConfig(config: ZoneMapCardConfig): LockChoice {
 interface SelectorElement extends HTMLElement {
   hass?: HomeAssistant;
   selector?: Record<string, unknown>;
-  value?: string;
+  value?: string | boolean;
   label?: string;
 }
 
@@ -83,6 +86,8 @@ const LOCK_SELECTOR = {
     ],
   },
 };
+
+const VIEW_ONLY_SELECTOR = { boolean: {} };
 
 /** The bit of `ha-device-picker`'s filter argument we read. */
 interface FilterableDevice {
@@ -144,6 +149,7 @@ export class ZoneMapCardEditor extends HTMLElement {
   private _title?: TextFieldElement;
   private _theme?: SelectorElement;
   private _lock?: SelectorElement;
+  private _viewOnly?: SelectorElement;
 
   constructor() {
     super();
@@ -166,20 +172,25 @@ export class ZoneMapCardEditor extends HTMLElement {
 
   private _render(): void {
     this._build();
-    if (!this._picker || !this._title || !this._theme || !this._lock) return;
+    if (!this._picker || !this._title || !this._theme || !this._lock || !this._viewOnly) return;
     this._picker.hass = this._hass;
     this._theme.hass = this._hass;
     this._lock.hass = this._hass;
+    this._viewOnly.hass = this._hass;
     const deviceId = String(this._config.device_id ?? "");
     const title = String(this._config.title ?? "");
     const theme = themeChoiceFromConfig(this._config);
     const lock = lockChoiceFromConfig(this._config);
+    const viewOnly = this._config.view_only === true;
     // Only on a real change. HA re-renders the editor on every state tick, and
     // re-assigning a text field's value moves the caret to the end of it.
     if (this._picker.value !== deviceId) this._picker.value = deviceId;
     if (this._title.value !== title) this._title.value = title;
     if (this._theme.value !== theme) this._theme.value = theme;
     if (this._lock.value !== lock) this._lock.value = lock;
+    if (this._viewOnly.value !== viewOnly) this._viewOnly.value = viewOnly;
+    // A view-only map has no lock, so its choice would do nothing.
+    if (this._lock.hidden !== viewOnly) this._lock.hidden = viewOnly;
   }
 
   /** The DOM is built once and then updated. HA sets `hass` on every state
@@ -246,6 +257,14 @@ export class ZoneMapCardEditor extends HTMLElement {
       );
     });
 
+    const viewOnly = document.createElement("ha-selector") as SelectorElement;
+    viewOnly.label = VIEW_ONLY_LABEL;
+    viewOnly.selector = VIEW_ONLY_SELECTOR;
+    viewOnly.addEventListener("value-changed", (event: Event) => {
+      event.stopPropagation();
+      this._commitViewOnly((event as CustomEvent).detail?.value === true);
+    });
+
     const hint = document.createElement("div");
     hint.className = "hint";
     hint.textContent =
@@ -253,12 +272,24 @@ export class ZoneMapCardEditor extends HTMLElement {
       " X/Y sensors, call the apollo_mmwave.update_zone service with an" +
       " entities list.";
 
-    form.append(picker, title, theme, lock, hint);
+    form.append(picker, title, theme, lock, viewOnly, hint);
     this.shadowRoot.append(style, form);
     this._picker = picker;
     this._title = title;
     this._theme = theme;
     this._lock = lock;
+    this._viewOnly = viewOnly;
+  }
+
+  /** Fold the View only toggle into `view_only`: off drops the key, since
+   *  absent is the full card. */
+  private _commitViewOnly(on: boolean): void {
+    if ((this._config.view_only === true) === on) return;
+    const config: ZoneMapCardConfig = { ...this._config };
+    if (on) config.view_only = true;
+    else delete config.view_only;
+    this._config = config;
+    this._emit(config);
   }
 
   /** Fold the lock choice into `start_locked`: "auto" drops the key so the

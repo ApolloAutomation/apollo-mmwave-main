@@ -3,7 +3,16 @@ Presence binary sensor platform for Apollo mmWave.
 
 One occupancy sensor per zone: on when any tracked LD2450 target's (x, y),
 converted to millimeters by each sensor's unit and rotated by the device's
-configured rotation, falls inside the zone's shape.
+configured rotation, falls inside the zone's shape. A target inside any
+ignore zone of the radar is dropped before that test, so no zone sees it, and
+an ignore zone's own sensor always reads off. While the radar is offline a
+detect zone reads unavailable. Reading and testing the targets lives in
+targets.py, which the movement recorder shares, so the two can never read a
+target differently.
+A detect zone with a hold time stays on after someone inside it is lost
+without being seen to leave, until that time has passed since it emptied.
+hold.py has the rules; the hold lives in memory only, so a restart or a
+reload ends it.
 Identity is the radar's Home Assistant device id plus the zone id, and the
 entity is registered against that device, so zone presence shows up on the
 radar's device page where automations are built from, and renaming it is safe.
@@ -11,197 +20,58 @@ radar's device page where automations are built from, and renaming it is safe.
 
 from __future__ import annotations
 
+import json
 import logging
-import math
+import time
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
     BinarySensorEntity,
 )
-from homeassistant.const import (
-    ATTR_UNIT_OF_MEASUREMENT,
-    STATE_UNAVAILABLE,
-    STATE_UNKNOWN,
-)
-from homeassistant.core import callback
+from homeassistant.core import HassJob, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
-from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.event import (
+    async_call_later,
+    async_track_state_change_event,
+)
 
 from .const import (
-    ATTR_CX,
-    ATTR_CY,
     ATTR_DATA,
-    ATTR_POINTS,
+    ATTR_HELD,
     ATTR_ROTATION_DEG,
-    ATTR_RX,
-    ATTR_RY,
     ATTR_SHAPE,
-    ATTR_X_MAX,
-    ATTR_X_MIN,
-    ATTR_Y_MAX,
-    ATTR_Y_MIN,
-    INPUT_UNIT_FACTORS,
-    POLYGON_MIN_POINTS,
-    SENSOR_UNIT_FACTORS,
+    ATTR_ZONE_TYPE,
     SIGNAL_ZONES_UPDATED,
     STORE_INPUT_UNITS,
+    STORE_ZONES,
+    ZONE_TYPE_IGNORE,
 )
+from .hold import HoldTracker
 from .ld2450 import effective_target_pairs
+from .store import zone_hold_s, zone_type_of
+from .targets import masked_readings, pair_ids, radar_offline, shape_tester
 from .zone_entities import ZoneEntityMixin, async_setup_zone_platform
 
 if TYPE_CHECKING:
     import asyncio
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable
+    from datetime import datetime
 
     from homeassistant.config_entries import ConfigEntry
-    from homeassistant.core import Event, EventStateChangedData, HomeAssistant, State
+    from homeassistant.core import (
+        CALLBACK_TYPE,
+        Event,
+        EventStateChangedData,
+        HomeAssistant,
+    )
     from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+    from .hold import Reading
     from .store import ZoneStore
 
 _LOGGER = logging.getLogger(__name__)
-
-# TODO(REVIEW_REPORT.md X59): this is never used.  # noqa: FIX002, TD003
-# The crossing guard in _point_in_polygon already excludes y1 == y2, so its
-# `or` fallback never runs. Removing both is output-neutral.
-_LINE_INTERSECTION_EPSILON = 1e-12
-
-type ShapeData = Any
-type ShapeTester = Callable[[float, float, ShapeData], bool]
-
-
-# TODO(REVIEW_REPORT.md X13): a copy of the one in  # noqa: FIX002, TD003
-# __init__.py, now without its finite and size guard. Share one helper from
-# an import-safe module; keep the tester's shape checks (migrated data is raw).
-def _coerce_float(value: Any) -> float | None:
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except TypeError, ValueError:
-        return None
-
-
-def _reading_unit_factor(state: State, fallback: float) -> float:
-    """
-    Return the millimeters per unit of one target reading.
-
-    Home Assistant hands over the state in the entity's display unit, not the
-    millimeters ESPHome reports: inches when the system is set to US customary
-    units, or whatever the user picked in the entity's settings. X and Y are
-    separate entities, so each is read by its own unit. A sensor with no
-    length unit, such as a DIY template sensor, is scaled by `fallback`, the
-    device's input unit. Must match `_readingUnitFactor` in
-    frontend-src/src/zone-map/card.ts.
-    """
-    unit = state.attributes.get(ATTR_UNIT_OF_MEASUREMENT)
-    if isinstance(unit, str) and unit in SENSOR_UNIT_FACTORS:
-        return SENSOR_UNIT_FACTORS[unit]
-    return fallback
-
-
-def _build_point_rotator(
-    rotation_raw: Any,
-) -> Callable[[float, float], tuple[float, float]]:
-    """
-    Return a function that rotates a target point by the device's rotation_deg.
-
-    Positive degrees swing the device's facing direction toward its right (+X):
-    90 maps (x, y) to (y, -x), so a target straight ahead at (0, d) lands at
-    (d, 0). Must match `_drawTrackedTargets` / `drawDeviceCone` in
-    frontend-src/src/zone-map/card.ts.
-    """
-    rotation_val = _coerce_float(rotation_raw)
-    # A stored inf would make math.cos raise inside async_added_to_hass, leaving
-    # an entity with no state that is never retried, and nan would silently stop
-    # the zone from ever detecting. Both read as "no rotation", like any other
-    # value that is not a number.
-    if rotation_val is None or not math.isfinite(rotation_val):
-        cos_theta = 1.0
-        sin_theta = 0.0
-    else:
-        rotation_rad = math.radians(rotation_val)
-        cos_theta = math.cos(rotation_rad)
-        sin_theta = math.sin(rotation_rad)
-
-    def rotate(x_val: float, y_val: float) -> tuple[float, float]:
-        return (
-            x_val * cos_theta + y_val * sin_theta,
-            -x_val * sin_theta + y_val * cos_theta,
-        )
-
-    return rotate
-
-
-def _point_in_rect(x_val: float, y_val: float, rect: ShapeData) -> bool:
-    if not isinstance(rect, dict):
-        return False
-    x_min = _coerce_float(rect.get(ATTR_X_MIN))
-    x_max = _coerce_float(rect.get(ATTR_X_MAX))
-    y_min = _coerce_float(rect.get(ATTR_Y_MIN))
-    y_max = _coerce_float(rect.get(ATTR_Y_MAX))
-    if x_min is None or x_max is None or y_min is None or y_max is None:
-        return False
-    if not (x_min < x_max and y_min < y_max):
-        return False
-    return x_min <= x_val <= x_max and y_min <= y_val <= y_max
-
-
-def _point_in_ellipse(x_val: float, y_val: float, ellipse: ShapeData) -> bool:
-    if not isinstance(ellipse, dict):
-        return False
-    cx = _coerce_float(ellipse.get(ATTR_CX))
-    cy = _coerce_float(ellipse.get(ATTR_CY))
-    rx = _coerce_float(ellipse.get(ATTR_RX))
-    ry = _coerce_float(ellipse.get(ATTR_RY))
-    if cx is None or cy is None or rx is None or ry is None:
-        return False
-    if rx <= 0 or ry <= 0:
-        return False
-    dx = x_val - cx
-    dy = y_val - cy
-    return (dx * dx) / (rx * rx) + (dy * dy) / (ry * ry) <= 1.0
-
-
-# Even-odd ray cast toward +x. A point exactly on a non-horizontal edge counts
-# as a crossing and toggles, while one on a horizontal edge never does, so
-# whether a boundary point reads inside depends on which edge it sits on. The
-# rect and ellipse tests are inclusive on every boundary. Only a reading that
-# lands exactly on an edge is affected; interior points are unambiguous.
-def _point_in_polygon(x_val: float, y_val: float, polygon: ShapeData) -> bool:
-    if not isinstance(polygon, dict):
-        return False
-    points = polygon.get(ATTR_POINTS)
-    if not isinstance(points, list) or len(points) < POLYGON_MIN_POINTS:
-        return False
-    inside = False
-    point_count = len(points)
-    for idx in range(point_count):
-        point_a = points[idx]
-        point_b = points[(idx + 1) % point_count]
-        if not isinstance(point_a, dict) or not isinstance(point_b, dict):
-            return False
-        x1 = _coerce_float(point_a.get("x"))
-        y1 = _coerce_float(point_a.get("y"))
-        x2 = _coerce_float(point_b.get("x"))
-        y2 = _coerce_float(point_b.get("y"))
-        if x1 is None or y1 is None or x2 is None or y2 is None:
-            return False
-        if (y1 > y_val) != (y2 > y_val):
-            denominator = (y2 - y1) or _LINE_INTERSECTION_EPSILON
-            x_at_y = x1 + (x2 - x1) * (y_val - y1) / denominator
-            if x_at_y >= x_val:
-                inside = not inside
-    return inside
-
-
-_SHAPE_TESTERS: dict[str, ShapeTester] = {
-    "rect": _point_in_rect,
-    "ellipse": _point_in_ellipse,
-    "polygon": _point_in_polygon,
-}
 
 
 async def async_setup_entry(
@@ -225,7 +95,7 @@ async def async_setup_entry(
 
 
 class ZonePresenceBinarySensor(ZoneEntityMixin, BinarySensorEntity):
-    """Occupancy: any tracked target inside this zone's shape."""
+    """Occupancy: a tracked target no ignore zone masks inside, or a hold."""
 
     _attr_should_poll = False
     _attr_icon = "mdi:motion-sensor"
@@ -240,8 +110,15 @@ class ZonePresenceBinarySensor(ZoneEntityMixin, BinarySensorEntity):
         self._device_id = device_id
         self._zone_id = zone_id
         self._attr_is_on = False
+        self._attr_extra_state_attributes = {}
         self._unsub_state_listener: Callable[[], None] | None = None
         self._pending_eval: asyncio.Handle | None = None
+        self._hold = HoldTracker()
+        self._unsub_hold: CALLBACK_TYPE | None = None
+        self._hold_deadline: float | None = None
+        # What presence read this zone by at the last zone signal (see
+        # _hold_fingerprint), or None before the entity is added.
+        self._fingerprint: str | None = None
 
         self._attr_name = f"Zone {zone_id} presence"
         self._attr_unique_id = f"{device_id}_zone_{zone_id}_presence"
@@ -270,6 +147,14 @@ class ZonePresenceBinarySensor(ZoneEntityMixin, BinarySensorEntity):
         @callback
         def _zones_updated(device_id: str) -> None:
             if device_id == self._device_id:
+                # A hold keeps people at the positions they were lost at, read
+                # the way this zone read them then. Once that way changes (see
+                # _hold_fingerprint), those positions mean nothing, so the
+                # hold ends.
+                fingerprint = self._hold_fingerprint()
+                if fingerprint != self._fingerprint:
+                    self._fingerprint = fingerprint
+                    self._drop_hold()
                 self._track_coordinate_entities()
                 self._evaluate_and_write()
 
@@ -277,10 +162,16 @@ class ZonePresenceBinarySensor(ZoneEntityMixin, BinarySensorEntity):
             async_dispatcher_connect(self.hass, SIGNAL_ZONES_UPDATED, _zones_updated)
         )
         self._track_coordinate_entities()
+        # Seeded before the first evaluation, so the first zone signal compares
+        # against what that evaluation read. A reload while Home Assistant runs
+        # gets no STARTED nudge, so that signal can come long after a hold
+        # began, and an unseeded fingerprint would end the hold.
+        self._fingerprint = self._hold_fingerprint()
         self._evaluate_and_write(write=False)
 
     async def async_will_remove_from_hass(self) -> None:
-        """Stop tracking coordinate entities."""
+        """Stop tracking coordinate entities and drop the hold timer."""
+        self._cancel_hold_timer()
         if self._pending_eval is not None:
             self._pending_eval.cancel()
             self._pending_eval = None
@@ -292,6 +183,35 @@ class ZonePresenceBinarySensor(ZoneEntityMixin, BinarySensorEntity):
     def _tracked_pairs(self) -> list[dict[str, str]]:
         return effective_target_pairs(self.hass, self._store, self._device_id)
 
+    def _hold_fingerprint(self) -> str:
+        """Return what turns this zone's readings into presence, as one string."""
+        # This zone's geometry and type, the radar's rotation and input units,
+        # the tracked pairs and every ignore zone. Not the name, the hold time,
+        # other detect zones or display settings, which leave a hold standing.
+        device = self._store.devices.get(self._device_id) or {}
+        zone_def = self._store.zone(self._device_id, self._zone_id) or {}
+        ignore_zones = sorted(
+            (
+                [str(zone_id), zone.get(ATTR_SHAPE), zone.get(ATTR_DATA)]
+                for zone_id, zone in (device.get(STORE_ZONES) or {}).items()
+                if zone_type_of(zone) == ZONE_TYPE_IGNORE
+            ),
+            key=lambda ignore_zone: ignore_zone[0],
+        )
+        return json.dumps(
+            [
+                zone_def.get(ATTR_SHAPE),
+                zone_def.get(ATTR_DATA),
+                zone_type_of(zone_def),
+                device.get(ATTR_ROTATION_DEG),
+                device.get(STORE_INPUT_UNITS),
+                self._tracked_pairs(),
+                ignore_zones,
+            ],
+            sort_keys=True,
+            default=str,
+        )
+
     # TODO(REVIEW_REPORT.md X07): a renamed pair goes dead.  # noqa: FIX002, TD003
     # A configured pair keeps the id it had before a rename, so this watches an
     # entity that no longer reports. See _registry_updated in ld2450.py.
@@ -300,18 +220,8 @@ class ZonePresenceBinarySensor(ZoneEntityMixin, BinarySensorEntity):
             self._unsub_state_listener()
             self._unsub_state_listener = None
 
-        # Pairs can share an entity (one X with two Ys, or X and Y the same
-        # entity). Home Assistant registers the listener once per listed id, so
-        # a repeat would dispatch every state change of that entity twice.
-        entity_ids = list(
-            dict.fromkeys(
-                entity_id
-                for pair in self._tracked_pairs()
-                if isinstance(pair, dict)
-                for entity_id in (pair.get("x"), pair.get("y"))
-                if isinstance(entity_id, str)
-            )
-        )
+        # Each id once: pairs can share an entity (see `pair_ids`).
+        entity_ids = pair_ids(self._tracked_pairs())
         if entity_ids:
             self._unsub_state_listener = async_track_state_change_event(
                 self.hass, entity_ids, self._handle_coordinate_update
@@ -335,80 +245,112 @@ class ZonePresenceBinarySensor(ZoneEntityMixin, BinarySensorEntity):
         self._pending_eval = None
         self._evaluate_and_write()
 
+    def _readings(self) -> list[Reading]:
+        return masked_readings(
+            self.hass, self._store, self._device_id, self._tracked_pairs()
+        )
+
     def _evaluate_and_write(self, *, write: bool = True) -> None:
-        # TODO(REVIEW_REPORT.md X09): offline radar reads off.  # noqa: FIX002, TD003
-        # With every tracked coordinate unavailable this writes off, unlike HA's
-        # group and trend sensors. Suggested: unavailable when the pair list is
-        # non-empty and every tracked id that has a state is unavailable (all ids
-        # missing, or an empty list, stays off), with a test and a changelog note.
-        self._attr_is_on = self._evaluate_presence()
+        zone_def = self._store.zone(self._device_id, self._zone_id)
+        # Ignore first: an ignore zone reads off even while the radar is
+        # offline, so its zone_type attribute, which Home Assistant leaves off
+        # an unavailable entity, always says what the zone is.
+        if zone_type_of(zone_def) == ZONE_TYPE_IGNORE:
+            self._write_ignore()
+        elif radar_offline(self.hass, self._tracked_pairs()):
+            self._write_offline()
+        else:
+            self._write_detect(zone_def)
         if write:
             self.async_write_ha_state()
 
+    def _write_ignore(self) -> None:
+        # A mask, not a sensor: every target inside it is dropped before any
+        # zone is tested, this one included, so it has nothing to turn on for
+        # and nothing to hold.
+        self._drop_hold()
+        self._attr_available = True
+        self._attr_is_on = False
+        self._attr_extra_state_attributes = {ATTR_ZONE_TYPE: ZONE_TYPE_IGNORE}
+
+    def _write_offline(self) -> None:
+        # Every tracked coordinate is unavailable, so nothing says whether the
+        # zone is empty. Unavailable says so, as Home Assistant's group and
+        # trend sensors do, where off would claim nobody is there. Whoever a
+        # hold kept is unknown now too, so the hold ends with the connection.
+        self._drop_hold()
+        self._attr_available = False
+        self._attr_is_on = False
+        self._attr_extra_state_attributes = {}
+
+    def _write_detect(self, zone_def: dict[str, Any] | None) -> None:
+        self._attr_available = True
+        hold_s = zone_hold_s(zone_def)
+        tester = shape_tester(zone_def)
+        data = zone_def.get(ATTR_DATA) if tester else None
+        readings = self._readings() if tester else []
+        if hold_s <= 0:
+            # Presence exactly as before holds existed: on while a reading is
+            # inside, with no half-vanish filter.
+            self._drop_hold()
+            self._attr_is_on = any(tester(*reading.map, data) for reading in readings)
+            self._attr_extra_state_attributes = {}
+            return
+        now = time.monotonic()
+        inside: list[Reading] = []
+        outside: list[Reading] = []
+        for reading in self._hold.usable(readings):
+            (inside if tester(*reading.map, data) else outside).append(reading)
+        is_on = self._hold.step(now, inside, outside, zone_def.get(ATTR_SHAPE), data)
+        deadline = self._hold.deadline(hold_s)
+        if deadline is not None and now >= deadline:
+            # A timer that ran late, or a hold time lowered below how long the
+            # zone has been empty.
+            self._hold.pending = []
+            is_on = bool(inside)
+        self._attr_is_on = is_on
+        self._schedule_hold_expiry(now, self._hold.deadline(hold_s))
+        self._attr_extra_state_attributes = {ATTR_HELD: self._hold.holding}
+
+    def _schedule_hold_expiry(self, now: float, deadline: float | None) -> None:
+        if deadline is None:
+            self._cancel_hold_timer()
+            return
+        # Every evaluation of a held zone lands here, and the deadline only
+        # moves when the hold time changes, so the timer is replaced only then.
+        if self._unsub_hold is not None and self._hold_deadline == deadline:
+            return
+        self._cancel_hold_timer()
+        self._hold_deadline = deadline
+        self._unsub_hold = async_call_later(
+            self.hass,
+            max(0.0, deadline - now),
+            HassJob(self._hold_expired, cancel_on_shutdown=True),
+        )
+
+    @callback
+    def _hold_expired(self, _now: datetime) -> None:
+        self._unsub_hold = None
+        self._hold_deadline = None
+        # The hold ran its course: whoever is still unaccounted for is let go.
+        self._hold.pending = []
+        self._evaluate_and_write()
+
+    def _drop_hold(self) -> None:
+        self._hold.reset()
+        self._cancel_hold_timer()
+
+    def _cancel_hold_timer(self) -> None:
+        if self._unsub_hold is not None:
+            self._unsub_hold()
+            self._unsub_hold = None
+        self._hold_deadline = None
+
     def _evaluate_presence(self) -> bool:
+        """Report whether a live target no ignore zone masks is inside now."""
         zone_def = self._store.zone(self._device_id, self._zone_id)
-        if zone_def is None:
-            return False
-        shape = zone_def.get(ATTR_SHAPE)
-        shape_tester = _SHAPE_TESTERS.get(shape) if isinstance(shape, str) else None
-        if shape_tester is None:
+        tester = shape_tester(zone_def)
+        if tester is None or zone_type_of(zone_def) == ZONE_TYPE_IGNORE:
             return False
         data = zone_def.get(ATTR_DATA)
-
-        device = self._store.devices.get(self._device_id) or {}
-        rotate = _build_point_rotator(device.get(ATTR_ROTATION_DEG))
-
-        return any(
-            shape_tester(x_val, y_val, data)
-            for x_val, y_val in self._iter_rotated_coordinates(rotate)
-        )
-
-    def _iter_rotated_coordinates(
-        self, rotate: Callable[[float, float], tuple[float, float]]
-    ) -> Iterator[tuple[float, float]]:
-        for pair in self._tracked_pairs():
-            if not isinstance(pair, dict):
-                continue
-            x_id = pair.get("x")
-            y_id = pair.get("y")
-            if not (isinstance(x_id, str) and isinstance(y_id, str)):
-                continue
-            coords = self._get_coordinate_pair(x_id, y_id)
-            if coords is not None:
-                yield rotate(*coords)
-
-    def _get_coordinate_pair(
-        self, x_entity_id: str, y_entity_id: str
-    ) -> tuple[float, float] | None:
-        x_state = self.hass.states.get(x_entity_id)
-        y_state = self.hass.states.get(y_entity_id)
-        if not self._states_are_valid(x_state, y_state):
-            return None
-        try:
-            x_val = float(x_state.state)  # type: ignore[union-attr]
-            y_val = float(y_state.state)  # type: ignore[union-attr]
-        except TypeError, ValueError:
-            return None
-        # Ignore origin (0,0) so default or uninitialized readings are skipped.
-        if x_val == 0.0 and y_val == 0.0:
-            return None
-        # Zone geometry is millimeters, so each reading is converted by its
-        # own unit (see `_reading_unit_factor`). The device's input unit is
-        # only the fallback for a sensor with no length unit; absent means
-        # millimeters. The card converts the same way before drawing, or a
-        # target it shows inside a zone would read "off" here.
-        units = (self._store.devices.get(self._device_id) or {}).get(STORE_INPUT_UNITS)
-        fallback = INPUT_UNIT_FACTORS.get(units, 1.0) if isinstance(units, str) else 1.0
-        return (
-            x_val * _reading_unit_factor(x_state, fallback),  # type: ignore[arg-type]
-            y_val * _reading_unit_factor(y_state, fallback),  # type: ignore[arg-type]
-        )
-
-    @staticmethod
-    def _states_are_valid(x_state: State | None, y_state: State | None) -> bool:
-        return (
-            x_state is not None
-            and y_state is not None
-            and x_state.state not in (STATE_UNKNOWN, STATE_UNAVAILABLE)
-            and y_state.state not in (STATE_UNKNOWN, STATE_UNAVAILABLE)
-        )
+        return any(tester(*reading.map, data) for reading in self._readings())

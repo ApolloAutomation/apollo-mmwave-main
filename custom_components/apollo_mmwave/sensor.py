@@ -23,9 +23,13 @@ from .const import (
     ATTR_NAME,
     ATTR_ROTATION_DEG,
     ATTR_SHAPE,
+    ATTR_ZONE_TYPE,
     SIGNAL_ZONES_UPDATED,
+    STORE_HOLD_S,
+    ZONE_TYPE_IGNORE,
 )
 from .ld2450 import effective_target_pairs
+from .store import zone_hold_s, zone_type_of
 from .zone_entities import ZoneEntityMixin, async_setup_zone_platform
 
 if TYPE_CHECKING:
@@ -93,7 +97,7 @@ class ZoneCoordsSensor(ZoneEntityMixin, SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        """Return shape/data plus the device-wide entities and rotation."""
+        """Return shape/data, the device-wide entities and rotation, and settings."""
         device = self._store.devices.get(self._device_id) or {}
         zone_def = self._store.zone(self._device_id, self._zone_id) or {}
         attrs: dict[str, Any] = {
@@ -110,6 +114,13 @@ class ZoneCoordsSensor(ZoneEntityMixin, SensorEntity):
         name = zone_def.get(ATTR_NAME)
         if isinstance(name, str) and name:
             attrs[ATTR_NAME] = name
+        # The zone's settings only when they are not the default, read the way
+        # presence reads them, so a zone without any publishes what it always
+        # has.
+        if zone_type_of(zone_def) == ZONE_TYPE_IGNORE:
+            attrs[ATTR_ZONE_TYPE] = ZONE_TYPE_IGNORE
+        if hold_s := zone_hold_s(zone_def):
+            attrs[STORE_HOLD_S] = hold_s
         return attrs
 
     async def async_added_to_hass(self) -> None:

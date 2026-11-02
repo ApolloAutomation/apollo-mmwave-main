@@ -67,7 +67,8 @@ export interface StrategyConfig {
 /** Whether a state object is a real reading. Only "unavailable" (or no state
  *  at all) means offline; "unknown" counts as live. `shouldRegenerate` uses
  *  the same test for its availability fast path, so the two cannot drift
- *  apart and miss an `online` flip in the device key. */
+ *  apart and miss a device without a registry model entering or leaving the
+ *  rendered set. */
 export function isLiveState(state: HassEntity | undefined): boolean {
   return state !== undefined && state.state !== "unavailable";
 }
@@ -123,9 +124,11 @@ function hasLiveRadarEvidence(
 
   // No recognizable radar entities: only a registry match keeps the device
   // (renamed-beyond-recognition case), and only while something is alive.
-  // This integration's own zone sensors sit on the radar's device but never go
-  // unavailable, so they say nothing about the radar and do not count. Only
-  // that platform is skipped: older frontends send no platform at all.
+  // This integration's own zone sensors sit on the radar's device but say
+  // nothing about the radar: the geometry sensors and ignore zones never go
+  // unavailable, and a detect zone's presence only echoes the radar's target
+  // sensors. So they do not count. Only that platform is skipped: older
+  // frontends send no platform at all.
   return (
     registryMatched &&
     entitiesForDevice(hass.entities, deviceId).some(
@@ -446,11 +449,12 @@ export const BUILT_IN_ZONES_NOTE =
   " Zone Type Disabled is recommended, because the zone map replaces them.";
 
 /** Under the LD2450 Controls card: what its Radar Timeout holds, and what it
- *  does not. Drawn zones are evaluated from the live X/Y with no hold. */
+ *  does not. Drawn zones are evaluated from the live X/Y and hold only for a
+ *  hold time set in the zone map's zone list. */
 export const LD2450_TIMEOUT_NOTE =
   "💡 **Radar Timeout** is how long LD2450 Presence stays on after the radar last" +
   " sees someone. It does not hold the zones you draw: a zone turns off as soon as" +
-  " nobody is in it.";
+  " nobody is in it, unless you give it a hold time in the zone list under Configure.";
 
 /**
  * Under the LD2410 Zone Config card. The boxes are template numbers in cm, and
@@ -566,7 +570,10 @@ function gateSizeMeters(hass: HomeAssistant, m: EntityMap): number {
  * draws a row for a missing entity as an "Entity not available" warning, right
  * beside the map the zone was just deleted on. So each row is a conditional
  * row that hides itself once its sensor is gone: a condition reads a missing
- * entity as "unavailable", and these sensors never are otherwise.
+ * entity as "unavailable". A detect zone's sensor also reads "unavailable"
+ * while the radar is offline, and after a Home Assistant restart until the
+ * radar connects, so its row hides then too. The map beside it greys the
+ * zone and says the radar is offline.
  */
 function zonePresenceCard(hass: HomeAssistant, deviceId: string): Record<string, any> {
   const ids = zonePresenceSensors(hass, deviceId).filter((id) => exists(hass, id));

@@ -42,12 +42,14 @@ from .const import (
     CONF_DASHBOARD_ID,
     CONF_DASHBOARD_URL_PATH,
     DASHBOARD_URL_PATH,
+    DATA_MOVEMENT,
     DATA_STORE,
     DISPLAY_UNITS,
     DISPLAY_UNITS_AUTO,
     DOMAIN,
     ENTRY_MINOR_VERSION,
     EVENT_ZONE_UPDATED,
+    HOLD_S_MAX,
     INPUT_UNIT_FACTORS,
     POLYGON_MAX_POINTS,
     POLYGON_MIN_POINTS,
@@ -60,8 +62,12 @@ from .const import (
     STORE_ALIASES,
     STORE_DISPLAY_UNITS,
     STORE_ENTITIES,
+    STORE_HOLD_S,
     STORE_INPUT_UNITS,
     STORE_LABEL,
+    STORE_MIRROR_X,
+    STORE_MOVEMENT_HISTORY,
+    STORE_ZONE_TYPE,
     STORE_ZONES,
     SUPPORTED_SHAPES,
     WARN_ELLIPSE_INVALID,
@@ -72,6 +78,9 @@ from .const import (
     WARN_RECT_INVALID,
     WARN_RECT_NON_NUM,
     WARN_ZONE_NO_GEOMETRY,
+    ZONE_TYPE_DETECT,
+    ZONE_TYPE_IGNORE,
+    ZONE_TYPES,
 )
 from .frontend import (
     DashboardsUnreadableError,
@@ -86,7 +95,8 @@ from .migration import (
     async_migrate_legacy,
     async_migrate_unique_ids,
 )
-from .store import ZoneStore
+from .movement import MovementHistory, async_remove_movement_store
+from .store import ZoneStore, device_flag, zone_hold_s, zone_type_of
 from .websocket import async_register as async_register_websocket
 
 # Every module setup uses is imported here, at module level. Home Assistant
@@ -499,6 +509,65 @@ def _apply_entity_pairs(device: dict[str, Any], call: ServiceCall) -> None:
         device[STORE_ENTITIES] = entities
 
 
+def _apply_device_flags(device: dict[str, Any], call: ServiceCall) -> None:
+    """Write mirror_x and movement_history: on stores True, off forgets the key."""
+    # Absent is how the store says off, so False is never written down.
+    for key in (STORE_MIRROR_X, STORE_MOVEMENT_HISTORY):
+        value = call.data.get(key)
+        if value:
+            device[key] = True
+        elif value is not None:
+            device.pop(key, None)
+
+
+def _zone_settings_in_call(call: ServiceCall) -> bool:
+    """Report whether a call carries a zone setting, zone_type or hold_s."""
+    return STORE_ZONE_TYPE in call.data or STORE_HOLD_S in call.data
+
+
+def _apply_zone_settings(zone_entry: dict[str, Any], call: ServiceCall) -> None:
+    """Write the call's zone_type and hold_s; a default forgets the key."""
+    # Absent means a detect zone with no hold, so neither default is stored.
+    zone_type = call.data.get(STORE_ZONE_TYPE)
+    if zone_type == ZONE_TYPE_IGNORE:
+        zone_entry[STORE_ZONE_TYPE] = ZONE_TYPE_IGNORE
+    elif zone_type == ZONE_TYPE_DETECT:
+        zone_entry.pop(STORE_ZONE_TYPE, None)
+    hold_s = call.data.get(STORE_HOLD_S)
+    if hold_s:
+        zone_entry[STORE_HOLD_S] = hold_s
+    elif hold_s is not None:
+        zone_entry.pop(STORE_HOLD_S, None)
+
+
+def _carry_zone_settings(
+    zone_entry: dict[str, Any], existing: dict[str, Any] | None
+) -> None:
+    """Copy a zone's type and hold time into the dict that replaces it."""
+    # A redraw, an Undo, Clear All and shape: none change where a zone is,
+    # not what it does. Read through the store's readers, so a hand-edited
+    # value that presence ignores is not carried along either.
+    if zone_type_of(existing) == ZONE_TYPE_IGNORE:
+        zone_entry[STORE_ZONE_TYPE] = ZONE_TYPE_IGNORE
+    if hold_s := zone_hold_s(existing):
+        zone_entry[STORE_HOLD_S] = hold_s
+
+
+def _zone_settings_change(call: ServiceCall, zone_def: dict[str, Any]) -> bool:
+    """Report whether the call's zone_type or hold_s acts on a stored zone."""
+    # Like a map unit, a setting counts even when it is the one stored. A
+    # default only forgets a setting, so it counts only when there is one.
+    zone_type = call.data.get(STORE_ZONE_TYPE)
+    if zone_type == ZONE_TYPE_IGNORE or (
+        zone_type == ZONE_TYPE_DETECT and zone_type_of(zone_def) == ZONE_TYPE_IGNORE
+    ):
+        return True
+    hold_s = call.data.get(STORE_HOLD_S)
+    if hold_s is None:
+        return False
+    return hold_s > 0 or zone_hold_s(zone_def) > 0
+
+
 def _zone_part_changes_something(
     call: ServiceCall, store: ZoneStore, device_id: str, zone_id: int | None
 ) -> bool:
@@ -508,20 +577,30 @@ def _zone_part_changes_something(
     if call.data.get("delete") or call.data.get("shape") is not None:
         return True
     # A zone_id alone, or with data but no shape, writes nothing to the zone.
-    if call.data.get("name") is None:
+    renames = call.data.get("name") is not None
+    settings = _zone_settings_in_call(call)
+    if not renames and not settings:
         return False
-    # A rename without geometry only lands on a stored zone. `store.device()`
-    # is a setdefault, so the lookup must not use it.
-    zones = (store.devices.get(device_id) or {}).get(STORE_ZONES) or {}
-    if isinstance(zones.get(zone_id), dict):
-        return True
-    _LOGGER.warning(
-        "Apollo mmWave: update_zone for device '%s' named zone %s, which does"
-        " not exist; the name was not applied.",
-        device_id,
-        zone_id,
-    )
-    return False
+    # A rename or a zone setting without geometry only lands on a stored zone.
+    # `store.zone()` reads through `devices`, so the lookup mints no entry.
+    zone_def = store.zone(device_id, zone_id)
+    if zone_def is None:
+        if settings:
+            _LOGGER.warning(
+                "Apollo mmWave: update_zone for device '%s' named zone %s, which"
+                " does not exist; nothing was applied to it.",
+                device_id,
+                zone_id,
+            )
+        else:
+            _LOGGER.warning(
+                "Apollo mmWave: update_zone for device '%s' named zone %s, which"
+                " does not exist; the name was not applied.",
+                device_id,
+                zone_id,
+            )
+        return False
+    return renames or _zone_settings_change(call, zone_def)
 
 
 def _display_units_change_something(
@@ -537,6 +616,20 @@ def _display_units_change_something(
     # "auto" only forgets a saved unit. Read through `devices`, because
     # `store.device()` would mint an entry for a radar with nothing to forget.
     return STORE_DISPLAY_UNITS in (store.devices.get(device_id) or {})
+
+
+def _flag_changes_something(
+    call: ServiceCall, store: ZoneStore, device_id: str, key: str
+) -> bool:
+    """Report whether the call's mirror_x or movement_history changes the radar."""
+    value = call.data.get(key)
+    if value is None:
+        return False
+    if value:
+        # Like a map unit, a flag turned on counts even when it is on.
+        return True
+    # Off only forgets a stored flag, read through `devices` as for "auto".
+    return device_flag(store.devices.get(device_id), key)
 
 
 def _call_changes_something(
@@ -565,6 +658,12 @@ def _call_changes_something(
             " without a zone_id, so the geometry was ignored.",
             device_id,
         )
+    if zone_id is None and _zone_settings_in_call(call):
+        _LOGGER.warning(
+            "Apollo mmWave: update_zone for device '%s' carried zone_type or"
+            " hold_s without a zone_id, so they were ignored.",
+            device_id,
+        )
     # Evaluated first so a rename of a missing zone is reported even when the
     # call's device-wide fields count on their own and still go through.
     zone_counts = _zone_part_changes_something(call, store, device_id, zone_id)
@@ -574,6 +673,8 @@ def _call_changes_something(
         or _display_units_change_something(call, store, device_id)
         or call.data.get("clear_entities")
         or _normalize_entities(call.data.get("entities")) is not None
+        or _flag_changes_something(call, store, device_id, STORE_MIRROR_X)
+        or _flag_changes_something(call, store, device_id, STORE_MOVEMENT_HISTORY)
         or zone_counts
     ):
         return True
@@ -587,6 +688,49 @@ def _call_changes_something(
     return False
 
 
+def _write_zone_geometry(
+    store: ZoneStore, device_id: str, zone_id: int, call: ServiceCall
+) -> str | None:
+    """
+    Store a zone's new shape, keeping its name, type and hold time.
+
+    Returns the name the zone's entities take in the registry, or None to
+    leave their registry names alone.
+    """
+    shape = call.data["shape"]
+    data = call.data.get("data")
+    zone_name = _coerce_zone_name(call.data.get("name"))
+    # `shape` is one of SUPPORTED_SHAPES here: the schema rejects any other.
+    # A drawable shape with no `data` (omitted or null) is still stored, with
+    # no geometry, so say so as every rejected geometry does. `none` is the
+    # documented way to clear a zone and stays quiet.
+    if shape != SHAPE_NONE and data is None:
+        _LOGGER.warning(WARN_ZONE_NO_GEOMETRY, zone_id, device_id, shape)
+
+    # Read before the write: the dict built here replaces the stored one.
+    existing = store.zone(device_id, zone_id)
+    zone_entry = {
+        ATTR_SHAPE: shape,
+        ATTR_DATA: _normalize_zone_payload(shape, data, zone_id, device_id),
+    }
+
+    if zone_name is not None:
+        zone_entry[ATTR_NAME] = zone_name
+    elif existing is not None and isinstance(existing.get(ATTR_NAME), str):
+        zone_entry[ATTR_NAME] = existing[ATTR_NAME]
+    _carry_zone_settings(zone_entry, existing)
+    _apply_zone_settings(zone_entry, call)
+
+    store.device(device_id)[STORE_ZONES][zone_id] = zone_entry
+
+    # The card's Add Zone creates a zone with its default name. Written to the
+    # registry by that creating call, it would make the entities read
+    # "Zone 1 - Zone 1".
+    if zone_name is None or (existing is None and zone_name == f"Zone {zone_id}"):
+        return None
+    return zone_name
+
+
 def _build_update_zone_handler(
     hass: HomeAssistant,
 ) -> Callable[[ServiceCall], Coroutine[Any, Any, None]]:
@@ -598,7 +742,6 @@ def _build_update_zone_handler(
 
         zone_id = call.data.get("zone_id")
         shape = call.data.get("shape")
-        data = call.data.get("data")
         rotation = _sanitize_rotation(call.data.get(ATTR_ROTATION_DEG))
         zone_name = _coerce_zone_name(call.data.get("name"))
         delete_zone = bool(call.data.get("delete"))
@@ -606,10 +749,16 @@ def _build_update_zone_handler(
         if not _call_changes_something(call, store, device_id, rotation):
             return
 
+        # Read before the flags are written: only a stored flag is turned off.
+        history_off = call.data.get(STORE_MOVEMENT_HISTORY) is False and device_flag(
+            store.devices.get(device_id), STORE_MOVEMENT_HISTORY
+        )
         device = store.device(device_id)
+        registry_name: str | None = None
 
         _apply_device_settings(device, call, rotation)
         _apply_entity_pairs(device, call)
+        _apply_device_flags(device, call)
 
         if delete_zone and zone_id is not None:
             # TODO(REVIEW_REPORT.md X15): an unknown zone id  # noqa: FIX002, TD003
@@ -617,49 +766,44 @@ def _build_update_zone_handler(
             # when the call has nothing else to change.
             device[STORE_ZONES].pop(zone_id, None)
             _remove_zone_entities(hass, device_id, zone_id)
-            _notify_zones_updated(hass, device_id)
-            return
-
-        if zone_id is None or shape is None:
-            # Rotation/entities-only update, or a rename without geometry.
-            if zone_id is not None and zone_name is not None:
-                zone_entry = store.zone(device_id, zone_id)
-                if zone_entry is not None:
+        elif zone_id is None or shape is None:
+            # Device-wide fields only, or a rename or zone settings without
+            # geometry, which only land on a stored zone.
+            zone_entry = None if zone_id is None else store.zone(device_id, zone_id)
+            if zone_entry is not None:
+                if zone_name is not None:
                     zone_entry[ATTR_NAME] = zone_name
                     _update_registry_names(hass, device_id, zone_id, zone_name)
-            _notify_zones_updated(hass, device_id)
-            return
-
-        # `shape` is one of SUPPORTED_SHAPES here: the schema rejects any other.
-        # A drawable shape with no `data` (omitted or null) is still stored, with
-        # no geometry, so say so as every rejected geometry does. `none` is the
-        # documented way to clear a zone and stays quiet.
-        if shape != SHAPE_NONE and data is None:
-            _LOGGER.warning(WARN_ZONE_NO_GEOMETRY, zone_id, device_id, shape)
-
-        zone_entry = {
-            ATTR_SHAPE: shape,
-            ATTR_DATA: _normalize_zone_payload(shape, data, zone_id, device_id),
-        }
-
-        if zone_name is not None:
-            zone_entry[ATTR_NAME] = zone_name
+                _apply_zone_settings(zone_entry, call)
         else:
-            existing = store.zone(device_id, zone_id)
-            if existing is not None and isinstance(existing.get(ATTR_NAME), str):
-                zone_entry[ATTR_NAME] = existing[ATTR_NAME]
+            registry_name = _write_zone_geometry(store, device_id, zone_id, call)
 
-        device[STORE_ZONES][zone_id] = zone_entry
-
-        # TODO(REVIEW_REPORT.md X01): on the creating call the  # noqa: FIX002, TD003
-        # entities do not exist yet, so this name never reaches the registry. Fix
-        # only that call: a one-shot pending name applied when the entity is added.
-        if zone_name is not None:
-            _update_registry_names(hass, device_id, zone_id, zone_name)
+        if history_off:
+            # Turning movement history off deletes this radar's positions in
+            # answer to the zone signal, and the movement file can start to
+            # change inside it. So the zone store is written first, and now
+            # rather than after its save delay: a crash between the two writes
+            # must never leave the flag on disk to turn recording back on at
+            # the next start.
+            await store.async_save()
 
         _notify_zones_updated(hass, device_id)
 
+        if registry_name is not None:
+            # After the zone signal, not before: both platforms register a new
+            # zone's entities inside it, so a name sent with the call that
+            # creates the zone reaches the registry too.
+            _update_registry_names(hass, device_id, zone_id, registry_name)
+
     return handle_update_zone
+
+
+def _hold_seconds(value: Any) -> Any:
+    # vol.Coerce(int) alone reads True, or YAML on, as a 1 s hold.
+    if isinstance(value, bool):
+        msg = "hold_s is a number of seconds, not a boolean"
+        raise vol.Invalid(msg)
+    return value
 
 
 UPDATE_ZONE_SERVICE_SCHEMA = vol.All(
@@ -686,6 +830,15 @@ UPDATE_ZONE_SERVICE_SCHEMA = vol.All(
             vol.Optional(STORE_DISPLAY_UNITS): vol.In(
                 [*DISPLAY_UNITS, DISPLAY_UNITS_AUTO]
             ),
+            # Zone settings, which need zone_id, then the radar's flags.
+            vol.Optional(STORE_ZONE_TYPE): vol.In(list(ZONE_TYPES)),
+            vol.Optional(STORE_HOLD_S): vol.All(
+                _hold_seconds,
+                vol.Coerce(int),
+                vol.Range(min=0, max=HOLD_S_MAX),
+            ),
+            vol.Optional(STORE_MIRROR_X): cv.boolean,
+            vol.Optional(STORE_MOVEMENT_HISTORY): cv.boolean,
             vol.Optional("name"): cv.string,
             vol.Optional("delete"): cv.boolean,
             vol.Optional("entities"): vol.All(
@@ -758,8 +911,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """
     Set up Apollo mmWave from a config entry.
 
-    Loads (or migrates) the zone store, registers the update service, forwards
-    the sensor/binary_sensor platforms and serves the bundled frontend.
+    Loads (or migrates) the zone store, loads the movement history, registers
+    the update service, forwards the sensor/binary_sensor platforms and serves
+    the bundled frontend.
 
     Setup never creates, rewrites or deletes a dashboard. The Apollo mmWave
     dashboard is created once, when an administrator asks for it in the config
@@ -779,10 +933,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # otherwise be abandoned and recreated fresh, losing its name and area.
     await async_migrate_unique_ids(hass, store)
     hass.data.setdefault(DOMAIN, {})[DATA_STORE] = store
+    # Loaded after the zone store, whose flags decide which radars keep their
+    # history, and before anything can ask for it.
+    movement = MovementHistory(hass, store)
+    await movement.async_load()
+    hass.data[DOMAIN][DATA_MOVEMENT] = movement
 
     # Before the platforms, so no entity can resolve pairs without the cache in
     # place and then hold a stale answer.
     entry.async_on_unload(async_track_target_pairs(hass))
+
+    # Recording starts with the pair cache in place. The teardown is a hook,
+    # as for the zone store below, so it also runs when a later step raises.
+    # Hooks run last registered first, so the zone teardown has popped the
+    # zone store by then; the history holds its own reference to it.
+    movement.async_start()
+
+    def _movement_teardown() -> Coroutine[Any, Any, None]:
+        hass.data.get(DOMAIN, {}).pop(DATA_MOVEMENT, None)
+        return movement.async_stop()
+
+    entry.async_on_unload(_movement_teardown)
 
     # Admin only: a call rewrites the zone configuration and creates, renames
     # and removes zone entities. Automations carry no user and still run; a
@@ -820,7 +991,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     # `frontend`, `http`, and `lovelace` are manifest dependencies, so they are
-    # ready by now — register immediately. Waiting for EVENT_HOMEASSISTANT_STARTED
+    # ready by now: register immediately. Waiting for EVENT_HOMEASSISTANT_STARTED
     # (the old behavior) left a window where a page load during startup missed
     # the extra JS module and the dashboard timed out waiting for the strategy.
     await async_register_frontend_assets(hass)
@@ -842,7 +1013,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Delete our dashboard, resources and both stores when the entry is removed."""
+    """Delete our dashboard, resources and every store when the entry is removed."""
     # Only the row this entry recorded, and only while its config is still our
     # strategy (frontend.async_remove_dashboard). An entry that owns none
     # leaves every dashboard alone.
@@ -866,3 +1037,5 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     store = hass.data.get(DOMAIN, {}).get(DATA_STORE) or ZoneStore(hass)
     await store.async_remove()
     await CalibrationStore(hass).async_remove()
+    # Every position goes with the entry, and the copies of a corrupt file too.
+    await async_remove_movement_store(hass)

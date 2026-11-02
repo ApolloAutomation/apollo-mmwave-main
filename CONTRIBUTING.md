@@ -164,6 +164,13 @@ is missed. The manifest version is the `?v=` on the served bundles, so a
 release that changes the bundles needs a bump, or browsers keep their cached
 copy. Rebuild after bumping, since `CARD_VERSION` is part of the tuning bundle.
 
+A pre-release version such as `2.4.0b1` is fine in all five places: npm keeps
+it as written, both version tests accept it, and AwesomeVersion, which Home
+Assistant uses, reads it as a beta above 2.3.0 and below 2.4.0. A tag never
+moves. A fix after `2.4.0b1` is published ships as `2.4.0b2`, with every copy
+bumped and the bundles rebuilt: a republished `2.4.0b1` would leave every
+browser that loaded it on the old bundles, and HACS would offer no update.
+
 ### Stored data
 
 Zone data is persisted in `.storage/apollo_mmwave.zones`; installs upgrading
@@ -172,6 +179,14 @@ ids from the display-name slug to the device-keyed form. Entity ids are left
 alone, and the card reads its configuration over the websocket API rather than
 off a fixed entity id. Calibration snapshots (the newest five per radar) live
 in a separate file, `.storage/apollo_mmwave.calibration`.
+
+Movement history, which an administrator turns on per radar, lives in
+`.storage/apollo_mmwave.movement`: up to 24 hours and 100,000 points per
+radar, stored as packed base64 columns. The file exists only while some radar
+has history on and has recorded something; turning a radar's history off
+deletes that radar's part within a second, and the file goes when no radar
+has any left. It holds where people were, so never log a target position or a
+movement record, at any level (`tests/test_movement.py` checks the log).
 
 ### The zone map card
 

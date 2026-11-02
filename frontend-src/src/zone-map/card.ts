@@ -15,8 +15,90 @@
  */
 
 import { registerElement } from '../register';
-import { connectZones } from './api';
+import { clearMovement, connectZones, fetchMovement, isMovementPayload } from './api';
+import { CELL_MM, CellGrid, bucketCells } from './cells';
+import {
+  ADMIN_ONLY_NOTE,
+  ADMIN_ONLY_TITLE,
+  CLEAR_LOCKED_TOAST,
+  COVERAGE_CLEAR,
+  COVERAGE_LABEL,
+  COVERAGE_TITLE,
+  DRAW_LOCKED_TOAST,
+  HELD_SUFFIX,
+  HISTORY_CLEAR,
+  HISTORY_CLEAR_CONFIRM,
+  HISTORY_CLEAR_NO,
+  HISTORY_CLEAR_YES,
+  HISTORY_CLEARED_TOAST,
+  HISTORY_EMPTY,
+  HISTORY_HEATMAP,
+  HISTORY_HINT,
+  HISTORY_LABEL,
+  HISTORY_LIVE,
+  HISTORY_LOADING,
+  HISTORY_PAUSE,
+  HISTORY_PLAY,
+  HISTORY_RANGES,
+  HISTORY_SCRUB_LABEL,
+  HISTORY_SPEEDS,
+  HISTORY_TITLE,
+  HISTORY_UNAUTHORIZED,
+  HISTORY_UNREADABLE,
+  HISTORY_WALK_TITLE,
+  HOLD_IGNORE_TITLE,
+  HOLD_LABEL,
+  HOLD_OPTIONS,
+  HOLD_TITLE,
+  IGNORED_SUFFIX,
+  LOCK_OFF_TOAST,
+  LOCK_ON_TOAST,
+  MIRROR_HINT,
+  MIRROR_LABEL,
+  MOVEMENT_HINT,
+  MOVEMENT_LABEL,
+  MOVEMENT_OFF_CONFIRM,
+  MOVEMENT_OFF_CONFIRM_NO,
+  MOVEMENT_OFF_CONFIRM_YES,
+  MOVEMENT_OFF_TOAST,
+  MOVEMENT_ON_TOAST,
+  NO_SHAPE_TEXT,
+  OFFLINE_NOTE,
+  POLY_TOO_FEW_TOAST,
+  SELECT_ZONE_TOAST,
+  SIZE_PREFIX,
+  TYPE_LABEL,
+  TYPE_OPTIONS,
+  TYPE_TITLE,
+  WALK_BUTTON_TITLE,
+  WALK_CANCEL,
+  WALK_CANCEL_CONFIRM,
+  WALK_CANCEL_NO,
+  WALK_CANCEL_YES,
+  WALK_CLOSED_TOAST,
+  WALK_CORNER,
+  WALK_FINISH,
+  WALK_FLAT_TOAST,
+  WALK_HINT_CROWD,
+  WALK_HINT_FULL,
+  WALK_HINT_NOBODY,
+  WALK_HINT_START,
+  WALK_TOO_CLOSE_TOAST,
+  WALK_UNDO,
+  ZONE_SETTINGS_HINT,
+  formatAgo,
+  historyClearError,
+  historyError,
+  replayBadge,
+  walkHintNext,
+} from './copy';
 import { ZONE_MAP_EDITOR_TAG, firstLd2450DeviceId } from './editor';
+import { formatHold, formatSize, zoneSize } from './format';
+import { pointInZone, rotateToMap } from './geometry';
+import { decodeMovement, heatCells, positionAt, sparkBuckets, trailAt } from './history';
+import { fallbackPresenceId, presenceLook } from './presence';
+import { TRAIL_GAP_MS, TRAIL_MS, TrailBuffer } from './trails';
+import { WALK_AVERAGE_MS, WALK_MIN_CORNER_GAP_MM, walkShape } from './walk';
 
 const COLOR = Object.freeze({
   ui: {
@@ -63,14 +145,58 @@ const COLOR = Object.freeze({
     drawStrokeDark: 'rgba(255,255,255,0.75)',
     deviceConeFill: 'rgba(128, 233, 31, 0.06)',
     deviceConeStroke: 'rgba(117, 243, 33, 0.6)',
+    // Hue says which zone it is; the fill's alpha (and the stroke's dash)
+    // says whether its presence sensor is on.
     zonePalette: [
-      { fill: 'rgba(244, 67, 54, 0.30)', stroke: 'rgba(244, 67, 54, 1)' },
-      { fill: 'rgba(33, 150, 243, 0.30)', stroke: 'rgba(33, 150, 243, 1)' },
-      { fill: 'rgba(76, 175, 80, 0.30)', stroke: 'rgba(76, 175, 80, 1)' },
-      { fill: 'rgba(255, 193, 7, 0.30)', stroke: 'rgba(255, 193, 7, 1)' },
-      { fill: 'rgba(156, 39, 176, 0.30)', stroke: 'rgba(156, 39, 176, 1)' },
+      {
+        fillOn: 'rgba(244, 67, 54, 0.45)',
+        fillOff: 'rgba(244, 67, 54, 0.18)',
+        stroke: 'rgba(244, 67, 54, 1)',
+      },
+      {
+        fillOn: 'rgba(33, 150, 243, 0.45)',
+        fillOff: 'rgba(33, 150, 243, 0.18)',
+        stroke: 'rgba(33, 150, 243, 1)',
+      },
+      {
+        fillOn: 'rgba(76, 175, 80, 0.45)',
+        fillOff: 'rgba(76, 175, 80, 0.18)',
+        stroke: 'rgba(76, 175, 80, 1)',
+      },
+      {
+        fillOn: 'rgba(255, 193, 7, 0.45)',
+        fillOff: 'rgba(255, 193, 7, 0.18)',
+        stroke: 'rgba(255, 193, 7, 1)',
+      },
+      {
+        fillOn: 'rgba(156, 39, 176, 0.45)',
+        fillOff: 'rgba(156, 39, 176, 0.18)',
+        stroke: 'rgba(156, 39, 176, 1)',
+      },
     ],
+    // A detect zone whose presence sensor is unavailable (the radar is offline).
+    zoneUnavailableFillLight: 'rgba(158, 158, 158, 0.18)',
+    zoneUnavailableFillDark: 'rgba(138, 143, 152, 0.22)',
+    zoneUnavailableStrokeLight: 'rgba(117, 117, 117, 0.9)',
+    zoneUnavailableStrokeDark: 'rgba(160, 165, 175, 0.9)',
+    // Ignore zones: a grey hatch, or a flat grey where no pattern can be made.
+    ignoreHatchLight: 'rgba(97, 97, 97, 0.45)',
+    ignoreHatchDark: 'rgba(189, 189, 189, 0.40)',
+    ignoreFillLight: 'rgba(97, 97, 97, 0.18)',
+    ignoreFillDark: 'rgba(189, 189, 189, 0.16)',
+    ignoreStrokeLight: 'rgba(97, 97, 97, 0.9)',
+    ignoreStrokeDark: 'rgba(189, 189, 189, 0.9)',
     targetPalette: ['#f44336', '#2196f3', '#4caf50', '#ffc107', '#9c27b0'],
+    // The number on each target dot, by the same index: black on red, blue,
+    // green and amber, white on purple, whichever contrasts more.
+    targetNumber: ['#000000', '#000000', '#000000', '#000000', '#ffffff'],
+    // A target inside an ignore zone, which presence does not see.
+    ignoredTargetLight: '#757575',
+    ignoredTargetDark: '#8a8f98',
+    // The Coverage paint, as the "r, g, b" an rgba() fill takes with each
+    // cell's alpha.
+    coverageLight: '255, 152, 0',
+    coverageDark: '255, 183, 77',
   },
 });
 
@@ -78,6 +204,8 @@ const DRAW_MODES = Object.freeze({
   RECT: 'rect',
   ELLIPSE: 'ellipse',
   POLYGON: 'polygon',
+  // Corners are marked by walking to them, not drawn, so the canvas pans.
+  WALK: 'walk',
 });
 
 const DEFAULT_GRID = Object.freeze({
@@ -106,7 +234,7 @@ const FIT_MARGIN_FRACTION = 0.05;
 // The fitted map is never taller than it is wide, and never shorter than this
 // share of its width. Facing ahead, the cone is about 12 m by 6.5 m, which
 // would be shorter still, but the drawing buttons open upward from the bottom
-// edge, five buttons tall in polygon mode, and need the height on a phone.
+// edge, up to six buttons tall in polygon mode, and need the height on a phone.
 const FIT_MIN_ASPECT = 0.75;
 // A fitted edge within this many mm of a grid step stays on that step. The
 // card saves zones in whole mm, rounded from a point clamped to the map, and a
@@ -167,6 +295,30 @@ const POLY_DOUBLE_TAP_SLOP_PX = 24;
 const CONE_TRY_PX = 10;
 // How long a try at the locked slider rings the Locked button.
 const LOCK_NUDGE_MS = 1200;
+// The lock reminders and the drawing toasts say each thing at most this
+// often, so a burst of taps does not stack copies of one message.
+const TOAST_THROTTLE_MS = 1500;
+// The trail fade timer paints a frame at most this often (ms), about ten a
+// second, and waits out the rest of a frame a hass push already painted.
+const TRAIL_FRAME_MS = 100;
+// How far (CSS px) the size readout sits above the pointer while a shape is
+// drawn. A fingertip covers far more than a mouse pointer does.
+const READOUT_OFFSET_MOUSE_PX = 28;
+const READOUT_OFFSET_TOUCH_PX = 64;
+// A movement replay that plays paints a frame this often (ms), about 15 a
+// second: smooth enough for a dot sliding between records half a second
+// apart, and a third of the work of an animation frame.
+const HISTORY_FRAME_MS = 66;
+// A first movement answer whose clock is further than this (ms) from the
+// one the request assumed is asked again with the start corrected, so the
+// range is not missing its first minutes.
+const HISTORY_SKEW_REFETCH_MS = 60000;
+// The sparkline over the replay's scrubber: this many bars across the range,
+// in a viewBox this many units tall.
+const HISTORY_SPARK_BUCKETS = 120;
+const HISTORY_SPARK_HEIGHT = 24;
+// Why a refused call failed, when Home Assistant gave no message.
+const REJECTED_REASON = 'Home Assistant rejected it.';
 
 const CONE_LOCKED_HINT = 'Locked with the map. Press Locked on the map to change it.';
 const CONE_LOCKED_TOAST = 'Cone rotation is locked. Press Locked on the map to change it.';
@@ -197,6 +349,30 @@ function writeStoredLock(deviceId, locked) {
   }
 }
 
+const COVERAGE_STORAGE_PREFIX = 'apollo-mmwave.zone-map.coverage';
+
+function coverageStorageKey(deviceId) {
+  return `${COVERAGE_STORAGE_PREFIX}.${deviceId}`;
+}
+
+// The Coverage toggle is a viewer's own, remembered per radar in this browser
+// like the lock. The paint itself is page memory and never stored.
+function readStoredCoverage(deviceId) {
+  try {
+    return window.localStorage.getItem(coverageStorageKey(deviceId)) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function writeStoredCoverage(deviceId, on) {
+  try {
+    window.localStorage.setItem(coverageStorageKey(deviceId), on ? '1' : '0');
+  } catch {
+    // Nothing to do; the toggle still applies for the current page load
+  }
+}
+
 /** The Touch with `identifier` in a TouchList, or null. A TouchList is
  *  array-like, not an array, so walk it by index. */
 function findTouch(list, identifier) {
@@ -205,6 +381,34 @@ function findTouch(list, identifier) {
     if (list[i] && list[i].identifier === identifier) return list[i];
   }
   return null;
+}
+
+/**
+ * Whether a target's reading (x, y) may be the first of the two writes of a
+ * target that vanishes: exactly one coordinate turned 0 since `last`, the
+ * slot's previous reading. The second write, the other coordinate
+ * turning 0, then shows the slot empty. The same rule as `half_vanished` in
+ * hold.py, by which the hold and the movement recorder skip such a point.
+ */
+function halfVanished(last, x, y) {
+  if (!last || (x === 0) === (y === 0)) return false;
+  return x === 0 ? last.x !== 0 : last.y !== 0;
+}
+
+/**
+ * A clock time with seconds in `language`, on a 12-hour clock when `hour12`
+ * is true, a 24-hour one when false, the language's own when undefined, in
+ * `timeZone` or this browser's. A 24-hour clock writes 09:05:00, as Home
+ * Assistant's own times do; a 12-hour one 9:05:00 AM. Throws what Intl
+ * throws for a language or time zone it does not know.
+ */
+function clockFormat(language, hour12, timeZone) {
+  const options = { hour: 'numeric', minute: '2-digit', second: '2-digit' };
+  if (hour12 !== undefined) options.hour12 = hour12;
+  if (timeZone) options.timeZone = timeZone;
+  const format = new Intl.DateTimeFormat(language, options);
+  if (format.resolvedOptions().hour12) return format;
+  return new Intl.DateTimeFormat(language, { ...options, hour: '2-digit' });
 }
 
 // TODO(REVIEW_REPORT.md X04): no yd here (backend and tuning cards accept it, so yd becomes
@@ -292,6 +496,80 @@ export class ZoneMapCard extends HTMLElement {
     // What `set hass` last painted the tracked targets from (see
     // _trackedStatesKey). null until it first paints, so that one always does.
     this._paintedTrackedKey = null;
+    // The same for the zones' presence states (see _zoneStatesKey).
+    this._paintedZoneKey = null;
+    // Per zone id, what the payload says beyond the geometry:
+    // { presence: entity id or null, type: 'detect' | 'ignore', holdS }.
+    this._zoneMeta = new Map();
+    // The radar's map is drawn mirrored left to right (mirror_x).
+    this._mirrorX = false;
+    // An administrator keeps this radar's movement history (movement_history),
+    // and whether Configure is asking before turning it off.
+    this._movementHistory = false;
+    this._movementConfirm = false;
+    // The History panel and its replay (see _openHistory). The range, speed
+    // and Heatmap are this viewer's picks and outlive a close; the rest
+    // belongs to one answer. `t` is the replay time, `since` the range's
+    // start and `serverNow` its end, all in the server's epoch ms, and
+    // `clientAt` this browser's clock when the answer came.
+    this._history = {
+      open: false,
+      rangeH: HISTORY_RANGES[0].hours,
+      heatmap: false,
+      playing: false,
+      speed: HISTORY_SPEEDS[0].speed,
+      t: null,
+      series: null,
+      heat: null,
+      loading: false,
+      error: null,
+      serverNow: null,
+      clientAt: null,
+      since: null,
+      timer: null,
+      // When the playing replay last moved on, on the _now() clock.
+      lastTick: 0,
+      confirmClear: false,
+    };
+    // The newest movement request's number: an answer to an older one, or
+    // one that comes after the panel closed, is dropped.
+    this._historyReq = 0;
+    // How far the server's clock is ahead of this browser's, as the last
+    // answer showed. A property of the two clocks, not of a radar.
+    this._historySkewMs = 0;
+    // The replay's time format and the locale it was made for.
+    this._replayFormat = null;
+    // When _notifyThrottled last showed each message, by message.
+    this._toastAt = new Map();
+    // Whether the "Radar offline" note is showing (see _renderOfflineNote).
+    this._offlineShown = false;
+    // The ignore zones' hatch pattern per theme, made once per context.
+    this._hatch = { light: null, dark: null };
+    // Canvas backing px per CSS px, read once at the top of each frame.
+    this._frameScale = 1;
+    // When the canvas was last painted, on the _now() clock.
+    this._lastDrawAt = 0;
+    // A few seconds of each live target's positions, page memory only: the
+    // trails behind the dots draw from it and Coverage counts from it.
+    this._trails = new TrailBuffer();
+    // Each live target's reading as last pushed into the trails, by slot.
+    this._trailReadings = new Map();
+    // The pending trail fade frame (see _kickTrailTimer), or null.
+    this._trailTimer = null;
+    // Every live position since the page loaded, in cells, and whether this
+    // viewer paints it (remembered per radar in this browser).
+    this._coverage = new CellGrid();
+    this._coverageOn = false;
+    // A card that shows only the map (view_only), with no coverage.
+    this._viewOnly = false;
+    // Walk, marking a zone's corners by walking to them: { corners } (mm in
+    // the radar's own frame, in walking order) while it is on, else null;
+    // the drawing mode it came from; whether its Cancel is asking first; and
+    // what its panel last showed (see _renderWalkPanel).
+    this._walk = null;
+    this._modeBeforeWalk = null;
+    this._walkConfirmCancel = false;
+    this._walkVisible = null;
     this.showZones = false;
     this.showConfig = false;
     this._polyPoints = [];
@@ -414,6 +692,18 @@ export class ZoneMapCard extends HTMLElement {
       // Retargeting the writes without retargeting the reads would leave the
       // card drawing one radar and saving to another.
       this._resetDeviceState();
+      // This viewer's Coverage toggle for the radar now shown.
+      this._coverageOn = readStoredCoverage(this.deviceId);
+    }
+    // Absent, or anything but true, is the full card.
+    const wasViewOnly = this._viewOnly;
+    this._viewOnly = config.view_only === true;
+    if (this._viewOnly && !wasViewOnly) {
+      // The map alone has no handler left to end a rect or polygon in
+      // progress, no Walk panel and no History, so all three end here.
+      this._resetDrawingState();
+      this._exitWalk();
+      this._closeHistory();
     }
     // Display only, so a user can call the card "Kitchen" and still share zone
     // data with the auto-generated dashboard. Deliberately NOT `this.title`:
@@ -509,7 +799,7 @@ export class ZoneMapCard extends HTMLElement {
       // HA's default would show a second one for the same rejection.
       await this._hass.callService('apollo_mmwave', 'update_zone', request, undefined, false);
     } catch (error) {
-      const reason = error?.message ? String(error.message) : 'Home Assistant rejected it.';
+      const reason = error?.message ? String(error.message) : REJECTED_REASON;
       this._notify(`Could not save: ${reason}`);
       return false;
     }
@@ -547,6 +837,31 @@ export class ZoneMapCard extends HTMLElement {
     // switch flipped on one radar's map says nothing about another's.
     this._storedDisplayUnits = null;
     this._viewDisplayUnits = null;
+    // The zones, their sensors and the device-wide flags are the old radar's
+    // too, and the new one's first payload brings its own.
+    this._zoneMeta = new Map();
+    this._paintedZoneKey = null;
+    this._mirrorX = false;
+    this._movementHistory = false;
+    this._movementConfirm = false;
+    this._toastAt = new Map();
+    this._offlineShown = false;
+    this._hatch = { light: null, dark: null };
+    this._frameScale = 1;
+    this._lastDrawAt = 0;
+    // So are the positions behind the trails and the coverage paint. The
+    // Coverage toggle is per radar, and setConfig reads the new one's.
+    this._stopTrailTimer();
+    this._trails.clear();
+    this._trailReadings = new Map();
+    this._coverage.clear();
+    this._coverageOn = false;
+    // The replay is the old radar's history, and an answer still on its way
+    // is too (closing drops it).
+    this._closeHistory();
+    // Corners walked on the old radar's map are no corners on the new one.
+    this._exitWalk();
+    this._walkVisible = null;
   }
 
   set hass(hass) {
@@ -554,7 +869,8 @@ export class ZoneMapCard extends HTMLElement {
     // The automatic map unit reads Home Assistant's unit system off hass, so
     // the first hass, or a change of that setting, can change the unit.
     const unitBefore = this._displayUnit();
-    // The m / ft switch's tooltips say whether a press saves for everyone.
+    // Who is viewing decides the m / ft switch's tooltips (whether a press
+    // saves for everyone) and which controls can be used.
     const adminBefore = this._isAdmin();
     this._hass = hass;
     // hass is set repeatedly, several times a second while the LD2450 pushes
@@ -581,17 +897,30 @@ export class ZoneMapCard extends HTMLElement {
       }
     }
     if (this._displayUnit() !== unitBefore) this._displayUnitChanged();
-    else if (this._isAdmin() !== adminBefore) this._renderUnitSwitch();
+    if (this._isAdmin() !== adminBefore) {
+      // The switch's tooltips, the controls only an administrator can use and
+      // the zone list's settings all depend on who is viewing.
+      this._renderUnitSwitch();
+      this._renderAdminControls();
+      this._renderZoneManager();
+    }
     // Home Assistant assigns a new hass on every state change in the whole
-    // instance, and the tracked targets are the only part of the picture drawn
-    // from it. Everything else (zones, rotation, mode, lock, theme, config)
-    // repaints itself when it changes, so a push that moved no tracked target
+    // instance, and the tracked targets and the zones' presence sensors are
+    // the only parts of the picture drawn from it. Everything else (zone
+    // shapes, rotation, mode, lock, theme, config) repaints itself when it
+    // changes, so a push that moved no tracked target and flipped no zone
     // leaves the canvas as it is.
     if (this.canvas) {
       const trackedKey = this._trackedStatesKey();
-      if (trackedKey !== this._paintedTrackedKey) {
+      const zoneKey = this._zoneStatesKey();
+      const trackedChanged = trackedKey !== this._paintedTrackedKey;
+      if (trackedChanged || zoneKey !== this._paintedZoneKey) {
         this._paintedTrackedKey = trackedKey;
-        this.drawGrid();
+        this._paintedZoneKey = zoneKey;
+        // Only a target move is sampled: a presence flip moved nobody.
+        if (trackedChanged) this._onTargetsChanged(this._now());
+        // A replay paints on its own timer and hides live dots and lit zones.
+        if (!this._replayShowing()) this.drawGrid();
       }
     }
     if (firstTime && this._hass) {
@@ -621,13 +950,229 @@ export class ZoneMapCard extends HTMLElement {
     );
   }
 
+  /**
+   * Everything a zone's look reads from hass: each zone's presence sensor,
+   * its state and whether it is holding. Two hass objects with the same key
+   * draw the same zones.
+   */
+  _zoneStatesKey() {
+    const states = this._hass?.states;
+    const parts = [];
+    this._zoneMeta.forEach((_meta, id) => {
+      const entityId = this._presenceEntityFor(id);
+      if (!entityId) return;
+      const stateObj = states?.[entityId];
+      parts.push([id, entityId, stateObj?.state, stateObj?.attributes?.held === true]);
+    });
+    return JSON.stringify(parts);
+  }
+
+  /**
+   * The presence sensor whose state lights zone `zoneId`: the one the payload
+   * names, else the one the integration's naming points at in the registry,
+   * which covers a 2.3.0 backend and a push that came in before the registry
+   * had the entity. null when there is neither.
+   */
+  _presenceEntityFor(zoneId) {
+    const presence = this._zoneMeta.get(Number(zoneId))?.presence;
+    if (typeof presence === 'string' && presence) return presence;
+    return fallbackPresenceId(this._hass?.entities, this.deviceId, zoneId);
+  }
+
+  /** The clock trails, the fade timer's frame gate and Walk run on. Toast
+   *  throttles keep Date.now(), and history runs on the server's clock. */
+  _now() {
+    return performance.now();
+  }
+
+  /**
+   * Whether a movement replay is on the map: the History panel is open and
+   * its answer has come. While one is, its own timer (or one paint on a
+   * pause, a scrub, a range change or the close) is the only painter, and
+   * live target moves and presence flips leave the canvas alone.
+   */
+  _replayShowing() {
+    return !!(this._history.open && this._history.series);
+  }
+
+  /**
+   * The live targets moved (or appeared, or went). Everything that follows
+   * them between paints samples here, once per move, before the repaint.
+   */
+  _onTargetsChanged(now) {
+    // Only a target whose reading changed is sampled. Another target's move
+    // says nothing new about a still one, and Coverage would count the still
+    // one's cell again for every move the other made.
+    const readings = new Map();
+    this._currentTargets().forEach(({ slot, x, y }) => {
+      const last = this._trailReadings.get(slot);
+      if (last && last.x === x && last.y === y) {
+        readings.set(slot, last);
+        return;
+      }
+      this._trails.push(slot, now, x, y);
+      readings.set(slot, { x, y, halfVanished: halfVanished(last, x, y) });
+    });
+    // A target gone right after one coordinate turned 0 left a point nobody
+    // stood at, (0, old y) or (old x, 0), where its X and Y writes came in
+    // two pushes. Taken back while it is too new for Coverage to have
+    // counted, so no trail runs out to the line x = 0 or y = 0 and no cell
+    // there is painted. A real reading with a 0 in it is followed by more
+    // readings and stays.
+    this._trailReadings.forEach((last, slot) => {
+      if (last.halfVanished && !readings.has(slot)) this._trails.retract(slot);
+    });
+    this._trailReadings = readings;
+    // Before the prune, so a position is counted before it ages out.
+    this._feedCoverage(now);
+    this._trails.prune(now);
+    // The same states say whether the radar went offline or came back.
+    this._renderOfflineNote();
+    // Walk's hint and Corner here follow who is in view.
+    this._renderWalkPanel();
+    this._kickTrailTimer();
+  }
+
+  /**
+   * Count in the Coverage paint the trail samples that became final since
+   * the last count: too old for the next push to replace (see
+   * TrailBuffer.takeFinal), so the in-between point of an X update without
+   * its Y never paints. A view-only card shows no coverage, so it keeps none.
+   */
+  _feedCoverage(now) {
+    if (this._viewOnly) return;
+    this._trails.takeFinal(now).forEach(({ x, y }) => this._coverage.add(x, y));
+  }
+
+  /**
+   * Keep the trails fading between hass pushes: one frame every
+   * TRAIL_FRAME_MS while some target still has a trail. One timer at a time,
+   * and only on a card that is on the page and has a canvas, so a card
+   * nobody can see schedules nothing. A replay paints on its own timer and
+   * shows no live trails.
+   */
+  _kickTrailTimer() {
+    if (this._replayShowing()) return;
+    if (!this.isConnected || !this.canvas || this._trailTimer !== null) return;
+    if (!this._trails.hasTrail(this._now())) return;
+    this._trailTimer = setTimeout(() => this._onTrailFrame(), TRAIL_FRAME_MS);
+  }
+
+  /**
+   * One fade frame: count what became final, drop what aged out, and paint,
+   * unless a hass push painted less than a frame ago. Then it waits out the
+   * rest of that frame, so a radar that pushes often is not painted twice as
+   * often. The frame after the last trail aged out paints it away, and the
+   * timer stops there.
+   */
+  _onTrailFrame() {
+    this._trailTimer = null;
+    const now = this._now();
+    this._feedCoverage(now);
+    this._trails.prune(now);
+    if (this._replayShowing()) return;
+    const since = now - this._lastDrawAt;
+    if (since < TRAIL_FRAME_MS) {
+      this._trailTimer = setTimeout(() => this._onTrailFrame(), TRAIL_FRAME_MS - since);
+      return;
+    }
+    this.drawGrid();
+    this._kickTrailTimer();
+  }
+
+  _stopTrailTimer() {
+    if (this._trailTimer === null) return;
+    clearTimeout(this._trailTimer);
+    this._trailTimer = null;
+  }
+
+  /**
+   * Whether the radar is offline, decided the way zone presence decides it:
+   * the tracked pairs name some sensor, at least one of them has a state, and
+   * every one that has a state is unavailable. Ids with no state at all (a
+   * pair list naming sensors that never existed) say nothing either way.
+   */
+  _radarOffline() {
+    const states = this._hass?.states;
+    if (!states) return false;
+    const ids = [];
+    (this.trackedEntities || []).forEach((pair) => {
+      [pair?.x, pair?.y].forEach((id) => {
+        if (typeof id === 'string' && id && !ids.includes(id)) ids.push(id);
+      });
+    });
+    const present = ids.map((id) => states[id]).filter(Boolean);
+    return present.length > 0 && present.every((stateObj) => stateObj.state === 'unavailable');
+  }
+
+  /**
+   * Show "Radar offline" over the map while _radarOffline holds: the zones
+   * grey out from their own unavailable states, and an empty map would
+   * otherwise read as an empty room. Touches the DOM only when the answer
+   * changes; the template draws the note from _offlineShown after a render.
+   */
+  _renderOfflineNote() {
+    const offline = this._radarOffline();
+    if (offline === this._offlineShown) return;
+    this._offlineShown = offline;
+    const note = this.shadowRoot?.getElementById('offlineNote');
+    if (note) note.hidden = !offline;
+  }
+
+  /**
+   * Each live target with a reading, in mm in the radar's own frame (unit
+   * converted, not rotated): `{ slot, x, y }`, where `slot` is the pair's
+   * index in the tracked list. A reading that is not a number, or the (0, 0)
+   * an LD2450 reports for an empty slot, is no target.
+   */
+  _currentTargets() {
+    const states = this._hass?.states;
+    if (!states) return [];
+    const targets = [];
+    this.trackedEntities.forEach((pair, slot) => {
+      if (!pair.x || !pair.y) return;
+      const stateX = states[pair.x];
+      const stateY = states[pair.y];
+      if (!stateX || !stateY) return;
+      const xRaw = parseFloat(stateX.state);
+      const yRaw = parseFloat(stateY.state);
+      if (Number.isNaN(xRaw) || Number.isNaN(yRaw)) return;
+      if (Math.abs(xRaw) < 1e-6 && Math.abs(yRaw) < 1e-6) return;
+      targets.push({
+        slot,
+        x: xRaw * this._readingUnitFactor(stateX),
+        y: yRaw * this._readingUnitFactor(stateY),
+      });
+    });
+    return targets;
+  }
+
+  /** A point in the radar's own frame, in the map frame the zones are drawn
+   *  in: turned by the rotation, as the presence sensors turn it. */
+  _toMap(x, y) {
+    return rotateToMap(x, y, this.coneAngleDeg || 0);
+  }
+
+  /** Whether a map-frame point is inside one of this radar's ignore zones,
+   *  where presence drops a target before any detect zone sees it. */
+  _isIgnored(mx, my) {
+    return (this.zones || []).some(
+      (zone) =>
+        this._zoneMeta.get(Number(zone.id))?.type === 'ignore' &&
+        pointInZone(zone.shape, zone.data, mx, my),
+    );
+  }
+
   connectedCallback() {
     // Home Assistant detaches and re-attaches cards as views change, and
     // `disconnectedCallback` closed the subscription and dropped the window
     // and document listeners on the way out. The canvas keeps its own
-    // listeners across a detach, so only the global ones come back here.
+    // listeners across a detach, so only the global ones come back here. A
+    // view-only map never had any.
     this._connectZones();
-    if (this.canvas && !this._onKeyDown) this._attachGlobalListeners();
+    if (this.canvas && !this._onKeyDown && !this._viewOnly) this._attachGlobalListeners();
+    // A trail that was fading when the card left the page fades on.
+    this._kickTrailTimer();
   }
 
   _connectZones() {
@@ -660,6 +1205,9 @@ export class ZoneMapCard extends HTMLElement {
   _setLoadError(message) {
     if (this._loadError === message) return;
     this._loadError = message;
+    // The replay goes with the map, and nothing plays on behind the error:
+    // the map comes back live once the store answers again.
+    this._closeHistory();
     // A full re-render, because the error state replaces the map: an empty
     // canvas looks exactly like a radar with no zones drawn yet.
     this.render();
@@ -677,13 +1225,16 @@ export class ZoneMapCard extends HTMLElement {
     }
     this._applyZones(config);
     this._applyRotation(config);
+    this._applyMirror(config);
     this._applyDisplayUnits(config);
     this._applyTrackedEntities(config);
+    this._movementHistory = config.movement_history === true;
     this._deviceLabel = typeof config.label === 'string' ? config.label : null;
     this._renderTitle();
     this._applyAutoLock();
     this.renderZoneButtons();
     this._renderZoneManager();
+    this._renderAdminControls();
     // After the zones, rotation and unit a fitted grid is drawn around.
     this._refitGrid();
     this._renderUnitSwitch();
@@ -705,11 +1256,23 @@ export class ZoneMapCard extends HTMLElement {
       .sort((a, b) => a - b);
 
     this.zones = [];
+    // Kept apart from this.zones, whose entries _upsertZone and _performUndo
+    // rebuild as { id, shape, data }: a redraw must not lose a zone's type or
+    // its presence sensor. Every stored zone gets an entry, geometry or not.
+    this._zoneMeta = new Map();
     ids.forEach((id) => {
       const entry = zones[String(id)] || {};
       if (entry.shape && entry.shape !== 'none' && entry.data) {
         this.zones.push({ id, shape: entry.shape, data: entry.data });
       }
+      // The backend sends only valid non-defaults, but a 2.3.0 backend sends
+      // none of these, and an absent key is the default.
+      const hold = entry.hold_s;
+      this._zoneMeta.set(id, {
+        presence: typeof entry.presence_entity_id === 'string' ? entry.presence_entity_id : null,
+        type: entry.zone_type === 'ignore' ? 'ignore' : 'detect',
+        holdS: Number.isInteger(hold) && hold >= 1 && hold <= 3600 ? hold : 0,
+      });
     });
 
     // The zone list the buttons and the manager render. The store is
@@ -755,9 +1318,37 @@ export class ZoneMapCard extends HTMLElement {
     if (angleLabel) angleLabel.textContent = `${this.coneAngleDeg}°`;
   }
 
+  /** Take the flip the store holds for the radar's map (mirror_x). */
+  _applyMirror(config) {
+    this._setMirror(config?.mirror_x === true);
+  }
+
+  /**
+   * Draw the map mirrored left to right, or not. Display only: zones are
+   * saved, and presence tests targets, in the radar's own frame, and every
+   * screen to mm conversion goes through valueToPixels and pixelsToValue.
+   */
+  _setMirror(on) {
+    if (on !== this._mirrorX) {
+      this._mirrorX = on;
+      // Every x on the canvas moves. The extents do not, so nothing refits.
+      this._invalidateGridCache();
+      this._invalidateConeCache();
+    }
+    // On every call, the way _applyRotation sets the slider's value: render()
+    // rebuilds both from the template. Flipped, +X is on the left, so the
+    // slider runs right to left and drags the way the cone turns on screen.
+    const angleSlider = this.shadowRoot?.getElementById('coneAngleSlider');
+    if (angleSlider) angleSlider.style.direction = this._mirrorX ? 'rtl' : '';
+    const toggle = this.shadowRoot?.getElementById('mirrorToggle');
+    if (toggle) toggle.checked = this._mirrorX;
+  }
+
   /** Take the store's answer. Nothing in the card edits the pair list, so
    *  there is never an unsaved edit here to protect. */
   _applyTrackedEntities(config) {
+    const pairIds = () => JSON.stringify(this.trackedEntities.map((pair) => [pair?.x, pair?.y]));
+    const pairsBefore = pairIds();
     const suggested = Array.isArray(config.suggested_entities)
       ? config.suggested_entities
       : [];
@@ -773,7 +1364,16 @@ export class ZoneMapCard extends HTMLElement {
         (pair) => ({ ...pair }),
       );
     }
+    if (pairIds() !== pairsBefore) {
+      // A trail belongs to a slot, a place in the pair list, and under
+      // another list that place holds another target. Coverage keeps its
+      // cells: those are places in the room.
+      this._trails.clear();
+      this._trailReadings = new Map();
+    }
     this._renderEntityStatus();
+    // Other pairs can be online when the old ones were not, and the other way.
+    this._renderOfflineNote();
   }
 
   processEntityConfig(entityConfig) {
@@ -840,9 +1440,11 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   _template() {
+    // First: a load error is never a blank map, view-only or not.
     if (this._loadError) {
       return this._errorTemplate();
     }
+    if (this._viewOnly) return this._viewOnlyTemplate();
     return `
       <style>
         :host { display: block; padding: 16px; }
@@ -855,17 +1457,29 @@ export class ZoneMapCard extends HTMLElement {
           --zm-chip-color: var(--primary-text-color);
         }
         .container { background: var(--card-background-color); border-radius: var(--ha-card-border-radius, 12px); box-shadow: var(--ha-card-box-shadow); padding: 16px; }
-        .container.dark { background: ${COLOR.ui.darkContainerBackground}; color: ${COLOR.ui.darkContainerText}; }
+        /* color-scheme: the native checkboxes, selects and sliders follow the
+           card's dark_mode, which can differ from the page's theme. */
+        .container.dark { background: ${COLOR.ui.darkContainerBackground}; color: ${COLOR.ui.darkContainerText}; color-scheme: dark; }
+        .container input { accent-color: var(--primary-color); }
         .container.dark .canvas-container { border-color: ${COLOR.ui.darkCanvasBorder}; background: ${COLOR.ui.darkCanvasBackground}; }
         .canvas-container { position: relative; width: 100%; aspect-ratio: 1; border: 1px solid var(--divider-color); border-radius: var(--zm-radius); overflow: hidden; background: ${COLOR.ui.lightCanvasBackground}; isolation: isolate; container-type: size; }
         canvas { width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
+        /* A map that cannot be drawn on (locked, in Walk, or with no zone
+           selected) lets a vertical swipe scroll the page. Two declarations:
+           iOS 14 does not know pinch-zoom and keeps the first. */
+        canvas.pans { touch-action: pan-y; touch-action: pan-y pinch-zoom; }
+        /* A note over the map's top left corner. It takes no pointer, so a
+           press on it still lands on the canvas. */
+        .map-note { position: absolute; top: 4px; left: 4px; z-index: 1; pointer-events: none; padding: 4px 8px; border-radius: 6px; font-size: 12px; line-height: 1.3; background: ${COLOR.ui.overlayButtonLightBg}; color: ${COLOR.ui.overlayButtonText}; }
+        /* The same kind of note in the top right corner while a replay shows. */
+        .map-note.replay-badge { left: auto; right: 4px; font-variant-numeric: tabular-nums; }
         .overlay-controls { position: absolute; bottom: 4px; display: flex; gap: 4px; z-index: 1; }
         .overlay-controls-left { left: 4px; flex-direction: column; align-items: flex-start; }
         .overlay-controls-right { right: 4px; }
         .overlay-controls button { background: ${COLOR.ui.overlayButtonLightBg}; color: ${COLOR.ui.overlayButtonText}; border: none; border-radius: 6px; font-size: 11px; line-height: 1; cursor: pointer; backdrop-filter: blur(4px); display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 6px; min-height: 32px; }
         #modeGroup button { font-size: 16px; width: 32px; height: 32px; min-width: 32px; min-height: 32px; padding: 0; }
         /* A fitted map can be shorter than wide, and on a phone shorter than the
-           five polygon buttons. They wrap into a second column rather than run
+           six polygon buttons. They wrap into a second column rather than run
            off the top, keeping clear of the menu button below them (32 px, the
            4 px gaps and the 4 px edge). */
         #modeGroup { flex-wrap: wrap; align-content: flex-start; max-height: calc(100cqh - 44px); }
@@ -893,6 +1507,18 @@ export class ZoneMapCard extends HTMLElement {
         #cone-controls.locked input[type="range"] { pointer-events: none; }
         #cone-controls .cone-lock-hint { flex-basis: 100%; font-size: 0.85em; opacity: 0.75; }
         #coneAngleSlider { flex: 1; min-width: 160px; }
+        .map-options { display: flex; flex-direction: column; gap: 4px; padding: 4px 0 8px; }
+        .map-option { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+        .map-option input { margin: 0; flex: none; }
+        .map-option input:disabled { cursor: not-allowed; }
+        .map-option input:disabled + span { opacity: 0.6; }
+        .map-option-hint { font-size: 0.85em; opacity: 0.75; }
+        /* Movement history and the question before it is turned off (and
+           the one before Clear history). Flex columns like the options
+           around them, so [hidden] needs saying. */
+        .movement-option, .movement-confirm, .history-confirm { display: flex; flex-direction: column; gap: 4px; }
+        .movement-option[hidden], .movement-option [hidden] { display: none; }
+        .confirm-row { display: flex; flex-wrap: wrap; gap: var(--zm-gap); }
         button { padding: 8px 16px; background: var(--primary-color); color: ${COLOR.ui.primaryButtonText}; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; }
         .container.dark button { background: ${COLOR.ui.darkPrimaryButton}; }
         button:hover { opacity: 0.9; }
@@ -919,6 +1545,36 @@ export class ZoneMapCard extends HTMLElement {
           color: ${COLOR.ui.overlayButtonText};
           border-color: ${COLOR.ui.darkZoneButtonActiveBorder};
         }
+        /* Dimmed, not disabled, while the map is locked: a disabled button
+           takes no tap, so a phone user would get no word of why. */
+        button.zone-btn.locked-action { opacity: 0.5; cursor: not-allowed; }
+        /* Walk's panel under the map, used on a phone carried around the
+           room: Corner here across a row of its own, and every button a
+           finger-sized 48 px. Its rows are flex, so [hidden] needs saying. */
+        .walk-panel, .walk-confirm { display: flex; flex-direction: column; gap: var(--zm-gap); }
+        .walk-panel { margin: 12px 0; }
+        .walk-hint { font-size: 14px; }
+        .walk-row { display: flex; gap: var(--zm-gap); }
+        .walk-row button { flex: 1; min-height: 48px; }
+        .walk-row button:disabled { opacity: 0.5; cursor: not-allowed; }
+        .walk-panel[hidden], .walk-panel [hidden] { display: none; }
+        /* The History chip, disabled while Walk is on. */
+        #viewTools button:disabled { opacity: 0.5; cursor: not-allowed; }
+        /* The History panel under the chips, whose rows wrap on a phone.
+           The panel and its rows are flex, so [hidden] needs saying again. */
+        .history-panel { display: flex; flex-direction: column; gap: var(--zm-gap); margin: 12px 0; }
+        .history-panel[hidden], .history-panel [hidden] { display: none; }
+        .history-head, .history-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--zm-gap); }
+        .history-head { justify-content: space-between; }
+        .history-title { font-weight: 600; }
+        .history-panel button:disabled { opacity: 0.5; cursor: not-allowed; }
+        /* The sparkline spans the scrubber under it, so a bar sits over the
+           part of the range it counts. */
+        .history-spark { height: 24px; }
+        .history-spark svg { display: block; width: 100%; height: 100%; fill: var(--primary-color); }
+        #historyScrub { width: 100%; margin: 0; }
+        .history-time { font-variant-numeric: tabular-nums; }
+        .history-status, .history-hint { font-size: 0.85em; opacity: 0.75; }
         .info { margin-top: 12px; font-size: 14px; color: var(--secondary-text-color); }
         .container.dark .info { color: ${COLOR.ui.infoDarkText}; }
         .container.dark .zone-item { background: ${COLOR.ui.zoneItemDarkBg}; color: ${COLOR.ui.zoneItemDarkText}; }
@@ -927,6 +1583,15 @@ export class ZoneMapCard extends HTMLElement {
         .entity-row label { font-weight: 600; opacity: 0.95; }
         .entity-row select, .entity-row input { width: 100%; padding: 2px 6px; border: 1px solid var(--divider-color); border-radius: 6px; background: var(--card-background-color); color: var(--primary-text-color); font-size: 12px; height: 28px; box-sizing: border-box; }
         .container.dark .entity-row select, .container.dark .entity-row input { background: ${COLOR.ui.darkSelectBg}; border-color: ${COLOR.ui.darkSelectBorder}; color: ${COLOR.ui.darkSelectText}; }
+        /* A zone row's second line, under its name: the size, then the Type
+           and Hold selects, each kept beside its label when the line wraps. */
+        .entity-row .zone-meta { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; font-size: 12px; }
+        .entity-row .zone-meta label { font-weight: normal; }
+        .entity-row .zone-meta select { width: auto; }
+        .entity-row .zone-meta select:disabled { opacity: 0.6; cursor: not-allowed; }
+        .zone-setting { display: inline-flex; align-items: center; gap: 4px; }
+        .zone-size { opacity: 0.85; }
+        .zone-settings-hint { font-size: 0.85em; opacity: 0.75; margin: 4px 0; }
         .device-title { font-size: 1.2em; font-weight: bold; margin-bottom: 8px; }
         .entity-controls { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
         .entity-controls select, .entity-controls input { width: 100%; }
@@ -936,7 +1601,9 @@ export class ZoneMapCard extends HTMLElement {
         .config-header { display: flex; align-items: center; justify-content: space-between; cursor: pointer; padding: 4px 0; background: transparent; border-radius: 0; }
         .config-title { font-weight: 600; }
         .config-content { max-height: 0; overflow: hidden; transition: max-height 200ms ease, padding 200ms ease; padding: 0; }
-        .config-content.open { max-height: 1200px; padding: 4px 0; }
+        /* Only a cap for the open transition. Zone rows take two lines, so
+           1200 px clipped the list at about a dozen zones. */
+        .config-content.open { max-height: 5000px; padding: 4px 0; }
         .subsection-header { display: flex; align-items: center; justify-content: space-between; cursor: pointer; padding: 4px 0; background: transparent; border-radius: 0; margin-top: 4px; }
         .subsection-title { font-weight: 600; }
         @media (max-width: 520px) { .entity-row { grid-template-columns: 1fr; } }
@@ -945,10 +1612,15 @@ export class ZoneMapCard extends HTMLElement {
         <div class="device-title" id="deviceTitle"></div>
         <div class="canvas-container">
           <canvas id="zoneCanvas"></canvas>
+          <div class="map-note" id="offlineNote" role="status" ${this._offlineShown ? '' : 'hidden'}>${OFFLINE_NOTE}</div>
+          <!-- _renderHistoryTime shows it while a replay is on the map. -->
+          <div class="map-note replay-badge" id="replayBadge" hidden></div>
           <div class="overlay-controls overlay-controls-left" id="overlayControlsLeft">
             <div id="modeGroup" style="display: ${this.showModeMenu ? 'flex' : 'none'}; flex-direction: column; gap: 4px;">
               <button id="btnPolyFinish" title="Finish polygon">✓</button>
               <button id="btnPolyUndo" title="Undo last point">↺</button>
+              <!-- Administrators only: _renderAdminControls shows it. -->
+              <button id="btnModeWalk" title="${WALK_BUTTON_TITLE}" aria-label="${WALK_BUTTON_TITLE}" style="display: none">🚶</button>
               <button id="btnModePolygon" title="Polygon">⬠</button>
               <button id="btnModeEllipse" title="Ellipse">◯</button>
               <button id="btnModeRect" title="Rectangle">▭</button>
@@ -965,6 +1637,9 @@ export class ZoneMapCard extends HTMLElement {
             <button id="btnLock" class="lock-toggle" title="Lock drawing and cone rotation">🔓</button>
           </div>
         </div>
+        ${this._walkPanelTemplate()}
+        ${this._viewToolsTemplate()}
+        ${this._historyPanelTemplate()}
         <div class="controls" id="zone-buttons">
         </div>
         <div class="config">
@@ -978,6 +1653,30 @@ export class ZoneMapCard extends HTMLElement {
               <input type="range" id="coneAngleSlider" min="-180" max="180" step="1" value="${this.coneAngleDeg}" />
               <span id="coneAngleLabel">${this.coneAngleDeg}°</span>
               <span id="coneLockHint" class="cone-lock-hint" hidden>${CONE_LOCKED_HINT}</span>
+            </div>
+            <!-- _renderAdminControls sets what depends on the viewer. -->
+            <div class="map-options" id="mapOptions">
+              <label class="map-option" id="mirrorOption">
+                <input type="checkbox" id="mirrorToggle" />
+                <span>${MIRROR_LABEL}</span>
+              </label>
+              <div class="map-option-hint">${MIRROR_HINT}</div>
+              <div class="map-option-hint" id="mapOptionsNote" hidden>${ADMIN_ONLY_NOTE}</div>
+              <!-- Administrators only: _renderMovementOption shows it. -->
+              <div class="movement-option" id="movementOption" hidden>
+                <label class="map-option">
+                  <input type="checkbox" id="movementToggle" />
+                  <span>${MOVEMENT_LABEL}</span>
+                </label>
+                <div class="map-option-hint">${MOVEMENT_HINT}</div>
+                <div class="movement-confirm" id="movementConfirm" hidden>
+                  <div>${MOVEMENT_OFF_CONFIRM}</div>
+                  <div class="confirm-row">
+                    <button id="btnMovementOffYes">${MOVEMENT_OFF_CONFIRM_YES}</button>
+                    <button id="btnMovementOffNo" class="zone-btn">${MOVEMENT_OFF_CONFIRM_NO}</button>
+                  </div>
+                </div>
+              </div>
             </div>
             <!-- Read only. The radar's X/Y targets are resolved by the
                  integration, and the DIY override is the update_zone
@@ -1007,9 +1706,114 @@ export class ZoneMapCard extends HTMLElement {
     `;
   }
 
+  /**
+   * The map alone (view_only): the title, the canvas and the offline note,
+   * with no drawing tools, chips, Configure or zone list. render() attaches
+   * no listeners to it, and the canvas leaves a vertical swipe to the
+   * browser, so a phone scrolls past the card. The rules are _template's for
+   * the same elements, but for the canvas's cursor and touch-action.
+   */
+  _viewOnlyTemplate() {
+    return `
+      <style>
+        :host { display: block; padding: 16px; --zm-radius: 10px; }
+        .container { background: var(--card-background-color); border-radius: var(--ha-card-border-radius, 12px); box-shadow: var(--ha-card-box-shadow); padding: 16px; }
+        .container.dark { background: ${COLOR.ui.darkContainerBackground}; color: ${COLOR.ui.darkContainerText}; color-scheme: dark; }
+        .container.dark .canvas-container { border-color: ${COLOR.ui.darkCanvasBorder}; background: ${COLOR.ui.darkCanvasBackground}; }
+        .canvas-container { position: relative; width: 100%; aspect-ratio: 1; border: 1px solid var(--divider-color); border-radius: var(--zm-radius); overflow: hidden; background: ${COLOR.ui.lightCanvasBackground}; isolation: isolate; container-type: size; }
+        /* Nothing to draw, so no crosshair, and a vertical swipe scrolls the
+           page. Two declarations: iOS 14 does not know pinch-zoom and keeps
+           the first. */
+        canvas { width: 100%; height: 100%; cursor: default; touch-action: pan-y; touch-action: pan-y pinch-zoom; }
+        .map-note { position: absolute; top: 4px; left: 4px; z-index: 1; pointer-events: none; padding: 4px 8px; border-radius: 6px; font-size: 12px; line-height: 1.3; background: ${COLOR.ui.overlayButtonLightBg}; color: ${COLOR.ui.overlayButtonText}; }
+        .device-title { font-size: 1.2em; font-weight: bold; margin-bottom: 8px; }
+      </style>
+      <div class="container ${this.darkMode ? 'dark' : ''}">
+        <div class="device-title" id="deviceTitle"></div>
+        <div class="canvas-container">
+          <canvas id="zoneCanvas"></canvas>
+          <div class="map-note" id="offlineNote" role="status" ${this._offlineShown ? '' : 'hidden'}>${OFFLINE_NOTE}</div>
+        </div>
+      </div>
+    `;
+  }
+
+  /**
+   * The chips under the map that change only what this viewer sees: Coverage
+   * and, while it is on, Clear coverage; History for an administrator on a
+   * radar that keeps it. _renderCoverageControls and _renderHistoryChip set
+   * their state from `this`.
+   */
+  _viewToolsTemplate() {
+    return `
+        <div class="controls" id="viewTools">
+          <button id="btnCoverage" class="zone-btn" aria-pressed="false">${COVERAGE_LABEL}</button>
+          <button id="btnCoverageClear" class="zone-btn" hidden>${COVERAGE_CLEAR}</button>
+          <button id="btnHistory" class="zone-btn" aria-expanded="false" aria-controls="historyPanel" hidden>${HISTORY_LABEL}</button>
+        </div>
+    `;
+  }
+
+  /**
+   * The History panel, under the chips and hidden until History opens: the
+   * title and Back to live, the range and Heatmap chips, the sparkline over
+   * the scrubber, Play with the speed chips and the time, the status line,
+   * the hint, and Clear history, which asks in place first. Built from
+   * copy.ts constants and numbers only; _renderHistoryPanel sets its state.
+   */
+  _historyPanelTemplate() {
+    const ranges = HISTORY_RANGES.map(
+      ({ hours, label }) =>
+        `<button class="zone-btn" data-hours="${hours}" aria-pressed="false">${label}</button>`,
+    ).join('');
+    const speeds = HISTORY_SPEEDS.map(
+      ({ speed, label }) =>
+        `<button class="zone-btn" data-speed="${speed}" aria-pressed="false">${label}</button>`,
+    ).join('');
+    return `
+        <div class="history-panel" id="historyPanel" hidden>
+          <div class="history-head">
+            <span class="history-title">${HISTORY_TITLE}</span>
+            <button id="btnHistoryLive" class="zone-btn">${HISTORY_LIVE}</button>
+          </div>
+          <div class="history-row" id="historyRanges">
+            ${ranges}
+            <button id="btnHistoryHeatmap" class="zone-btn" aria-pressed="false">${HISTORY_HEATMAP}</button>
+          </div>
+          <div class="history-spark" id="historySpark" aria-hidden="true"></div>
+          <input type="range" id="historyScrub" min="0" max="3600" step="1" value="0" aria-label="${HISTORY_SCRUB_LABEL}" disabled />
+          <div class="history-row">
+            <button id="btnHistoryPlay" disabled>${HISTORY_PLAY}</button>
+            <span class="history-row" id="historySpeeds">${speeds}</span>
+            <span class="history-time" id="historyTime"></span>
+          </div>
+          <div class="history-status" id="historyStatus" role="status"></div>
+          <div class="history-hint">${HISTORY_HINT}</div>
+          <div class="history-row">
+            <button id="btnHistoryClear" class="zone-btn">${HISTORY_CLEAR}</button>
+          </div>
+          <div class="history-confirm" id="historyClearConfirm" hidden>
+            <div>${HISTORY_CLEAR_CONFIRM}</div>
+            <div class="confirm-row">
+              <button id="btnHistoryClearYes">${HISTORY_CLEAR_YES}</button>
+              <button id="btnHistoryClearNo" class="zone-btn">${HISTORY_CLEAR_NO}</button>
+            </div>
+          </div>
+        </div>
+    `;
+  }
+
   render() {
     // TODO(REVIEW_REPORT.md X47): with a cached payload, chips, manager, status and drawGrid run
     // twice. Skipping the first pass changes selection on a same-device setConfig; decide first.
+    // The old template's lock closure would otherwise set a cursor and a
+    // slider that are about to go, from _applyAutoLock, on a template that
+    // has no Locked button to make a new one.
+    this._updateLockVisual = null;
+    // The Walk panel comes back hidden, to be laid out again.
+    this._walkVisible = null;
+    // Started again at the end, once the new canvas has its picture.
+    this._stopTrailTimer();
     this._detachGlobalListeners();
     this.shadowRoot.innerHTML = this._template();
     this._renderTitle();
@@ -1026,7 +1830,9 @@ export class ZoneMapCard extends HTMLElement {
 
     this.renderZoneButtons();
     this.setupCanvas();
-    this.attachEventListeners();
+    // The map alone takes no input, so a phone scrolls past it. The renderers
+    // below find no host for what its template leaves out and return.
+    if (!this._viewOnly) this.attachEventListeners();
     this._renderEntityStatus();
     this._renderZoneManager();
     this._renderUnitSwitch();
@@ -1036,6 +1842,14 @@ export class ZoneMapCard extends HTMLElement {
       // has to be laid back over the new one.
       this._applyZoneConfig(this._zoneConfigPayload);
     }
+    // The rest of the DOM state lives on `this`, which outlives a render.
+    this._renderAdminControls();
+    this._renderCoverageControls();
+    this._renderWalkPanel();
+    this._renderHistoryPanel();
+    this._updateCanvasTouchMode();
+    // A trail fading when the theme flipped keeps fading on the new canvas.
+    this._kickTrailTimer();
   }
 
   renderZoneButtons() {
@@ -1043,7 +1857,7 @@ export class ZoneMapCard extends HTMLElement {
     if (!container) return;
     container.innerHTML = '';
     if (!this.zoneConfig || this.zoneConfig.length === 0) {
-      this.selectedZone = null;
+      this._setSelectedZone(null);
     }
     this.zoneConfig.forEach((zone) => {
       const btn = document.createElement('button');
@@ -1053,6 +1867,12 @@ export class ZoneMapCard extends HTMLElement {
       btn.addEventListener('click', () => this._setSelectedZone(zone.id));
       btn.addEventListener('dblclick', (e) => {
         e.preventDefault();
+        // One quick gesture, which a stray double tap on a phone makes too,
+        // so the lock guards it like drawing.
+        if (this.isLocked) {
+          this._remindLocked(CLEAR_LOCKED_TOAST);
+          return;
+        }
         this._clearZone(zone.id, true);
       });
       container.appendChild(btn);
@@ -1062,6 +1882,7 @@ export class ZoneMapCard extends HTMLElement {
     clearBtn.id = 'clearBtn';
     clearBtn.className = 'zone-btn clear-all';
     clearBtn.textContent = 'Clear All Zones';
+    this._renderClearAllLock(clearBtn);
     container.appendChild(clearBtn);
 
     const firstZone = container.querySelector('.zone-btn[data-zone-id]');
@@ -1079,21 +1900,58 @@ export class ZoneMapCard extends HTMLElement {
     }
   }
 
-  drawCurrentPosition(x, y, color = COLOR.canvas.defaultTarget) {
+  /**
+   * One target dot at map-frame mm (x, y), with `label` (its number) on it.
+   * A dot is a filled core with a soft halo, so it reads over a lit zone; a
+   * target presence ignores (`hollow`) is a grey ring with a grey number
+   * instead. The radius follows the card's width, never below 10 backing px.
+   */
+  drawCurrentPosition(
+    x,
+    y,
+    color = COLOR.canvas.defaultTarget,
+    label = null,
+    { hollow = false, numberColor = '#000000' } = {},
+  ) {
     if (!this.ctx || !this.canvas) return;
     const ctx = this.ctx;
     const pixelX = this.valueToPixels(x, 'x');
     const pixelY = this.valueToPixels(y, 'y');
-
-    if (pixelX >= 0 && pixelX <= this.canvas.width && pixelY >= 0 && pixelY <= this.canvas.height) {
-      ctx.fillStyle = color;
+    if (pixelX < 0 || pixelX > this.canvas.width || pixelY < 0 || pixelY > this.canvas.height) {
+      return;
+    }
+    const r = Math.max(10, Math.round(9 * (this._frameScale || 1)));
+    let textColor = numberColor;
+    ctx.save();
+    if (hollow) {
+      textColor = this.darkMode ? COLOR.canvas.ignoredTargetDark : COLOR.canvas.ignoredTargetLight;
+      ctx.strokeStyle = textColor;
+      ctx.lineWidth = 3;
       ctx.beginPath();
-      ctx.arc(pixelX, pixelY, 10, 0, 2 * Math.PI);
+      ctx.arc(pixelX, pixelY, r, 0, 2 * Math.PI);
+      ctx.stroke();
+    } else {
+      ctx.fillStyle = color;
+      ctx.globalAlpha = 0.25;
+      ctx.beginPath();
+      ctx.arc(pixelX, pixelY, r * 1.7, 0, 2 * Math.PI);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.beginPath();
+      ctx.arc(pixelX, pixelY, r, 0, 2 * Math.PI);
       ctx.fill();
       ctx.strokeStyle = COLOR.canvas.targetStroke;
       ctx.lineWidth = 3;
       ctx.stroke();
     }
+    if (label !== null && label !== undefined && label !== '') {
+      ctx.fillStyle = textColor;
+      ctx.font = `bold ${Math.round(r * 1.1)}px sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(String(label), pixelX, pixelY);
+    }
+    ctx.restore();
   }
 
   attachEventListeners() {
@@ -1103,6 +1961,84 @@ export class ZoneMapCard extends HTMLElement {
     this._attachDrawingModeControls();
     this._attachUnitSwitch();
     this._attachConfigEvents();
+    this._attachMapOptions();
+    this._attachWalkPanel();
+    this._attachViewTools();
+    this._attachHistoryPanel();
+  }
+
+  _attachViewTools() {
+    const coverage = this.shadowRoot.getElementById('btnCoverage');
+    if (coverage) coverage.addEventListener('click', () => this._setCoverage(!this._coverageOn));
+    const clear = this.shadowRoot.getElementById('btnCoverageClear');
+    if (clear) clear.addEventListener('click', () => this._clearCoverage());
+    const history = this.shadowRoot.getElementById('btnHistory');
+    if (history) {
+      history.addEventListener('click', () => {
+        if (this._history.open) this._closeHistory();
+        else this._openHistory();
+      });
+    }
+  }
+
+  _attachHistoryPanel() {
+    const root = this.shadowRoot;
+    const on = (id, handler) => {
+      const element = root.getElementById(id);
+      if (element) element.addEventListener('click', handler);
+    };
+    on('btnHistoryLive', () => this._closeHistory());
+    root.querySelectorAll('#historyPanel [data-hours]').forEach((button) => {
+      button.addEventListener('click', () => this._setHistoryRange(Number(button.dataset.hours)));
+    });
+    on('btnHistoryHeatmap', () => this._setHistoryHeatmap(!this._history.heatmap));
+    root.querySelectorAll('#historyPanel [data-speed]').forEach((button) => {
+      button.addEventListener('click', () => this._setHistorySpeed(Number(button.dataset.speed)));
+    });
+    on('btnHistoryPlay', () => {
+      if (this._history.playing) this._pauseHistory();
+      else this._playHistory();
+    });
+    const scrub = root.getElementById('historyScrub');
+    if (scrub) scrub.addEventListener('input', () => this._scrubHistory(Number(scrub.value)));
+    on('btnHistoryClear', () => {
+      this._history.confirmClear = true;
+      this._renderHistoryPanel();
+    });
+    on('btnHistoryClearYes', () => this._clearHistory());
+    on('btnHistoryClearNo', () => {
+      this._history.confirmClear = false;
+      this._renderHistoryPanel();
+    });
+  }
+
+  /**
+   * Paint where live targets have been, or stop, for this viewer only, and
+   * remember it for the radar in this browser. Positions are counted either
+   * way, so turning it on shows everything since the page opened.
+   */
+  _setCoverage(on) {
+    this._coverageOn = on;
+    writeStoredCoverage(this.deviceId, on);
+    this._renderCoverageControls();
+    this.drawGrid();
+  }
+
+  _clearCoverage() {
+    this._coverage.clear();
+    this.drawGrid();
+  }
+
+  /** The Coverage chip pressed or not, and Clear coverage only while on. */
+  _renderCoverageControls() {
+    const button = this.shadowRoot?.getElementById('btnCoverage');
+    if (button) {
+      button.classList.toggle('active', this._coverageOn);
+      button.setAttribute('aria-pressed', this._coverageOn ? 'true' : 'false');
+      button.title = COVERAGE_TITLE;
+    }
+    const clear = this.shadowRoot?.getElementById('btnCoverageClear');
+    if (clear) clear.hidden = !this._coverageOn;
   }
 
   _attachUnitSwitch() {
@@ -1140,6 +2076,810 @@ export class ZoneMapCard extends HTMLElement {
   /** Whether this page's viewer can save, as update_zone is admin-only. */
   _isAdmin() {
     return !!this._hass?.user?.is_admin;
+  }
+
+  /**
+   * The controls whose state depends on who is viewing. The template is built
+   * before the first hass, and the user behind hass can change, so this runs
+   * after every render, every payload and every change of viewer.
+   */
+  _renderAdminControls() {
+    const admin = this._isAdmin();
+    // The flip stays visible, so a viewer can see the map is flipped on
+    // purpose, but update_zone is admin-only and would refuse the save. A
+    // disabled checkbox's title never reaches touch or keyboard users, so
+    // the note under it says the same.
+    const mirror = this.shadowRoot?.getElementById('mirrorToggle');
+    if (mirror) {
+      mirror.disabled = !admin;
+      mirror.title = admin ? '' : ADMIN_ONLY_TITLE;
+    }
+    const mirrorOption = this.shadowRoot?.getElementById('mirrorOption');
+    if (mirrorOption) mirrorOption.title = admin ? '' : ADMIN_ONLY_TITLE;
+    const note = this.shadowRoot?.getElementById('mapOptionsNote');
+    if (note) note.hidden = admin;
+    // Walk saves a zone, so it is an administrator's, and like drawing it
+    // needs the map unlocked. The button stays for a locked map, where a
+    // press says how to unlock.
+    const walk = this.shadowRoot?.getElementById('btnModeWalk');
+    if (walk) walk.style.display = admin ? '' : 'none';
+    if (!admin || this.isLocked) this._exitWalk();
+    // Movement history is an administrator's, on a radar that keeps it.
+    // Anyone else never sees its option or History, and the question before
+    // turning it off has nothing left to ask once it is off.
+    if (!admin || !this._movementHistory) {
+      this._closeHistory();
+      this._movementConfirm = false;
+    }
+    this._renderMovementOption();
+    this._renderHistoryChip();
+  }
+
+  /** Configure's Movement history option: shown to administrators only,
+   *  ticked as the store holds it, and asking while _movementConfirm. */
+  _renderMovementOption() {
+    const option = this.shadowRoot?.getElementById('movementOption');
+    if (option) option.hidden = !this._isAdmin();
+    const toggle = this.shadowRoot?.getElementById('movementToggle');
+    if (toggle) toggle.checked = this._movementHistory;
+    const confirm = this.shadowRoot?.getElementById('movementConfirm');
+    if (confirm) confirm.hidden = !this._movementConfirm;
+  }
+
+  /**
+   * The Movement history box was ticked or unticked by an administrator.
+   * Ticked saves it at once. Unticked deletes the radar's history, so it
+   * asks first, in place, with the box left ticked until the answer.
+   */
+  async _chooseMovementHistory(on) {
+    if (!this._isAdmin()) {
+      // A hidden checkbox gets no change event, but nothing that still
+      // reaches it (a screen reader, say) saves.
+      this._renderMovementOption();
+      return;
+    }
+    this._movementConfirm = !on;
+    this._renderMovementOption();
+    // Ticked, it is being saved; unticked, the store keeps it until the
+    // answer. Either way the box stays ticked for now.
+    const toggle = this.shadowRoot?.getElementById('movementToggle');
+    if (toggle) toggle.checked = true;
+    if (!on) return;
+    // A device-wide setting, so input_units, which rescales presence for
+    // sensors without a unit, stays out of it, as with the flip. The save's
+    // echo shows the History chip.
+    const saved = await this._saveZoneUpdate(
+      { device_id: this.deviceId, movement_history: true },
+      MOVEMENT_ON_TOAST,
+      { withInputUnits: false },
+    );
+    // Back to what the store holds, which the refused save did not change.
+    if (!saved) this._renderMovementOption();
+  }
+
+  /** The answer to the question: turn movement history off, which deletes
+   *  this radar's history. The save's echo closes History. */
+  async _turnMovementHistoryOff() {
+    this._movementConfirm = false;
+    this._renderMovementOption();
+    if (!this._isAdmin()) return;
+    const toggle = this.shadowRoot?.getElementById('movementToggle');
+    if (toggle) toggle.checked = false;
+    const saved = await this._saveZoneUpdate(
+      { device_id: this.deviceId, movement_history: false },
+      MOVEMENT_OFF_TOAST,
+      { withInputUnits: false },
+    );
+    if (!saved) this._renderMovementOption();
+  }
+
+  _attachWalkPanel() {
+    const on = (id, handler) => {
+      const button = this.shadowRoot.getElementById(id);
+      if (button) button.addEventListener('click', handler);
+    };
+    on('btnWalkCorner', () => this._walkCorner());
+    on('btnWalkUndo', () => this._walkUndo());
+    on('btnWalkFinish', () => this._walkFinish());
+    on('btnWalkCancel', () => this._walkCancel());
+    on('btnWalkCancelYes', () => this._exitWalk());
+    on('btnWalkCancelNo', () => {
+      this._walkConfirmCancel = false;
+      this._renderWalkPanel();
+    });
+  }
+
+  /**
+   * Walk's panel, right under the map and hidden until Walk is on: the hint,
+   * read out as it changes, Corner here on a row of its own, then Undo
+   * corner, Finish and Cancel, which swap for Cancel's question while it
+   * asks. _renderWalkPanel sets them from `this`.
+   */
+  _walkPanelTemplate() {
+    return `
+        <div class="walk-panel" id="walkPanel" hidden>
+          <div class="walk-hint" id="walkHint" aria-live="polite"></div>
+          <div class="walk-row">
+            <button id="btnWalkCorner">${WALK_CORNER}</button>
+          </div>
+          <div class="walk-row" id="walkActions">
+            <button id="btnWalkUndo">${WALK_UNDO}</button>
+            <button id="btnWalkFinish">${WALK_FINISH}</button>
+            <button id="btnWalkCancel" class="zone-btn">${WALK_CANCEL}</button>
+          </div>
+          <div class="walk-confirm" id="walkConfirm" hidden>
+            <div class="walk-hint">${WALK_CANCEL_CONFIRM}</div>
+            <div class="walk-row">
+              <button id="btnWalkCancelYes">${WALK_CANCEL_YES}</button>
+              <button id="btnWalkCancelNo" class="zone-btn">${WALK_CANCEL_NO}</button>
+            </div>
+          </div>
+        </div>
+    `;
+  }
+
+  /**
+   * Lay Walk's panel out from the state on `this`: shown while Walk is on,
+   * with the hint for who is in view and how many corners are down; Corner
+   * here only with exactly one person in view and room for another corner,
+   * Undo corner with a corner to undo, Finish with two; Cancel's question in
+   * place of those three while it asks. It runs on every target move, so it
+   * touches the DOM only when one of those changed (_walkVisible), and
+   * render() lays a rebuilt panel out again.
+   */
+  _renderWalkPanel() {
+    const panel = this.shadowRoot?.getElementById('walkPanel');
+    if (!panel) return;
+    if (!this._walk) {
+      if (this._walkVisible !== null) {
+        panel.hidden = true;
+        this._walkVisible = null;
+      }
+      return;
+    }
+    const visible = this._walkTargets().length;
+    const corners = this._walk.corners.length;
+    const confirm = this._walkConfirmCancel;
+    const shown = this._walkVisible;
+    const same =
+      shown && shown.visible === visible && shown.corners === corners && shown.confirm === confirm;
+    if (same) return;
+    this._walkVisible = { visible, corners, confirm };
+    panel.hidden = false;
+    const full = corners >= this.polyMaxPoints;
+    let hint;
+    if (full) hint = WALK_HINT_FULL;
+    else if (visible === 0) hint = WALK_HINT_NOBODY;
+    else if (visible >= 2) hint = WALK_HINT_CROWD;
+    else if (corners === 0) hint = WALK_HINT_START;
+    else hint = walkHintNext(corners);
+    const set = (id, apply) => {
+      const element = this.shadowRoot.getElementById(id);
+      if (element) apply(element);
+    };
+    set('walkHint', (element) => {
+      element.textContent = hint;
+    });
+    set('btnWalkCorner', (element) => {
+      element.disabled = full || visible !== 1;
+    });
+    set('btnWalkUndo', (element) => {
+      element.disabled = corners === 0;
+    });
+    set('btnWalkFinish', (element) => {
+      element.disabled = corners < 2;
+    });
+    set('walkActions', (element) => {
+      element.hidden = confirm;
+    });
+    set('walkConfirm', (element) => {
+      element.hidden = !confirm;
+    });
+  }
+
+  /**
+   * Start marking a zone's corners by walking to them, as an administrator
+   * on an unlocked map. History closes first: its replay would hide the dot
+   * of the person walking. The canvas pans in Walk, so a phone carried
+   * around the room still scrolls the page.
+   */
+  _enterWalk() {
+    if (this._viewOnly || !this._isAdmin() || this._walk) return;
+    if (this.isLocked) {
+      this._remindLocked(DRAW_LOCKED_TOAST);
+      return;
+    }
+    this._closeHistory();
+    this._modeBeforeWalk = this.drawMode;
+    this._walk = { corners: [] };
+    this._walkConfirmCancel = false;
+    // Ends any shape in progress, shows the panel and lets the canvas pan.
+    this._setDrawMode(DRAW_MODES.WALK);
+  }
+
+  /** Leave Walk, back to the drawing mode it came from, and drop the
+   *  corners without asking. */
+  _exitWalk() {
+    if (this.drawMode !== DRAW_MODES.WALK) return;
+    const mode = this._modeBeforeWalk;
+    this._setDrawMode(mode && mode !== DRAW_MODES.WALK ? mode : DRAW_MODES.RECT);
+  }
+
+  /** The live targets Walk can mark a corner at: every target outside the
+   *  ignore zones, where presence does not see them either. */
+  _walkTargets() {
+    return this._currentTargets().filter(({ x, y }) => {
+      const m = this._toMap(x, y);
+      return !this._isIgnored(m.x, m.y);
+    });
+  }
+
+  /**
+   * Corner here: mark where the one person in view stands, as their
+   * time-weighted position over the last WALK_AVERAGE_MS, so the steps up to
+   * the corner weigh little. Once they have stood still for so long that
+   * every sample aged out, their current reading. Kept in the radar's own
+   * frame, so a rotation changed mid-walk turns the corners with the map. A
+   * corner too close to the last one, or back at the first once three are
+   * down, is refused and the corners stay.
+   */
+  _walkCorner() {
+    if (!this._walk) return;
+    const corners = this._walk.corners;
+    const targets = this._walkTargets();
+    if (targets.length !== 1 || corners.length >= this.polyMaxPoints) {
+      // The press beat a push: the panel says why now.
+      this._renderWalkPanel();
+      return;
+    }
+    const [target] = targets;
+    const at = this._trails.average(target.slot, this._now(), WALK_AVERAGE_MS) || target;
+    const corner = { x: at.x, y: at.y };
+    const near = (other) =>
+      Math.hypot(corner.x - other.x, corner.y - other.y) < WALK_MIN_CORNER_GAP_MM;
+    if (corners.length > 0 && near(corners[corners.length - 1])) {
+      this._notifyThrottled(WALK_TOO_CLOSE_TOAST);
+      return;
+    }
+    // Back where the walk started is a closed shape, which Finish saves; a
+    // corner there would only repeat the first.
+    if (corners.length >= 3 && near(corners[0])) {
+      this._notifyThrottled(WALK_CLOSED_TOAST);
+      return;
+    }
+    corners.push(corner);
+    // Still marking, so a question Cancel was asking is answered.
+    this._walkConfirmCancel = false;
+    this._renderWalkPanel();
+    this.drawGrid();
+  }
+
+  _walkUndo() {
+    if (!this._walk || this._walk.corners.length === 0) return;
+    this._walk.corners.pop();
+    this._walkConfirmCancel = false;
+    this._renderWalkPanel();
+    this.drawGrid();
+  }
+
+  /** Cancel: with two or more corners down, which took a walk around the
+   *  room to mark, ask first, in the panel. */
+  _walkCancel() {
+    if (!this._walk) return;
+    if (this._walk.corners.length >= 2) {
+      this._walkConfirmCancel = true;
+      this._renderWalkPanel();
+      return;
+    }
+    this._exitWalk();
+  }
+
+  /**
+   * Finish: save the walked corners as the selected zone's shape, through
+   * the same commit a drawn rect or polygon takes (an undo snapshot, the
+   * shape on the map at once, the save and its "<label> saved"). Two corners
+   * are a rectangle, three or more a polygon. With no zone selected, or a
+   * shape too thin to use, the walk goes on with its corners.
+   */
+  _walkFinish() {
+    if (!this._walk || this._walk.corners.length < 2) return;
+    const zoneId = this.selectedZone;
+    if (zoneId === null || zoneId === undefined) {
+      this._notifyThrottled(SELECT_ZONE_TOAST);
+      return;
+    }
+    const mapCorners = this._walk.corners.map(({ x, y }) => this._toMap(x, y));
+    const clamp = (p) => ({
+      x: this._clampAndRound(p.x, this.xMin, this.xMax),
+      y: this._clampAndRound(p.y, this.yMin, this.yMax),
+    });
+    const result = walkShape(mapCorners, clamp, this.polyMaxPoints);
+    if (result.error) {
+      this._notifyThrottled(result.error === 'flat' ? WALK_FLAT_TOAST : POLY_TOO_FEW_TOAST);
+      return;
+    }
+    if (result.shape === DRAW_MODES.RECT) {
+      const { x_min, y_min, x_max, y_max } = result.data;
+      const payload = this._rectFromMm(x_min, y_min, x_max, y_max);
+      this._exitWalk();
+      this._commitZoneShape(zoneId, payload);
+      return;
+    }
+    this._exitWalk();
+    this._polyPoints = result.points;
+    this.finishPolygon();
+  }
+
+  /** Whether this viewer may open History: an administrator, on a radar
+   *  that keeps movement history, on the full card. Anyone else's card
+   *  never calls the movement commands. */
+  _historyAllowed() {
+    return !this._viewOnly && this._isAdmin() && this._movementHistory;
+  }
+
+  /** The History chip: shown only where History is allowed, disabled while
+   *  Walk is on (its replay would hide the walker's dot), pressed and
+   *  expanded while the panel is open. */
+  _renderHistoryChip() {
+    const chip = this.shadowRoot?.getElementById('btnHistory');
+    if (!chip) return;
+    chip.hidden = !this._historyAllowed();
+    const walking = !!this._walk;
+    chip.disabled = walking;
+    chip.title = walking ? HISTORY_WALK_TITLE : '';
+    const open = this._history.open;
+    chip.classList.toggle('active', open);
+    chip.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+
+  /**
+   * Open the History panel and read the range from the server. The live map
+   * stays until the answer comes; from then the replay takes the map, at
+   * the start of the range and paused.
+   */
+  _openHistory() {
+    const h = this._history;
+    if (h.open || this._walk || !this._historyAllowed()) return;
+    h.open = true;
+    this._fetchHistory();
+  }
+
+  /**
+   * Close the History panel, back to the live map: stop the replay, drop its
+   * answer and every answer still on its way. Back to live, the History
+   * chip, the flag going off, an administrator who is one no more, Walk, a
+   * card leaving the page, another radar and view_only all end here. The
+   * range, speed and Heatmap stay for the next open.
+   */
+  _closeHistory() {
+    const h = this._history;
+    this._historyReq += 1;
+    this._stopPlayback();
+    if (!h.open) return;
+    const showing = this._replayShowing();
+    h.open = false;
+    this._dropHistoryAnswer();
+    h.loading = false;
+    h.error = null;
+    h.confirmClear = false;
+    this._renderHistoryPanel();
+    if (showing) {
+      // The live map, which the replay kept from painting, and its trails.
+      this.drawGrid();
+      this._kickTrailTimer();
+    }
+  }
+
+  /** Forget the answer the replay shows, and where in it the replay was. */
+  _dropHistoryAnswer() {
+    const h = this._history;
+    h.series = null;
+    h.heat = null;
+    h.t = null;
+    h.serverNow = null;
+    h.clientAt = null;
+    h.since = null;
+  }
+
+  /** Stop a replay that plays; it stays where it got to. */
+  _stopPlayback() {
+    const h = this._history;
+    h.playing = false;
+    if (h.timer !== null) {
+      clearTimeout(h.timer);
+      h.timer = null;
+    }
+  }
+
+  /**
+   * Read the open panel's range from the server, by the server's clock. The
+   * request starts at this browser's clock corrected by the skew the last
+   * answer showed; the range ends at the answer's `now` and starts its
+   * length before that. A first answer more than a minute off the clock the
+   * request assumed is asked again with the start corrected, so the range
+   * is not missing its first minutes. Only the newest request of a panel
+   * still open for the same radar is applied: a slow 24 h answer must not
+   * replace a later 1 h one, or reopen a closed panel.
+   */
+  async _fetchHistory(retry = true) {
+    const h = this._history;
+    const token = ++this._historyReq;
+    const deviceId = this.deviceId;
+    const rangeMs = h.rangeH * 3600000;
+    const skewMs = this._historySkewMs;
+    const showing = this._replayShowing();
+    this._stopPlayback();
+    this._dropHistoryAnswer();
+    h.loading = true;
+    h.error = null;
+    this._renderHistoryPanel();
+    if (showing) {
+      // The live map while the range loads, or after it failed to. Its
+      // trails fade on: the replay stood the fade timer down, and a radar
+      // with nobody moving sends no push to start it again.
+      this.drawGrid();
+      this._kickTrailTimer();
+    }
+    const fail = (message) => {
+      // Nothing older may land on top of what this says.
+      this._historyReq += 1;
+      h.loading = false;
+      h.error = message;
+      this._renderHistoryPanel();
+    };
+    let payload;
+    try {
+      payload = await fetchMovement(this._hass, deviceId, Date.now() + skewMs - rangeMs);
+    } catch (error) {
+      if (this._historyAnswerCurrent(token, deviceId)) fail(this._historyErrorText(error));
+      return;
+    }
+    if (!this._historyAnswerCurrent(token, deviceId)) return;
+    const clientAt = Date.now();
+    if (!isMovementPayload(payload)) {
+      fail(historyError(HISTORY_UNREADABLE));
+      return;
+    }
+    this._historySkewMs = payload.now - clientAt;
+    if (retry && Math.abs(this._historySkewMs - skewMs) > HISTORY_SKEW_REFETCH_MS) {
+      this._fetchHistory(false);
+      return;
+    }
+    let series;
+    try {
+      series = decodeMovement(payload);
+    } catch (error) {
+      fail(historyError(error?.message ? String(error.message) : HISTORY_UNREADABLE));
+      return;
+    }
+    const since = payload.now - rangeMs;
+    h.loading = false;
+    h.series = series;
+    // Once per answer: dwell does not change while the replay moves.
+    h.heat = heatCells(series, since, payload.now);
+    h.serverNow = payload.now;
+    h.clientAt = clientAt;
+    h.since = since;
+    h.t = since;
+    this._renderHistoryPanel();
+    this.drawGrid();
+  }
+
+  /** Whether the answer to request `token` for `deviceId` may still be
+   *  applied: it is the newest one, and its panel is still open. */
+  _historyAnswerCurrent(token, deviceId) {
+    return token === this._historyReq && this._history.open && this.deviceId === deviceId;
+  }
+
+  /** What the status line says about a refused movement read. */
+  _historyErrorText(error) {
+    if (error?.code === 'unauthorized') return HISTORY_UNAUTHORIZED;
+    return historyError(error?.message ? String(error.message) : REJECTED_REASON);
+  }
+
+  /** Another range, read again from the server and replayed from its start. */
+  _setHistoryRange(hours) {
+    const h = this._history;
+    if (!h.open || hours === h.rangeH) return;
+    if (!HISTORY_RANGES.some((range) => range.hours === hours)) return;
+    h.rangeH = hours;
+    this._fetchHistory();
+  }
+
+  /** Paint where people spent their time over the range, or stop. */
+  _setHistoryHeatmap(on) {
+    this._history.heatmap = on;
+    this._renderHistoryPanel();
+    if (this._replayShowing()) this.drawGrid();
+  }
+
+  /** Play at another speed, from the moment it was pressed. */
+  _setHistorySpeed(speed) {
+    const h = this._history;
+    if (!HISTORY_SPEEDS.some((option) => option.speed === speed)) return;
+    if (h.playing) this._advanceHistory();
+    h.speed = speed;
+    this._renderHistoryPanel();
+  }
+
+  /** Play the replay from where it is, or from the start once it has
+   *  played to the end. The replay timer is then the map's only painter. */
+  _playHistory() {
+    const h = this._history;
+    if (h.playing || !this._replayShowing()) return;
+    const restart = h.t >= h.serverNow;
+    if (restart) h.t = h.since;
+    h.playing = true;
+    h.lastTick = this._now();
+    h.timer = setTimeout(() => this._onHistoryFrame(), HISTORY_FRAME_MS);
+    this._renderHistoryPanel();
+    if (restart) this.drawGrid();
+  }
+
+  /** Pause where the replay is now, painted there once. */
+  _pauseHistory() {
+    if (!this._history.playing) return;
+    this._advanceHistory();
+    this._stopPlayback();
+    this._renderHistoryPanel();
+    this.drawGrid();
+  }
+
+  /** Move a playing replay on by the time since it last moved, times its
+   *  speed, never past the end of the range. */
+  _advanceHistory() {
+    const h = this._history;
+    const now = this._now();
+    h.t = Math.min(h.serverNow, h.t + (now - h.lastTick) * h.speed);
+    h.lastTick = now;
+  }
+
+  /** One frame of a playing replay. At the end of the range it pauses. */
+  _onHistoryFrame() {
+    const h = this._history;
+    h.timer = null;
+    if (!h.playing || !this._replayShowing()) return;
+    this._advanceHistory();
+    if (h.t >= h.serverNow) {
+      h.playing = false;
+      this._renderHistoryPanel();
+    } else {
+      h.timer = setTimeout(() => this._onHistoryFrame(), HISTORY_FRAME_MS);
+      this._renderHistoryTime();
+    }
+    this.drawGrid();
+  }
+
+  /** The scrubber moved to `seconds` into the range. A playing replay plays
+   *  on from there. */
+  _scrubHistory(seconds) {
+    const h = this._history;
+    if (!this._replayShowing() || !Number.isFinite(seconds)) return;
+    h.t = Math.min(h.serverNow, Math.max(h.since, h.since + seconds * 1000));
+    if (h.playing) h.lastTick = this._now();
+    this._renderHistoryTime();
+    this.drawGrid();
+  }
+
+  /**
+   * The answer to Clear history's question: delete this radar's movement
+   * history. The radar keeps recording, so the panel, if it is still open
+   * for this radar, reads the range again.
+   */
+  async _clearHistory() {
+    const h = this._history;
+    h.confirmClear = false;
+    this._renderHistoryPanel();
+    if (!this._hass || !this._historyAllowed()) return;
+    const deviceId = this.deviceId;
+    try {
+      await clearMovement(this._hass, deviceId);
+    } catch (error) {
+      this._notify(historyClearError(error?.message ? String(error.message) : REJECTED_REASON));
+      return;
+    }
+    this._notify(HISTORY_CLEARED_TOAST);
+    if (h.open && this.deviceId === deviceId) this._fetchHistory();
+  }
+
+  /** Lay the History panel out from the state on `this`, after a change of
+   *  it and after render() rebuilt the DOM. A playing replay updates only
+   *  its time (_renderHistoryTime). */
+  _renderHistoryPanel() {
+    this._renderHistoryChip();
+    const root = this.shadowRoot;
+    const panel = root?.getElementById('historyPanel');
+    if (panel) {
+      const h = this._history;
+      const pressed = (button, on) => {
+        button.classList.toggle('active', on);
+        button.setAttribute('aria-pressed', on ? 'true' : 'false');
+      };
+      panel.hidden = !h.open;
+      panel.querySelectorAll('[data-hours]').forEach((button) => {
+        pressed(button, Number(button.dataset.hours) === h.rangeH);
+      });
+      panel.querySelectorAll('[data-speed]').forEach((button) => {
+        pressed(button, Number(button.dataset.speed) === h.speed);
+      });
+      const heatmap = root.getElementById('btnHistoryHeatmap');
+      if (heatmap) pressed(heatmap, h.heatmap);
+      const loaded = !!h.series;
+      const play = root.getElementById('btnHistoryPlay');
+      if (play) {
+        play.textContent = h.playing ? HISTORY_PAUSE : HISTORY_PLAY;
+        play.disabled = !loaded;
+      }
+      const scrub = root.getElementById('historyScrub');
+      if (scrub) {
+        // Before the value, which the old maximum would clamp.
+        scrub.max = String(h.rangeH * 3600);
+        scrub.disabled = !loaded;
+      }
+      const status = root.getElementById('historyStatus');
+      if (status) status.textContent = this._historyStatusText();
+      const spark = root.getElementById('historySpark');
+      if (spark) spark.innerHTML = this._sparklineMarkup();
+      const clear = root.getElementById('btnHistoryClear');
+      if (clear) clear.hidden = h.confirmClear;
+      const confirm = root.getElementById('historyClearConfirm');
+      if (confirm) confirm.hidden = !h.confirmClear;
+    }
+    this._renderHistoryTime();
+  }
+
+  /**
+   * What moves with the replay time: the scrubber, the time under it (which
+   * the scrubber reads out as its value) and the badge over the map. Runs
+   * every frame of a playing replay.
+   */
+  _renderHistoryTime() {
+    const root = this.shadowRoot;
+    const h = this._history;
+    const showing = this._replayShowing();
+    const time = showing ? this._replayTime(h.t) : '';
+    const readout = showing ? `${time}, ${formatAgo(this._historyNow() - h.t)}` : '';
+    const scrub = root?.getElementById('historyScrub');
+    if (scrub) {
+      scrub.value = String(showing ? Math.round((h.t - h.since) / 1000) : 0);
+      if (readout) scrub.setAttribute('aria-valuetext', readout);
+      else scrub.removeAttribute('aria-valuetext');
+    }
+    const host = root?.getElementById('historyTime');
+    if (host) host.textContent = readout;
+    const badge = root?.getElementById('replayBadge');
+    if (badge) {
+      badge.hidden = !showing;
+      badge.textContent = showing ? replayBadge(time) : '';
+    }
+  }
+
+  /** The server's clock now, from the answer's `now` and the time since it
+   *  came on this browser's clock. */
+  _historyNow() {
+    const h = this._history;
+    return h.serverNow + (Date.now() - h.clientAt);
+  }
+
+  /** The status line: loading, why the read failed, or that the range has
+   *  nothing to replay; empty while a replay shows. */
+  _historyStatusText() {
+    const h = this._history;
+    if (h.loading) return HISTORY_LOADING;
+    if (h.error) return h.error;
+    if (h.series && !this._historyHasPoints()) return HISTORY_EMPTY;
+    return '';
+  }
+
+  /** Whether the answer holds a position to replay, not only the marks of
+   *  targets leaving. */
+  _historyHasPoints() {
+    const slots = this._history.series?.slots;
+    if (!slots) return false;
+    for (const series of slots.values()) {
+      if (series.gone.includes(0)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * The sparkline over the scrubber: how many positions were recorded in
+   * each of HISTORY_SPARK_BUCKETS slices of the range, as bars whose height
+   * follows the log of the count, so one busy minute does not flatten the
+   * rest. Markup from numbers only. Empty with nothing recorded.
+   */
+  _sparklineMarkup() {
+    const h = this._history;
+    if (!h.series) return '';
+    const counts = sparkBuckets(h.series, h.since, h.serverNow, HISTORY_SPARK_BUCKETS);
+    const top = Math.max(0, ...counts);
+    if (top === 0) return '';
+    const scale = HISTORY_SPARK_HEIGHT / Math.log1p(top);
+    const bars = counts
+      .map((count, i) => {
+        if (count === 0) return '';
+        const height = Math.log1p(count) * scale;
+        const y = HISTORY_SPARK_HEIGHT - height;
+        return `<rect x="${i}" y="${y.toFixed(2)}" width="1" height="${height.toFixed(2)}"></rect>`;
+      })
+      .join('');
+    return (
+      `<svg viewBox="0 0 ${HISTORY_SPARK_BUCKETS} ${HISTORY_SPARK_HEIGHT}"` +
+      ` preserveAspectRatio="none" focusable="false">${bars}</svg>`
+    );
+  }
+
+  /**
+   * Server epoch ms `t` as a clock time the way this viewer's Home Assistant
+   * shows times: its language, its 12 or 24 hour choice, and the server's
+   * time zone when the profile says so (else this browser's). A language or
+   * zone Intl does not know falls back to this browser's own format. The
+   * format is made once per locale, not once per frame.
+   */
+  _replayTime(t) {
+    const locale = this._hass?.locale;
+    const language = locale?.language || undefined;
+    let hour12;
+    if (locale?.time_format === '12') hour12 = true;
+    else if (locale?.time_format === '24') hour12 = false;
+    const timeZone =
+      locale?.time_zone === 'server' ? this._hass?.config?.time_zone || undefined : undefined;
+    const key = JSON.stringify([language, hour12, timeZone]);
+    if (this._replayFormat?.key !== key) {
+      let format;
+      try {
+        format = clockFormat(language, hour12, timeZone);
+      } catch {
+        format = clockFormat(undefined, undefined, undefined);
+      }
+      this._replayFormat = { key, format };
+    }
+    return this._replayFormat.format.format(t);
+  }
+
+  _attachMapOptions() {
+    const mirror = this.shadowRoot.getElementById('mirrorToggle');
+    if (mirror) mirror.addEventListener('change', () => this._chooseMirror(mirror.checked));
+    const movement = this.shadowRoot.getElementById('movementToggle');
+    if (movement) {
+      movement.addEventListener('change', () => this._chooseMovementHistory(movement.checked));
+    }
+    const yes = this.shadowRoot.getElementById('btnMovementOffYes');
+    if (yes) yes.addEventListener('click', () => this._turnMovementHistoryOff());
+    const no = this.shadowRoot.getElementById('btnMovementOffNo');
+    if (no) {
+      no.addEventListener('click', () => {
+        this._movementConfirm = false;
+        this._renderMovementOption();
+      });
+    }
+  }
+
+  /**
+   * Flip this radar's map for everyone who opens it, as an administrator.
+   * The map flips at once and flips back if Home Assistant refuses the save;
+   * the save's own echo confirms it.
+   */
+  async _chooseMirror(on) {
+    if (!this._isAdmin()) {
+      // A disabled checkbox gets no change event, but nothing that still
+      // reaches it (a screen reader, say) flips the map or saves.
+      this._applyMirror(this._zoneConfigPayload);
+      return;
+    }
+    if (on === this._mirrorX) return;
+    this._setMirror(on);
+    this.drawGrid();
+    // A display setting, so input_units, which rescales presence for sensors
+    // without a unit, stays out of it, as with the m / ft switch.
+    const saved = await this._saveZoneUpdate({ device_id: this.deviceId, mirror_x: on }, null, {
+      withInputUnits: false,
+    });
+    if (!saved) {
+      // Back to what the store holds, which the refused save did not change.
+      this._applyMirror(this._zoneConfigPayload);
+      this.drawGrid();
+    }
   }
 
   /**
@@ -1181,6 +2921,7 @@ export class ZoneMapCard extends HTMLElement {
     this._invalidateConeCache();
     this._renderUnitSwitch();
     this._renderInfo();
+    this._renderZoneSizes();
     this.drawGrid();
   }
 
@@ -1224,8 +2965,25 @@ export class ZoneMapCard extends HTMLElement {
       if (!target || target.id !== 'clearBtn') {
         return;
       }
+      // One press wipes every zone, so the lock guards it like drawing. The
+      // button stays enabled (see _renderClearAllLock) so the press can say why.
+      if (this.isLocked) {
+        this._remindLocked(CLEAR_LOCKED_TOAST);
+        return;
+      }
       this._clearAllZones();
     });
+  }
+
+  /** Dim Clear All Zones while the map is locked, and tell assistive tech it
+   *  will not act. It stays enabled: a disabled button takes no tap and shows
+   *  no tooltip on touch, so a phone user would see a dim chip that does
+   *  nothing and not know why. */
+  _renderClearAllLock(clearBtn) {
+    if (!clearBtn) return;
+    clearBtn.classList.toggle('locked-action', !!this.isLocked);
+    if (this.isLocked) clearBtn.setAttribute('aria-disabled', 'true');
+    else clearBtn.removeAttribute('aria-disabled');
   }
 
   _attachCanvasEvents() {
@@ -1239,11 +2997,16 @@ export class ZoneMapCard extends HTMLElement {
     this.canvas.addEventListener('mousemove', handleMouseMove);
     this.canvas.addEventListener('mouseup', handleMouseUp);
 
-    // TODO(REVIEW_REPORT.md X46): a locked canvas still preventDefaults every touch (touch-action
-    // none), blocking page scroll. Consider skipping it and using pan-y while locked, with a test.
+    // A map nothing can be drawn on (see _canvasPans) leaves the touch to the
+    // browser, so a swipe that starts on it scrolls the page instead of
+    // trapping a phone user in the card. A tap still reaches startDrawing
+    // through the mousedown the browser makes of it, so a locked map still
+    // says how to unlock. Read at event time, and a gesture already drawing
+    // finishes or cancels as before.
     this.canvas.addEventListener(
       'touchstart',
       (event) => {
+        if (this._canvasPans() && !this.isDrawing) return;
         event.preventDefault();
         this.startDrawing(event);
       },
@@ -1252,6 +3015,7 @@ export class ZoneMapCard extends HTMLElement {
     this.canvas.addEventListener(
       'touchmove',
       (event) => {
+        if (this._canvasPans() && !this.isDrawing) return;
         event.preventDefault();
         this.draw(event);
       },
@@ -1260,6 +3024,7 @@ export class ZoneMapCard extends HTMLElement {
     this.canvas.addEventListener(
       'touchend',
       (event) => {
+        if (this._canvasPans() && !this.isDrawing) return;
         event.preventDefault();
         this.endDrawing(event);
       },
@@ -1304,7 +3069,8 @@ export class ZoneMapCard extends HTMLElement {
   _attachGlobalListeners() {
     // TODO(REVIEW_REPORT.md X40): render() reaches this on a detached card, so these listeners
     // retain it. If tightened, attach (and subscribe) only while isConnected; update the tests.
-    if (!this.canvas) return;
+    // A view-only map draws nothing for a key or a press elsewhere to end.
+    if (!this.canvas || this._viewOnly) return;
     this._detachGlobalListeners();
 
     this._onKeyDown = (event) => {
@@ -1427,23 +3193,27 @@ export class ZoneMapCard extends HTMLElement {
       const dx = Math.abs(e.clientX - press.x);
       if (dx > CONE_TRY_PX && dx > Math.abs(e.clientY - press.y)) {
         press.tried = true;
-        this._remindConeLocked();
+        this._remindLocked(CONE_LOCKED_TOAST);
       }
     });
     row.addEventListener('pointerup', (e) => {
       if (!press || e.pointerId !== press.id) return;
       const { tried, y } = press;
       press = null;
-      if (!tried && Math.abs(e.clientY - y) <= CONE_TRY_PX) this._remindConeLocked();
+      if (!tried && Math.abs(e.clientY - y) <= CONE_TRY_PX) this._remindLocked(CONE_LOCKED_TOAST);
     });
     row.addEventListener('pointercancel', () => {
       press = null;
     });
   }
 
-  /** Ring the Locked button and, at most once per 1.5 s like the drawing
-   *  reminder, say how to unlock. */
-  _remindConeLocked() {
+  /**
+   * Something the lock guards was tried: ring the Locked button, so the way
+   * out is in view, and say `message`. The draw, clear and cone reminders
+   * share one throttle, so a burst of tries on a locked map toasts once per
+   * 1.5 s whichever control was tried.
+   */
+  _remindLocked(message) {
     const btnLock = this.shadowRoot?.getElementById('btnLock');
     if (btnLock) {
       btnLock.classList.add('nudge');
@@ -1451,9 +3221,19 @@ export class ZoneMapCard extends HTMLElement {
       this._lockNudgeTimer = setTimeout(() => btnLock.classList.remove('nudge'), LOCK_NUDGE_MS);
     }
     const now = Date.now();
-    if (this._lastLockWarningTs && now - this._lastLockWarningTs <= 1500) return;
+    if (this._lastLockWarningTs && now - this._lastLockWarningTs <= TOAST_THROTTLE_MS) return;
     this._lastLockWarningTs = now;
-    this._notify(CONE_LOCKED_TOAST);
+    this._notify(message);
+  }
+
+  /** Say `message`, unless it was said in the last 1.5 s: a repeated gesture
+   *  (a double tap that keeps landing on too few points) gets one toast. */
+  _notifyThrottled(message) {
+    const now = Date.now();
+    const last = this._toastAt.get(message);
+    if (last !== undefined && now - last <= TOAST_THROTTLE_MS) return;
+    this._toastAt.set(message, now);
+    this._notify(message);
   }
 
   _attachDrawingModeControls() {
@@ -1479,6 +3259,8 @@ export class ZoneMapCard extends HTMLElement {
       btnModeEllipse.addEventListener('click', () => this._setDrawMode(DRAW_MODES.ELLIPSE));
     if (btnModePolygon)
       btnModePolygon.addEventListener('click', () => this._setDrawMode(DRAW_MODES.POLYGON));
+    const btnModeWalk = this.shadowRoot.getElementById('btnModeWalk');
+    if (btnModeWalk) btnModeWalk.addEventListener('click', () => this._enterWalk());
 
     if (btnPolyUndo) {
       btnPolyUndo.addEventListener('click', () => {
@@ -1511,6 +3293,8 @@ export class ZoneMapCard extends HTMLElement {
         if (coneControls) coneControls.classList.toggle('locked', this.isLocked);
         const hint = this.shadowRoot.getElementById('coneLockHint');
         if (hint) hint.hidden = !this.isLocked;
+        this._renderClearAllLock(this.shadowRoot.getElementById('clearBtn'));
+        this._updateCanvasTouchMode();
       };
       btnLock.addEventListener('click', () => {
         this.isLocked = !this.isLocked;
@@ -1519,11 +3303,11 @@ export class ZoneMapCard extends HTMLElement {
         this._lastLockWarningTs = 0;
         if (this.isLocked) {
           if (this.isDrawing) this.cancelDrawing();
-          // TODO(REVIEW_REPORT.md X06): the lock gates only drawing; chip double-click clear,
-          // Clear All, Undo and the manager still write. Gate the two clears or say "draw".
-          this._notify('Drawing and cone rotation locked. Unlock the grid to change them.');
+          // Walk saves a zone too, so the lock ends it, corners and all.
+          this._exitWalk();
+          this._notify(LOCK_ON_TOAST);
         } else {
-          this._notify('Drawing and cone rotation unlocked. You can edit zones now.');
+          this._notify(LOCK_OFF_TOAST);
         }
       });
       this._updateLockVisual = updateLockVisual;
@@ -1995,7 +3779,9 @@ export class ZoneMapCard extends HTMLElement {
       pixelStartY: this.valueToPixels(startY, 'y'),
       skipTolX: stepX * 0.001,
       skipTolY: stepY * 0.001,
-      pixelStepX: stepX * pxPerMmX,
+      // A flipped map runs x right to left (valueToPixels), so each step
+      // along it moves left.
+      pixelStepX: (this._mirrorX ? -stepX : stepX) * pxPerMmX,
       pixelStepY: stepY * pxPerMmY,
     };
   }
@@ -2019,6 +3805,7 @@ export class ZoneMapCard extends HTMLElement {
       this.unitDisplay ? 1 : 0,
       this.unitLabelSize,
       this._roundKeyValue(labelGap, 1e3),
+      this._mirrorX ? 1 : 0,
     ];
     const key = keyParts.join('|');
     if (this._gridCache && this._gridCache.key === key) {
@@ -2327,11 +4114,28 @@ export class ZoneMapCard extends HTMLElement {
       this._updatePolygonButtonsVisibility();
       return;
     }
+    // Walk starts only through _enterWalk, which checks who is viewing and
+    // the lock and sets up its corners first.
+    if (nextMode === DRAW_MODES.WALK && !this._walk) {
+      this._enterWalk();
+      return;
+    }
+    // Any other mode ends a walk, and its corners go without asking.
+    if (this.drawMode === DRAW_MODES.WALK) {
+      this._walk = null;
+      this._modeBeforeWalk = null;
+      this._walkConfirmCancel = false;
+    }
     this.drawMode = nextMode;
     // A shape drawn in one mode cannot be finished in another.
     this._resetDrawingState();
     this._highlightActiveModeButton();
     this._updatePolygonButtonsVisibility();
+    // Into or out of Walk, which has its panel, lets the canvas pan and
+    // keeps History shut.
+    this._updateCanvasTouchMode();
+    this._renderWalkPanel();
+    this._renderHistoryChip();
     this._invalidateGridCache();
     this._refitAndDraw();
   }
@@ -2340,12 +4144,14 @@ export class ZoneMapCard extends HTMLElement {
     const rectBtn = this.shadowRoot?.getElementById('btnModeRect');
     const ellipseBtn = this.shadowRoot?.getElementById('btnModeEllipse');
     const polyBtn = this.shadowRoot?.getElementById('btnModePolygon');
-    [rectBtn, ellipseBtn, polyBtn].forEach((btn) => {
+    const walkBtn = this.shadowRoot?.getElementById('btnModeWalk');
+    [rectBtn, ellipseBtn, polyBtn, walkBtn].forEach((btn) => {
       if (!btn) return;
       const shouldActivate =
         (btn === rectBtn && this.drawMode === DRAW_MODES.RECT) ||
         (btn === ellipseBtn && this.drawMode === DRAW_MODES.ELLIPSE) ||
-        (btn === polyBtn && this.drawMode === DRAW_MODES.POLYGON);
+        (btn === polyBtn && this.drawMode === DRAW_MODES.POLYGON) ||
+        (btn === walkBtn && this.drawMode === DRAW_MODES.WALK);
       btn.classList.toggle('active', shouldActivate);
     });
   }
@@ -2353,15 +4159,39 @@ export class ZoneMapCard extends HTMLElement {
   _setSelectedZone(zoneId) {
     if (zoneId === null || zoneId === undefined) {
       this.selectedZone = null;
+      this._updateCanvasTouchMode();
       return;
     }
     this.selectedZone = Number(zoneId);
+    this._updateCanvasTouchMode();
     const buttons = this.shadowRoot?.querySelectorAll('.zone-btn[data-zone-id]');
     if (!buttons) return;
     buttons.forEach((btn) => {
       const targetId = Number(btn.dataset.zoneId);
       btn.classList.toggle('active', targetId === this.selectedZone);
     });
+  }
+
+  /**
+   * Whether a touch on the canvas belongs to the page rather than to drawing:
+   * the map is locked, Walk is on (corners come from the radar, not the
+   * finger), or no zone is selected, so nothing could be drawn. A new radar's
+   * map starts unlocked with no zones, and a phone must still scroll past it.
+   */
+  _canvasPans() {
+    return (
+      !!this.isLocked ||
+      this.drawMode === DRAW_MODES.WALK ||
+      this.selectedZone === null ||
+      this.selectedZone === undefined
+    );
+  }
+
+  /** The canvas's touch-action follows _canvasPans (CSS `canvas.pans`). The
+   *  touch handlers leave such a touch alone, but under the canvas's own
+   *  touch-action: none the browser still would not scroll for it. */
+  _updateCanvasTouchMode() {
+    if (this.canvas) this.canvas.classList.toggle('pans', this._canvasPans());
   }
 
   /** Undo the last polygon vertex (Backspace or the undo button). Popping
@@ -2428,6 +4258,7 @@ export class ZoneMapCard extends HTMLElement {
       this._setUndoSnapshot(this._snapshotZones([zoneId]));
     }
     this._removeZone(zoneId);
+    this._renderZoneSizes();
     if (notifyBackend) {
       this.updateHomeAssistantShape(zoneId, 'none', null, `${this._zoneLabel(zoneId)} cleared`);
     }
@@ -2443,6 +4274,7 @@ export class ZoneMapCard extends HTMLElement {
     const zoneIds = (this.zoneConfig || []).map((zone) => zone.id);
     this._setUndoSnapshot(this._snapshotZones(zoneIds));
     this.zones = [];
+    this._renderZoneSizes();
     this._resetDrawingState();
     this.drawGrid();
     if (!zoneIds.length) return;
@@ -2489,6 +4321,9 @@ export class ZoneMapCard extends HTMLElement {
       // The second tap is the gesture, not a vertex, so it is never pushed.
       if (this._isPolyFinishTap(p, now)) {
         if (this._polyPoints.length >= 3) this.finishPolygon();
+        // The polygon stays open for the corners it still needs, but a finish
+        // that does nothing has to say why.
+        else this._notifyThrottled(POLY_TOO_FEW_TOAST);
         return;
       }
       // Add a vertex on each other mouse/touch end
@@ -2518,64 +4353,86 @@ export class ZoneMapCard extends HTMLElement {
       this.cancelDrawing();
       return;
     }
-    // Convert drawn zones to mm
-    let payload = null;
-    if (this.drawMode === DRAW_MODES.RECT) {
-      const x1 = this.pixelsToValue(this.startPoint.x, 'x');
-      const x2 = this.pixelsToValue(endPoint.x, 'x');
-      const y1 = this.pixelsToValue(this.startPoint.y, 'y');
-      const y2 = this.pixelsToValue(endPoint.y, 'y');
-      const xMinRounded = this._clampAndRound(Math.min(x1, x2), this.xMin, this.xMax);
-      const xMaxRounded = this._clampAndRound(Math.max(x1, x2), this.xMin, this.xMax);
-      const yMinRounded = this._clampAndRound(Math.min(y1, y2), this.yMin, this.yMax);
-      const yMaxRounded = this._clampAndRound(Math.max(y1, y2), this.yMin, this.yMax);
+    const payload = this._shapeFromDrag(this.startPoint, endPoint, this.drawMode);
+    if (!payload) {
       // A click, a tap or a perfectly straight drag has no area. The backend
       // only keeps a rect with x_min < x_max and y_min < y_max and clears the
       // zone for anything else, so saving this would wipe the zone's current
       // shape. Drop the gesture silently, like a drag that leaves the canvas.
-      if (xMinRounded === xMaxRounded || yMinRounded === yMaxRounded) {
-        this.cancelDrawing();
-        return;
-      }
-      payload = {
-        shape: DRAW_MODES.RECT,
-        data: {
-          x_min: xMinRounded,
-          x_max: xMaxRounded,
-          y_min: yMinRounded,
-          y_max: yMaxRounded,
-        },
-      };
-    } else if (this.drawMode === DRAW_MODES.ELLIPSE) {
+      this.cancelDrawing();
+      return;
+    }
+    this._commitZoneShape(this.selectedZone, payload);
+    this._activeInput = null;
+    this.startPoint = null;
+    this._cursorPoint = null;
+  }
+
+  /**
+   * The `{ shape, data }` a rect or ellipse drag from canvas point `startPx`
+   * to `endPx` (backing px) saves, in whole mm clamped to the map, or null
+   * for a rect with no area. Anything that shows a drag's result (the size
+   * readout) reads it from here, so it always matches what is saved.
+   */
+  _shapeFromDrag(startPx, endPx, mode) {
+    if (mode === DRAW_MODES.RECT) {
+      return this._rectFromMm(
+        this.pixelsToValue(startPx.x, 'x'),
+        this.pixelsToValue(startPx.y, 'y'),
+        this.pixelsToValue(endPx.x, 'x'),
+        this.pixelsToValue(endPx.y, 'y'),
+      );
+    }
+    if (mode === DRAW_MODES.ELLIPSE) {
       // Bounding box -> ellipse center/radii. The corners are clamped to the
       // grid first, like the rect's: a touch keeps reporting after the finger
       // leaves the canvas, and an unclamped corner gave an edge-pinned center
       // with a radius reaching past the grid.
-      const x1 = this._clampValue(this.pixelsToValue(this.startPoint.x, 'x'), this.xMin, this.xMax);
-      const y1 = this._clampValue(this.pixelsToValue(this.startPoint.y, 'y'), this.yMin, this.yMax);
-      const x2 = this._clampValue(this.pixelsToValue(endPoint.x, 'x'), this.xMin, this.xMax);
-      const y2 = this._clampValue(this.pixelsToValue(endPoint.y, 'y'), this.yMin, this.yMax);
+      const x1 = this._clampValue(this.pixelsToValue(startPx.x, 'x'), this.xMin, this.xMax);
+      const y1 = this._clampValue(this.pixelsToValue(startPx.y, 'y'), this.yMin, this.yMax);
+      const x2 = this._clampValue(this.pixelsToValue(endPx.x, 'x'), this.xMin, this.xMax);
+      const y2 = this._clampValue(this.pixelsToValue(endPx.y, 'y'), this.yMin, this.yMax);
       const cx = this._clampAndRound((x1 + x2) / 2, this.xMin, this.xMax);
       const cy = this._clampAndRound((y1 + y2) / 2, this.yMin, this.yMax);
       const rx = Math.max(1, Math.round(Math.abs(x2 - x1) / 2));
       const ry = Math.max(1, Math.round(Math.abs(y2 - y1) / 2));
-      payload = { shape: DRAW_MODES.ELLIPSE, data: { cx, cy, rx, ry } };
-    } else if (this.drawMode === DRAW_MODES.POLYGON) {
-      // polygon finalization is handled by dblclick -> finishPolygon()
+      return { shape: DRAW_MODES.ELLIPSE, data: { cx, cy, rx, ry } };
     }
+    // A polygon is saved by finishPolygon, from its vertices.
+    return null;
+  }
 
-    if (!payload) return;
-    const zoneId = this.selectedZone;
+  /**
+   * The rect two corners in mm span, in whole mm clamped to the map, as the
+   * `{ shape, data }` a save carries, or null when it has no area. Shared by
+   * a dragged rect and one marked by walking to two corners.
+   */
+  _rectFromMm(x1, y1, x2, y2) {
+    const xMin = this._clampAndRound(Math.min(x1, x2), this.xMin, this.xMax);
+    const xMax = this._clampAndRound(Math.max(x1, x2), this.xMin, this.xMax);
+    const yMin = this._clampAndRound(Math.min(y1, y2), this.yMin, this.yMax);
+    const yMax = this._clampAndRound(Math.max(y1, y2), this.yMin, this.yMax);
+    if (xMin === xMax || yMin === yMax) return null;
+    return {
+      shape: DRAW_MODES.RECT,
+      data: { x_min: xMin, x_max: xMax, y_min: yMin, y_max: yMax },
+    };
+  }
+
+  /**
+   * Save a finished rect or ellipse as zone `zoneId`'s shape: an undo
+   * snapshot of what it replaces, the new shape on the map at once, and the
+   * write, which toasts "<label> saved" once Home Assistant takes it.
+   */
+  _commitZoneShape(zoneId, payload) {
     this._setUndoSnapshot(this._snapshotZones([zoneId]));
     this._upsertZone(zoneId, payload.shape, payload.data);
+    this._renderZoneSizes();
     // The save's echo fits the map again, but a refused save sends none.
     this._refitAndDraw();
     const savedMessage =
       zoneId === null || zoneId === undefined ? null : `${this._zoneLabel(zoneId)} saved`;
-    this.updateHomeAssistantShape(zoneId, payload.shape, payload.data, savedMessage);
-    this._activeInput = null;
-    this.startPoint = null;
-    this._cursorPoint = null;
+    return this.updateHomeAssistantShape(zoneId, payload.shape, payload.data, savedMessage);
   }
 
   /** Whether a polygon tap at canvas point `p` (backing px) finishes the
@@ -2700,6 +4557,7 @@ export class ZoneMapCard extends HTMLElement {
         data == null ? null : data,
       );
     });
+    this._renderZoneSizes();
     this.drawGrid();
     Promise.all(writes).then((saved) => {
       if (saved.every(Boolean)) this._notify('Undid last zone change');
@@ -2757,6 +4615,22 @@ export class ZoneMapCard extends HTMLElement {
     const drafts = this._captureZoneNameDrafts(host);
     host.innerHTML = '';
     const zones = (this.zoneConfig || []).slice().sort((a, b) => Number(a.id) - Number(b.id));
+    const admin = this._isAdmin();
+    if (zones.length) {
+      // What the two selects on each row do, said once above the rows. A
+      // disabled select's title never reaches touch or keyboard users, so a
+      // viewer is told in plain text why they cannot change them.
+      const hint = document.createElement('div');
+      hint.className = 'zone-settings-hint';
+      hint.textContent = ZONE_SETTINGS_HINT;
+      host.appendChild(hint);
+      if (!admin) {
+        const note = document.createElement('div');
+        note.className = 'zone-settings-hint zone-settings-note';
+        note.textContent = ADMIN_ONLY_NOTE;
+        host.appendChild(note);
+      }
+    }
     zones.forEach((z) => {
       const row = document.createElement('div');
       row.className = 'entity-row';
@@ -2828,13 +4702,154 @@ export class ZoneMapCard extends HTMLElement {
         this.drawGrid();
       });
 
+      // The first line stays label, name, Save and Delete; the second spans
+      // the row under them.
       row.appendChild(label);
       row.appendChild(input);
       row.appendChild(saveBtn);
       row.appendChild(delBtn);
+      row.appendChild(this._zoneMetaLine(z.id, admin));
       host.appendChild(row);
     });
     this._restoreZoneNameDrafts(host, drafts);
+  }
+
+  /**
+   * A zone row's second line: the zone's size (what _renderZoneSizes keeps
+   * current), then its Type and its Hold. Only an administrator can save
+   * either, and an ignore zone never holds, so its Hold is disabled too.
+   * The selects carry data-zone, never data-zone-id, which marks the name
+   * inputs whose drafts a rebuild keeps.
+   */
+  _zoneMetaLine(zoneId, admin) {
+    const meta = this._zoneMeta.get(Number(zoneId)) || { type: 'detect', holdS: 0 };
+    const line = document.createElement('div');
+    line.className = 'zone-meta';
+
+    const size = document.createElement('span');
+    size.className = 'zone-size';
+    size.dataset.zone = String(zoneId);
+    size.textContent = this._zoneSizeText(zoneId);
+    line.appendChild(size);
+
+    const type = this._zoneSettingSelect(zoneId, 'zone_type', TYPE_OPTIONS, meta.type);
+    type.className = 'zone-type';
+    type.disabled = !admin;
+    type.title = admin ? TYPE_TITLE : ADMIN_ONLY_TITLE;
+    line.appendChild(this._zoneSettingLabel(TYPE_LABEL, type));
+
+    // A hold the list does not offer (saved through the service) still shows,
+    // as one more option in its place by length.
+    const holds = HOLD_OPTIONS.includes(meta.holdS)
+      ? HOLD_OPTIONS
+      : [...HOLD_OPTIONS, meta.holdS].sort((a, b) => a - b);
+    const hold = this._zoneSettingSelect(
+      zoneId,
+      'hold_s',
+      holds.map((seconds) => ({ value: String(seconds), label: formatHold(seconds) })),
+      String(meta.holdS),
+    );
+    hold.className = 'zone-hold';
+    const ignore = meta.type === 'ignore';
+    hold.disabled = !admin || ignore;
+    if (!admin) hold.title = ADMIN_ONLY_TITLE;
+    else hold.title = ignore ? HOLD_IGNORE_TITLE : HOLD_TITLE;
+    line.appendChild(this._zoneSettingLabel(HOLD_LABEL, hold));
+    return line;
+  }
+
+  /** A select for zone setting `setting` (a key update_zone takes) that
+   *  saves each change on its own. */
+  _zoneSettingSelect(zoneId, setting, options, value) {
+    const select = document.createElement('select');
+    select.id = `zoneSetting-${setting}-${zoneId}`;
+    select.dataset.zone = String(zoneId);
+    select.dataset.zoneSetting = setting;
+    options.forEach((option) => {
+      const element = document.createElement('option');
+      element.value = option.value;
+      element.textContent = option.label;
+      select.appendChild(element);
+    });
+    select.value = value;
+    select.addEventListener('change', () => {
+      const chosen = setting === 'hold_s' ? Number(select.value) : select.value;
+      this._saveZoneSetting(zoneId, { [setting]: chosen });
+    });
+    return select;
+  }
+
+  /** `select` with its visible label, kept together when the line wraps. */
+  _zoneSettingLabel(text, select) {
+    const wrap = document.createElement('span');
+    wrap.className = 'zone-setting';
+    const label = document.createElement('label');
+    label.htmlFor = select.id;
+    label.textContent = text;
+    wrap.appendChild(label);
+    wrap.appendChild(select);
+    return wrap;
+  }
+
+  /**
+   * Save one zone setting (`{ zone_type }` or `{ hold_s }`) for zone
+   * `zoneId`. A zone only the card YAML names is created with it, the way a
+   * rename creates one. A setting changes nothing about how readings scale,
+   * so input_units stays out, as with the flip. Refused, the select goes back
+   * to what the store holds; accepted, the save's echo rebuilds the row.
+   */
+  async _saveZoneSetting(zoneId, fields) {
+    const id = Number(zoneId);
+    const [setting] = Object.keys(fields);
+    // A disabled select gets no change event, but nothing that still reaches
+    // one (a screen reader, say) saves for a viewer.
+    if (!this._isAdmin() || !Number.isFinite(id) || id <= 0) {
+      this._revertZoneSetting(id, setting);
+      return false;
+    }
+    const payload = {
+      device_id: this.deviceId,
+      zone_id: id,
+      ...fields,
+      ...(this._zoneIsUnsaved(id) ? { shape: 'none', data: null } : {}),
+    };
+    const saved = await this._saveZoneUpdate(payload, `${this._zoneLabel(id)} saved`, {
+      withInputUnits: false,
+    });
+    if (!saved) this._revertZoneSetting(id, setting);
+    return saved;
+  }
+
+  /** Put zone `zoneId`'s `setting` select back to the stored value. */
+  _revertZoneSetting(zoneId, setting) {
+    const meta = this._zoneMeta.get(Number(zoneId)) || { type: 'detect', holdS: 0 };
+    const select = Array.from(
+      this.shadowRoot?.querySelectorAll('#zoneManager select[data-zone-setting]') || [],
+    ).find((s) => s.dataset.zone === String(zoneId) && s.dataset.zoneSetting === setting);
+    if (select) select.value = String(setting === 'hold_s' ? meta.holdS : meta.type);
+  }
+
+  /** "Size 2.4 m × 1.8 m" in the map's unit, or the hint for a zone with no
+   *  shape to measure. */
+  _zoneSizeText(zoneId) {
+    const zone = this._getZone(zoneId);
+    const size = zone ? zoneSize(zone.shape, zone.data) : null;
+    if (!size) return NO_SHAPE_TEXT;
+    const family = this._unitFamily(this._displayUnit());
+    return `${SIZE_PREFIX} ${formatSize(size.width, size.depth, family)}`;
+  }
+
+  /**
+   * Bring each zone row's size up to date after a shape or the map's unit
+   * changed. Only the size texts change, so a name being typed, a focused
+   * select and an open dropdown are left alone.
+   */
+  _renderZoneSizes() {
+    const host = this.shadowRoot?.getElementById('zoneManager');
+    if (!host) return;
+    host.querySelectorAll('.zone-size').forEach((span) => {
+      span.textContent = this._zoneSizeText(span.dataset.zone);
+    });
   }
 
   /**
@@ -2843,11 +4858,14 @@ export class ZoneMapCard extends HTMLElement {
    * `values` holds every input whose text differs from the name its row was
    * built with, keyed by zone id; a row nobody edited is left out, so it picks
    * up a rename from the payload. `focus` is the focused input's zone id and
-   * selection, or null when focus is elsewhere.
+   * selection, or null when focus is elsewhere. `selectFocus` is the focused
+   * setting select's zone and setting: a select saves on change, so it has no
+   * draft, but keyboard focus on it has to outlive the rebuild too.
    */
   _captureZoneNameDrafts(host) {
     const values = new Map();
     let focus = null;
+    let selectFocus = null;
     const active = this.shadowRoot?.activeElement;
     host.querySelectorAll('input[data-zone-id]').forEach((input) => {
       const zoneId = input.dataset.zoneId;
@@ -2861,7 +4879,12 @@ export class ZoneMapCard extends HTMLElement {
         };
       }
     });
-    return { values, focus };
+    host.querySelectorAll('select[data-zone-setting]').forEach((select) => {
+      if (select === active) {
+        selectFocus = { zone: select.dataset.zone, setting: select.dataset.zoneSetting };
+      }
+    });
+    return { values, focus, selectFocus };
   }
 
   /** Lay captured drafts back over the rebuilt rows of the zones still listed. */
@@ -2874,6 +4897,13 @@ export class ZoneMapCard extends HTMLElement {
       const input = inputs.get(zoneId);
       if (input) input.value = value;
     });
+    if (drafts.selectFocus) {
+      const { zone, setting } = drafts.selectFocus;
+      const select = Array.from(host.querySelectorAll('select[data-zone-setting]')).find(
+        (s) => s.dataset.zone === zone && s.dataset.zoneSetting === setting,
+      );
+      if (select) select.focus({ preventScroll: true });
+    }
     const focused = drafts.focus ? inputs.get(drafts.focus.zoneId) : null;
     if (!focused) return;
     focused.focus({ preventScroll: true });
@@ -2914,7 +4944,9 @@ export class ZoneMapCard extends HTMLElement {
     const newZone = { id: next, name: `Zone ${next}` };
     this.zoneConfig = [...(this.zoneConfig || []), newZone];
     this.selectedZone = next;
-    // Persist empty zone with name so entities are created and named
+    // Persist the empty zone so its entities are created. It carries the
+    // default name, which the backend stores but keeps out of the registry,
+    // so the entities keep the names they were created with.
     this._saveZoneUpdate(
       {
         device_id: this.deviceId,
@@ -2936,9 +4968,15 @@ export class ZoneMapCard extends HTMLElement {
     const pts = this._polyPoints.filter(
       (p, i, a) => i === 0 || p.x !== a[i - 1].x || p.y !== a[i - 1].y,
     );
-    // TODO(REVIEW_REPORT.md X44): too few points (or no zone selected) cancels silently. Suggest
-    // a toast ("A polygon needs at least 3 points", "Select a zone first"), with a test.
-    if (pts.length >= 3 && this.selectedZone !== null) {
+    // Either way the polygon ends, as it always did. Only a polygon that was
+    // in progress says why nothing was saved: the dblclick that follows a
+    // double-tap finish, or Finish on an empty canvas, has nothing to report.
+    const inProgress = this._polyPoints.length > 0;
+    if (this.selectedZone === null || this.selectedZone === undefined) {
+      if (inProgress) this._notifyThrottled(SELECT_ZONE_TOAST);
+    } else if (pts.length < 3) {
+      if (inProgress) this._notifyThrottled(POLY_TOO_FEW_TOAST);
+    } else {
       const zoneId = this.selectedZone;
       // Enforce max points on commit
       const points = pts.slice(0, this.polyMaxPoints).map((pt) => ({
@@ -2951,6 +4989,7 @@ export class ZoneMapCard extends HTMLElement {
       };
       this._setUndoSnapshot(this._snapshotZones([zoneId]));
       this._upsertZone(zoneId, payload.shape, payload.data);
+      this._renderZoneSizes();
       this.updateHomeAssistantShape(
         zoneId,
         payload.shape,
@@ -2963,10 +5002,24 @@ export class ZoneMapCard extends HTMLElement {
     this._refitAndDraw();
   }
 
+  /**
+   * Paint the whole map, bottom layer first: painted cells, the grid, its
+   * labels and the cone, the zones, a shape being drawn, then the targets.
+   * While a replay shows, its zones are lit by its dots, and its trails and
+   * dots take the place of the live ones.
+   */
   drawGrid() {
     if (!this.ctx || !this.canvas) return;
     const ctx = this.ctx;
+    // One layout read per frame; what is sized in CSS px reads it from here.
+    this._frameScale = this._canvasScale();
+    // Worked out before anything is drawn: the zones its dots light are
+    // drawn before the dots.
+    const replay = this._replayShowing() ? this._replayFrame() : null;
     ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    // First, so no grid, ring or range label is tinted by the cells, and
+    // still under the zones.
+    this._drawCellLayer(ctx);
 
     const gridState = this._getGridRenderState();
     const gridMetrics = gridState?.metrics;
@@ -2994,9 +5047,283 @@ export class ZoneMapCard extends HTMLElement {
     this.drawDeviceCone(gridMetrics, ringLabels);
     this._drawRangeLabel(ctx, rangeLabel);
 
-    this.drawZones();
+    this.drawZones(replay ? { lit: replay.lit } : {});
     this._drawInProgress();
-    this._drawTrackedTargets();
+    this._drawWalkPreview(ctx);
+    // Trails under the dots, which they lead up to.
+    if (replay) {
+      this._drawReplayTrails(ctx, replay);
+      this._drawReplayDots(replay);
+    } else {
+      this._drawTrails(ctx);
+      this._drawTrackedTargets();
+    }
+    // Corner markers over the dots, so the walker's own dot never hides the
+    // newest corner.
+    this._drawWalkMarkers(ctx);
+    // The trail fade timer skips a frame a hass push painted a moment ago.
+    this._lastDrawAt = this._now();
+  }
+
+  /**
+   * Cells painted under the whole map: while a replay shows with Heatmap on,
+   * where people spent their time over its range; else where live targets
+   * have been, while this viewer has Coverage on. Both in the Coverage
+   * colors, as both say where targets were, and never both at once. A
+   * view-only card paints neither.
+   */
+  _drawCellLayer(ctx) {
+    const rgb = this.darkMode ? COLOR.canvas.coverageDark : COLOR.canvas.coverageLight;
+    const heat = this._history.heat;
+    if (this._history.heatmap && heat && this._replayShowing()) {
+      this._drawCells(ctx, heat, rgb);
+      return;
+    }
+    if (this._viewOnly || !this._coverageOn) return;
+    this._drawCells(ctx, this._coverage, rgb);
+  }
+
+  /**
+   * What the replay shows at its time T, worked out once per frame: each
+   * slot with a position then, in the map frame through today's rotation
+   * (the flip comes with valueToPixels), whether one of today's ignore zones
+   * holds it (history can be older than they are), its trail, and the detect
+   * zones its dot lights, by their current shapes. null without an answer.
+   */
+  _replayFrame() {
+    const { series, t } = this._history;
+    if (!series) return null;
+    const items = [];
+    const lit = new Set();
+    const detectZones = (this.zones || []).filter((zone) => !this._isIgnoreZone(zone.id));
+    series.slots.forEach((slotSeries, slot) => {
+      const p = positionAt(slotSeries, t);
+      if (!p) return;
+      const m = this._toMap(p.x, p.y);
+      const ignored = this._isIgnored(m.x, m.y);
+      items.push({ slot, m, ignored, trail: trailAt(slotSeries, t, TRAIL_MS) });
+      // Presence drops a target inside an ignore zone, so it lights nothing.
+      if (ignored) return;
+      detectZones.forEach((zone) => {
+        if (pointInZone(zone.shape, zone.data, m.x, m.y)) lit.add(Number(zone.id));
+      });
+    });
+    return { items, lit };
+  }
+
+  /** The replayed trails, aged against the replay time as the live ones are
+   *  against now, grey where today's ignore zones hold the target. */
+  _drawReplayTrails(ctx, replay) {
+    const colors = COLOR.canvas.targetPalette;
+    const grey = this.darkMode ? COLOR.canvas.ignoredTargetDark : COLOR.canvas.ignoredTargetLight;
+    replay.items.forEach(({ slot, ignored, trail }) => {
+      if (trail.length < 2) return;
+      this._drawTrail(ctx, trail, this._history.t, ignored ? grey : colors[slot % colors.length]);
+    });
+  }
+
+  /** The replayed dots, numbered by slot as the live ones are, hollow and
+   *  grey inside today's ignore zones. */
+  _drawReplayDots(replay) {
+    const colors = COLOR.canvas.targetPalette;
+    const numbers = COLOR.canvas.targetNumber;
+    replay.items.forEach(({ slot, m, ignored }) => {
+      this.drawCurrentPosition(m.x, m.y, colors[slot % colors.length], String(slot + 1), {
+        hollow: ignored,
+        numberColor: numbers[slot % numbers.length],
+      });
+    });
+  }
+
+  /**
+   * Paint `grid`'s cells in `rgb` ("r, g, b"), each at the alpha its value
+   * earns, with one fill style, one path and one fill per alpha (bucketCells)
+   * rather than one per cell. A cell is a square in the radar's own frame, so
+   * its corners turn and flip with the dots. Both steps are linear, so the
+   * corners of every cell are whole steps along two fixed vectors on the
+   * canvas, worked out once per frame instead of once per corner.
+   */
+  _drawCells(ctx, grid, rgb) {
+    const groups = bucketCells(grid);
+    if (!groups.length) return;
+    const toPixels = (x, y) => {
+      const m = this._toMap(x, y);
+      return { x: this.valueToPixels(m.x, 'x'), y: this.valueToPixels(m.y, 'y') };
+    };
+    const origin = toPixels(0, 0);
+    const alongX = toPixels(CELL_MM, 0);
+    const alongY = toPixels(0, CELL_MM);
+    const ux = alongX.x - origin.x;
+    const uy = alongX.y - origin.y;
+    const vx = alongY.x - origin.x;
+    const vy = alongY.y - origin.y;
+    ctx.save();
+    groups.forEach(({ alpha, cells }) => {
+      ctx.fillStyle = `rgba(${rgb}, ${alpha})`;
+      ctx.beginPath();
+      cells.forEach(([ix, iy]) => {
+        const x = origin.x + ix * ux + iy * vx;
+        const y = origin.y + ix * uy + iy * vy;
+        ctx.moveTo(x, y);
+        ctx.lineTo(x + ux, y + uy);
+        ctx.lineTo(x + ux + vx, y + uy + vy);
+        ctx.lineTo(x + vx, y + vy);
+        ctx.closePath();
+      });
+      ctx.fill();
+    });
+    ctx.restore();
+  }
+
+  /** The corners walked so far in the map frame, turned with the rotation
+   *  and clamped to the map as Finish saves them, in walking order. */
+  _walkMapCorners() {
+    return (this._walk?.corners || []).map(({ x, y }) => {
+      const m = this._toMap(x, y);
+      return {
+        x: this._clampAndRound(m.x, this.xMin, this.xMax),
+        y: this._clampAndRound(m.y, this.yMin, this.yMax),
+      };
+    });
+  }
+
+  /**
+   * The zone the corners walked so far make, dashed: two as the rectangle
+   * between them, three or more as the polygon through them in walking
+   * order. Its size sits above the newest corner, as far above as over a
+   * finger, which keeps it clear of that corner's ring and number.
+   */
+  _drawWalkPreview(ctx) {
+    const corners = this._walkMapCorners();
+    if (corners.length < 2) return;
+    const points = corners.map((c) => ({
+      x: this.valueToPixels(c.x, 'x'),
+      y: this.valueToPixels(c.y, 'y'),
+    }));
+    ctx.save();
+    ctx.strokeStyle = this.darkMode
+      ? COLOR.canvas.polygonStrokeDark
+      : COLOR.canvas.polygonStrokeLight;
+    ctx.lineWidth = 3;
+    // A dash of its own, apart from a drawn shape's rubber band and a zone.
+    ctx.setLineDash([10, 6]);
+    ctx.beginPath();
+    if (points.length === 2) {
+      const [a, b] = points;
+      ctx.rect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y));
+    } else {
+      ctx.moveTo(points[0].x, points[0].y);
+      for (let i = 1; i < points.length; i += 1) ctx.lineTo(points[i].x, points[i].y);
+      ctx.closePath();
+    }
+    ctx.stroke();
+    ctx.restore();
+    const xs = corners.map((c) => c.x);
+    const ys = corners.map((c) => c.y);
+    this._drawSizeReadout(
+      ctx,
+      Math.max(...xs) - Math.min(...xs),
+      Math.max(...ys) - Math.min(...ys),
+      points[points.length - 1],
+      READOUT_OFFSET_TOUCH_PX,
+    );
+  }
+
+  /**
+   * The fading trail behind each live target: its last TRAIL_MS of
+   * positions in its dot's color, or grey while it stands in an ignore zone,
+   * where presence does not see it. A target that has gone keeps the color
+   * of where it was last seen until its trail fades.
+   */
+  _drawTrails(ctx) {
+    // A replay draws the trails it replays instead.
+    if (this._replayShowing()) return;
+    const now = this._now();
+    const colors = COLOR.canvas.targetPalette;
+    const grey = this.darkMode ? COLOR.canvas.ignoredTargetDark : COLOR.canvas.ignoredTargetLight;
+    this._trails.slots().forEach((slot) => {
+      const samples = this._trails.samples(slot);
+      if (samples.length < 2) return;
+      const at = this._trailReadings.get(slot) || samples[samples.length - 1];
+      const m = this._toMap(at.x, at.y);
+      const color = this._isIgnored(m.x, m.y) ? grey : colors[slot % colors.length];
+      this._drawTrail(ctx, samples, now, color);
+    });
+  }
+
+  /**
+   * One trail through `points` ({ t, x, y } in the radar's own frame, oldest
+   * first), as segments between consecutive points, aged against `now`: the
+   * newest strongest and widest, fading to a faint thin line at TRAIL_MS. A
+   * silence over TRAIL_GAP_MS breaks it, so a target that vanished and came
+   * back elsewhere is not joined to where it was.
+   */
+  _drawTrail(ctx, points, now, color) {
+    const scale = this._frameScale || 1;
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineCap = 'round';
+    let previous = null;
+    points.forEach(({ t, x, y }) => {
+      const m = this._toMap(x, y);
+      const point = { t, x: this.valueToPixels(m.x, 'x'), y: this.valueToPixels(m.y, 'y') };
+      if (previous && t - previous.t <= TRAIL_GAP_MS) {
+        const f = Math.max(0.08, 1 - (now - t) / TRAIL_MS);
+        ctx.globalAlpha = 0.6 * f;
+        ctx.lineWidth = scale * (1.5 + 2.5 * f);
+        ctx.beginPath();
+        ctx.moveTo(previous.x, previous.y);
+        ctx.lineTo(point.x, point.y);
+        ctx.stroke();
+      }
+      previous = point;
+    });
+    ctx.restore();
+  }
+
+  /**
+   * A ring on each corner walked so far, with its number outside the ring's
+   * upper right on a plate in the canvas color. Drawn over the dots, so the
+   * walker's own dot never hides the newest corner, and hollow, so the dot
+   * shows through.
+   */
+  _drawWalkMarkers(ctx) {
+    const corners = this._walkMapCorners();
+    if (!corners.length) return;
+    const scale = this._frameScale || 1;
+    const r = Math.max(14, Math.round(14 * scale));
+    const axis = this.darkMode ? COLOR.canvas.axisDark : COLOR.canvas.axisLight;
+    const plate = this.darkMode ? COLOR.ui.darkCanvasBackground : COLOR.ui.lightCanvasBackground;
+    const pad = 2 * scale;
+    ctx.save();
+    ctx.lineWidth = 3;
+    ctx.font = `bold ${r}px sans-serif`;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'bottom';
+    corners.forEach((corner, i) => {
+      const x = this.valueToPixels(corner.x, 'x');
+      const y = this.valueToPixels(corner.y, 'y');
+      ctx.strokeStyle = axis;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, 2 * Math.PI);
+      ctx.stroke();
+      const text = String(i + 1);
+      // The same estimate _measureLabels falls back to where the canvas
+      // cannot measure text.
+      const measured = ctx.measureText?.(text)?.width;
+      const width =
+        typeof measured === 'number' && measured > 0
+          ? measured
+          : text.length * r * LABEL_FALLBACK_EM_PER_CHAR;
+      // From the ring's corner box outward, so the plate clears the ring.
+      const left = x + r;
+      const bottom = y - r;
+      ctx.fillStyle = plate;
+      ctx.fillRect(left - pad, bottom - r - pad, width + 2 * pad, r + 2 * pad);
+      ctx.fillStyle = axis;
+      ctx.fillText(text, left, bottom);
+    });
+    ctx.restore();
   }
 
   /**
@@ -3027,8 +5354,8 @@ export class ZoneMapCard extends HTMLElement {
     const arcX = this.valueToPixels(this.coneYMax * Math.sin(facing), 'x');
     const arcY = this.valueToPixels(this.coneYMax * Math.cos(facing), 'y');
     // The facing direction in canvas px, where a YAML grid can scale X and Y
-    // apart, as a unit vector.
-    let dirX = Math.sin(facing) * (this.pxPerX || 0);
+    // apart, as a unit vector. A flipped map runs x right to left.
+    let dirX = Math.sin(facing) * (this.pxPerX || 0) * (this._mirrorX ? -1 : 1);
     let dirY = Math.cos(facing) * (this.pxPerY || 0);
     const length = Math.hypot(dirX, dirY) || 1;
     dirX /= length;
@@ -3157,29 +5484,21 @@ export class ZoneMapCard extends HTMLElement {
     ctx.restore();
   }
 
+  /**
+   * Each live target as a dot numbered by its pair (Target N on an Apollo
+   * radar, whose pairs are in target order), hollow and grey inside an
+   * ignore zone, where presence drops it.
+   */
   _drawTrackedTargets() {
     if (!this._hass) return;
     const colors = COLOR.canvas.targetPalette;
-    const theta = ((this.coneAngleDeg || 0) * Math.PI) / 180;
-    const cosTheta = Math.cos(theta);
-    const sinTheta = Math.sin(theta);
-    const rotatePoint = (x, y) => ({
-      x: x * cosTheta + y * sinTheta,
-      y: -x * sinTheta + y * cosTheta,
-    });
-    this.trackedEntities.forEach((pair, idx) => {
-      if (!pair.x || !pair.y) return;
-      const stateX = this._hass.states[pair.x];
-      const stateY = this._hass.states[pair.y];
-      if (!stateX || !stateY) return;
-      const xRaw = parseFloat(stateX.state);
-      const yRaw = parseFloat(stateY.state);
-      if (Number.isNaN(xRaw) || Number.isNaN(yRaw)) return;
-      if (Math.abs(xRaw) < 1e-6 && Math.abs(yRaw) < 1e-6) return;
-      const xVal = xRaw * this._readingUnitFactor(stateX);
-      const yVal = yRaw * this._readingUnitFactor(stateY);
-      const rotated = rotatePoint(xVal, yVal);
-      this.drawCurrentPosition(rotated.x, rotated.y, colors[idx % colors.length]);
+    const numbers = COLOR.canvas.targetNumber;
+    this._currentTargets().forEach(({ slot, x, y }) => {
+      const m = this._toMap(x, y);
+      this.drawCurrentPosition(m.x, m.y, colors[slot % colors.length], String(slot + 1), {
+        hollow: this._isIgnored(m.x, m.y),
+        numberColor: numbers[slot % numbers.length],
+      });
     });
   }
 
@@ -3190,7 +5509,7 @@ export class ZoneMapCard extends HTMLElement {
    * picked in the entity's settings. X and Y are separate entities, so each is
    * read by its own unit. A sensor with no length unit, such as a DIY template
    * sensor, is scaled by the YAML input_units as before. Must match
-   * `_reading_unit_factor` in binary_sensor.py.
+   * `reading_unit_factor` in targets.py.
    */
   _readingUnitFactor(stateObj) {
     const unit = stateObj?.attributes?.unit_of_measurement;
@@ -3200,16 +5519,31 @@ export class ZoneMapCard extends HTMLElement {
     return known ? SENSOR_LENGTH_UNITS[unit] : this.inputUnitMultiplier || 1;
   }
 
-  drawZones() {
+  /**
+   * Every zone with a shape, in id order, ignore zones last so their hatch
+   * shows over a detect zone they overlap. `lit`, a Set of zone ids, stands
+   * in for the presence sensors when a replay draws zones as they were.
+   */
+  drawZones({ lit = null } = {}) {
     const ctx = this.ctx;
+    if (!ctx) return;
     const colors = COLOR.canvas.zonePalette;
-    const orderedZones = [...this.zones].sort((a, b) => Number(a.id) - Number(b.id));
+    const byId = [...this.zones].sort((a, b) => Number(a.id) - Number(b.id));
+    const orderedZones = [
+      ...byId.filter((zone) => !this._isIgnoreZone(zone?.id)),
+      ...byId.filter((zone) => this._isIgnoreZone(zone?.id)),
+    ];
     orderedZones.forEach((zone, idx) => {
       if (!zone || !zone.shape || !zone.data) return;
       const color = colors[(Number(zone.id) - 1) % colors.length] || colors[idx % colors.length];
-      ctx.strokeStyle = color.stroke;
-      ctx.fillStyle = color.fill;
-      ctx.lineWidth = 3;
+      const look = this._zoneLook(zone.id, color, lit);
+      // Each zone in its own save and restore, so its dash never reaches the
+      // grid lines, a shape being drawn or the dots.
+      ctx.save();
+      ctx.strokeStyle = look.stroke;
+      ctx.fillStyle = look.fill;
+      ctx.lineWidth = look.lineWidth;
+      ctx.setLineDash(look.dash);
       let bbox = null; // {x,y,width,height}
       if (zone.shape === DRAW_MODES.RECT) {
         const { x_min, x_max, y_min, y_max } = zone.data;
@@ -3261,10 +5595,107 @@ export class ZoneMapCard extends HTMLElement {
           bbox = { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
         }
       }
+      ctx.restore();
       if (bbox && bbox.width > 20 && bbox.height > 14) {
-        this._drawZoneLabel(zone, bbox);
+        this._drawZoneLabel(zone, bbox, look.suffix);
       }
     });
+  }
+
+  /** Whether zone `zoneId` is an ignore zone, by the payload's zone_type. */
+  _isIgnoreZone(zoneId) {
+    return this._zoneMeta.get(Number(zoneId))?.type === 'ignore';
+  }
+
+  /**
+   * How zone `zoneId` is drawn: `{ fill, stroke, dash, lineWidth, suffix }`.
+   * A detect zone keeps its hue, `color`, so on and off show by alpha and
+   * dash alone: on is a strong fill with a solid outline, off (and unknown,
+   * or no sensor at all) a faint fill with a dashed one. Unavailable, the
+   * radar being offline, greys it out. A held zone's label says so, since it
+   * is lit with nobody on the map. An ignore zone, whose sensor always reads
+   * off, is hatched grey.
+   */
+  _zoneLook(zoneId, color, lit) {
+    const dark = this.darkMode;
+    if (this._isIgnoreZone(zoneId)) {
+      return {
+        fill:
+          this._hatchPattern(dark) ||
+          (dark ? COLOR.canvas.ignoreFillDark : COLOR.canvas.ignoreFillLight),
+        stroke: dark ? COLOR.canvas.ignoreStrokeDark : COLOR.canvas.ignoreStrokeLight,
+        dash: [6, 4],
+        lineWidth: 2,
+        suffix: IGNORED_SUFFIX,
+      };
+    }
+    let state = null;
+    let held = false;
+    if (lit) {
+      state = lit.has(Number(zoneId)) ? 'on' : 'off';
+    } else {
+      const entityId = this._presenceEntityFor(zoneId);
+      const stateObj = entityId ? this._hass?.states?.[entityId] : null;
+      state = presenceLook(stateObj?.state);
+      held = stateObj?.attributes?.held === true;
+    }
+    const suffix = held ? HELD_SUFFIX : '';
+    if (state === 'on') {
+      return { fill: color.fillOn, stroke: color.stroke, dash: [], lineWidth: 3, suffix };
+    }
+    if (state === 'unavailable') {
+      return {
+        fill: dark ? COLOR.canvas.zoneUnavailableFillDark : COLOR.canvas.zoneUnavailableFillLight,
+        stroke: dark
+          ? COLOR.canvas.zoneUnavailableStrokeDark
+          : COLOR.canvas.zoneUnavailableStrokeLight,
+        dash: [4, 4],
+        lineWidth: 2,
+        suffix,
+      };
+    }
+    // A longer dash than the previews' [5, 5] and [6, 6], so a zone at rest
+    // does not look like a shape being drawn.
+    return { fill: color.fillOff, stroke: color.stroke, dash: [8, 6], lineWidth: 2, suffix };
+  }
+
+  /**
+   * The ignore zones' fill: one diagonal grey line on a 12 x 12 px tile,
+   * repeated. Made once per theme and per context (a render brings a new
+   * canvas). null when the context cannot make a pattern (createPattern
+   * missing, throwing or returning nothing, as in some browsers), and the
+   * zone is then filled flat.
+   */
+  _hatchPattern(dark) {
+    const key = dark ? 'dark' : 'light';
+    const cached = this._hatch[key];
+    if (cached && cached.ctx === this.ctx) return cached.pattern;
+    let pattern = null;
+    try {
+      const tile = document.createElement('canvas');
+      tile.width = 12;
+      tile.height = 12;
+      const tileCtx = tile.getContext('2d');
+      if (tileCtx && typeof this.ctx?.createPattern === 'function') {
+        tileCtx.strokeStyle = dark ? COLOR.canvas.ignoreHatchDark : COLOR.canvas.ignoreHatchLight;
+        tileCtx.lineWidth = 2;
+        tileCtx.beginPath();
+        // The diagonal, then its ends in the two other corners, so the tiles
+        // join into unbroken stripes.
+        tileCtx.moveTo(0, 12);
+        tileCtx.lineTo(12, 0);
+        tileCtx.moveTo(-2, 2);
+        tileCtx.lineTo(2, -2);
+        tileCtx.moveTo(10, 14);
+        tileCtx.lineTo(14, 10);
+        tileCtx.stroke();
+        pattern = this.ctx.createPattern(tile, 'repeat') || null;
+      }
+    } catch {
+      pattern = null;
+    }
+    this._hatch[key] = { ctx: this.ctx, pattern };
+    return pattern;
   }
 
   _drawInProgress() {
@@ -3321,6 +5752,7 @@ export class ZoneMapCard extends HTMLElement {
         this._drawVertexDot(ctx, this.startPoint.x, this.startPoint.y);
       }
       ctx.restore();
+      this._drawPolygonSize(ctx);
     } else if (
       this.isDrawing &&
       this.startPoint &&
@@ -3358,8 +5790,78 @@ export class ZoneMapCard extends HTMLElement {
           ctx.stroke();
         }
         ctx.restore();
+        // The size of exactly what letting go would save, so the readout
+        // and the zone list agree to the mm. A rect with no area saves
+        // nothing and shows no size.
+        const payload = this._shapeFromDrag(pt, cur, this.drawMode);
+        const size = payload ? zoneSize(payload.shape, payload.data) : null;
+        if (size) this._drawSizeReadout(ctx, size.width, size.depth, cur);
       }
     }
+  }
+
+  /**
+   * The size of a polygon being drawn: the box around its corners and the
+   * pointer, which is where the next corner would go, measured the way that
+   * corner would be saved (clamped to the map, whole mm).
+   */
+  _drawPolygonSize(ctx) {
+    const cur = this._cursorPoint;
+    const corners = this._polyPoints || [];
+    if (!cur || !corners.length) return;
+    const xs = corners.map((p) => p.x);
+    const ys = corners.map((p) => p.y);
+    xs.push(this._clampAndRound(this.pixelsToValue(cur.x, 'x'), this.xMin, this.xMax));
+    ys.push(this._clampAndRound(this.pixelsToValue(cur.y, 'y'), this.yMin, this.yMax));
+    const width = Math.max(...xs) - Math.min(...xs);
+    const depth = Math.max(...ys) - Math.min(...ys);
+    // The pointer still on the first corner has nothing to measure yet.
+    if (width === 0 && depth === 0) return;
+    this._drawSizeReadout(ctx, width, depth, cur);
+  }
+
+  /**
+   * "2.4 m × 1.8 m" (or feet and inches, with the map's unit) on a plate in
+   * the canvas color, centered above `anchorPx`, the pointer. A fingertip
+   * covers more than a mouse pointer, so the readout sits further above it;
+   * where that runs off the top of the canvas it goes as far below instead.
+   * Sized in CSS px, so it reads the same on a phone and a desktop.
+   * `offsetCssPx` sets the distance where the anchor is not the pointer.
+   */
+  _drawSizeReadout(ctx, widthMm, depthMm, anchorPx, offsetCssPx = null) {
+    if (!ctx || !this.canvas || !anchorPx) return;
+    const scale = this._frameScale || 1;
+    const fontPx = Math.round(14 * scale);
+    const text = formatSize(widthMm, depthMm, this._unitFamily(this._displayUnit()));
+    ctx.save();
+    ctx.font = `bold ${fontPx}px sans-serif`;
+    // The same estimate _measureLabels falls back to where the canvas
+    // cannot measure text.
+    const measured = ctx.measureText?.(text)?.width;
+    const textWidth =
+      typeof measured === 'number' && measured > 0
+        ? measured
+        : text.length * fontPx * LABEL_FALLBACK_EM_PER_CHAR;
+    const plateWidth = textWidth + 12 * scale;
+    const plateHeight = fontPx + 6 * scale;
+    const pointerOffset =
+      this._activeInput === 'touch' ? READOUT_OFFSET_TOUCH_PX : READOUT_OFFSET_MOUSE_PX;
+    const offset = (offsetCssPx ?? pointerOffset) * scale;
+    let y = anchorPx.y - offset;
+    if (y - plateHeight / 2 < 0) y = anchorPx.y + offset;
+    // A finger keeps reporting after it leaves the canvas, and the shape
+    // stops at the map's edge, so the readout stays on the canvas too.
+    const clampOnto = (value, half, extent) =>
+      half * 2 >= extent ? extent / 2 : Math.min(Math.max(value, half), extent - half);
+    y = clampOnto(y, plateHeight / 2, this.canvas.height);
+    const x = clampOnto(anchorPx.x, plateWidth / 2, this.canvas.width);
+    ctx.fillStyle = this.darkMode ? COLOR.ui.darkCanvasBackground : COLOR.ui.lightCanvasBackground;
+    ctx.fillRect(x - plateWidth / 2, y - plateHeight / 2, plateWidth, plateHeight);
+    ctx.fillStyle = this.darkMode ? COLOR.canvas.axisDark : COLOR.canvas.axisLight;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, x, y);
+    ctx.restore();
   }
 
   /** One in-progress vertex marker: a filled dot with a contrasting ring. */
@@ -3379,10 +5881,13 @@ export class ZoneMapCard extends HTMLElement {
     ctx.stroke();
   }
 
-  _drawZoneLabel(zone, bbox) {
+  /** The zone's name at its center, followed by `suffix` (" (held)" or
+   *  " (ignored)") when its look needs one. */
+  _drawZoneLabel(zone, bbox, suffix = '') {
     const ctx = this.ctx;
-    const label = this._zoneLabel(zone.id);
-    if (!label) return;
+    const name = this._zoneLabel(zone.id);
+    if (!name) return;
+    const label = `${name}${suffix}`;
     ctx.save();
     ctx.font = '24px sans-serif';
     ctx.fillStyle = this.darkMode ? COLOR.canvas.axisDark : COLOR.canvas.axisLight;
@@ -3502,6 +6007,7 @@ export class ZoneMapCard extends HTMLElement {
     const pxPerMmY = gridMetrics ? gridMetrics.pxPerMmY : this.pxPerY || 0;
     if (!pxPerMmX || !pxPerMmY) return null;
 
+    const mirror = this._mirrorX;
     const keyParts = [
       this._roundKeyValue(thetaStart),
       this._roundKeyValue(thetaEnd),
@@ -3509,11 +6015,13 @@ export class ZoneMapCard extends HTMLElement {
       this._roundKeyValue(pxPerMmX),
       this._roundKeyValue(pxPerMmY),
       this._roundKeyValue(this.xMin),
+      this._roundKeyValue(this.xMax),
       this._roundKeyValue(this.yMin),
       labelUnit,
       stepMm,
       this.canvas?.width || 0,
       this.canvas?.height || 0,
+      mirror ? 1 : 0,
     ];
     const key = keyParts.join('|');
     if (this._coneRingsCache && this._coneRingsCache.key === key) {
@@ -3531,7 +6039,10 @@ export class ZoneMapCard extends HTMLElement {
     const cosStep = Math.cos(angStep);
     const sinStart = Math.sin(thetaStart);
     const cosStart = Math.cos(thetaStart);
-    const offsetX = -this.xMin * pxPerMmX;
+    // The rings skip valueToPixels for speed, so they repeat its x mapping:
+    // (x - xMin) * px, or (xMax - x) * px on a flipped map.
+    const signX = mirror ? -1 : 1;
+    const offsetX = mirror ? this.xMax * pxPerMmX : -this.xMin * pxPerMmX;
     const offsetY = -this.yMin * pxPerMmY;
 
     // TODO(REVIEW_REPORT.md X45): rings run out to cone.y_max (no ceiling), even past the grid.
@@ -3543,7 +6054,7 @@ export class ZoneMapCard extends HTMLElement {
       for (let i = 0; i <= segments; i++) {
         const x = r * sinAng;
         const y = r * cosAng;
-        const px = x * pxPerMmX + offsetX;
+        const px = signX * x * pxPerMmX + offsetX;
         const py = y * pxPerMmY + offsetY;
         points.push([px, py]);
         if (i < segments) {
@@ -3562,7 +6073,7 @@ export class ZoneMapCard extends HTMLElement {
       rings.push(points);
 
       const mid = (thetaStart + thetaEnd) / 2;
-      const lx = r * Math.sin(mid) * pxPerMmX + offsetX;
+      const lx = signX * r * Math.sin(mid) * pxPerMmX + offsetX;
       const ly = r * Math.cos(mid) * pxPerMmY + offsetY;
       labels.push({
         x: lx,
@@ -3656,6 +6167,10 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   startDrawing(e) {
+    // Nothing listens on a view-only map, and nothing there could end a
+    // drawing that started anyway. In Walk the radar marks the corners, not
+    // the pointer, and the canvas pans.
+    if (this._viewOnly || this.drawMode === DRAW_MODES.WALK) return;
     // A right or middle press opens the browser menu or autoscroll; it must
     // not start a drag or place a vertex. Touch events carry no button.
     if (typeof e.button === 'number' && e.button !== 0) return;
@@ -3665,11 +6180,7 @@ export class ZoneMapCard extends HTMLElement {
     // either finger committed a collapsed or truncated shape over the zone.
     if (isTouch && e.touches.length > 1) return;
     if (this.isLocked) {
-      const now = Date.now();
-      if (!this._lastLockWarningTs || now - this._lastLockWarningTs > 1500) {
-        this._notify('Unlock the grid before drawing.');
-        this._lastLockWarningTs = now;
-      }
+      this._remindLocked(DRAW_LOCKED_TOAST);
       return;
     }
     if (this.selectedZone === null) return;
@@ -3707,7 +6218,12 @@ export class ZoneMapCard extends HTMLElement {
 
   valueToPixels(val, axis) {
     if (axis === 'x') {
-      return (val - this.xMin) * (this.pxPerX || 0);
+      // A flipped map (mirror_x) puts xMax on the left edge. Only these two
+      // transforms flip, never the context (ctx.scale(-1, 1) or a CSS
+      // scaleX(-1) would mirror the text and the pointer math too).
+      return this._mirrorX
+        ? (this.xMax - val) * (this.pxPerX || 0)
+        : (val - this.xMin) * (this.pxPerX || 0);
     } else {
       // Y increases downward: map directly without flipping
       return (val - this.yMin) * (this.pxPerY || 0);
@@ -3716,8 +6232,8 @@ export class ZoneMapCard extends HTMLElement {
 
   pixelsToValue(pix, axis) {
     if (axis === 'x') {
-      if (!this.pxPerX) return this.xMin;
-      return pix / this.pxPerX + this.xMin;
+      if (!this.pxPerX) return this._mirrorX ? this.xMax : this.xMin;
+      return this._mirrorX ? this.xMax - pix / this.pxPerX : pix / this.pxPerX + this.xMin;
     } else {
       // Inverse of valueToPixels when Y increases downward
       if (!this.pxPerY) return this.yMin;
@@ -3726,12 +6242,14 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   getCardSize() {
-    return 8;
+    // The map alone has no chips, Configure or zone list under it.
+    return this._viewOnly ? 6 : 8;
   }
 
   _updatePolygonButtonsVisibility() {
     const undo = this.shadowRoot.getElementById('btnPolyUndo');
     const fin = this.shadowRoot.getElementById('btnPolyFinish');
+    // Polygon only: Walk has its own Undo corner and Finish in its panel.
     const show = this.drawMode === DRAW_MODES.POLYGON;
     [undo, fin].forEach((btn) => {
       if (!btn) return;
@@ -3748,6 +6266,9 @@ export class ZoneMapCard extends HTMLElement {
   disconnectedCallback() {
     this._detachGlobalListeners();
     this._disconnectZones();
+    this._stopTrailTimer();
+    // A replay nobody can see stops, and the card comes back live.
+    this._closeHistory();
   }
 
   _detachGlobalListeners() {

@@ -24,7 +24,13 @@ from custom_components.apollo_mmwave.const import (
     STORE_ZONES,
 )
 from custom_components.apollo_mmwave.sensor import ZoneCoordsSensor
-from custom_components.apollo_mmwave.store import SAVE_DELAY_SECONDS, ZoneStore
+from custom_components.apollo_mmwave.store import (
+    SAVE_DELAY_SECONDS,
+    ZoneStore,
+    device_flag,
+    zone_hold_s,
+    zone_type_of,
+)
 from custom_components.apollo_mmwave.store import STORAGE_KEY as ZONE_STORAGE_KEY
 
 from .conftest import CALIBRATION_STORAGE_KEY, radar_ids, setup_integration
@@ -549,6 +555,255 @@ async def test_unknown_display_units_on_disk_are_dropped(hass, hass_storage) -> 
         assert "display_units" not in store.devices[device_id]
     assert store.devices["meters"]["display_units"] == "m"
     assert store.orphans["Ghost Room"]["display_units"] == "ft"
+
+
+async def test_mirror_x_and_movement_history_round_trip(hass, hass_storage) -> None:
+    """Both radar flags an administrator turned on come back after a restart."""
+    store = ZoneStore(hass)
+    store.devices["dev"] = {"zones": {}, "mirror_x": True, "movement_history": True}
+    await store.async_save()
+    on_disk = hass_storage[ZONE_STORAGE_KEY]["data"]["devices"]["dev"]
+    assert on_disk["mirror_x"] is True
+    assert on_disk["movement_history"] is True
+
+    reloaded = ZoneStore(hass)
+    assert await reloaded.async_load() is True
+
+    assert reloaded.devices["dev"] == {
+        "zones": {},
+        "mirror_x": True,
+        "movement_history": True,
+    }
+
+
+async def test_device_flags_other_than_true_are_dropped_on_load(
+    hass, hass_storage
+) -> None:
+    """Only the True the service writes turns a flag on; anything else is off."""
+    # A hand edit that reads as on would start keeping positions nobody turned
+    # on, so nothing that merely looks true counts.
+    junk = [False, None, 1, 1.0, 0, "true", "True", "yes", "on", [True], {"on": True}]
+    hass_storage[ZONE_STORAGE_KEY] = {
+        "version": 2,
+        "data": {
+            "devices": {
+                **{
+                    f"junk{index}": {
+                        "zones": {},
+                        "mirror_x": value,
+                        "movement_history": value,
+                    }
+                    for index, value in enumerate(junk)
+                },
+                "on": {"zones": {}, "mirror_x": True, "movement_history": True},
+                "mirror_only": {"zones": {}, "mirror_x": True},
+                "none": {"zones": {}},
+            },
+            "orphans": {
+                "Ghost Room": {"zones": {}, "mirror_x": True, "movement_history": 1}
+            },
+        },
+    }
+
+    store = ZoneStore(hass)
+    assert await store.async_load() is True
+
+    for index in range(len(junk)):
+        assert store.devices[f"junk{index}"] == {"zones": {}}
+    assert store.devices["on"] == {
+        "zones": {},
+        "mirror_x": True,
+        "movement_history": True,
+    }
+    assert store.devices["mirror_only"] == {"zones": {}, "mirror_x": True}
+    assert store.devices["none"] == {"zones": {}}
+    assert store.orphans["Ghost Room"] == {"zones": {}, "mirror_x": True}
+
+
+async def test_zone_type_and_hold_are_kept_verbatim_on_load(hass, hass_storage) -> None:
+    """Zone dicts load as stored; the readers, not the loader, judge a value."""
+    zones = {
+        "1": {"shape": "rect", "data": {}, "zone_type": "ignore"},
+        "2": {"shape": "rect", "data": {}, "hold_s": 30},
+        # Hand edits: kept, and read as a detect zone with no hold.
+        "3": {"shape": "rect", "data": {}, "zone_type": "Ignore", "hold_s": "30"},
+    }
+    hass_storage[ZONE_STORAGE_KEY] = {
+        "version": 2,
+        "data": {"devices": {"dev": {"zones": copy.deepcopy(zones)}}, "orphans": {}},
+    }
+
+    store = ZoneStore(hass)
+    assert await store.async_load() is True
+
+    assert store.devices["dev"]["zones"] == {
+        int(zone_id): zone for zone_id, zone in zones.items()
+    }
+    assert [zone_type_of(store.zone("dev", zone_id)) for zone_id in (1, 2, 3)] == [
+        "ignore",
+        "detect",
+        "detect",
+    ]
+    assert [zone_hold_s(store.zone("dev", zone_id)) for zone_id in (1, 2, 3)] == [
+        0,
+        30,
+        0,
+    ]
+
+
+@pytest.mark.parametrize(
+    ("zone_def", "expected"),
+    [
+        ({"zone_type": "ignore"}, "ignore"),
+        ({"shape": "rect", "data": {}, "zone_type": "ignore"}, "ignore"),
+        ({"zone_type": "detect"}, "detect"),
+        ({}, "detect"),
+        ({"zone_type": "Ignore"}, "detect"),
+        ({"zone_type": "ignore "}, "detect"),
+        ({"zone_type": "exclude"}, "detect"),
+        ({"zone_type": True}, "detect"),
+        ({"zone_type": 1}, "detect"),
+        ({"zone_type": None}, "detect"),
+        ({"zone_type": ["ignore"]}, "detect"),
+        ({"zone_type": {"ignore": True}}, "detect"),
+        (None, "detect"),
+        ("ignore", "detect"),
+        (["ignore"], "detect"),
+    ],
+    ids=[
+        "ignore",
+        "ignore-with-geometry",
+        "detect",
+        "absent",
+        "capitalized",
+        "padded",
+        "unknown-type",
+        "bool",
+        "int",
+        "null",
+        "list",
+        "object",
+        "no-zone",
+        "zone-is-a-str",
+        "zone-is-a-list",
+    ],
+)
+def test_zone_type_of_is_ignore_only_for_the_exact_value(zone_def, expected) -> None:
+    """A hand-edited type that is not exactly "ignore" keeps the zone detecting."""
+    assert zone_type_of(zone_def) == expected
+
+
+@pytest.mark.parametrize(
+    ("hold", "expected"),
+    [
+        (30, 30),
+        (1, 1),
+        (3600, 3600),
+        (3601, 3600),
+        (86400, 3600),
+        (10**30, 3600),
+        (30.9, 30),
+        (1.0, 1),
+        (3600.5, 3600),
+        (1e300, 3600),
+        (0.5, 0),
+        (0, 0),
+        (0.0, 0),
+        (-1, 0),
+        (-30.5, 0),
+        (float("nan"), 0),
+        (float("inf"), 0),
+        (float("-inf"), 0),
+        (True, 0),
+        (False, 0),
+        ("30", 0),
+        ("abc", 0),
+        (None, 0),
+        ([30], 0),
+        ({"s": 30}, 0),
+    ],
+    ids=[
+        "int",
+        "one",
+        "max",
+        "over-max",
+        "a-day",
+        "huge-int",
+        "float",
+        "float-whole",
+        "float-over-max",
+        "huge-float",
+        "float-under-one",
+        "zero",
+        "float-zero",
+        "negative",
+        "negative-float",
+        "nan",
+        "inf",
+        "negative-inf",
+        "true",
+        "false",
+        "numeric-str",
+        "str",
+        "null",
+        "list",
+        "object",
+    ],
+)
+def test_zone_hold_s_reads_hand_edited_values(hold, expected) -> None:
+    """Whole seconds capped at an hour; anything that is not a number is no hold."""
+    result = zone_hold_s({"shape": "rect", "data": {}, "hold_s": hold})
+
+    assert result == expected
+    assert type(result) is int
+
+
+@pytest.mark.parametrize(
+    "zone_def",
+    [{}, {"shape": "rect", "data": {}}, None, "hold_s", [("hold_s", 30)], 30],
+    ids=["empty", "no-hold", "no-zone", "str", "list", "int"],
+)
+def test_zone_hold_s_without_a_stored_hold_is_zero(zone_def) -> None:
+    """Absent means no hold, and so does a zone that is not an object."""
+    assert zone_hold_s(zone_def) == 0
+
+
+@pytest.mark.parametrize(
+    ("entry", "expected"),
+    [
+        ({"mirror_x": True}, True),
+        ({"zones": {}, "mirror_x": True, "movement_history": False}, True),
+        ({"mirror_x": False}, False),
+        ({}, False),
+        ({"mirror_x": 1}, False),
+        ({"mirror_x": 1.0}, False),
+        ({"mirror_x": "true"}, False),
+        ({"mirror_x": [True]}, False),
+        ({"mirror_x": None}, False),
+        ({"movement_history": True}, False),
+        (None, False),
+        ([("mirror_x", True)], False),
+        ("mirror_x", False),
+    ],
+    ids=[
+        "true",
+        "true-beside-others",
+        "false",
+        "absent",
+        "int",
+        "float",
+        "str",
+        "list",
+        "null",
+        "another-flag",
+        "no-entry",
+        "entry-is-a-list",
+        "entry-is-a-str",
+    ],
+)
+def test_device_flag_is_on_only_for_true(entry, expected) -> None:
+    """A flag reads on only when the radar's entry holds exactly True."""
+    assert device_flag(entry, "mirror_x") is expected
 
 
 async def test_delayed_save_writes_after_the_delay(hass, hass_storage) -> None:
