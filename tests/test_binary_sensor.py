@@ -1712,29 +1712,69 @@ async def test_outside_target_after_three_seconds_does_not_release(
     assert _hold_state(hass, presence_id) == ("on", True)
 
 
-async def test_another_tracked_person_4_m_away_releases_within_3_s(
+async def test_another_tracked_person_counts_only_within_600_mm(
     hass, freezer, entity_registry, setup_entry_with_zone
 ) -> None:
-    """The reach grows past 5 m in 3 s, so anyone the radar tracks nearby counts."""
-    # Rule 1 as specified, pinned on purpose: a narrower reach for targets
-    # tracked elsewhere is an open question.
+    """Someone the radar tracked elsewhere when the zone emptied is someone else."""
+    # Unless they are right where the person was: LD2450 slots swap.
     device_id, _ = setup_entry_with_zone
     await _store_zone(hass, device_id)
     presence_id = _presence_id(entity_registry, device_id)
     _set_target(hass, TARGET_2, 4000, 1000)  # someone else, outside the zone
-    await _sit(hass, freezer, TARGET_1, 0, 1000)
+    await _sit(hass, freezer, TARGET_1, 900, 1000)
     await _vanish(hass, TARGET_1)
     assert _hold_state(hass, presence_id) == ("on", True)
 
-    await _advance(hass, freezer, 0.5)
-    _set_target(hass, TARGET_2, 4000, 1100)  # 4 m, past the 3.3 m of 0.5 s
+    # 1.1 m from where they were 2.5 s on, well within the 6.5 m reach then
+    # of a target that could be them.
+    await _advance(hass, freezer, 2.5)
+    _set_target(hass, TARGET_2, 2000, 1000)
     await hass.async_block_till_done()
     assert _hold_state(hass, presence_id) == ("on", True)
 
-    await _advance(hass, freezer, 2)
-    _set_target(hass, TARGET_2, 4000, 1000)  # within the 6.5 m of 2.5 s
+    await _advance(hass, freezer, 0.3)
+    _set_target(hass, TARGET_2, 1450, 1000)  # 550 mm from where they were
     await hass.async_block_till_done()
     assert _hold_state(hass, presence_id) == ("off", False)
+
+
+# A still object an R PRO-1 tracks all night, 35 cm in front of it.
+STILL_OBJECT = (-127.0, 343.0)
+
+
+@pytest.mark.parametrize(
+    "someone_walks_in", [False, True], ids=["object-only", "someone-walks-in"]
+)
+async def test_a_still_object_in_front_of_the_radar_ends_no_hold(
+    hass, freezer, entity_registry, setup_entry_with_zone, someone_walks_in
+) -> None:
+    """Tracked all along, it is not who vanished; someone walking into view can be."""
+    device_id, _ = setup_entry_with_zone
+    couch = {
+        "shape": "rect",
+        "data": {"x_min": -1000, "x_max": 1000, "y_min": 1500, "y_max": 3500},
+    }
+    await _store_zone(hass, device_id, _hold_zone(couch))
+    presence_id = _presence_id(entity_registry, device_id)
+    _set_target(hass, TARGET_2, *STILL_OBJECT)
+    # Sitting still 2 m beyond it.
+    await _sit(hass, freezer, TARGET_1, 100, 2340)
+    await _lose(hass, TARGET_1)
+    assert _hold_state(hass, presence_id) == ("on", True)
+
+    # The object's reading wobbles each second. Someone may walk into view
+    # 2 s on, 1.2 m from where the person sat.
+    for second in range(4):
+        await _advance(hass, freezer, 1)
+        _set_target(
+            hass, TARGET_2, STILL_OBJECT[0] + 10 * (second % 2), STILL_OBJECT[1]
+        )
+        if someone_walks_in and second == 1:
+            _set_target(hass, TARGET_3, 1300, 2340)
+        await hass.async_block_till_done()
+
+    expected = ("off", False) if someone_walks_in else ("on", True)
+    assert _hold_state(hass, presence_id) == expected
 
 
 async def test_one_outside_target_accounts_for_one_person(

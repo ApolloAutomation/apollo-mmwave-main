@@ -419,12 +419,12 @@ def test_reacquire_limit_grows_with_elapsed_time(
 ) -> None:
     """600 mm, plus 1.6 mm a millisecond since the zone emptied, for 3 s."""
     # And 1.6 mm a millisecond from the person's last report until it
-    # emptied, for up to 1.2 s.
+    # emptied, for up to 1.2 s. The target outside is their own slot.
     tracker = HoldTracker()
     assert tracker.step(10.0 - report_age_s, [_reading(0, 0, 1000)], [], "rect", RECT)
     if elapsed_s:
         assert tracker.step(10.0, [], [], "rect", RECT)
-    outside = [_reading(1, distance, 1000)]
+    outside = [_reading(0, distance, 1000)]
 
     on = tracker.step(10.0 + elapsed_s, [], outside, "rect", RECT)
 
@@ -443,6 +443,35 @@ def test_reach_counts_from_the_persons_last_report_not_the_last_evaluation() -> 
     # since their last report allows, not the 0.9 m of the 0.17 s since the
     # last evaluation.
     assert not tracker.step(11.07, [], [_reading(0, 1900, 1000)], "rect", RECT)
+
+
+@pytest.mark.parametrize(
+    ("slot", "released"),
+    [(0, True), (2, True), (1, False)],
+    ids=["their-own-slot", "a-slot-read-nothing", "tracked-elsewhere"],
+)
+def test_a_target_tracked_elsewhere_when_the_zone_emptied_counts_within_600_mm(
+    slot, released
+) -> None:
+    """Only their own slot, or one that read nothing, gets the growing reach."""
+    tracker = HoldTracker()
+    # Sitting still while slot 1 tracks someone, or something, 2.1 m away,
+    # and lost.
+    for t in (5.0, 10.0):
+        inside = [_reading(0, 900, 1000)]
+        assert tracker.step(t, inside, [_reading(1, 3000, 1000)], "rect", RECT)
+    assert tracker.step(10.5, [], [_reading(1, 3000, 1000)], "rect", RECT)
+    assert tracker.tracked_slots == {1}
+
+    # 2.5 s on, 1.1 m from where they were: within the reach of a target
+    # that may be them, but not 600 mm.
+    outside = [_reading(slot, 2000, 1000)]
+    if slot != 1:
+        outside.append(_reading(1, 3000, 1000))
+    assert tracker.step(13.0, [], outside, "rect", RECT) is not released
+
+    # Within 600 mm, anyone accounts for them.
+    assert not tracker.step(13.3, [], [_reading(1, 1450, 1000)], "rect", RECT)
 
 
 def test_each_outside_target_accounts_for_one_person() -> None:

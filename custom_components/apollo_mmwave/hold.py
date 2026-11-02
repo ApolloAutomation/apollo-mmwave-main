@@ -369,6 +369,9 @@ class HoldTracker:
         self.pending: list[Occupant] = []
         # Slots of outside readings already used this empty period.
         self.used_slots: set[int] = set()
+        # Slots with a reading when the zone emptied: targets the radar was
+        # already tracking elsewhere then (see _match).
+        self.tracked_slots: set[int] = set()
         self.empty_since: float | None = None
         # Each slot's raw reading at the previous evaluation.
         self._last_raw: dict[int, tuple[float, float]] = {}
@@ -382,6 +385,7 @@ class HoldTracker:
         self.occupants = {}
         self.pending = []
         self.used_slots = set()
+        self.tracked_slots = set()
         self.empty_since = None
         self._last_raw = {}
         self._flagged = {}
@@ -474,6 +478,7 @@ class HoldTracker:
                 ),
                 default=now,
             )
+            self.tracked_slots = {reading.slot for reading in outside}
             matched = self._match(people, outside, now)
             # Rule 2 is decided here, once: motion freshness and the last
             # positions are fixed at the emptying, so later evaluations only
@@ -516,7 +521,12 @@ class HoldTracker:
             return set()
         empty_since = self.empty_since
 
-        def reach(person: Occupant) -> float:
+        def reach(person: Occupant, reading: Reading) -> float:
+            if reading.slot != person.slot and reading.slot in self.tracked_slots:
+                # A target the radar already tracked elsewhere when the zone
+                # emptied, someone else or a still object, is not the person
+                # who left unless it is right where they were.
+                return HOLD_REACQUIRE_BASE_MM
             # A reading stays current until it changes, so the radius grows
             # from when the zone emptied, and from the person's last report
             # before that for up to HOLD_REPORT_AGE_MAX_S: at a report about
@@ -536,7 +546,8 @@ class HoldTracker:
             for index, person in enumerate(people)
             for reading in outside
             if reading.slot not in self.used_slots
-            and (distance := math.dist(reading.map, person.last_map)) <= reach(person)
+            and (distance := math.dist(reading.map, person.last_map))
+            <= reach(person, reading)
         )
         matched: set[int] = set()
         for _distance, index, slot in candidates:
