@@ -6802,6 +6802,701 @@ describe("zone map card size readout", () => {
 });
 
 /**
+ * Marking a zone's corners by walking to them (Walk).
+ *
+ * An administrator on an unlocked map presses 🚶 in the drawing modes, walks
+ * to each corner of the zone with a phone, stands still and presses Corner
+ * here. The corner is where the radar saw them over the last 1.5 s, weighted
+ * by time. Two corners save a rectangle and three or more a polygon, through
+ * the same commit a drawn shape takes. Only one person may be in view;
+ * targets inside ignore zones do not count. Facing ahead on the 10 m grid,
+ * (x, y) mm is canvas (400 + x / 12.5, y / 12.5).
+ */
+describe("zone map card walk", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    document.body.replaceChildren();
+  });
+
+  const PAIRS = [
+    { x: "sensor.a_x", y: "sensor.a_y" },
+    { x: "sensor.b_x", y: "sensor.b_y" },
+  ];
+  // An ignore zone over a fan, where target b moves.
+  const FAN = {
+    shape: "rect",
+    data: { x_min: 2000, x_max: 4000, y_min: 4000, y_max: 6000 },
+    zone_type: "ignore",
+  };
+  const WITH_FAN = { zones: { ...ZONE_PAYLOAD.zones, "2": FAN } };
+
+  const HINT = {
+    nobody: "Nobody is on the map. Walk into the radar's view.",
+    crowd:
+      "More than one target is on the map. Only the person marking corners should be in view. If you are alone, a fan or curtain may be moving: add an ignore zone over it.",
+    start: "Stand still in one corner of the zone, then press Corner here.",
+  };
+
+  /**
+   * An administrator's card, unlocked, with zone 1 (Doorway) selected,
+   * tracking pairs a and b. `at` puts a target at (x, y) mm, or off the map
+   * with null. The clock is faked, performance.now() included.
+   */
+  async function walkCard({
+    admin = true,
+    config = {},
+    payload = {},
+  }: { admin?: boolean; config?: Record<string, any>; payload?: Record<string, any> } = {}) {
+    vi.useFakeTimers();
+    const hass = fakeHass({ ...ZONE_PAYLOAD, rotation_deg: 0, entities: PAIRS, ...payload });
+    hass.user = { is_admin: admin };
+    const card = await mountCard(hass, { ...TEN_METER_GRID, start_locked: false, ...config });
+    hass.callService.mockClear();
+    const toasts = notifications(card);
+    let states: Record<string, any> = {};
+    const at: PutTarget = (pair, x, y = 0) => {
+      const reading = (value: number) => ({ state: x === null ? "0" : String(value) });
+      states = {
+        ...states,
+        [`sensor.${pair}_x`]: reading(x ?? 0),
+        [`sensor.${pair}_y`]: reading(y),
+      };
+      card.hass = { ...hass, states };
+    };
+    return { card, hass, toasts, at };
+  }
+
+  type PutTarget = (pair: "a" | "b", x: number | null, y?: number) => void;
+
+  const $ = (card: any, id: string) => card.shadowRoot.getElementById(id);
+
+  /** Target a stands at (x, y) mm for 2 s, which puts the corner exactly
+   *  there, and Corner here is pressed. */
+  function markCorner(card: any, at: PutTarget, x: number, y: number) {
+    at("a", x, y);
+    vi.advanceTimersByTime(2000);
+    $(card, "btnWalkCorner").click();
+  }
+
+  /** Let a save's promise run on to its toast, under the fake clock. */
+  async function settle() {
+    await vi.advanceTimersByTimeAsync(0);
+  }
+
+  function frame(card: any): Draw[] {
+    const { ctx, draws } = drawRecordingContext();
+    card.ctx = ctx;
+    card.drawGrid();
+    return draws;
+  }
+
+  /** The size readouts a frame drew: [text, x, y]. */
+  const readouts = (draws: Draw[]) =>
+    draws
+      .filter((d) => d.name === "fillText" && String(d.args[0]).includes(" × "))
+      .map((d) => d.args);
+
+  it("shows Walk only to administrators", async () => {
+    const viewer = await walkCard({ admin: false });
+    expect($(viewer.card, "btnModeWalk").style.display).toBe("none");
+    // Nothing that still reaches the hidden button starts a walk.
+    $(viewer.card, "btnModeWalk").click();
+    expect(viewer.card._walk).toBeNull();
+    expect(viewer.card.drawMode).toBe("rect");
+
+    const { card, hass } = await walkCard();
+    expect($(card, "btnModeWalk").style.display).toBe("");
+    card.render();
+    expect($(card, "btnModeWalk").style.display).toBe("");
+
+    // A viewer who stops being an administrator loses it, and a walk under
+    // way ends.
+    $(card, "btnModeWalk").click();
+    expect(card.drawMode).toBe("walk");
+    card.hass = { ...hass, user: { is_admin: false } };
+    expect($(card, "btnModeWalk").style.display).toBe("none");
+    expect(card.drawMode).toBe("rect");
+    expect(card._walk).toBeNull();
+    expect($(card, "walkPanel").hidden).toBe(true);
+  });
+
+  it("names the Walk button for screen readers", async () => {
+    const { card } = await walkCard();
+    const button = $(card, "btnModeWalk");
+
+    expect(button.textContent).toBe("🚶");
+    expect(button.title).toBe("Mark corners by walking");
+    expect(button.getAttribute("aria-label")).toBe("Mark corners by walking");
+    // Between Undo point and Polygon in the drawing modes.
+    expect(Array.from($(card, "modeGroup").children, (el: any) => el.id)).toEqual([
+      "btnPolyFinish",
+      "btnPolyUndo",
+      "btnModeWalk",
+      "btnModePolygon",
+      "btnModeEllipse",
+      "btnModeRect",
+    ]);
+    // Marked as the mode in use while Walk is on.
+    button.click();
+    expect(button.classList.contains("active")).toBe(true);
+    expect($(card, "btnModeRect").classList.contains("active")).toBe(false);
+  });
+
+  it("refuses Walk on a locked map with the lock toast", async () => {
+    const { card, toasts } = await walkCard({ config: { start_locked: true } });
+    expect(card.isLocked).toBe(true);
+    // Shown on a locked map too, where a press says how to unlock.
+    expect($(card, "btnModeWalk").style.display).toBe("");
+
+    $(card, "btnModeWalk").click();
+
+    expect(toasts).toEqual(["Unlock the map to draw zones."]);
+    expect($(card, "btnLock").classList.contains("nudge")).toBe(true);
+    expect(card.drawMode).toBe("rect");
+    expect(card._walk).toBeNull();
+    expect($(card, "walkPanel").hidden).toBe(true);
+  });
+
+  it("Corner here averages the last 1.5 s of the only visible target", async () => {
+    const { card, at } = await walkCard();
+    $(card, "btnModeWalk").click();
+    // Walking in along y = 2000 mm, then standing at x = -1000.
+    at("a", -3000, 2000);
+    vi.advanceTimersByTime(500);
+    at("a", -2000, 2000);
+    vi.advanceTimersByTime(500);
+    at("a", -1000, 2000);
+    vi.advanceTimersByTime(1000);
+
+    $(card, "btnWalkCorner").click();
+
+    // -2000 for the first 0.5 s of the window, -1000 for the last 1 s. Home
+    // Assistant sends changes only, so the plain mean of the samples, -2000,
+    // would lean back toward the way in.
+    expect(card._walk.corners).toHaveLength(1);
+    const [corner] = card._walk.corners;
+    expect(corner.x).toBeCloseTo(-4000 / 3, 6);
+    expect(corner.y).toBe(2000);
+  });
+
+  it("Corner here falls back to the current reading of a still target", async () => {
+    // Target b is the fan, whose moves keep pushes coming.
+    const { card, at } = await walkCard({ payload: WITH_FAN });
+    $(card, "btnModeWalk").click();
+    at("a", -2000, 2000);
+    vi.advanceTimersByTime(300);
+    at("a", -1000, 2000);
+    // Someone standing still sends nothing new, so after 3 s the pushes the
+    // fan makes have pruned every sample of theirs.
+    for (let i = 0; i < 8; i += 1) {
+      vi.advanceTimersByTime(500);
+      at("b", 3000 + (i % 2) * 100, 5000);
+    }
+    expect(card._trails.samples(0)).toEqual([]);
+
+    $(card, "btnWalkCorner").click();
+
+    expect(card._walk.corners).toEqual([{ x: -1000, y: 2000 }]);
+  });
+
+  it("Corner here is disabled with nobody or two people in view", async () => {
+    const { card, at } = await walkCard();
+    $(card, "btnModeWalk").click();
+    const corner = $(card, "btnWalkCorner");
+    const hint = $(card, "walkHint");
+
+    expect($(card, "walkPanel").hidden).toBe(false);
+    expect(hint.getAttribute("aria-live")).toBe("polite");
+    expect(corner.disabled).toBe(true);
+    expect(hint.textContent).toBe(HINT.nobody);
+
+    at("a", -1000, 2000);
+    expect(corner.disabled).toBe(false);
+    expect(hint.textContent).toBe(HINT.start);
+    // A step that leaves one person in view changes nothing the panel
+    // shows, so the panel is left alone.
+    hint.textContent = "as it was";
+    at("a", -900, 2000);
+    expect(hint.textContent).toBe("as it was");
+
+    at("b", 1000, 2000);
+    expect(corner.disabled).toBe(true);
+    expect(hint.textContent).toBe(HINT.crowd);
+    // A press that beat the push marks nothing.
+    vi.advanceTimersByTime(2000);
+    card._walkCorner();
+    expect(card._walk.corners).toEqual([]);
+
+    at("b", null);
+    expect(corner.disabled).toBe(false);
+    expect(hint.textContent).toBe(HINT.start);
+  });
+
+  it("targets inside ignore zones do not count for Walk", async () => {
+    const { card, at } = await walkCard({ payload: WITH_FAN });
+    $(card, "btnModeWalk").click();
+    const corner = $(card, "btnWalkCorner");
+
+    at("b", 3000, 5000);
+    expect(corner.disabled).toBe(true);
+    expect($(card, "walkHint").textContent).toBe(HINT.nobody);
+
+    markCorner(card, at, -1000, 2000);
+    expect(card._walk.corners).toEqual([{ x: -1000, y: 2000 }]);
+
+    // Out of the ignore zone, the fan's target is someone else in view.
+    at("b", 1000, 5000);
+    expect(corner.disabled).toBe(true);
+    expect($(card, "walkHint").textContent).toBe(HINT.crowd);
+  });
+
+  it("refuses a corner too close to the last one", async () => {
+    const { card, toasts, at } = await walkCard();
+    $(card, "btnModeWalk").click();
+    markCorner(card, at, -1000, 2000);
+
+    markCorner(card, at, -750, 2000);
+
+    expect(toasts).toEqual([
+      "That is too close to the last corner. Walk farther, then press Corner here.",
+    ]);
+    expect(card._walk.corners).toEqual([{ x: -1000, y: 2000 }]);
+
+    // 300 mm away is far enough.
+    markCorner(card, at, -700, 2000);
+    expect(card._walk.corners).toEqual([
+      { x: -1000, y: 2000 },
+      { x: -700, y: 2000 },
+    ]);
+    expect($(card, "walkHint").textContent).toBe(
+      "Corner 2 marked. Keep going around the zone in order. Two corners make a rectangle, three or more a polygon. Press Finish when done."
+    );
+  });
+
+  it("refuses a corner back at the start", async () => {
+    const { card, toasts, at } = await walkCard();
+    $(card, "btnModeWalk").click();
+    markCorner(card, at, -2000, 2000);
+    expect($(card, "walkHint").textContent).toBe(
+      "Corner 1 marked. Walk along the edge to the next corner, stand still, and press Corner here."
+    );
+    markCorner(card, at, 2000, 2000);
+    markCorner(card, at, 2000, 5000);
+
+    markCorner(card, at, -1900, 2100);
+
+    expect(toasts).toEqual(["That is where you started. Press Finish to save the zone."]);
+    expect(card._walk.corners).toEqual([
+      { x: -2000, y: 2000 },
+      { x: 2000, y: 2000 },
+      { x: 2000, y: 5000 },
+    ]);
+  });
+
+  it("Finish with two corners saves a rect through the hand-drawn path", async () => {
+    const { card, hass, toasts, at } = await walkCard();
+    $(card, "btnModeWalk").click();
+    markCorner(card, at, -1000, 3000);
+    markCorner(card, at, -3000, 1000);
+    expect($(card, "btnWalkFinish").disabled).toBe(false);
+
+    $(card, "btnWalkFinish").click();
+    await settle();
+
+    const data = { x_min: -3000, x_max: -1000, y_min: 1000, y_max: 3000 };
+    const walked = hass.callService.mock.calls.map((call: any[]) => call[2]);
+    expect(walked).toEqual([
+      { device_id: "dev123", zone_id: 1, shape: "rect", data, input_units: "mm" },
+    ]);
+    expect(toasts).toEqual(["Doorway saved"]);
+    // Out of Walk, back in the mode it came from, the rect on the map at
+    // once and Undo ready for it.
+    expect(card.drawMode).toBe("rect");
+    expect(card._walk).toBeNull();
+    expect($(card, "walkPanel").hidden).toBe(true);
+    expect(card.zones).toEqual([{ id: 1, shape: "rect", data }]);
+    expect($(card, "btnUndo").disabled).toBe(false);
+
+    // A drag over the same rect sends the same call and says the same.
+    hass.callService.mockClear();
+    layOut(card, 800);
+    const mouse = (type: string, x: number, y: number) =>
+      card.canvas.dispatchEvent(new MouseEvent(type, { clientX: x, clientY: y }));
+    mouse("mousedown", 160, 80);
+    mouse("mousemove", 320, 240);
+    mouse("mouseup", 320, 240);
+    await settle();
+    expect(hass.callService.mock.calls.map((call: any[]) => call[2])).toEqual(walked);
+    expect(toasts).toEqual(["Doorway saved", "Doorway saved"]);
+  });
+
+  it("Finish with three corners saves through finishPolygon", async () => {
+    const { card, hass, toasts, at } = await walkCard();
+    card._setDrawMode("polygon");
+    $(card, "btnModeWalk").click();
+    const finish = vi.spyOn(card, "finishPolygon");
+    markCorner(card, at, -3000, 1000);
+    markCorner(card, at, -1000, 1000);
+    markCorner(card, at, -2000, 3000);
+
+    $(card, "btnWalkFinish").click();
+    await settle();
+
+    expect(finish).toHaveBeenCalledTimes(1);
+    const points = [
+      { x: -3000, y: 1000 },
+      { x: -1000, y: 1000 },
+      { x: -2000, y: 3000 },
+    ];
+    expect(hass.callService.mock.calls.map((call: any[]) => call[2])).toEqual([
+      { device_id: "dev123", zone_id: 1, shape: "polygon", data: { points }, input_units: "mm" },
+    ]);
+    expect(toasts).toEqual(["Doorway saved"]);
+    expect(card.zones).toEqual([{ id: 1, shape: "polygon", data: { points } }]);
+    // Back in polygon mode with nothing left in progress.
+    expect(card.drawMode).toBe("polygon");
+    expect(card._polyPoints).toEqual([]);
+    expect(card.isDrawing).toBe(false);
+  });
+
+  it("Finish with no zone selected keeps the corners", async () => {
+    const { card, hass, toasts, at } = await walkCard();
+    $(card, "btnModeWalk").click();
+    markCorner(card, at, -3000, 1000);
+    markCorner(card, at, -1000, 3000);
+    // The only zone was deleted from another browser, say.
+    card._setSelectedZone(null);
+
+    $(card, "btnWalkFinish").click();
+
+    expect(toasts).toEqual(["Select a zone first."]);
+    expect(hass.callService).not.toHaveBeenCalled();
+    expect(card.drawMode).toBe("walk");
+    expect(card._walk.corners).toHaveLength(2);
+
+    // With a zone selected, the same corners save.
+    card._setSelectedZone(1);
+    $(card, "btnWalkFinish").click();
+    expect(hass.callService).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a zone too thin to use and keeps walking", async () => {
+    const { card, hass, toasts, at } = await walkCard();
+    $(card, "btnModeWalk").click();
+    // Two corners along one wall, 0.2 m apart across it.
+    markCorner(card, at, -3000, 1000);
+    markCorner(card, at, -1000, 1200);
+
+    $(card, "btnWalkFinish").click();
+
+    const flat =
+      "Those corners make a zone too thin to use. Mark corners on opposite sides of the area.";
+    expect(toasts).toEqual([flat]);
+    expect(hass.callService).not.toHaveBeenCalled();
+    expect(card._walk.corners).toHaveLength(2);
+
+    // A third corner in line with them is no better.
+    markCorner(card, at, 1000, 1400);
+    vi.advanceTimersByTime(1600);
+    $(card, "btnWalkFinish").click();
+    expect(toasts).toEqual([flat, flat]);
+    expect(card._walk.corners).toHaveLength(3);
+  });
+
+  it("stops marking at the most corners a zone can have", async () => {
+    const { card, at } = await walkCard();
+    card.polyMaxPoints = 3;
+    $(card, "btnModeWalk").click();
+    markCorner(card, at, -3000, 1000);
+    markCorner(card, at, -1000, 1000);
+    markCorner(card, at, -2000, 3000);
+
+    expect($(card, "walkHint").textContent).toBe(
+      "That is the most corners a zone can have. Press Finish."
+    );
+    expect($(card, "btnWalkCorner").disabled).toBe(true);
+    expect($(card, "btnWalkFinish").disabled).toBe(false);
+    at("a", 2000, 5000);
+    vi.advanceTimersByTime(2000);
+    card._walkCorner();
+    expect(card._walk.corners).toHaveLength(3);
+  });
+
+  it("Cancel with two corners asks first", async () => {
+    const { card, at } = await walkCard();
+    const confirm = () => $(card, "walkConfirm");
+    const actions = () => $(card, "walkActions");
+
+    // With one corner, Cancel ends Walk at once.
+    $(card, "btnModeWalk").click();
+    markCorner(card, at, -3000, 1000);
+    $(card, "btnWalkCancel").click();
+    expect(card.drawMode).toBe("rect");
+    expect($(card, "walkPanel").hidden).toBe(true);
+
+    // With two, it asks first, in the panel.
+    $(card, "btnModeWalk").click();
+    expect(card._walk.corners).toEqual([]);
+    markCorner(card, at, -1000, 1000);
+    markCorner(card, at, -3000, 3000);
+    $(card, "btnWalkCancel").click();
+    expect(card.drawMode).toBe("walk");
+    expect(confirm().hidden).toBe(false);
+    expect(actions().hidden).toBe(true);
+    expect(confirm().textContent).toContain("Drop the corners you marked?");
+    const answers = ["btnWalkCancelYes", "btnWalkCancelNo"].map((id) => $(card, id).textContent);
+    expect(answers).toEqual(["Drop them", "Keep marking"]);
+
+    // Keep marking puts the buttons back, corners and all.
+    $(card, "btnWalkCancelNo").click();
+    expect(confirm().hidden).toBe(true);
+    expect(actions().hidden).toBe(false);
+    expect(card._walk.corners).toHaveLength(2);
+
+    // Drop them ends Walk without the corners.
+    $(card, "btnWalkCancel").click();
+    $(card, "btnWalkCancelYes").click();
+    expect(card.drawMode).toBe("rect");
+    expect(card._walk).toBeNull();
+    expect($(card, "walkPanel").hidden).toBe(true);
+    $(card, "btnModeWalk").click();
+    expect(card._walk.corners).toEqual([]);
+    expect(confirm().hidden).toBe(true);
+  });
+
+  it("Undo corner takes back the last corner", async () => {
+    const { card, at } = await walkCard();
+    $(card, "btnModeWalk").click();
+    const undo = $(card, "btnWalkUndo");
+    expect(undo.disabled).toBe(true);
+    markCorner(card, at, -3000, 1000);
+    markCorner(card, at, -1000, 3000);
+
+    undo.click();
+
+    expect(card._walk.corners).toEqual([{ x: -3000, y: 1000 }]);
+    expect($(card, "btnWalkFinish").disabled).toBe(true);
+    expect($(card, "walkHint").textContent).toBe(
+      "Corner 1 marked. Walk along the edge to the next corner, stand still, and press Corner here."
+    );
+    undo.click();
+    expect(card._walk.corners).toEqual([]);
+    expect(undo.disabled).toBe(true);
+    // Still walking, from the start.
+    expect(card.drawMode).toBe("walk");
+    expect($(card, "walkHint").textContent).toBe(HINT.start);
+  });
+
+  it("locking cancels the walk", async () => {
+    const { card, toasts, at } = await walkCard();
+    const walkTwoCorners = () => {
+      $(card, "btnModeWalk").click();
+      markCorner(card, at, -3000, 1000);
+      markCorner(card, at, -1000, 3000);
+      expect(card._walk.corners).toHaveLength(2);
+    };
+    walkTwoCorners();
+
+    $(card, "btnLock").click();
+
+    // Without asking: the lock says what it did.
+    expect(card.isLocked).toBe(true);
+    expect(card._walk).toBeNull();
+    expect(card.drawMode).toBe("rect");
+    expect($(card, "walkPanel").hidden).toBe(true);
+    expect(toasts).toEqual(["Drawing and cone rotation locked. Unlock the map to change them."]);
+
+    // So do another drawing mode, view_only and another radar.
+    $(card, "btnLock").click();
+    walkTwoCorners();
+    $(card, "btnModeEllipse").click();
+    expect(card._walk).toBeNull();
+    expect(card.drawMode).toBe("ellipse");
+
+    walkTwoCorners();
+    const unlocked = { ...TEN_METER_GRID, start_locked: false };
+    card.setConfig({ device_id: "dev123", ...unlocked, view_only: true });
+    expect(card._walk).toBeNull();
+    expect(card.drawMode).toBe("ellipse");
+
+    card.setConfig({ device_id: "dev123", ...unlocked });
+    walkTwoCorners();
+    card.setConfig({ device_id: "devB", ...unlocked });
+    expect(card._walk).toBeNull();
+    expect($(card, "walkPanel").hidden).toBe(true);
+  });
+
+  it("pressing a walk button does not cancel anything", async () => {
+    // The press listener on document cancels a shape being drawn when
+    // something else in the card is pressed. Walk is not a shape being
+    // drawn, and its buttons are outside the map.
+    const { card, at } = await walkCard();
+    document.body.appendChild(card);
+    $(card, "btnModeWalk").click();
+    markCorner(card, at, -3000, 1000);
+    markCorner(card, at, -1000, 3000);
+
+    for (const id of ["btnWalkUndo", "btnWalkFinish", "btnWalkCancel", "btnWalkCorner"]) {
+      pressOn($(card, id), "mousedown");
+      pressOn($(card, id), "touchstart");
+    }
+    expect(card.drawMode).toBe("walk");
+    expect(card._walk.corners).toHaveLength(2);
+
+    // A press and its click on Corner here mark the corner.
+    at("a", 1000, 3000);
+    vi.advanceTimersByTime(2000);
+    pressOn($(card, "btnWalkCorner"), "mousedown");
+    $(card, "btnWalkCorner").click();
+    expect(card._walk.corners).toHaveLength(3);
+  });
+
+  it("entering Walk closes History", async () => {
+    // History's replay would hide the dot of the person walking.
+    const { card } = await walkCard();
+    const close = vi.spyOn(card, "_closeHistory");
+
+    $(card, "btnModeWalk").click();
+
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(card.drawMode).toBe("walk");
+  });
+
+  it("lets the canvas pan and draws nothing with the pointer in Walk", async () => {
+    const { card, toasts } = await walkCard();
+    layOut(card, 800);
+    expect(card.canvas.classList.contains("pans")).toBe(false);
+
+    $(card, "btnModeWalk").click();
+
+    expect(card.canvas.classList.contains("pans")).toBe(true);
+    card.canvas.dispatchEvent(new MouseEvent("mousedown", { clientX: 100, clientY: 100 }));
+    expect(card.isDrawing).toBe(false);
+    expect(toasts).toEqual([]);
+
+    $(card, "btnWalkCancel").click();
+    expect(card.canvas.classList.contains("pans")).toBe(false);
+  });
+
+  it("lays the walk back out after a render", async () => {
+    const { card, at } = await walkCard();
+    $(card, "btnModeWalk").click();
+    markCorner(card, at, -3000, 1000);
+    markCorner(card, at, -1000, 3000);
+    $(card, "btnWalkCancel").click();
+
+    // A theme flip renders the card again.
+    card.render();
+
+    expect($(card, "walkPanel").hidden).toBe(false);
+    expect($(card, "walkConfirm").hidden).toBe(false);
+    expect($(card, "btnWalkFinish").disabled).toBe(false);
+    expect($(card, "btnModeWalk").classList.contains("active")).toBe(true);
+    expect(card.canvas.classList.contains("pans")).toBe(true);
+    // And keeps up with the people in view.
+    at("b", 1000, 2000);
+    expect($(card, "walkHint").textContent).toBe(HINT.crowd);
+  });
+
+  it("previews the walked zone dashed, with its size above the newest corner", async () => {
+    const { card, at } = await walkCard();
+    $(card, "btnModeWalk").click();
+    markCorner(card, at, -3000, 1000);
+    const dashes = (draws: Draw[]) =>
+      draws.filter((d) => d.name === "setLineDash" && d.args[0].join() === "10,6");
+    // One corner is no shape yet.
+    expect(dashes(frame(card))).toEqual([]);
+
+    markCorner(card, at, -1000, 3000);
+    let draws = frame(card);
+    // The rect between (-3000, 1000) and (-1000, 3000) mm, in a dash of its
+    // own inside its own save and restore.
+    expect(dashes(draws).map((d) => d.depth)).toEqual([1]);
+    expect(draws.filter((d) => d.name === "rect").map((d) => [d.args, d.depth])).toEqual([
+      [[160, 80, 160, 160], 1],
+    ]);
+    // Its size 64 px above the newest corner, clear of that corner's ring.
+    expect(readouts(draws)).toEqual([["2.0 m × 2.0 m", 320, 176]]);
+
+    markCorner(card, at, -2000, 5000);
+    draws = frame(card);
+    // Three corners: the polygon through them in walking order, closed.
+    const at10 = draws.indexOf(dashes(draws)[0]);
+    const path = draws
+      .slice(at10)
+      .filter((d) => ["moveTo", "lineTo", "closePath", "stroke"].includes(d.name));
+    expect(path.slice(0, 5).map((d) => [d.name, d.args])).toEqual([
+      ["moveTo", [160, 80]],
+      ["lineTo", [320, 240]],
+      ["lineTo", [240, 400]],
+      ["closePath", []],
+      ["stroke", []],
+    ]);
+    expect(readouts(draws)).toEqual([["2.0 m × 4.0 m", 240, 336]]);
+  });
+
+  it("rings each corner with its number over the dots", async () => {
+    const { card, at } = await walkCard();
+    $(card, "btnModeWalk").click();
+    markCorner(card, at, -3000, 1000);
+    // Target 1 stands on corner 2.
+    markCorner(card, at, -1000, 3000);
+
+    const draws = frame(card);
+
+    const rings = draws.filter((d) => d.name === "arc" && d.args[2] === 14);
+    expect(rings.map((d) => d.args.slice(0, 2))).toEqual([
+      [160, 80],
+      [320, 240],
+    ]);
+    const dot = draws.findIndex((d) => d.name === "fill" && d.fill === "#f44336");
+    expect(dot).toBeGreaterThan(-1);
+    expect(draws.indexOf(rings[0])).toBeGreaterThan(dot);
+    // Stroked 3 px in the axis color, not filled, so the dot shows.
+    const ringStrokes = draws.filter(
+      (d, i) => d.name === "stroke" && draws[i - 1]?.name === "arc" && draws[i - 1].args[2] === 14
+    );
+    expect(ringStrokes.map((d) => [d.stroke, d.lineWidth])).toEqual([
+      ["#000000", 3],
+      ["#000000", 3],
+    ]);
+    // Each number bold in the axis color outside its ring's upper right,
+    // on a plate in the canvas color.
+    const numbers = draws.filter((d) => d.name === "fillText" && ["1", "2"].includes(d.args[0]));
+    const markerNumbers = numbers.filter((d) => d.font === "bold 14px sans-serif");
+    expect(markerNumbers.map((d) => [d.args, d.fill])).toEqual([
+      [["1", 174, 66], "#000000"],
+      [["2", 334, 226], "#000000"],
+    ]);
+    markerNumbers.forEach((number) => {
+      const plate = draws[draws.indexOf(number) - 1];
+      expect([plate.name, plate.fill]).toEqual(["fillRect", "#ffffff"]);
+    });
+  });
+
+  it("keeps the corners in the radar's own frame through a rotation change", async () => {
+    const { card, hass, at } = await walkCard();
+    $(card, "btnModeWalk").click();
+    markCorner(card, at, -3000, 1000);
+
+    // Turned 90 degrees, (-3000, 1000) mm in the radar's frame is (1000,
+    // 3000) on the map: the corner turns with it.
+    hass.handlers[ZONES_SUBSCRIBE][0]({ ...ZONE_PAYLOAD, rotation_deg: 90, entities: PAIRS });
+
+    expect(card._walk.corners).toEqual([{ x: -3000, y: 1000 }]);
+    const [ring] = frame(card).filter((d) => d.name === "arc" && d.args[2] === 14);
+    expect(ring.args[0]).toBeCloseTo(480, 6);
+    expect(ring.args[1]).toBeCloseTo(240, 6);
+
+    // A chip change keeps the walk too.
+    $(card, "btnAddZone").click();
+    expect(card.selectedZone).toBe(2);
+    expect(card._walk.corners).toHaveLength(1);
+  });
+});
+
+/**
  * The map flipped left to right (mirror_x).
  *
  * A radar mounted one way round shows a person who steps to its right

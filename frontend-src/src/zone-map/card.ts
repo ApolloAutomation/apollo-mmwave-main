@@ -43,13 +43,30 @@ import {
   TYPE_LABEL,
   TYPE_OPTIONS,
   TYPE_TITLE,
+  WALK_BUTTON_TITLE,
+  WALK_CANCEL,
+  WALK_CANCEL_CONFIRM,
+  WALK_CANCEL_NO,
+  WALK_CANCEL_YES,
+  WALK_CLOSED_TOAST,
+  WALK_CORNER,
+  WALK_FINISH,
+  WALK_FLAT_TOAST,
+  WALK_HINT_CROWD,
+  WALK_HINT_FULL,
+  WALK_HINT_NOBODY,
+  WALK_HINT_START,
+  WALK_TOO_CLOSE_TOAST,
+  WALK_UNDO,
   ZONE_SETTINGS_HINT,
+  walkHintNext,
 } from './copy';
 import { ZONE_MAP_EDITOR_TAG, firstLd2450DeviceId } from './editor';
 import { formatHold, formatSize, zoneSize } from './format';
 import { pointInZone, rotateToMap } from './geometry';
 import { fallbackPresenceId, presenceLook } from './presence';
 import { TRAIL_GAP_MS, TRAIL_MS, TrailBuffer } from './trails';
+import { WALK_AVERAGE_MS, WALK_MIN_CORNER_GAP_MM, walkShape } from './walk';
 
 const COLOR = Object.freeze({
   ui: {
@@ -185,7 +202,7 @@ const FIT_MARGIN_FRACTION = 0.05;
 // The fitted map is never taller than it is wide, and never shorter than this
 // share of its width. Facing ahead, the cone is about 12 m by 6.5 m, which
 // would be shorter still, but the drawing buttons open upward from the bottom
-// edge, five buttons tall in polygon mode, and need the height on a phone.
+// edge, up to six buttons tall in polygon mode, and need the height on a phone.
 const FIT_MIN_ASPECT = 0.75;
 // A fitted edge within this many mm of a grid step stays on that step. The
 // card saves zones in whole mm, rounded from a point clamped to the map, and a
@@ -437,6 +454,14 @@ export class ZoneMapCard extends HTMLElement {
     this._coverageOn = false;
     // A card that shows only the map (view_only), with no coverage.
     this._viewOnly = false;
+    // Walk, marking a zone's corners by walking to them: { corners } (mm in
+    // the radar's own frame, in walking order) while it is on, else null;
+    // the drawing mode it came from; whether its Cancel is asking first; and
+    // what its panel last showed (see _renderWalkPanel).
+    this._walk = null;
+    this._modeBeforeWalk = null;
+    this._walkConfirmCancel = false;
+    this._walkVisible = null;
     this.showZones = false;
     this.showConfig = false;
     this._polyPoints = [];
@@ -723,6 +748,9 @@ export class ZoneMapCard extends HTMLElement {
     this._coverage.clear();
     this._coverageOn = false;
     this._closeHistory();
+    // Corners walked on the old radar's map are no corners on the new one.
+    this._exitWalk();
+    this._walkVisible = null;
   }
 
   set hass(hass) {
@@ -1321,7 +1349,7 @@ export class ZoneMapCard extends HTMLElement {
         .overlay-controls button { background: ${COLOR.ui.overlayButtonLightBg}; color: ${COLOR.ui.overlayButtonText}; border: none; border-radius: 6px; font-size: 11px; line-height: 1; cursor: pointer; backdrop-filter: blur(4px); display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 6px; min-height: 32px; }
         #modeGroup button { font-size: 16px; width: 32px; height: 32px; min-width: 32px; min-height: 32px; padding: 0; }
         /* A fitted map can be shorter than wide, and on a phone shorter than the
-           five polygon buttons. They wrap into a second column rather than run
+           six polygon buttons. They wrap into a second column rather than run
            off the top, keeping clear of the menu button below them (32 px, the
            4 px gaps and the 4 px edge). */
         #modeGroup { flex-wrap: wrap; align-content: flex-start; max-height: calc(100cqh - 44px); }
@@ -1384,6 +1412,16 @@ export class ZoneMapCard extends HTMLElement {
         /* Dimmed, not disabled, while the map is locked: a disabled button
            takes no tap, so a phone user would get no word of why. */
         button.zone-btn.locked-action { opacity: 0.5; cursor: not-allowed; }
+        /* Walk's panel under the map, used on a phone carried around the
+           room: Corner here across a row of its own, and every button a
+           finger-sized 48 px. Its rows are flex, so [hidden] needs saying. */
+        .walk-panel, .walk-confirm { display: flex; flex-direction: column; gap: var(--zm-gap); }
+        .walk-panel { margin: 12px 0; }
+        .walk-hint { font-size: 14px; }
+        .walk-row { display: flex; gap: var(--zm-gap); }
+        .walk-row button { flex: 1; min-height: 48px; }
+        .walk-row button:disabled { opacity: 0.5; cursor: not-allowed; }
+        .walk-panel[hidden], .walk-panel [hidden] { display: none; }
         .info { margin-top: 12px; font-size: 14px; color: var(--secondary-text-color); }
         .container.dark .info { color: ${COLOR.ui.infoDarkText}; }
         .container.dark .zone-item { background: ${COLOR.ui.zoneItemDarkBg}; color: ${COLOR.ui.zoneItemDarkText}; }
@@ -1426,6 +1464,8 @@ export class ZoneMapCard extends HTMLElement {
             <div id="modeGroup" style="display: ${this.showModeMenu ? 'flex' : 'none'}; flex-direction: column; gap: 4px;">
               <button id="btnPolyFinish" title="Finish polygon">✓</button>
               <button id="btnPolyUndo" title="Undo last point">↺</button>
+              <!-- Administrators only: _renderAdminControls shows it. -->
+              <button id="btnModeWalk" title="${WALK_BUTTON_TITLE}" aria-label="${WALK_BUTTON_TITLE}" style="display: none">🚶</button>
               <button id="btnModePolygon" title="Polygon">⬠</button>
               <button id="btnModeEllipse" title="Ellipse">◯</button>
               <button id="btnModeRect" title="Rectangle">▭</button>
@@ -1442,6 +1482,7 @@ export class ZoneMapCard extends HTMLElement {
             <button id="btnLock" class="lock-toggle" title="Lock drawing and cone rotation">🔓</button>
           </div>
         </div>
+        ${this._walkPanelTemplate()}
         ${this._viewToolsTemplate()}
         <div class="controls" id="zone-buttons">
         </div>
@@ -1547,6 +1588,8 @@ export class ZoneMapCard extends HTMLElement {
     // slider that are about to go, from _applyAutoLock, on a template that
     // has no Locked button to make a new one.
     this._updateLockVisual = null;
+    // The Walk panel comes back hidden, to be laid out again.
+    this._walkVisible = null;
     // Started again at the end, once the new canvas has its picture.
     this._stopTrailTimer();
     this._detachGlobalListeners();
@@ -1697,6 +1740,7 @@ export class ZoneMapCard extends HTMLElement {
     this._attachUnitSwitch();
     this._attachConfigEvents();
     this._attachMapOptions();
+    this._attachWalkPanel();
     this._attachViewTools();
   }
 
@@ -1793,14 +1837,252 @@ export class ZoneMapCard extends HTMLElement {
     if (mirrorOption) mirrorOption.title = admin ? '' : ADMIN_ONLY_TITLE;
     const note = this.shadowRoot?.getElementById('mapOptionsNote');
     if (note) note.hidden = admin;
+    // Walk saves a zone, so it is an administrator's, and like drawing it
+    // needs the map unlocked. The button stays for a locked map, where a
+    // press says how to unlock.
+    const walk = this.shadowRoot?.getElementById('btnModeWalk');
+    if (walk) walk.style.display = admin ? '' : 'none';
+    if (!admin || this.isLocked) this._exitWalk();
     // Movement history is an administrator's, on a radar that keeps it.
     if (!admin || !this._movementHistory) this._closeHistory();
   }
 
-  /** Lay the Walk panel back over a rebuilt DOM from the state on `this`,
-   *  and bring it up to date as targets come and go (_onTargetsChanged).
-   *  The card has no Walk panel yet, so there is nothing to lay back. */
-  _renderWalkPanel() {}
+  _attachWalkPanel() {
+    const on = (id, handler) => {
+      const button = this.shadowRoot.getElementById(id);
+      if (button) button.addEventListener('click', handler);
+    };
+    on('btnWalkCorner', () => this._walkCorner());
+    on('btnWalkUndo', () => this._walkUndo());
+    on('btnWalkFinish', () => this._walkFinish());
+    on('btnWalkCancel', () => this._walkCancel());
+    on('btnWalkCancelYes', () => this._exitWalk());
+    on('btnWalkCancelNo', () => {
+      this._walkConfirmCancel = false;
+      this._renderWalkPanel();
+    });
+  }
+
+  /**
+   * Walk's panel, right under the map and hidden until Walk is on: the hint,
+   * read out as it changes, Corner here on a row of its own, then Undo
+   * corner, Finish and Cancel, which swap for Cancel's question while it
+   * asks. _renderWalkPanel sets them from `this`.
+   */
+  _walkPanelTemplate() {
+    return `
+        <div class="walk-panel" id="walkPanel" hidden>
+          <div class="walk-hint" id="walkHint" aria-live="polite"></div>
+          <div class="walk-row">
+            <button id="btnWalkCorner">${WALK_CORNER}</button>
+          </div>
+          <div class="walk-row" id="walkActions">
+            <button id="btnWalkUndo">${WALK_UNDO}</button>
+            <button id="btnWalkFinish">${WALK_FINISH}</button>
+            <button id="btnWalkCancel" class="zone-btn">${WALK_CANCEL}</button>
+          </div>
+          <div class="walk-confirm" id="walkConfirm" hidden>
+            <div class="walk-hint">${WALK_CANCEL_CONFIRM}</div>
+            <div class="walk-row">
+              <button id="btnWalkCancelYes">${WALK_CANCEL_YES}</button>
+              <button id="btnWalkCancelNo" class="zone-btn">${WALK_CANCEL_NO}</button>
+            </div>
+          </div>
+        </div>
+    `;
+  }
+
+  /**
+   * Lay Walk's panel out from the state on `this`: shown while Walk is on,
+   * with the hint for who is in view and how many corners are down; Corner
+   * here only with exactly one person in view and room for another corner,
+   * Undo corner with a corner to undo, Finish with two; Cancel's question in
+   * place of those three while it asks. It runs on every target move, so it
+   * touches the DOM only when one of those changed (_walkVisible), and
+   * render() lays a rebuilt panel out again.
+   */
+  _renderWalkPanel() {
+    const panel = this.shadowRoot?.getElementById('walkPanel');
+    if (!panel) return;
+    if (!this._walk) {
+      if (this._walkVisible !== null) {
+        panel.hidden = true;
+        this._walkVisible = null;
+      }
+      return;
+    }
+    const visible = this._walkTargets().length;
+    const corners = this._walk.corners.length;
+    const confirm = this._walkConfirmCancel;
+    const shown = this._walkVisible;
+    const same =
+      shown && shown.visible === visible && shown.corners === corners && shown.confirm === confirm;
+    if (same) return;
+    this._walkVisible = { visible, corners, confirm };
+    panel.hidden = false;
+    const full = corners >= this.polyMaxPoints;
+    let hint;
+    if (full) hint = WALK_HINT_FULL;
+    else if (visible === 0) hint = WALK_HINT_NOBODY;
+    else if (visible >= 2) hint = WALK_HINT_CROWD;
+    else if (corners === 0) hint = WALK_HINT_START;
+    else hint = walkHintNext(corners);
+    const set = (id, apply) => {
+      const element = this.shadowRoot.getElementById(id);
+      if (element) apply(element);
+    };
+    set('walkHint', (element) => {
+      element.textContent = hint;
+    });
+    set('btnWalkCorner', (element) => {
+      element.disabled = full || visible !== 1;
+    });
+    set('btnWalkUndo', (element) => {
+      element.disabled = corners === 0;
+    });
+    set('btnWalkFinish', (element) => {
+      element.disabled = corners < 2;
+    });
+    set('walkActions', (element) => {
+      element.hidden = confirm;
+    });
+    set('walkConfirm', (element) => {
+      element.hidden = !confirm;
+    });
+  }
+
+  /**
+   * Start marking a zone's corners by walking to them, as an administrator
+   * on an unlocked map. History closes first: its replay would hide the dot
+   * of the person walking. The canvas pans in Walk, so a phone carried
+   * around the room still scrolls the page.
+   */
+  _enterWalk() {
+    if (this._viewOnly || !this._isAdmin() || this._walk) return;
+    if (this.isLocked) {
+      this._remindLocked(DRAW_LOCKED_TOAST);
+      return;
+    }
+    this._closeHistory();
+    this._modeBeforeWalk = this.drawMode;
+    this._walk = { corners: [] };
+    this._walkConfirmCancel = false;
+    // Ends any shape in progress, shows the panel and lets the canvas pan.
+    this._setDrawMode(DRAW_MODES.WALK);
+  }
+
+  /** Leave Walk, back to the drawing mode it came from, and drop the
+   *  corners without asking. */
+  _exitWalk() {
+    if (this.drawMode !== DRAW_MODES.WALK) return;
+    const mode = this._modeBeforeWalk;
+    this._setDrawMode(mode && mode !== DRAW_MODES.WALK ? mode : DRAW_MODES.RECT);
+  }
+
+  /** The live targets Walk can mark a corner at: every target outside the
+   *  ignore zones, where presence does not see them either. */
+  _walkTargets() {
+    return this._currentTargets().filter(({ x, y }) => {
+      const m = this._toMap(x, y);
+      return !this._isIgnored(m.x, m.y);
+    });
+  }
+
+  /**
+   * Corner here: mark where the one person in view stands, as their
+   * time-weighted position over the last WALK_AVERAGE_MS, so the steps up to
+   * the corner weigh little. Once they have stood still for so long that
+   * every sample aged out, their current reading. Kept in the radar's own
+   * frame, so a rotation changed mid-walk turns the corners with the map. A
+   * corner too close to the last one, or back at the first once three are
+   * down, is refused and the corners stay.
+   */
+  _walkCorner() {
+    if (!this._walk) return;
+    const corners = this._walk.corners;
+    const targets = this._walkTargets();
+    if (targets.length !== 1 || corners.length >= this.polyMaxPoints) {
+      // The press beat a push: the panel says why now.
+      this._renderWalkPanel();
+      return;
+    }
+    const [target] = targets;
+    const at = this._trails.average(target.slot, this._now(), WALK_AVERAGE_MS) || target;
+    const corner = { x: at.x, y: at.y };
+    const near = (other) =>
+      Math.hypot(corner.x - other.x, corner.y - other.y) < WALK_MIN_CORNER_GAP_MM;
+    if (corners.length > 0 && near(corners[corners.length - 1])) {
+      this._notifyThrottled(WALK_TOO_CLOSE_TOAST);
+      return;
+    }
+    // Back where the walk started is a closed shape, which Finish saves; a
+    // corner there would only repeat the first.
+    if (corners.length >= 3 && near(corners[0])) {
+      this._notifyThrottled(WALK_CLOSED_TOAST);
+      return;
+    }
+    corners.push(corner);
+    // Still marking, so a question Cancel was asking is answered.
+    this._walkConfirmCancel = false;
+    this._renderWalkPanel();
+    this.drawGrid();
+  }
+
+  _walkUndo() {
+    if (!this._walk || this._walk.corners.length === 0) return;
+    this._walk.corners.pop();
+    this._walkConfirmCancel = false;
+    this._renderWalkPanel();
+    this.drawGrid();
+  }
+
+  /** Cancel: with two or more corners down, which took a walk around the
+   *  room to mark, ask first, in the panel. */
+  _walkCancel() {
+    if (!this._walk) return;
+    if (this._walk.corners.length >= 2) {
+      this._walkConfirmCancel = true;
+      this._renderWalkPanel();
+      return;
+    }
+    this._exitWalk();
+  }
+
+  /**
+   * Finish: save the walked corners as the selected zone's shape, through
+   * the same commit a drawn rect or polygon takes (an undo snapshot, the
+   * shape on the map at once, the save and its "<label> saved"). Two corners
+   * are a rectangle, three or more a polygon. With no zone selected, or a
+   * shape too thin to use, the walk goes on with its corners.
+   */
+  _walkFinish() {
+    if (!this._walk || this._walk.corners.length < 2) return;
+    const zoneId = this.selectedZone;
+    if (zoneId === null || zoneId === undefined) {
+      this._notifyThrottled(SELECT_ZONE_TOAST);
+      return;
+    }
+    const mapCorners = this._walk.corners.map(({ x, y }) => this._toMap(x, y));
+    const clamp = (p) => ({
+      x: this._clampAndRound(p.x, this.xMin, this.xMax),
+      y: this._clampAndRound(p.y, this.yMin, this.yMax),
+    });
+    const result = walkShape(mapCorners, clamp, this.polyMaxPoints);
+    if (result.error) {
+      this._notifyThrottled(result.error === 'flat' ? WALK_FLAT_TOAST : POLY_TOO_FEW_TOAST);
+      return;
+    }
+    if (result.shape === DRAW_MODES.RECT) {
+      const { x_min, y_min, x_max, y_max } = result.data;
+      const payload = this._rectFromMm(x_min, y_min, x_max, y_max);
+      this._exitWalk();
+      this._commitZoneShape(zoneId, payload);
+      return;
+    }
+    this._exitWalk();
+    this._polyPoints = result.points;
+    this.finishPolygon();
+  }
 
   /** Lay the History panel back over a rebuilt DOM from the state on `this`.
    *  The card has no History panel yet, so there is nothing to lay back. */
@@ -1809,10 +2091,6 @@ export class ZoneMapCard extends HTMLElement {
   /** Close the History panel and stop its replay. The card has no History
    *  panel yet, so there is nothing to close. */
   _closeHistory() {}
-
-  /** Leave Walk and drop its corners. The card has no Walk mode yet, so
-   *  there is nothing to leave. */
-  _exitWalk() {}
 
   _attachMapOptions() {
     const mirror = this.shadowRoot.getElementById('mirrorToggle');
@@ -2223,6 +2501,8 @@ export class ZoneMapCard extends HTMLElement {
       btnModeEllipse.addEventListener('click', () => this._setDrawMode(DRAW_MODES.ELLIPSE));
     if (btnModePolygon)
       btnModePolygon.addEventListener('click', () => this._setDrawMode(DRAW_MODES.POLYGON));
+    const btnModeWalk = this.shadowRoot.getElementById('btnModeWalk');
+    if (btnModeWalk) btnModeWalk.addEventListener('click', () => this._enterWalk());
 
     if (btnPolyUndo) {
       btnPolyUndo.addEventListener('click', () => {
@@ -2265,6 +2545,8 @@ export class ZoneMapCard extends HTMLElement {
         this._lastLockWarningTs = 0;
         if (this.isLocked) {
           if (this.isDrawing) this.cancelDrawing();
+          // Walk saves a zone too, so the lock ends it, corners and all.
+          this._exitWalk();
           this._notify(LOCK_ON_TOAST);
         } else {
           this._notify(LOCK_OFF_TOAST);
@@ -3074,11 +3356,26 @@ export class ZoneMapCard extends HTMLElement {
       this._updatePolygonButtonsVisibility();
       return;
     }
+    // Walk starts only through _enterWalk, which checks who is viewing and
+    // the lock and sets up its corners first.
+    if (nextMode === DRAW_MODES.WALK && !this._walk) {
+      this._enterWalk();
+      return;
+    }
+    // Any other mode ends a walk, and its corners go without asking.
+    if (this.drawMode === DRAW_MODES.WALK) {
+      this._walk = null;
+      this._modeBeforeWalk = null;
+      this._walkConfirmCancel = false;
+    }
     this.drawMode = nextMode;
     // A shape drawn in one mode cannot be finished in another.
     this._resetDrawingState();
     this._highlightActiveModeButton();
     this._updatePolygonButtonsVisibility();
+    // Into or out of Walk, which has its panel and lets the canvas pan.
+    this._updateCanvasTouchMode();
+    this._renderWalkPanel();
     this._invalidateGridCache();
     this._refitAndDraw();
   }
@@ -3087,12 +3384,14 @@ export class ZoneMapCard extends HTMLElement {
     const rectBtn = this.shadowRoot?.getElementById('btnModeRect');
     const ellipseBtn = this.shadowRoot?.getElementById('btnModeEllipse');
     const polyBtn = this.shadowRoot?.getElementById('btnModePolygon');
-    [rectBtn, ellipseBtn, polyBtn].forEach((btn) => {
+    const walkBtn = this.shadowRoot?.getElementById('btnModeWalk');
+    [rectBtn, ellipseBtn, polyBtn, walkBtn].forEach((btn) => {
       if (!btn) return;
       const shouldActivate =
         (btn === rectBtn && this.drawMode === DRAW_MODES.RECT) ||
         (btn === ellipseBtn && this.drawMode === DRAW_MODES.ELLIPSE) ||
-        (btn === polyBtn && this.drawMode === DRAW_MODES.POLYGON);
+        (btn === polyBtn && this.drawMode === DRAW_MODES.POLYGON) ||
+        (btn === walkBtn && this.drawMode === DRAW_MODES.WALK);
       btn.classList.toggle('active', shouldActivate);
     });
   }
@@ -4045,8 +4344,59 @@ export class ZoneMapCard extends HTMLElement {
     ctx.restore();
   }
 
-  /** The shape a walk's corners make so far. The card has no Walk mode yet. */
-  _drawWalkPreview(ctx) {}
+  /** The corners walked so far in the map frame, turned with the rotation
+   *  and clamped to the map as Finish saves them, in walking order. */
+  _walkMapCorners() {
+    return (this._walk?.corners || []).map(({ x, y }) => {
+      const m = this._toMap(x, y);
+      return {
+        x: this._clampAndRound(m.x, this.xMin, this.xMax),
+        y: this._clampAndRound(m.y, this.yMin, this.yMax),
+      };
+    });
+  }
+
+  /**
+   * The zone the corners walked so far make, dashed: two as the rectangle
+   * between them, three or more as the polygon through them in walking
+   * order. Its size sits above the newest corner, as far above as over a
+   * finger, which keeps it clear of that corner's ring and number.
+   */
+  _drawWalkPreview(ctx) {
+    const corners = this._walkMapCorners();
+    if (corners.length < 2) return;
+    const points = corners.map((c) => ({
+      x: this.valueToPixels(c.x, 'x'),
+      y: this.valueToPixels(c.y, 'y'),
+    }));
+    ctx.save();
+    ctx.strokeStyle = this.darkMode
+      ? COLOR.canvas.polygonStrokeDark
+      : COLOR.canvas.polygonStrokeLight;
+    ctx.lineWidth = 3;
+    // A dash of its own, apart from a drawn shape's rubber band and a zone.
+    ctx.setLineDash([10, 6]);
+    ctx.beginPath();
+    if (points.length === 2) {
+      const [a, b] = points;
+      ctx.rect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y));
+    } else {
+      ctx.moveTo(points[0].x, points[0].y);
+      for (let i = 1; i < points.length; i += 1) ctx.lineTo(points[i].x, points[i].y);
+      ctx.closePath();
+    }
+    ctx.stroke();
+    ctx.restore();
+    const xs = corners.map((c) => c.x);
+    const ys = corners.map((c) => c.y);
+    this._drawSizeReadout(
+      ctx,
+      Math.max(...xs) - Math.min(...xs),
+      Math.max(...ys) - Math.min(...ys),
+      points[points.length - 1],
+      READOUT_OFFSET_TOUCH_PX,
+    );
+  }
 
   /**
    * The fading trail behind each live target: its last TRAIL_MS of
@@ -4100,9 +4450,50 @@ export class ZoneMapCard extends HTMLElement {
     ctx.restore();
   }
 
-  /** A ring and number on each corner a walk marked. The card has no Walk
-   *  mode yet. */
-  _drawWalkMarkers(ctx) {}
+  /**
+   * A ring on each corner walked so far, with its number outside the ring's
+   * upper right on a plate in the canvas color. Drawn over the dots, so the
+   * walker's own dot never hides the newest corner, and hollow, so the dot
+   * shows through.
+   */
+  _drawWalkMarkers(ctx) {
+    const corners = this._walkMapCorners();
+    if (!corners.length) return;
+    const scale = this._frameScale || 1;
+    const r = Math.max(14, Math.round(14 * scale));
+    const axis = this.darkMode ? COLOR.canvas.axisDark : COLOR.canvas.axisLight;
+    const plate = this.darkMode ? COLOR.ui.darkCanvasBackground : COLOR.ui.lightCanvasBackground;
+    const pad = 2 * scale;
+    ctx.save();
+    ctx.lineWidth = 3;
+    ctx.font = `bold ${r}px sans-serif`;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'bottom';
+    corners.forEach((corner, i) => {
+      const x = this.valueToPixels(corner.x, 'x');
+      const y = this.valueToPixels(corner.y, 'y');
+      ctx.strokeStyle = axis;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, 2 * Math.PI);
+      ctx.stroke();
+      const text = String(i + 1);
+      // The same estimate _measureLabels falls back to where the canvas
+      // cannot measure text.
+      const measured = ctx.measureText?.(text)?.width;
+      const width =
+        typeof measured === 'number' && measured > 0
+          ? measured
+          : text.length * r * LABEL_FALLBACK_EM_PER_CHAR;
+      // From the ring's corner box outward, so the plate clears the ring.
+      const left = x + r;
+      const bottom = y - r;
+      ctx.fillStyle = plate;
+      ctx.fillRect(left - pad, bottom - r - pad, width + 2 * pad, r + 2 * pad);
+      ctx.fillStyle = axis;
+      ctx.fillText(text, left, bottom);
+    });
+    ctx.restore();
+  }
 
   /**
    * Where the "Radar range 6 m (20 ft), 120°" label goes, in canvas px, or
@@ -4604,8 +4995,9 @@ export class ZoneMapCard extends HTMLElement {
    * covers more than a mouse pointer, so the readout sits further above it;
    * where that runs off the top of the canvas it goes as far below instead.
    * Sized in CSS px, so it reads the same on a phone and a desktop.
+   * `offsetCssPx` sets the distance where the anchor is not the pointer.
    */
-  _drawSizeReadout(ctx, widthMm, depthMm, anchorPx) {
+  _drawSizeReadout(ctx, widthMm, depthMm, anchorPx, offsetCssPx = null) {
     if (!ctx || !this.canvas || !anchorPx) return;
     const scale = this._frameScale || 1;
     const fontPx = Math.round(14 * scale);
@@ -4621,8 +5013,9 @@ export class ZoneMapCard extends HTMLElement {
         : text.length * fontPx * LABEL_FALLBACK_EM_PER_CHAR;
     const plateWidth = textWidth + 12 * scale;
     const plateHeight = fontPx + 6 * scale;
-    const offset =
-      (this._activeInput === 'touch' ? READOUT_OFFSET_TOUCH_PX : READOUT_OFFSET_MOUSE_PX) * scale;
+    const pointerOffset =
+      this._activeInput === 'touch' ? READOUT_OFFSET_TOUCH_PX : READOUT_OFFSET_MOUSE_PX;
+    const offset = (offsetCssPx ?? pointerOffset) * scale;
     let y = anchorPx.y - offset;
     if (y - plateHeight / 2 < 0) y = anchorPx.y + offset;
     // A finger keeps reporting after it leaves the canvas, and the shape
@@ -4944,8 +5337,9 @@ export class ZoneMapCard extends HTMLElement {
 
   startDrawing(e) {
     // Nothing listens on a view-only map, and nothing there could end a
-    // drawing that started anyway.
-    if (this._viewOnly) return;
+    // drawing that started anyway. In Walk the radar marks the corners, not
+    // the pointer, and the canvas pans.
+    if (this._viewOnly || this.drawMode === DRAW_MODES.WALK) return;
     // A right or middle press opens the browser menu or autoscroll; it must
     // not start a drag or place a vertex. Touch events carry no button.
     if (typeof e.button === 'number' && e.button !== 0) return;
@@ -5024,6 +5418,7 @@ export class ZoneMapCard extends HTMLElement {
   _updatePolygonButtonsVisibility() {
     const undo = this.shadowRoot.getElementById('btnPolyUndo');
     const fin = this.shadowRoot.getElementById('btnPolyFinish');
+    // Polygon only: Walk has its own Undo corner and Finish in its panel.
     const show = this.drawMode === DRAW_MODES.POLYGON;
     [undo, fin].forEach((btn) => {
       if (!btn) return;
