@@ -65,7 +65,7 @@ from homeassistant.helpers.event import (
 from homeassistant.helpers.storage import Store
 
 from .const import DATA_MOVEMENT, DOMAIN, SIGNAL_ZONES_UPDATED, STORE_MOVEMENT_HISTORY
-from .hold import half_vanished
+from .hold import HALF_VANISH_MAX_S, half_vanished
 from .ld2450 import effective_target_pairs
 from .store import device_flag
 from .targets import masked_readings, pair_ids
@@ -102,10 +102,9 @@ MOVEMENT_HEARTBEAT_MS = 15000
 # never pairs with the next reading's X.
 MOVEMENT_PAIR_MS = 550
 # A reading held back as the first of a target's two vanishing writes counts
-# once it has stood unchanged this long: the second write lands about 0.45 s
-# after the first, and someone who really stands on an axis line is recorded
-# after a second.
-MOVEMENT_HALF_VANISH_MAX_MS = 1000
+# once it has stood unchanged this long. The same bound as zone presence's,
+# so the two count someone who really stands on an axis line together.
+MOVEMENT_HALF_VANISH_MAX_MS = round(HALF_VANISH_MAX_S * 1000)
 MOVEMENT_RETENTION_MS = 86400000
 # The time prune runs once the oldest record is this far past the retention,
 # so it runs at most this often while history exists.
@@ -158,20 +157,6 @@ def _is_int(value: Any) -> bool:
 def _slot_of(value: int) -> int:
     """Return the slot of an s column value: a gone marker is -1 - slot."""
     return value if value >= 0 else -1 - value
-
-
-def _first_of_two(
-    previous: tuple[float, float] | None, raw: tuple[float, float]
-) -> bool:
-    """Report whether raw is the first write of a target vanishing or appearing."""
-    # Radars that empty a slot as 0/0 write X and Y one after the other, so
-    # a target that vanishes first reads (0, old y) or (old x, 0), which
-    # half_vanished finds. One that appears in such a slot first reads (x, 0)
-    # or (0, y), and the slot has no previous reading: neither is a point
-    # anyone occupied.
-    if previous is None:
-        return (raw[0] == 0.0) != (raw[1] == 0.0)
-    return half_vanished(previous, raw)
 
 
 def _b64(column: array[int]) -> str:
@@ -603,7 +588,7 @@ class _Recorder:
             previous, state.seen_raw = state.seen_raw, reading.raw
             seen.add(reading.slot)
             held_since = state.half_since if reading.raw == state.half_raw else None
-            if _first_of_two(previous, reading.raw) or (
+            if half_vanished(previous, reading.raw) or (
                 held_since is not None
                 and mono - held_since < MOVEMENT_HALF_VANISH_MAX_MS
             ):
