@@ -26,16 +26,27 @@ import {
   COVERAGE_TITLE,
   DRAW_LOCKED_TOAST,
   HELD_SUFFIX,
+  HOLD_IGNORE_TITLE,
+  HOLD_LABEL,
+  HOLD_OPTIONS,
+  HOLD_TITLE,
   IGNORED_SUFFIX,
   LOCK_OFF_TOAST,
   LOCK_ON_TOAST,
   MIRROR_HINT,
   MIRROR_LABEL,
+  NO_SHAPE_TEXT,
   OFFLINE_NOTE,
   POLY_TOO_FEW_TOAST,
   SELECT_ZONE_TOAST,
+  SIZE_PREFIX,
+  TYPE_LABEL,
+  TYPE_OPTIONS,
+  TYPE_TITLE,
+  ZONE_SETTINGS_HINT,
 } from './copy';
 import { ZONE_MAP_EDITOR_TAG, firstLd2450DeviceId } from './editor';
+import { formatHold, formatSize, zoneSize } from './format';
 import { pointInZone, rotateToMap } from './geometry';
 import { fallbackPresenceId, presenceLook } from './presence';
 import { TRAIL_GAP_MS, TRAIL_MS, TrailBuffer } from './trails';
@@ -241,6 +252,10 @@ const TOAST_THROTTLE_MS = 1500;
 // The trail fade timer paints a frame at most this often (ms), about ten a
 // second, and waits out the rest of a frame a hass push already painted.
 const TRAIL_FRAME_MS = 100;
+// How far (CSS px) the size readout sits above the pointer while a shape is
+// drawn. A fingertip covers far more than a mouse pointer does.
+const READOUT_OFFSET_MOUSE_PX = 28;
+const READOUT_OFFSET_TOUCH_PX = 64;
 
 const CONE_LOCKED_HINT = 'Locked with the map. Press Locked on the map to change it.';
 const CONE_LOCKED_TOAST = 'Cone rotation is locked. Press Locked on the map to change it.';
@@ -1366,6 +1381,15 @@ export class ZoneMapCard extends HTMLElement {
         .entity-row label { font-weight: 600; opacity: 0.95; }
         .entity-row select, .entity-row input { width: 100%; padding: 2px 6px; border: 1px solid var(--divider-color); border-radius: 6px; background: var(--card-background-color); color: var(--primary-text-color); font-size: 12px; height: 28px; box-sizing: border-box; }
         .container.dark .entity-row select, .container.dark .entity-row input { background: ${COLOR.ui.darkSelectBg}; border-color: ${COLOR.ui.darkSelectBorder}; color: ${COLOR.ui.darkSelectText}; }
+        /* A zone row's second line, under its name: the size, then the Type
+           and Hold selects, each kept beside its label when the line wraps. */
+        .entity-row .zone-meta { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; font-size: 12px; }
+        .entity-row .zone-meta label { font-weight: normal; }
+        .entity-row .zone-meta select { width: auto; }
+        .entity-row .zone-meta select:disabled { opacity: 0.6; cursor: not-allowed; }
+        .zone-setting { display: inline-flex; align-items: center; gap: 4px; }
+        .zone-size { opacity: 0.85; }
+        .zone-settings-hint { font-size: 0.85em; opacity: 0.75; margin: 4px 0; }
         .device-title { font-size: 1.2em; font-weight: bold; margin-bottom: 8px; }
         .entity-controls { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
         .entity-controls select, .entity-controls input { width: 100%; }
@@ -1375,7 +1399,9 @@ export class ZoneMapCard extends HTMLElement {
         .config-header { display: flex; align-items: center; justify-content: space-between; cursor: pointer; padding: 4px 0; background: transparent; border-radius: 0; }
         .config-title { font-weight: 600; }
         .config-content { max-height: 0; overflow: hidden; transition: max-height 200ms ease, padding 200ms ease; padding: 0; }
-        .config-content.open { max-height: 1200px; padding: 4px 0; }
+        /* Only a cap for the open transition. Zone rows take two lines, so
+           1200 px clipped the list at about a dozen zones. */
+        .config-content.open { max-height: 5000px; padding: 4px 0; }
         .subsection-header { display: flex; align-items: center; justify-content: space-between; cursor: pointer; padding: 4px 0; background: transparent; border-radius: 0; margin-top: 4px; }
         .subsection-title { font-weight: 600; }
         @media (max-width: 520px) { .entity-row { grid-template-columns: 1fr; } }
@@ -1810,6 +1836,7 @@ export class ZoneMapCard extends HTMLElement {
     this._invalidateConeCache();
     this._renderUnitSwitch();
     this._renderInfo();
+    this._renderZoneSizes();
     this.drawGrid();
   }
 
@@ -3122,6 +3149,7 @@ export class ZoneMapCard extends HTMLElement {
       this._setUndoSnapshot(this._snapshotZones([zoneId]));
     }
     this._removeZone(zoneId);
+    this._renderZoneSizes();
     if (notifyBackend) {
       this.updateHomeAssistantShape(zoneId, 'none', null, `${this._zoneLabel(zoneId)} cleared`);
     }
@@ -3137,6 +3165,7 @@ export class ZoneMapCard extends HTMLElement {
     const zoneIds = (this.zoneConfig || []).map((zone) => zone.id);
     this._setUndoSnapshot(this._snapshotZones(zoneIds));
     this.zones = [];
+    this._renderZoneSizes();
     this._resetDrawingState();
     this.drawGrid();
     if (!zoneIds.length) return;
@@ -3289,6 +3318,7 @@ export class ZoneMapCard extends HTMLElement {
   _commitZoneShape(zoneId, payload) {
     this._setUndoSnapshot(this._snapshotZones([zoneId]));
     this._upsertZone(zoneId, payload.shape, payload.data);
+    this._renderZoneSizes();
     // The save's echo fits the map again, but a refused save sends none.
     this._refitAndDraw();
     const savedMessage =
@@ -3418,6 +3448,7 @@ export class ZoneMapCard extends HTMLElement {
         data == null ? null : data,
       );
     });
+    this._renderZoneSizes();
     this.drawGrid();
     Promise.all(writes).then((saved) => {
       if (saved.every(Boolean)) this._notify('Undid last zone change');
@@ -3475,6 +3506,22 @@ export class ZoneMapCard extends HTMLElement {
     const drafts = this._captureZoneNameDrafts(host);
     host.innerHTML = '';
     const zones = (this.zoneConfig || []).slice().sort((a, b) => Number(a.id) - Number(b.id));
+    const admin = this._isAdmin();
+    if (zones.length) {
+      // What the two selects on each row do, said once above the rows. A
+      // disabled select's title never reaches touch or keyboard users, so a
+      // viewer is told in plain text why they cannot change them.
+      const hint = document.createElement('div');
+      hint.className = 'zone-settings-hint';
+      hint.textContent = ZONE_SETTINGS_HINT;
+      host.appendChild(hint);
+      if (!admin) {
+        const note = document.createElement('div');
+        note.className = 'zone-settings-hint zone-settings-note';
+        note.textContent = ADMIN_ONLY_NOTE;
+        host.appendChild(note);
+      }
+    }
     zones.forEach((z) => {
       const row = document.createElement('div');
       row.className = 'entity-row';
@@ -3546,13 +3593,154 @@ export class ZoneMapCard extends HTMLElement {
         this.drawGrid();
       });
 
+      // The first line stays label, name, Save and Delete; the second spans
+      // the row under them.
       row.appendChild(label);
       row.appendChild(input);
       row.appendChild(saveBtn);
       row.appendChild(delBtn);
+      row.appendChild(this._zoneMetaLine(z.id, admin));
       host.appendChild(row);
     });
     this._restoreZoneNameDrafts(host, drafts);
+  }
+
+  /**
+   * A zone row's second line: the zone's size (what _renderZoneSizes keeps
+   * current), then its Type and its Hold. Only an administrator can save
+   * either, and an ignore zone never holds, so its Hold is disabled too.
+   * The selects carry data-zone, never data-zone-id, which marks the name
+   * inputs whose drafts a rebuild keeps.
+   */
+  _zoneMetaLine(zoneId, admin) {
+    const meta = this._zoneMeta.get(Number(zoneId)) || { type: 'detect', holdS: 0 };
+    const line = document.createElement('div');
+    line.className = 'zone-meta';
+
+    const size = document.createElement('span');
+    size.className = 'zone-size';
+    size.dataset.zone = String(zoneId);
+    size.textContent = this._zoneSizeText(zoneId);
+    line.appendChild(size);
+
+    const type = this._zoneSettingSelect(zoneId, 'zone_type', TYPE_OPTIONS, meta.type);
+    type.className = 'zone-type';
+    type.disabled = !admin;
+    type.title = admin ? TYPE_TITLE : ADMIN_ONLY_TITLE;
+    line.appendChild(this._zoneSettingLabel(TYPE_LABEL, type));
+
+    // A hold the list does not offer (saved through the service) still shows,
+    // as one more option in its place by length.
+    const holds = HOLD_OPTIONS.includes(meta.holdS)
+      ? HOLD_OPTIONS
+      : [...HOLD_OPTIONS, meta.holdS].sort((a, b) => a - b);
+    const hold = this._zoneSettingSelect(
+      zoneId,
+      'hold_s',
+      holds.map((seconds) => ({ value: String(seconds), label: formatHold(seconds) })),
+      String(meta.holdS),
+    );
+    hold.className = 'zone-hold';
+    const ignore = meta.type === 'ignore';
+    hold.disabled = !admin || ignore;
+    if (!admin) hold.title = ADMIN_ONLY_TITLE;
+    else hold.title = ignore ? HOLD_IGNORE_TITLE : HOLD_TITLE;
+    line.appendChild(this._zoneSettingLabel(HOLD_LABEL, hold));
+    return line;
+  }
+
+  /** A select for zone setting `setting` (a key update_zone takes) that
+   *  saves each change on its own. */
+  _zoneSettingSelect(zoneId, setting, options, value) {
+    const select = document.createElement('select');
+    select.id = `zoneSetting-${setting}-${zoneId}`;
+    select.dataset.zone = String(zoneId);
+    select.dataset.zoneSetting = setting;
+    options.forEach((option) => {
+      const element = document.createElement('option');
+      element.value = option.value;
+      element.textContent = option.label;
+      select.appendChild(element);
+    });
+    select.value = value;
+    select.addEventListener('change', () => {
+      const chosen = setting === 'hold_s' ? Number(select.value) : select.value;
+      this._saveZoneSetting(zoneId, { [setting]: chosen });
+    });
+    return select;
+  }
+
+  /** `select` with its visible label, kept together when the line wraps. */
+  _zoneSettingLabel(text, select) {
+    const wrap = document.createElement('span');
+    wrap.className = 'zone-setting';
+    const label = document.createElement('label');
+    label.htmlFor = select.id;
+    label.textContent = text;
+    wrap.appendChild(label);
+    wrap.appendChild(select);
+    return wrap;
+  }
+
+  /**
+   * Save one zone setting (`{ zone_type }` or `{ hold_s }`) for zone
+   * `zoneId`. A zone only the card YAML names is created with it, the way a
+   * rename creates one. A setting changes nothing about how readings scale,
+   * so input_units stays out, as with the flip. Refused, the select goes back
+   * to what the store holds; accepted, the save's echo rebuilds the row.
+   */
+  async _saveZoneSetting(zoneId, fields) {
+    const id = Number(zoneId);
+    const [setting] = Object.keys(fields);
+    // A disabled select gets no change event, but nothing that still reaches
+    // one (a screen reader, say) saves for a viewer.
+    if (!this._isAdmin() || !Number.isFinite(id) || id <= 0) {
+      this._revertZoneSetting(id, setting);
+      return false;
+    }
+    const payload = {
+      device_id: this.deviceId,
+      zone_id: id,
+      ...fields,
+      ...(this._zoneIsUnsaved(id) ? { shape: 'none', data: null } : {}),
+    };
+    const saved = await this._saveZoneUpdate(payload, `${this._zoneLabel(id)} saved`, {
+      withInputUnits: false,
+    });
+    if (!saved) this._revertZoneSetting(id, setting);
+    return saved;
+  }
+
+  /** Put zone `zoneId`'s `setting` select back to the stored value. */
+  _revertZoneSetting(zoneId, setting) {
+    const meta = this._zoneMeta.get(Number(zoneId)) || { type: 'detect', holdS: 0 };
+    const select = Array.from(
+      this.shadowRoot?.querySelectorAll('#zoneManager select[data-zone-setting]') || [],
+    ).find((s) => s.dataset.zone === String(zoneId) && s.dataset.zoneSetting === setting);
+    if (select) select.value = String(setting === 'hold_s' ? meta.holdS : meta.type);
+  }
+
+  /** "Size 2.4 m × 1.8 m" in the map's unit, or the hint for a zone with no
+   *  shape to measure. */
+  _zoneSizeText(zoneId) {
+    const zone = this._getZone(zoneId);
+    const size = zone ? zoneSize(zone.shape, zone.data) : null;
+    if (!size) return NO_SHAPE_TEXT;
+    const family = this._unitFamily(this._displayUnit());
+    return `${SIZE_PREFIX} ${formatSize(size.width, size.depth, family)}`;
+  }
+
+  /**
+   * Bring each zone row's size up to date after a shape or the map's unit
+   * changed. Only the size texts change, so a name being typed, a focused
+   * select and an open dropdown are left alone.
+   */
+  _renderZoneSizes() {
+    const host = this.shadowRoot?.getElementById('zoneManager');
+    if (!host) return;
+    host.querySelectorAll('.zone-size').forEach((span) => {
+      span.textContent = this._zoneSizeText(span.dataset.zone);
+    });
   }
 
   /**
@@ -3561,11 +3749,14 @@ export class ZoneMapCard extends HTMLElement {
    * `values` holds every input whose text differs from the name its row was
    * built with, keyed by zone id; a row nobody edited is left out, so it picks
    * up a rename from the payload. `focus` is the focused input's zone id and
-   * selection, or null when focus is elsewhere.
+   * selection, or null when focus is elsewhere. `selectFocus` is the focused
+   * setting select's zone and setting: a select saves on change, so it has no
+   * draft, but keyboard focus on it has to outlive the rebuild too.
    */
   _captureZoneNameDrafts(host) {
     const values = new Map();
     let focus = null;
+    let selectFocus = null;
     const active = this.shadowRoot?.activeElement;
     host.querySelectorAll('input[data-zone-id]').forEach((input) => {
       const zoneId = input.dataset.zoneId;
@@ -3579,7 +3770,12 @@ export class ZoneMapCard extends HTMLElement {
         };
       }
     });
-    return { values, focus };
+    host.querySelectorAll('select[data-zone-setting]').forEach((select) => {
+      if (select === active) {
+        selectFocus = { zone: select.dataset.zone, setting: select.dataset.zoneSetting };
+      }
+    });
+    return { values, focus, selectFocus };
   }
 
   /** Lay captured drafts back over the rebuilt rows of the zones still listed. */
@@ -3592,6 +3788,13 @@ export class ZoneMapCard extends HTMLElement {
       const input = inputs.get(zoneId);
       if (input) input.value = value;
     });
+    if (drafts.selectFocus) {
+      const { zone, setting } = drafts.selectFocus;
+      const select = Array.from(host.querySelectorAll('select[data-zone-setting]')).find(
+        (s) => s.dataset.zone === zone && s.dataset.zoneSetting === setting,
+      );
+      if (select) select.focus({ preventScroll: true });
+    }
     const focused = drafts.focus ? inputs.get(drafts.focus.zoneId) : null;
     if (!focused) return;
     focused.focus({ preventScroll: true });
@@ -3675,6 +3878,7 @@ export class ZoneMapCard extends HTMLElement {
       };
       this._setUndoSnapshot(this._snapshotZones([zoneId]));
       this._upsertZone(zoneId, payload.shape, payload.data);
+      this._renderZoneSizes();
       this.updateHomeAssistantShape(
         zoneId,
         payload.shape,
@@ -4276,6 +4480,7 @@ export class ZoneMapCard extends HTMLElement {
         this._drawVertexDot(ctx, this.startPoint.x, this.startPoint.y);
       }
       ctx.restore();
+      this._drawPolygonSize(ctx);
     } else if (
       this.isDrawing &&
       this.startPoint &&
@@ -4313,8 +4518,76 @@ export class ZoneMapCard extends HTMLElement {
           ctx.stroke();
         }
         ctx.restore();
+        // The size of exactly what letting go would save, so the readout
+        // and the zone list agree to the mm. A rect with no area saves
+        // nothing and shows no size.
+        const payload = this._shapeFromDrag(pt, cur, this.drawMode);
+        const size = payload ? zoneSize(payload.shape, payload.data) : null;
+        if (size) this._drawSizeReadout(ctx, size.width, size.depth, cur);
       }
     }
+  }
+
+  /**
+   * The size of a polygon being drawn: the box around its corners and the
+   * pointer, which is where the next corner would go, measured the way that
+   * corner would be saved (clamped to the map, whole mm).
+   */
+  _drawPolygonSize(ctx) {
+    const cur = this._cursorPoint;
+    const corners = this._polyPoints || [];
+    if (!cur || !corners.length) return;
+    const xs = corners.map((p) => p.x);
+    const ys = corners.map((p) => p.y);
+    xs.push(this._clampAndRound(this.pixelsToValue(cur.x, 'x'), this.xMin, this.xMax));
+    ys.push(this._clampAndRound(this.pixelsToValue(cur.y, 'y'), this.yMin, this.yMax));
+    const width = Math.max(...xs) - Math.min(...xs);
+    const depth = Math.max(...ys) - Math.min(...ys);
+    // The pointer still on the first corner has nothing to measure yet.
+    if (width === 0 && depth === 0) return;
+    this._drawSizeReadout(ctx, width, depth, cur);
+  }
+
+  /**
+   * "2.4 m × 1.8 m" (or feet and inches, with the map's unit) on a plate in
+   * the canvas color, centered above `anchorPx`, the pointer. A fingertip
+   * covers more than a mouse pointer, so the readout sits further above it;
+   * where that runs off the top of the canvas it goes as far below instead.
+   * Sized in CSS px, so it reads the same on a phone and a desktop.
+   */
+  _drawSizeReadout(ctx, widthMm, depthMm, anchorPx) {
+    if (!ctx || !this.canvas || !anchorPx) return;
+    const scale = this._frameScale || 1;
+    const fontPx = Math.round(14 * scale);
+    const text = formatSize(widthMm, depthMm, this._unitFamily(this._displayUnit()));
+    ctx.save();
+    ctx.font = `bold ${fontPx}px sans-serif`;
+    // The same estimate _measureLabels falls back to where the canvas
+    // cannot measure text.
+    const measured = ctx.measureText?.(text)?.width;
+    const textWidth =
+      typeof measured === 'number' && measured > 0
+        ? measured
+        : text.length * fontPx * LABEL_FALLBACK_EM_PER_CHAR;
+    const plateWidth = textWidth + 12 * scale;
+    const plateHeight = fontPx + 6 * scale;
+    const offset =
+      (this._activeInput === 'touch' ? READOUT_OFFSET_TOUCH_PX : READOUT_OFFSET_MOUSE_PX) * scale;
+    let y = anchorPx.y - offset;
+    if (y - plateHeight / 2 < 0) y = anchorPx.y + offset;
+    // A finger keeps reporting after it leaves the canvas, and the shape
+    // stops at the map's edge, so the readout stays on the canvas too.
+    const clampOnto = (value, half, extent) =>
+      half * 2 >= extent ? extent / 2 : Math.min(Math.max(value, half), extent - half);
+    y = clampOnto(y, plateHeight / 2, this.canvas.height);
+    const x = clampOnto(anchorPx.x, plateWidth / 2, this.canvas.width);
+    ctx.fillStyle = this.darkMode ? COLOR.ui.darkCanvasBackground : COLOR.ui.lightCanvasBackground;
+    ctx.fillRect(x - plateWidth / 2, y - plateHeight / 2, plateWidth, plateHeight);
+    ctx.fillStyle = this.darkMode ? COLOR.canvas.axisDark : COLOR.canvas.axisLight;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, x, y);
+    ctx.restore();
   }
 
   /** One in-progress vertex marker: a filled dot with a contrasting ring. */

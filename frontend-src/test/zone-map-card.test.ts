@@ -2265,6 +2265,461 @@ describe("zone map card zone names across payloads", () => {
   });
 });
 
+/**
+ * The second line of each zone list row: the zone's size, its Type and its
+ * Hold.
+ *
+ * The first line stays the label, name, Save and Delete that the other zone
+ * list tests find rows by. Under it, the size follows the map's unit and
+ * every shape change without rebuilding the rows. Type (Detect or Ignore)
+ * and Hold save on change through update_zone, without input_units, and an
+ * ignore zone never holds. Only an administrator can save them, and a viewer
+ * is told so in plain text above the rows as well as in the titles.
+ */
+describe("zone map card zone list settings", () => {
+  afterEach(() => {
+    // happy-dom hands out a proxy for a <select>, which its removal check
+    // does not match, so a select that had focus stays the document's
+    // active element after it is removed, and the next card's
+    // shadowRoot.activeElement throws. Focusing and blurring an element of
+    // the page's own clears it.
+    const reset = document.body.appendChild(document.createElement("input"));
+    reset.focus();
+    reset.blur();
+    vi.restoreAllMocks();
+    document.body.replaceChildren();
+  });
+
+  const COUCH = { shape: "ellipse", data: { cx: 0, cy: 3000, rx: 1200, ry: 450 }, name: "Couch" };
+  const NOOK = {
+    shape: "polygon",
+    data: {
+      points: [
+        { x: -2000, y: 1000 },
+        { x: -500, y: 1400 },
+        { x: -1200, y: 3100 },
+      ],
+    },
+  };
+  const DESK = { shape: "none", data: null, name: "Desk" };
+  const FOUR_ZONES = {
+    ...ZONE_PAYLOAD,
+    zones: { ...ZONE_PAYLOAD.zones, "2": COUCH, "3": NOOK, "4": DESK },
+  };
+
+  async function listCard(
+    payload: any = ZONE_PAYLOAD,
+    { isAdmin = true, config = {} as Record<string, any> } = {}
+  ) {
+    const hass = fakeHass(payload);
+    hass.user = { is_admin: isAdmin };
+    const card = await mountCard(hass, config);
+    hass.callService.mockClear();
+    const toasts = notifications(card);
+    return { card, hass, toasts };
+  }
+
+  function rows(card: any): any[] {
+    return Array.from(card.shadowRoot.querySelectorAll("#zoneManager .entity-row"));
+  }
+
+  function row(card: any, zoneId: number): any {
+    const found = rows(card).find(
+      (r) => r.querySelector("label")?.textContent === `Zone ${zoneId}`
+    );
+    expect(found).toBeTruthy();
+    return found;
+  }
+
+  const sizeText = (card: any, zoneId: number) =>
+    row(card, zoneId).querySelector(".zone-size").textContent;
+  const typeSelect = (card: any, zoneId: number) =>
+    row(card, zoneId).querySelector("select.zone-type");
+  const holdSelect = (card: any, zoneId: number) =>
+    row(card, zoneId).querySelector("select.zone-hold");
+
+  function options(select: any): string[][] {
+    return Array.from(select.options).map((o: any) => [o.value, o.textContent]);
+  }
+
+  function choose(select: any, value: string) {
+    select.value = value;
+    select.dispatchEvent(new Event("change"));
+  }
+
+  function zoneSaves(hass: any): any[] {
+    return hass.callService.mock.calls
+      .filter((call: any[]) => call[1] === "update_zone")
+      .map((call: any[]) => call[2]);
+  }
+
+  async function settle() {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  function push(hass: any, payload: any) {
+    hass.handlers[ZONES_SUBSCRIBE][0](payload);
+  }
+
+  it("lists each zone's size, and 'No shape yet' without geometry", async () => {
+    const { card } = await listCard(FOUR_ZONES, { config: { zones: [{ id: 7, name: "Hall" }] } });
+
+    const listed = rows(card).map((r) => [
+      r.querySelector("label").textContent,
+      r.querySelector(".zone-size").textContent,
+    ]);
+    expect(listed).toEqual([
+      ["Zone 1", "Size 1.0 m × 1.0 m"],
+      // An ellipse is 2 rx by 2 ry; a polygon is the box around its points.
+      ["Zone 2", "Size 2.4 m × 0.9 m"],
+      ["Zone 3", "Size 1.5 m × 2.1 m"],
+      ["Zone 4", "No shape yet. Select the zone and draw it on the map."],
+      // Only the card YAML names this one.
+      ["Zone 7", "No shape yet. Select the zone and draw it on the map."],
+    ]);
+    // On the row's second line, under the name, Save and Delete.
+    const meta = row(card, 1).children[4];
+    expect(meta.classList.contains("zone-meta")).toBe(true);
+    expect(meta.firstElementChild.classList.contains("zone-size")).toBe(true);
+    expect(Array.from(row(card, 1).children).slice(0, 4).map((el: any) => el.tagName)).toEqual([
+      "LABEL",
+      "INPUT",
+      "BUTTON",
+      "BUTTON",
+    ]);
+  });
+
+  it("updates the sizes on a unit switch without rebuilding the rows", async () => {
+    const { card } = await listCard(FOUR_ZONES, { isAdmin: false });
+    document.body.appendChild(card);
+    const before = rows(card);
+    const name = row(card, 1).querySelector("input");
+    name.focus();
+    name.value = "Kit";
+
+    card.shadowRoot.getElementById("btnUnitFt").click();
+
+    expect(sizeText(card, 1)).toBe("Size 3 ft 3 in × 3 ft 3 in");
+    expect(sizeText(card, 2)).toBe("Size 7 ft 10 in × 2 ft 11 in");
+    expect(sizeText(card, 4)).toBe("No shape yet. Select the zone and draw it on the map.");
+    // The same rows, with what was being typed and the focus left alone.
+    rows(card).forEach((r, i) => expect(r).toBe(before[i]));
+    expect(row(card, 1).querySelector("input").value).toBe("Kit");
+    expect(card.shadowRoot.activeElement).toBe(name);
+  });
+
+  it("updates a polygon zone's size after Finish", async () => {
+    const { card } = await listCard(ZONE_PAYLOAD, {
+      config: { ...TEN_METER_GRID, start_locked: false },
+    });
+    expect(card.selectedZone).toBe(1);
+    card._setDrawMode("polygon");
+    layOut(card, 800);
+    const click = (x: number, y: number) => {
+      card._lastPolyTap = 0;
+      card.canvas.dispatchEvent(new MouseEvent("mousedown", { clientX: x, clientY: y }));
+      card.canvas.dispatchEvent(new MouseEvent("mouseup", { clientX: x, clientY: y }));
+    };
+    click(100, 100);
+    click(300, 100);
+    click(300, 300);
+    // Corners do not change the saved zone until Finish.
+    expect(sizeText(card, 1)).toBe("Size 1.0 m × 1.0 m");
+
+    card.shadowRoot.getElementById("btnPolyFinish").click();
+
+    // At once, ahead of the save's echo: (-3750, 1250) to (-1250, 3750) mm.
+    expect(sizeText(card, 1)).toBe("Size 2.5 m × 2.5 m");
+  });
+
+  it("keeps each zone's size current through a drag, a clear and Undo", async () => {
+    const two = { ...ZONE_PAYLOAD, zones: { ...ZONE_PAYLOAD.zones, "2": COUCH } };
+    const { card } = await listCard(two, { config: { ...TEN_METER_GRID, start_locked: false } });
+    layOut(card, 800);
+    const mouse = (type: string, x: number, y: number) =>
+      card.canvas.dispatchEvent(new MouseEvent(type, { clientX: x, clientY: y }));
+
+    // A rect drag on Doorway: (-3750, 1250) to (-1250, 3125) mm.
+    mouse("mousedown", 100, 100);
+    mouse("mousemove", 300, 250);
+    mouse("mouseup", 300, 250);
+    expect(sizeText(card, 1)).toBe("Size 2.5 m × 1.9 m");
+
+    card.shadowRoot.getElementById("btnUndo").click();
+    expect(sizeText(card, 1)).toBe("Size 1.0 m × 1.0 m");
+
+    // A double-click on Couch's chip clears it.
+    card.shadowRoot
+      .querySelector('#zone-buttons .zone-btn[data-zone-id="2"]')
+      .dispatchEvent(new MouseEvent("dblclick"));
+    expect(sizeText(card, 2)).toBe("No shape yet. Select the zone and draw it on the map.");
+    card.shadowRoot.getElementById("btnUndo").click();
+    expect(sizeText(card, 2)).toBe("Size 2.4 m × 0.9 m");
+
+    card.shadowRoot.getElementById("clearBtn").click();
+    expect([sizeText(card, 1), sizeText(card, 2)]).toEqual([
+      "No shape yet. Select the zone and draw it on the map.",
+      "No shape yet. Select the zone and draw it on the map.",
+    ]);
+    card.shadowRoot.getElementById("btnUndo").click();
+    expect([sizeText(card, 1), sizeText(card, 2)]).toEqual([
+      "Size 1.0 m × 1.0 m",
+      "Size 2.4 m × 0.9 m",
+    ]);
+  });
+
+  it("offers Detect and Ignore and saves a change", async () => {
+    const { card, hass, toasts } = await listCard();
+    const type = typeSelect(card, 1);
+    expect(options(type)).toEqual([
+      ["detect", "Detect"],
+      ["ignore", "Ignore"],
+    ]);
+    expect(type.value).toBe("detect");
+    expect(type.disabled).toBe(false);
+    expect(type.title).toBe(
+      "Detect turns this zone's presence sensor on. Ignore hides the targets inside it from the other zones."
+    );
+    // Labeled for assistive tech by the "Type" label beside it.
+    const label = card.shadowRoot.querySelector(`label[for="${type.id}"]`);
+    expect(label.textContent).toBe("Type");
+
+    choose(type, "ignore");
+    await settle();
+
+    // A zone setting says nothing about how readings scale: no input_units.
+    expect(hass.callService.mock.calls).toEqual([
+      [
+        "apollo_mmwave",
+        "update_zone",
+        { device_id: "dev123", zone_id: 1, zone_type: "ignore" },
+        undefined,
+        false,
+      ],
+    ]);
+    expect(toasts).toEqual(["Doorway saved"]);
+
+    // The save's echo rebuilds the row as an ignore zone, which never holds.
+    push(hass, {
+      ...ZONE_PAYLOAD,
+      zones: { "1": { ...ZONE_PAYLOAD.zones["1"], zone_type: "ignore" } },
+    });
+    expect(typeSelect(card, 1).value).toBe("ignore");
+    expect(holdSelect(card, 1).disabled).toBe(true);
+
+    hass.callService.mockClear();
+    choose(typeSelect(card, 1), "detect");
+    expect(zoneSaves(hass)).toEqual([{ device_id: "dev123", zone_id: 1, zone_type: "detect" }]);
+  });
+
+  it("offers the hold options and saves a change", async () => {
+    const { card, hass, toasts } = await listCard();
+    const hold = holdSelect(card, 1);
+    expect(options(hold)).toEqual([
+      ["0", "Off"],
+      ["15", "15 s"],
+      ["30", "30 s"],
+      ["60", "1 min"],
+      ["120", "2 min"],
+      ["300", "5 min"],
+      ["600", "10 min"],
+      ["1800", "30 min"],
+    ]);
+    expect(hold.value).toBe("0");
+    expect(hold.disabled).toBe(false);
+    expect(hold.title).toBe(
+      "How long the zone stays on after someone inside goes still and the radar loses them"
+    );
+    expect(card.shadowRoot.querySelector(`label[for="${hold.id}"]`).textContent).toBe("Hold");
+
+    choose(hold, "120");
+    await settle();
+
+    // A number of seconds, not the option's string.
+    expect(zoneSaves(hass)).toEqual([{ device_id: "dev123", zone_id: 1, hold_s: 120 }]);
+    expect(toasts).toEqual(["Doorway saved"]);
+  });
+
+  it("shows a custom hold value it does not list", async () => {
+    // Saved through the service, outside the list's choices.
+    const { card } = await listCard({
+      ...ZONE_PAYLOAD,
+      zones: {
+        "1": { ...ZONE_PAYLOAD.zones["1"], hold_s: 45 },
+        "2": { ...COUCH, hold_s: 3600 },
+        "3": { ...NOOK, hold_s: 60 },
+      },
+    });
+
+    // In its place by length, selected.
+    const hold = holdSelect(card, 1);
+    expect(hold.value).toBe("45");
+    expect(options(hold).map(([, label]) => label)).toEqual([
+      "Off",
+      "15 s",
+      "30 s",
+      "45 s",
+      "1 min",
+      "2 min",
+      "5 min",
+      "10 min",
+      "30 min",
+    ]);
+    expect(holdSelect(card, 2).value).toBe("3600");
+    expect(options(holdSelect(card, 2)).slice(-2)).toEqual([
+      ["1800", "30 min"],
+      ["3600", "1 h"],
+    ]);
+    // A listed value adds nothing.
+    expect(holdSelect(card, 3).value).toBe("60");
+    expect(options(holdSelect(card, 3))).toHaveLength(8);
+  });
+
+  it("disables hold for ignore zones", async () => {
+    const { card } = await listCard({
+      ...ZONE_PAYLOAD,
+      zones: { ...ZONE_PAYLOAD.zones, "2": { ...COUCH, zone_type: "ignore", hold_s: 60 } },
+    });
+
+    expect(typeSelect(card, 2).value).toBe("ignore");
+    expect(typeSelect(card, 2).disabled).toBe(false);
+    expect(holdSelect(card, 2).disabled).toBe(true);
+    expect(holdSelect(card, 2).title).toBe("Ignore zones never hold");
+    // A detect zone's Hold stays free.
+    expect(holdSelect(card, 1).disabled).toBe(false);
+  });
+
+  it("reverts a select when the save is refused", async () => {
+    const { card, hass, toasts } = await listCard({
+      ...ZONE_PAYLOAD,
+      zones: { "1": { ...ZONE_PAYLOAD.zones["1"], hold_s: 30 } },
+    });
+    hass.callService.mockRejectedValue(new Error("Home Assistant is restarting"));
+
+    choose(holdSelect(card, 1), "300");
+    choose(typeSelect(card, 1), "ignore");
+    expect(holdSelect(card, 1).value).toBe("300");
+    await settle();
+
+    // Back to what the store holds.
+    expect(holdSelect(card, 1).value).toBe("30");
+    expect(typeSelect(card, 1).value).toBe("detect");
+    expect(toasts).toEqual([
+      "Could not save: Home Assistant is restarting",
+      "Could not save: Home Assistant is restarting",
+    ]);
+  });
+
+  it("creates a YAML-only zone when its type is saved", async () => {
+    // The backend applies a setting only to a zone the store holds, so a
+    // zone only the card YAML names is created with it, as a rename does.
+    const { card, hass } = await listCard(ZONE_PAYLOAD, {
+      config: { zones: [{ id: 7, name: "Desk" }] },
+    });
+
+    choose(typeSelect(card, 7), "ignore");
+    choose(holdSelect(card, 7), "60");
+    // A stored zone keeps its shape.
+    choose(holdSelect(card, 1), "15");
+
+    expect(zoneSaves(hass)).toEqual([
+      { device_id: "dev123", zone_id: 7, zone_type: "ignore", shape: "none", data: null },
+      { device_id: "dev123", zone_id: 7, hold_s: 60, shape: "none", data: null },
+      { device_id: "dev123", zone_id: 1, hold_s: 15 },
+    ]);
+  });
+
+  it("keeps the name input the only input[data-zone-id]", async () => {
+    // The drafts a rebuild keeps are found by input[data-zone-id], so the
+    // selects are marked with data-zone instead.
+    const { card } = await listCard(FOUR_ZONES);
+
+    rows(card).forEach((r) => {
+      const marked = Array.from(r.querySelectorAll("[data-zone-id]"));
+      expect(marked).toHaveLength(1);
+      expect(marked[0]).toBe(r.querySelector("input"));
+    });
+    const selects = Array.from(card.shadowRoot.querySelectorAll("#zoneManager select")) as any[];
+    expect(selects.map((s) => [s.dataset.zone, s.dataset.zoneSetting])).toEqual([
+      ["1", "zone_type"],
+      ["1", "hold_s"],
+      ["2", "zone_type"],
+      ["2", "hold_s"],
+      ["3", "zone_type"],
+      ["3", "hold_s"],
+      ["4", "zone_type"],
+      ["4", "hold_s"],
+    ]);
+    expect(card.shadowRoot.querySelectorAll("#zoneManager input[data-zone-id]")).toHaveLength(4);
+  });
+
+  it("keeps a focused select focused when a payload rebuilds the rows", async () => {
+    const { card, hass } = await listCard();
+    document.body.appendChild(card);
+    holdSelect(card, 1).focus();
+    expect(card.shadowRoot.activeElement).toBe(holdSelect(card, 1));
+
+    push(hass, { ...ZONE_PAYLOAD, rotation_deg: 20 });
+
+    // A new select, focused again.
+    expect(card.coneAngleDeg).toBe(20);
+    expect(card.shadowRoot.activeElement).toBe(holdSelect(card, 1));
+  });
+
+  it("explains Ignore and Hold above the zone rows", async () => {
+    const { card } = await listCard();
+    const host = card.shadowRoot.getElementById("zoneManager");
+
+    const hint = host.firstElementChild;
+    expect(hint.textContent).toBe(
+      "Ignore drops targets inside that zone, such as a fan or a curtain, before the other zones are checked. Hold keeps a zone on for a while after the radar loses someone who sat still."
+    );
+    expect(hint.classList.contains("entity-row")).toBe(false);
+    expect(hint.nextElementSibling).toBe(rows(card)[0]);
+    // An administrator needs no note.
+    expect(host.textContent).not.toContain("Only an administrator can change these.");
+
+    // With no zones there is nothing to explain.
+    const empty = await listCard({ ...ZONE_PAYLOAD, zones: {} });
+    expect(empty.card.shadowRoot.getElementById("zoneManager").textContent).toBe("");
+  });
+
+  it("tells a non-administrator why the selects are disabled", async () => {
+    const { card, hass } = await listCard(ZONE_PAYLOAD, { isAdmin: false });
+    const host = card.shadowRoot.getElementById("zoneManager");
+
+    const note = host.children[1];
+    expect(note.textContent).toBe("Only an administrator can change these.");
+    expect(note.nextElementSibling).toBe(rows(card)[0]);
+
+    // An administrator on the same card sees no note and can save.
+    card.hass = { ...hass, user: { is_admin: true } };
+    expect(card.shadowRoot.getElementById("zoneManager").textContent).not.toContain(
+      "Only an administrator can change these."
+    );
+    expect(typeSelect(card, 1).disabled).toBe(false);
+  });
+
+  it("disables the selects for non-administrators", async () => {
+    const { card, hass } = await listCard(
+      { ...ZONE_PAYLOAD, zones: { ...ZONE_PAYLOAD.zones, "2": { ...COUCH, zone_type: "ignore" } } },
+      { isAdmin: false }
+    );
+
+    const selects = [1, 2].flatMap((id) => [typeSelect(card, id), holdSelect(card, id)]);
+    for (const select of selects) {
+      expect(select.disabled).toBe(true);
+      expect(select.title).toBe("Only an administrator can change this");
+    }
+
+    // Nothing that still reaches a disabled select saves.
+    choose(holdSelect(card, 1), "60");
+    await settle();
+    expect(hass.callService).not.toHaveBeenCalled();
+    expect(holdSelect(card, 1).value).toBe("0");
+  });
+});
+
 describe("zone map card undo after a zone manager Delete", () => {
   // Undo writes every snapshot entry back with update_zone, and the backend
   // stores any zone id it is given and re-creates that zone's entities. A
@@ -5871,6 +6326,200 @@ describe("zone map card drawing", () => {
     expect(card._undoSnapshot).toEqual([{ zoneId: 1, shape: "rect", data: DOORWAY }]);
     expect(card._polyPoints).toEqual([]);
     expect(card.isDrawing).toBe(false);
+  });
+});
+
+/**
+ * The size readout while a shape is drawn.
+ *
+ * A rect or ellipse drag, and a polygon's corners with the pointer, show
+ * their width by depth in the map's unit on a plate over the pointer: 28 CSS
+ * px above a mouse pointer, 64 above a finger, and as far below where that
+ * would leave the top of the canvas. The numbers come from the same
+ * _shapeFromDrag the save uses, so the readout says what letting go saves.
+ * Facing ahead on the 10 m grid, canvas (100, 100) is (-3750, 1250) mm.
+ */
+describe("zone map card size readout", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** Unlocked on ZONE_PAYLOAD with zone 1 (Doorway) selected in `mode`. */
+  async function drawingCard(mode: string, { feet = false, cssWidth = 800 } = {}) {
+    const hass = fakeHass();
+    if (feet) hass.config = { unit_system: { length: "mi" } };
+    const card = await mountCard(hass, { ...TEN_METER_GRID, start_locked: false });
+    expect(card.selectedZone).toBe(1);
+    card._setDrawMode(mode);
+    layOut(card, cssWidth);
+    hass.callService.mockClear();
+    return { card, hass };
+  }
+
+  function mouse(card: any, type: string, x: number, y: number) {
+    card.canvas.dispatchEvent(new MouseEvent(type, { clientX: x, clientY: y }));
+  }
+
+  function touch(card: any, type: string, x: number, y: number) {
+    const point = { clientX: x, clientY: y };
+    card.canvas.dispatchEvent(
+      Object.assign(new Event(type, { cancelable: true }), {
+        touches: type === "touchend" ? [] : [point],
+        changedTouches: [point],
+      })
+    );
+  }
+
+  /** The readouts one frame draws: text, center, font and the plate under it. */
+  function readouts(card: any) {
+    const { ctx, draws } = drawRecordingContext();
+    card.ctx = ctx;
+    card.drawGrid();
+    return draws.flatMap((draw, i) => {
+      if (draw.name !== "fillText" || !String(draw.args[0]).includes(" × ")) return [];
+      const plate = draws[i - 1];
+      expect(plate.name).toBe("fillRect");
+      const [left, top, width, height] = plate.args;
+      return [
+        {
+          text: draw.args[0],
+          x: draw.args[1],
+          y: draw.args[2],
+          font: draw.font,
+          plateCenter: [left + width / 2, top + height / 2].map((v) => Math.round(v * 1e6) / 1e6),
+          plateFill: plate.fill,
+          depth: draw.depth,
+        },
+      ];
+    });
+  }
+
+  function zoneSaves(hass: any): any[] {
+    return hass.callService.mock.calls
+      .filter((call: any[]) => call[1] === "update_zone")
+      .map((call: any[]) => call[2]);
+  }
+
+  it("shows the rect's size while drawing, in meters", async () => {
+    const { card } = await drawingCard("rect");
+    mouse(card, "mousedown", 100, 100);
+    // Nothing to measure before the pointer moves.
+    expect(readouts(card)).toEqual([]);
+
+    mouse(card, "mousemove", 300, 250);
+
+    // 2500 by 1875 mm, centered 28 px above the pointer on a plate in the
+    // canvas color, inside its own save and restore.
+    expect(readouts(card)).toEqual([
+      {
+        text: "2.5 m × 1.9 m",
+        x: 300,
+        y: 222,
+        font: "bold 14px sans-serif",
+        plateCenter: [300, 222],
+        plateFill: "#ffffff",
+        depth: 1,
+      },
+    ]);
+
+    // Gone once the rect is saved.
+    mouse(card, "mouseup", 300, 250);
+    expect(readouts(card)).toEqual([]);
+  });
+
+  it("shows the rect's size while drawing, in feet and inches", async () => {
+    const { card } = await drawingCard("rect", { feet: true });
+    expect(card._displayUnit()).toBe("ft");
+    mouse(card, "mousedown", 100, 100);
+    mouse(card, "mousemove", 300, 250);
+
+    // 98.4 and 73.8 inches, rounded to whole inches before the split.
+    expect(readouts(card).map((r) => r.text)).toEqual(["8 ft 2 in × 6 ft 2 in"]);
+
+    // The switch over the map changes the readout mid-drag.
+    card.shadowRoot.getElementById("btnUnitM").click();
+    expect(card.isDrawing).toBe(true);
+    expect(readouts(card).map((r) => r.text)).toEqual(["2.5 m × 1.9 m"]);
+  });
+
+  it("shows the size the save will carry", async () => {
+    // A finger dragged past the bottom right corner keeps reporting, and the
+    // shape stops at the map's edge: 3750..5000 by 8750..10000 mm. The 2.5 m
+    // the finger travelled is not what gets saved.
+    for (const mode of ["rect", "ellipse"]) {
+      const { card, hass } = await drawingCard(mode);
+      touch(card, "touchstart", 700, 700);
+      touch(card, "touchmove", 900, 900);
+      const shown = readouts(card);
+      touch(card, "touchend", 900, 900);
+
+      const [save] = zoneSaves(hass);
+      const data = save.data;
+      const size =
+        mode === "rect"
+          ? [data.x_max - data.x_min, data.y_max - data.y_min]
+          : [2 * data.rx, 2 * data.ry];
+      expect(size).toEqual([1250, 1250]);
+      expect(shown.map((r) => r.text)).toEqual(["1.3 m × 1.3 m"]);
+      // Kept on the canvas, by the corner the shape stops at.
+      const [{ x, y }] = shown;
+      expect(x).toBeLessThan(800);
+      expect(y).toBeLessThan(800);
+    }
+  });
+
+  it("raises the readout above a finger", async () => {
+    const { card } = await drawingCard("rect");
+    touch(card, "touchstart", 100, 100);
+    touch(card, "touchmove", 300, 400);
+    expect(readouts(card).map((r) => [r.x, r.y])).toEqual([[300, 336]]);
+    touch(card, "touchend", 300, 400);
+
+    // A mouse pointer covers less, so the readout sits closer.
+    mouse(card, "mousedown", 100, 100);
+    mouse(card, "mousemove", 300, 400);
+    expect(readouts(card).map((r) => [r.x, r.y])).toEqual([[300, 372]]);
+
+    // At the top edge it goes as far below the pointer instead.
+    mouse(card, "mousemove", 300, 20);
+    expect(readouts(card).map((r) => [r.x, r.y])).toEqual([[300, 48]]);
+    mouse(card, "mouseup", 300, 20);
+    touch(card, "touchstart", 100, 300);
+    touch(card, "touchmove", 300, 50);
+    expect(readouts(card).map((r) => [r.x, r.y])).toEqual([[300, 114]]);
+    touch(card, "touchend", 300, 50);
+
+    // Sized in CSS px: on a card shown at 400 px, each is twice as many
+    // backing px, and the font with them.
+    layOut(card, 400);
+    touch(card, "touchstart", 50, 50);
+    touch(card, "touchmove", 150, 200);
+    expect(readouts(card).map((r) => [r.x, r.y, r.font])).toEqual([
+      [300, 400 - 128, "bold 28px sans-serif"],
+    ]);
+  });
+
+  it("measures a polygon's corners and the pointer", async () => {
+    const { card } = await drawingCard("polygon");
+    const click = (x: number, y: number) => {
+      card._lastPolyTap = 0;
+      mouse(card, "mousedown", x, y);
+      mouse(card, "mouseup", x, y);
+    };
+    click(100, 100);
+    // The pointer still on the first corner has nothing to measure.
+    expect(readouts(card)).toEqual([]);
+
+    mouse(card, "mousemove", 300, 100);
+    expect(readouts(card).map((r) => [r.text, r.x, r.y])).toEqual([
+      ["2.5 m × 0.0 m", 300, 72],
+    ]);
+
+    click(300, 100);
+    mouse(card, "mousemove", 200, 400);
+    // The box around (-3750, 1250), (-1250, 1250) and the pointer at
+    // (-2500, 5000) mm.
+    expect(readouts(card).map((r) => r.text)).toEqual(["2.5 m × 3.8 m"]);
   });
 });
 
