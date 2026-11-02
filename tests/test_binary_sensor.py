@@ -2203,6 +2203,9 @@ async def test_zone_deletion_cancels_the_hold_timer(
     presence_id = _presence_id(er.async_get(hass), device_id)
     await _sit(hass, freezer, TARGET_1, 0, 1000)
     await _vanish(hass, TARGET_1)
+    # Half of an appearance, whose timer would read the zone again.
+    _set_target(hass, TARGET_2, 0, 1500)
+    await hass.async_block_till_done()
     assert _hold_state(hass, presence_id) == ("on", True)
     evaluated: list[str] = []
     real = ZonePresenceBinarySensor._evaluate_and_write  # noqa: SLF001 - the subject
