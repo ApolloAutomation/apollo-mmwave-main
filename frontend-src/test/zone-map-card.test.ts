@@ -6831,6 +6831,62 @@ describe("zone map card zone looks", () => {
     expect(createPattern).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps each zone's label on the canvas", async () => {
+    // Centered on a zone at a wall, a label ran off the canvas edge and lost
+    // its start or its suffix.
+    const LONG = "A".repeat(70);
+    const rect = (x_min: number, x_max: number, y_min: number, y_max: number) => ({
+      shape: "rect",
+      data: { x_min, x_max, y_min, y_max },
+    });
+    const hass = fakeHass({
+      ...ZONE_PAYLOAD,
+      rotation_deg: 0,
+      display_units: "ft",
+      zones: {
+        "1": { ...rect(-5400, -4800, 1000, 3000), name: "Window curtain", zone_type: "ignore" },
+        "2": { ...rect(-1000, 1000, 2000, 3000), name: "Couch" },
+        "3": {
+          ...rect(4800, 5400, 4000, 6000),
+          name: "Desk",
+          presence_entity_id: "binary_sensor.desk",
+        },
+        "4": { ...rect(-1000, 1000, 0, 250), name: "Shelf" },
+        "5": { ...rect(-3000, 3000, 7000, 8000), name: LONG },
+      },
+    });
+    hass.states = { "binary_sensor.desk": { state: "on", attributes: { held: true } } };
+    // Fitted to the cone in feet, as the dashboard's map is.
+    const card = await mountCard(hass);
+    expect(card._gridFromConfig).toBe(false);
+    const { ctx, texts } = textRecordingContext(browserTextWidth);
+    card.ctx = ctx;
+
+    card.drawZones();
+
+    const label = (text: string) => texts.find((t) => t.text === text)!;
+    const width = card.canvas.width;
+    // In by just enough, 2 px from the edge, on either side.
+    expect(boxOf(label("Window curtain (ignored)")).left).toBeCloseTo(2, 9);
+    expect(boxOf(label("Desk (held)")).right).toBeCloseTo(width - 2, 9);
+    // Down from the top edge to half its height.
+    expect(label("Shelf").y).toBe(12);
+    // Wider than the canvas: centered on it.
+    expect(label(LONG).x).toBe(width / 2);
+    // A zone clear of the edges keeps its label on its center.
+    const couch = label("Couch");
+    const center = (a: number, b: number, axis: "x" | "y") =>
+      (card.valueToPixels(a, axis) + card.valueToPixels(b, axis)) / 2;
+    expect(couch.x).toBeCloseTo(center(-1000, 1000, "x"), 9);
+    expect(couch.y).toBeCloseTo(center(2000, 3000, "y"), 9);
+    // Every other label lies wholly on the canvas.
+    expect(texts).toHaveLength(5);
+    const off = texts.filter(
+      (t) => t.text !== LONG && (boxOf(t).left < 0 || boxOf(t).right > width)
+    );
+    expect(off).toEqual([]);
+  });
+
   it("fills an ignore zone flat when no pattern can be made", async () => {
     const zones = payload(PRESENCE, { "2": { shape: "rect", data: WINDOW, zone_type: "ignore" } });
     const ignored = (draws: Draw[]) => zoneDraws(draws).slice(2);

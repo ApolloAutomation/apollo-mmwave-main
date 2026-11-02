@@ -335,6 +335,12 @@ function lockStorageKey(deviceId) {
   return `${LOCK_STORAGE_PREFIX}.${deviceId}`;
 }
 
+/** `value` moved just far enough that a box reaching `half` either side of
+ *  it stays within 0..`extent`, or the middle when the box is wider. */
+function clampOnto(value, half, extent) {
+  return half * 2 >= extent ? extent / 2 : Math.min(Math.max(value, half), extent - half);
+}
+
 // Remember the lock toggle per radar so a reload keeps the grid locked
 function readStoredLock(deviceId) {
   try {
@@ -5986,8 +5992,6 @@ export class ZoneMapCard extends HTMLElement {
     if (y - plateHeight / 2 < 0) y = anchorPx.y + offset;
     // A finger keeps reporting after it leaves the canvas, and the shape
     // stops at the map's edge, so the readout stays on the canvas too.
-    const clampOnto = (value, half, extent) =>
-      half * 2 >= extent ? extent / 2 : Math.min(Math.max(value, half), extent - half);
     y = clampOnto(y, plateHeight / 2, this.canvas.height);
     const x = clampOnto(anchorPx.x, plateWidth / 2, this.canvas.width);
     ctx.fillStyle = this.darkMode ? COLOR.ui.darkCanvasBackground : COLOR.ui.lightCanvasBackground;
@@ -6017,14 +6021,16 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   /** The zone's name at its center, followed by `suffix` (" (held)" or
-   *  " (ignored)") when its look needs one. */
+   *  " (ignored)") when its look needs one, moved in as far as it takes to
+   *  stay on the canvas. */
   _drawZoneLabel(zone, bbox, suffix = '') {
     const ctx = this.ctx;
     const name = this._zoneLabel(zone.id);
     if (!name) return;
     const label = `${name}${suffix}`;
+    const fontPx = 24;
     ctx.save();
-    ctx.font = '24px sans-serif';
+    ctx.font = `${fontPx}px sans-serif`;
     ctx.fillStyle = this.darkMode ? COLOR.canvas.axisDark : COLOR.canvas.axisLight;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
@@ -6062,6 +6068,17 @@ export class ZoneMapCard extends HTMLElement {
         cy = Cy / (6 * A);
       }
     }
+    // Centered on a zone at a wall, a label ran off the canvas and lost its
+    // start or its " (ignored)". Measured the way _drawSizeReadout measures,
+    // with 2 px to spare at either side; one wider than the canvas is
+    // centered on it.
+    const measured = ctx.measureText?.(label)?.width;
+    const width =
+      typeof measured === 'number' && measured > 0
+        ? measured
+        : label.length * fontPx * LABEL_FALLBACK_EM_PER_CHAR;
+    cx = clampOnto(cx, width / 2 + 2, this.canvas.width);
+    cy = clampOnto(cy, fontPx / 2, this.canvas.height);
     ctx.fillText(label, cx, cy);
     ctx.restore();
   }
