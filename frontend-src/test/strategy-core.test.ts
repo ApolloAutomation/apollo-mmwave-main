@@ -706,6 +706,22 @@ describe("LD2450 zone mapping", () => {
     expect(zone.title).toBe("Office R-PRO-1");
   });
 
+  it("the dashboard's zone map has no view_only key", () => {
+    // The dashboard keeps the map zones are drawn on. Showing the map alone
+    // is a choice for a card of one's own.
+    const { hass } = ld2450Hass();
+    const dev = detectRadarDevices(hass)[0];
+    const zone = buildDeviceCards(hass, dev).find(
+      (c: any) => c.type === "custom:apollo-radar-zone-map-card"
+    );
+    expect(zone).toEqual({
+      type: "custom:apollo-radar-zone-map-card",
+      device_id: dev.deviceId,
+      title: "Office R-PRO-1",
+      unit_display: true,
+    });
+  });
+
   it("adds the zone map alongside tuning on a device with both radars", () => {
     const b = "apollo_r_pro_1_abcd";
     const eng = `switch.${b}_ld2412_engineering_mode`;
@@ -1652,6 +1668,14 @@ describe("plain help, labels and the Device card", () => {
     const cards = cardsOf(rproHass());
     expect(cards.some((c) => c.content === LD2450_TIMEOUT_NOTE)).toBe(false);
     expect(LD2450_TIMEOUT_NOTE).toContain("does not hold the zones you draw");
+  });
+
+  it("points the LD2450 timeout note at a zone's own hold time", () => {
+    expect(LD2450_TIMEOUT_NOTE).toBe(
+      "💡 **Radar Timeout** is how long LD2450 Presence stays on after the radar last" +
+        " sees someone. It does not hold the zones you draw: a zone turns off as soon as" +
+        " nobody is in it, unless you give it a hold time in the zone list under Configure."
+    );
   });
 });
 

@@ -12,11 +12,16 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   CONFIG_ENTRIES_SUBSCRIBE,
+  MOVEMENT_CLEAR,
+  MOVEMENT_GET,
   RETRY_DELAYS_MS,
   ZONES_GET,
   ZONES_SUBSCRIBE,
+  clearMovement,
   connectZones,
+  fetchMovement,
   fetchZones,
+  isMovementPayload,
   subscribeZones,
 } from "../src/zone-map/api";
 
@@ -399,5 +404,136 @@ describe("connectZones", () => {
     hass.connection.handlers[ZONES_SUBSCRIBE][0](PAYLOAD);
 
     expect(onConfig).not.toHaveBeenCalled();
+  });
+});
+
+describe("movement history", () => {
+  // The backend's example answer (the integration's contract): it decodes to
+  // dt [0, 500, 512, 14988], s [0, 0, 1, -1], x [120, 170, -800, 0] and
+  // y [2400, 2410, 3100, 0].
+  const MOVEMENT = {
+    enabled: true,
+    now: 1767229200000,
+    since: 1767225600000,
+    retention_s: 86400,
+    n: 4,
+    t0: 1767225590000,
+    dt: "AAAAAPQBAAAAAgAAjDoAAA==",
+    s: "AAAAAAEA//8=",
+    x: "eACqAOD8AAA=",
+    y: "YAlqCRwMAAA=",
+  };
+  /** What a radar whose history is off answers: no records, not an error. */
+  const OFF = {
+    enabled: false,
+    now: 1767229200000,
+    since: 1767142800000,
+    retention_s: 86400,
+    n: 0,
+    t0: null,
+    dt: "",
+    s: "",
+    x: "",
+    y: "",
+  };
+
+  it("fetchMovement sends device_id and since", async () => {
+    const hass = fakeHass({ callWS: vi.fn().mockResolvedValue(MOVEMENT) });
+
+    const payload = await fetchMovement(hass, "dev123", 1767225600000);
+
+    expect(MOVEMENT_GET).toBe("apollo_mmwave/movement/get");
+    expect(hass.callWS).toHaveBeenCalledTimes(1);
+    expect(hass.callWS).toHaveBeenCalledWith({
+      type: MOVEMENT_GET,
+      device_id: "dev123",
+      since: 1767225600000,
+    });
+    expect(payload).toEqual(MOVEMENT);
+  });
+
+  it("sends since as a whole, non-negative number of ms", async () => {
+    // The command's schema refuses anything else, and the card computes since
+    // from Date.now() and a clock skew.
+    const hass = fakeHass({ callWS: vi.fn().mockResolvedValue(MOVEMENT) });
+
+    await fetchMovement(hass, "dev123", 1767225600000.6);
+    await fetchMovement(hass, "dev123", 1767225600000.4);
+    await fetchMovement(hass, "dev123", -3600000);
+
+    expect(hass.callWS.mock.calls.map((call: any[]) => call[0].since)).toEqual([
+      1767225600001, 1767225600000, 0,
+    ]);
+  });
+
+  it("leaves since out when none is given, so the server sends its last 24 hours", async () => {
+    const hass = fakeHass({ callWS: vi.fn().mockResolvedValue(OFF) });
+
+    const payload = await fetchMovement(hass, "dev123");
+
+    expect(Object.keys(hass.callWS.mock.calls[0][0])).toEqual(["type", "device_id"]);
+    expect(hass.callWS.mock.calls[0][0]).toEqual({ type: MOVEMENT_GET, device_id: "dev123" });
+    expect(payload).toEqual(OFF);
+  });
+
+  it("passes a refusal through for the card to word", async () => {
+    // A non-administrator gets unauthorized; the card shows its own text for it.
+    const refusal = { code: "unauthorized", message: "Unauthorized" };
+    const hass = fakeHass({ callWS: vi.fn().mockRejectedValue(refusal) });
+
+    await expect(fetchMovement(hass, "dev123", 0)).rejects.toEqual(refusal);
+    await expect(clearMovement(hass, "dev123")).rejects.toEqual(refusal);
+  });
+
+  it("clearMovement sends device_id", async () => {
+    const hass = fakeHass({ callWS: vi.fn().mockResolvedValue({ cleared: 4 }) });
+
+    const result = await clearMovement(hass, "dev123");
+
+    expect(MOVEMENT_CLEAR).toBe("apollo_mmwave/movement/clear");
+    expect(hass.callWS).toHaveBeenCalledTimes(1);
+    expect(hass.callWS).toHaveBeenCalledWith({ type: MOVEMENT_CLEAR, device_id: "dev123" });
+    expect(result).toEqual({ cleared: 4 });
+  });
+
+  it("rejects a payload that is not movement columns", () => {
+    expect(isMovementPayload(MOVEMENT)).toBe(true);
+    expect(isMovementPayload(OFF)).toBe(true);
+
+    // The card tests' fake hass answers every command it does not know with
+    // [], which must never read as an empty history.
+    for (const value of [[], [MOVEMENT], null, undefined, "", "AAAA", 4, true, PAYLOAD]) {
+      expect(isMovementPayload(value), JSON.stringify(value)).toBe(false);
+    }
+
+    const broken: Record<string, unknown>[] = [
+      { enabled: "true" },
+      { enabled: 1 },
+      { now: "1767229200000" },
+      { now: NaN },
+      { since: null },
+      { since: Infinity },
+      { retention_s: undefined },
+      { n: -1 },
+      { n: 1.5 },
+      { n: "4" },
+      { n: NaN },
+      { t0: undefined },
+      { t0: "1767225590000" },
+      { t0: NaN },
+      // A column as a JSON list rather than a packed string.
+      { dt: [0, 500, 512, 14988] },
+      { s: null },
+      { x: undefined },
+      { y: 0 },
+    ];
+    for (const change of broken) {
+      expect(isMovementPayload({ ...MOVEMENT, ...change }), Object.keys(change)[0]).toBe(false);
+    }
+    for (const key of Object.keys(MOVEMENT)) {
+      const missing: Record<string, unknown> = { ...MOVEMENT };
+      delete missing[key];
+      expect(isMovementPayload(missing), key).toBe(false);
+    }
   });
 });

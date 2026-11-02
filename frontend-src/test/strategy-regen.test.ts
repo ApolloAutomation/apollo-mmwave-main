@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { shouldRegenerate } from "../src/strategy";
-import { detectRadarDevices } from "../src/strategy-core";
+import { detectRadarDevices, strategyDevices } from "../src/strategy-core";
 import type { HomeAssistant, HassEntity } from "../src/types";
 
 const base = "apollo_msr_2_m4c4dd";
@@ -183,6 +183,33 @@ describe("shouldRegenerate on availability changes", () => {
     expect(shouldRegenerate({}, online, moved)).toBe(false);
   });
 
+  describe("on a registry-matched radar", () => {
+    // The device registry names this MTR-1, so it has a tab online or not. A
+    // radar dropping off Wi-Fi now and then must not rebuild every tab: that
+    // would throw away a zone being drawn on any of them.
+    const x = "sensor.apollo_mtr_1_cbbdb4_target_1_x";
+    const mtrDevices = {
+      mtr: { name: "Hall MTR-1", manufacturer: "ApolloAutomation", model: "MTR-1" },
+    };
+    const mtrEntities = { [x]: { device_id: "mtr", platform: "esphome" } };
+    const flaps = ["1200", "unavailable", "800", "unavailable", "0"].map((value) =>
+      hassWith({ [x]: state(x, value) }, mtrEntities, mtrDevices)
+    );
+
+    it.each([{}, { devices: ["mtr"] }])("keeps the dashboard through flaps", (config) => {
+      // The radar really is on the dashboard and really goes offline, so a
+      // key that still held liveness would change at every step.
+      const shown = (hass: HomeAssistant) =>
+        strategyDevices(hass, config).map((d) => [d.deviceId, d.online]);
+      expect(shown(flaps[0])).toEqual([["mtr", true]]);
+      expect(shown(flaps[1])).toEqual([["mtr", false]]);
+      for (let i = 1; i < flaps.length; i++) {
+        const step = `${flaps[i - 1].states[x].state} to ${flaps[i].states[x].state}`;
+        expect(shouldRegenerate(config, flaps[i - 1], flaps[i]), step).toBe(false);
+      }
+    });
+  });
+
   it("ignores availability flips on entities that belong to no radar", () => {
     const lamp = "light.hall";
     const withLampOff = hassWith(
@@ -234,13 +261,15 @@ describe("shouldRegenerate with a device selection", () => {
     expect(shouldRegenerate(legacy(["dev1"]), both, dev2Offline)).toBe(false);
   });
 
-  it("regenerates when the selected device flips availability (legacy options)", () => {
+  it("keeps the dashboard when the selected device flips availability (legacy options)", () => {
+    // A selected device is shown online or not, so only its tab's offline
+    // note would change, and that note waits for a page reload.
     const dev1Offline = hassWith(
       { ...both.states, [eng]: state(eng, "unavailable") },
       entities,
       devices
     );
-    expect(shouldRegenerate(legacy(["dev1"]), both, dev1Offline)).toBe(true);
+    expect(shouldRegenerate(legacy(["dev1"]), both, dev1Offline)).toBe(false);
   });
 
   it("regenerates when a forced registry-less device gains capability (legacy options)", () => {
@@ -292,8 +321,8 @@ describe("shouldRegenerate with a device selection", () => {
 });
 
 describe('shouldRegenerate treats "unknown" as live', () => {
-  // Only "unavailable" (or no state) is offline, for both the device key's
-  // online flag and the availability fast path.
+  // Only "unavailable" (or no state) is offline, for both the detection of a
+  // device without a registry model and the availability fast path.
   const devices = { dev1: { name: "Living Room MSR-2" } };
   const entities = { [eng]: { device_id: "dev1" } };
   const at = (value: string) => hassWith({ [eng]: state(eng, value) }, entities, devices);

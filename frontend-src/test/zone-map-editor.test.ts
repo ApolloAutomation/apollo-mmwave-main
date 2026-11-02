@@ -279,3 +279,88 @@ describe("zone map card editor lock", () => {
     expect(configs).toHaveLength(3);
   });
 });
+
+describe("zone map card editor view only", () => {
+  function lockSelect(editor: ZoneMapCardEditor): any {
+    return editor.shadowRoot!.querySelectorAll("ha-selector")[1];
+  }
+
+  function viewOnlySelect(editor: ZoneMapCardEditor): any {
+    return editor.shadowRoot!.querySelectorAll("ha-selector")[2];
+  }
+
+  function toggle(editor: ZoneMapCardEditor, value: unknown, init: EventInit = {}) {
+    viewOnlySelect(editor).dispatchEvent(
+      new CustomEvent("value-changed", { detail: { value }, ...init })
+    );
+  }
+
+  it("offers View only after the lock selector", () => {
+    const editor = mountEditor({ device_id: "radar" });
+
+    const form = editor.shadowRoot!.querySelector(".form")!;
+    expect(Array.from(form.children, (el) => el.tagName.toLowerCase())).toEqual([
+      "ha-device-picker",
+      "ha-textfield",
+      "ha-selector",
+      "ha-selector",
+      "ha-selector",
+      "div",
+    ]);
+    const select = viewOnlySelect(editor);
+    expect(select.label).toBe("View only (the map without drawing tools)");
+    expect(select.selector).toEqual({ boolean: {} });
+    expect(select.hass).toBeTruthy();
+    expect(select.value).toBe(false);
+    expect(viewOnlySelect(mountEditor({ device_id: "radar", view_only: true })).value).toBe(true);
+    // Anything but true is the full card, as the card reads it.
+    expect(viewOnlySelect(mountEditor({ device_id: "radar", view_only: "yes" })).value).toBe(false);
+  });
+
+  it("writes view_only: true and deletes it on false", () => {
+    const editor = mountEditor({ device_id: "radar", title: "Office" });
+    const configs = emitted(editor);
+    const raw = vi.fn();
+    editor.addEventListener("value-changed", raw);
+
+    toggle(editor, true, { bubbles: true, composed: true });
+    expect(configs[0]).toEqual({
+      type: CARD_TYPE,
+      device_id: "radar",
+      title: "Office",
+      view_only: true,
+    });
+
+    toggle(editor, false, { bubbles: true, composed: true });
+    expect(configs[1]).toEqual({ type: CARD_TYPE, device_id: "radar", title: "Office" });
+    expect(configs).toHaveLength(2);
+    // Lovelace sees the config, not the selector's own event.
+    expect(raw).not.toHaveBeenCalled();
+  });
+
+  it("emits nothing on an echo", () => {
+    const on = mountEditor({ device_id: "radar", view_only: true });
+    const onConfigs = emitted(on);
+    toggle(on, true);
+    expect(onConfigs).toHaveLength(0);
+
+    const off = mountEditor({ device_id: "radar" });
+    const offConfigs = emitted(off);
+    toggle(off, false);
+    expect(offConfigs).toHaveLength(0);
+  });
+
+  it("hides the lock selector while View only is on", () => {
+    // A view-only map has no lock, so the lock choice would do nothing.
+    const editor = mountEditor({ device_id: "radar", start_locked: true });
+    expect(lockSelect(editor).hidden).toBe(false);
+
+    editor.setConfig({ type: CARD_TYPE, device_id: "radar", start_locked: true, view_only: true });
+    expect(lockSelect(editor).hidden).toBe(true);
+    expect(viewOnlySelect(editor).hidden).toBe(false);
+
+    editor.setConfig({ type: CARD_TYPE, device_id: "radar", start_locked: true });
+    expect(lockSelect(editor).hidden).toBe(false);
+    expect(lockSelect(editor).value).toBe("locked");
+  });
+});
