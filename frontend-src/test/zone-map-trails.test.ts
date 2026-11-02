@@ -91,18 +91,18 @@ describe("TrailBuffer", () => {
     expect(trails.samples(0)).toEqual([{ t: 8100, x: -800, y: 2100 }]);
   });
 
-  it("starts a new segment after a gap over 1 s", () => {
-    expect(TRAIL_GAP_MS).toBe(1000);
+  it("starts a new segment after a gap over 2.5 s", () => {
+    expect(TRAIL_GAP_MS).toBe(2500);
     const trails = new TrailBuffer();
-    // A gap of exactly 1 s still joins; 1.1 s breaks the trail in two.
-    for (const t of [0, 200, 400, 1400, 2500, 2700]) {
+    // A gap of exactly 2.5 s still joins; 2.6 s breaks the trail in two.
+    for (const t of [0, 1070, 3570, 6170, 7240]) {
       expect(trails.push(0, t, t + 100, 2000)).toBe(true);
     }
 
-    expect(trails.samples(0).map((s) => s.t)).toEqual([0, 200, 400, 1400, 2500, 2700]);
+    expect(trails.samples(0).map((s) => s.t)).toEqual([0, 1070, 3570, 6170, 7240]);
     expect(segments(trails.samples(0))).toEqual([
-      [0, 200, 400, 1400],
-      [2500, 2700],
+      [0, 1070, 3570],
+      [6170, 7240],
     ]);
   });
 

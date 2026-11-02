@@ -4278,15 +4278,45 @@ describe("zone map card trails", () => {
     ]);
   });
 
-  it("breaks the trail where its target went silent for over a second", async () => {
+  it("breaks the trail where its target went silent for over 2.5 s", async () => {
     const { card, move } = await trailCard();
     move(-2000, 2000);
-    vi.advanceTimersByTime(1200);
+    vi.advanceTimersByTime(2600);
     move(-1000, 2000);
     vi.advanceTimersByTime(200);
     move(0, 2000);
 
     expectSegments(segments(frame(card)), [[320, 160, 400, 160, ...strength(0)]]);
+  });
+
+  it("joins readings about a second apart when X and Y come together", async () => {
+    // The LD2450 sometimes writes X and Y in the same instant, each about
+    // every 1.07 s.
+    const { card, move } = await trailCard();
+    move(-2000, 2000);
+    vi.advanceTimersByTime(1070);
+    move(-1500, 2500);
+    expectSegments(segments(frame(card)), [[240, 160, 280, 200, ...strength(0)]]);
+
+    // A value that repeats writes nothing, so the next reading can come
+    // 2.14 s later.
+    vi.advanceTimersByTime(2140);
+    move(-1000, 3000);
+    expectSegments(segments(frame(card)), [[280, 200, 320, 240, ...strength(0)]]);
+  });
+
+  it("counts a silence from the last write merged into a sample", async () => {
+    const { card, move, set } = await trailCard();
+    move(-2000, 2000);
+    vi.advanceTimersByTime(1000);
+    set({ "sensor.a_x": { state: "-1500" } });
+    vi.advanceTimersByTime(450);
+    set({ "sensor.a_y": { state: "2500" } });
+    // 2.95 s after that sample's X, but 2.5 s after its Y: one silence.
+    vi.advanceTimersByTime(2500);
+    move(-1000, 3000);
+
+    expectSegments(segments(frame(card)), [[280, 200, 320, 240, ...strength(0)]]);
   });
 
   it("draws a diagonal walk at the measured cadence with no (new X, old Y) sample or cell", async () => {

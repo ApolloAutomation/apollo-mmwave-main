@@ -19,8 +19,12 @@
 
 /** How long a trail lasts behind its dot. */
 export const TRAIL_MS = 3000;
-/** A longer silence between two samples breaks the trail in two. */
-export const TRAIL_GAP_MS = 1000;
+/**
+ * A longer silence between two samples breaks the trail in two. The LD2450
+ * writes each axis about every 1.0 to 1.15 s and nothing for a value that
+ * repeats, so a target it still tracks can go 2 s or more without a write.
+ */
+export const TRAIL_GAP_MS = 2500;
 /** A push this soon after the slot's last sample replaces that sample. */
 export const TRAIL_COALESCE_MS = 60;
 /**
