@@ -432,6 +432,24 @@ def test_reacquire_limit_grows_with_elapsed_time(
     assert tracker.holding is not released
 
 
+def test_reach_never_counts_from_after_the_zone_emptied() -> None:
+    """A report after the first half of someone else's vanish takes nothing away."""
+    tracker = HoldTracker()
+    assert _evaluate(tracker, 9.0, [_reading(0, 500, 1000), _reading(1, -500, 1000)])
+    # Slot 0's X lands alone at 10 s, slot 1 reports at 10.2 s, and then
+    # slot 0's Y lands and slot 1 is lost: the zone emptied at 10 s.
+    half = _reading(0, 0, 1000)
+    assert _evaluate(tracker, 10.0, [half, _reading(1, -500, 1000)])
+    assert _evaluate(tracker, 10.2, [half, _reading(1, -450, 1000)])
+    assert _evaluate(tracker, 10.45, [])
+    assert tracker.empty_since == 10.0
+
+    # 1.4 m from where slot 1's person was, 0.6 s on: within their 1.56 m
+    # reach, so it is theirs, not the other person's, 1.7 m away.
+    assert _evaluate(tracker, 10.6, [_reading(2, -450, 2400)])
+    assert [person.slot for person in tracker.pending] == [0]
+
+
 def test_reach_counts_from_the_persons_last_report_not_the_last_evaluation() -> None:
     """Another target's write in between does not make their report any newer."""
     tracker = HoldTracker()

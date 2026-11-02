@@ -550,8 +550,9 @@ class HoldTracker:
             # from when the zone emptied, and from the person's last report
             # before that for up to HOLD_REPORT_AGE_MAX_S: at a report about
             # once a second, a walker's last report inside can be a second
-            # old by the time one outside empties the zone.
-            age_s = min(empty_since - person.seen_t, HOLD_REPORT_AGE_MAX_S)
+            # old by the time one outside empties the zone. A report after
+            # empty_since, someone else's first half of a vanish, adds none.
+            age_s = min(max(0.0, empty_since - person.seen_t), HOLD_REPORT_AGE_MAX_S)
             return (
                 HOLD_REACQUIRE_BASE_MM
                 + HOLD_REACQUIRE_MM_PER_MS * (elapsed_s + age_s) * 1000
