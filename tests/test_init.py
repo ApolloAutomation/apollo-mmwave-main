@@ -9,9 +9,10 @@ from unittest.mock import patch
 import pytest
 import voluptuous as vol
 from homeassistant.config_entries import SOURCE_USER, ConfigEntryState
-from homeassistant.core import Context
+from homeassistant.core import Context, callback
 from homeassistant.exceptions import Unauthorized
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.json import json_bytes
 from homeassistant.helpers.storage import Store
 from homeassistant.setup import async_setup_component
@@ -38,11 +39,13 @@ from custom_components.apollo_mmwave.const import (
     DASHBOARD_STRATEGY_TYPE,
     DASHBOARD_TITLE,
     DASHBOARD_URL_PATH,
+    DATA_MOVEMENT,
     DATA_STORE,
     DISPLAY_UNITS,
     DOMAIN,
     ENTRY_MINOR_VERSION,
     EVENT_ZONE_UPDATED,
+    HOLD_S_MAX,
     INPUT_UNIT_FACTORS,
     POLYGON_MAX_POINTS,
     POLYGON_MIN_POINTS,
@@ -50,12 +53,17 @@ from custom_components.apollo_mmwave.const import (
     SERVICE_CANCEL_CALIBRATION,
     SERVICE_RESTORE_GATE_THRESHOLDS,
     SERVICE_UPDATE_ZONE,
+    SIGNAL_ZONES_UPDATED,
     STORE_DEVICES,
     STORE_DISPLAY_UNITS,
     STORE_ENTITIES,
+    STORE_HOLD_S,
     STORE_INPUT_UNITS,
     STORE_LABEL,
+    STORE_MIRROR_X,
+    STORE_MOVEMENT_HISTORY,
     STORE_ORPHANS,
+    STORE_ZONE_TYPE,
     STORE_ZONES,
     WARN_ELLIPSE_INVALID,
     WARN_ELLIPSE_NON_POSITIVE,
@@ -92,6 +100,7 @@ TRACKED = [
 MAX_SAFE_INT = 2**53 - 1
 
 ZONE_STORAGE_KEY = f"{DOMAIN}.zones"
+MOVEMENT_STORAGE_KEY = f"{DOMAIN}.movement"
 
 # The real Store.async_remove, taken at import, before the hass_storage fixture
 # swaps in a mock that only drops the key and leaves a pending write scheduled.
@@ -2012,8 +2021,9 @@ async def test_empty_name_clears_the_zone_name(
     """Renaming to '' drops the name, and a later rename still applies."""
     _ = init_integration
     await _create_rect_zone(hass, device_id)
-    # Renamed in its own call: a name sent with the creating call reaches the
-    # store but not the registry, since the entities do not exist yet.
+    # Named in a call of its own, as the card's Save button names a stored
+    # zone. A name sent with the creating call reaches the registry as well
+    # (test_name_on_the_creating_call_reaches_the_registry).
     await _rename_zone(hass, device_id, "Couch")
     registry = er.async_get(hass)
     sensor_id, presence_id = _zone_entity_ids(hass, device_id)
@@ -2068,3 +2078,567 @@ async def test_schema_rejects_malformed_calls(
     await hass.async_block_till_done()
 
     assert device_id not in get_store(hass).devices
+
+
+# ---------------------------------------------------------------------------
+# Zone settings (zone_type, hold_s) and the radar flags (mirror_x,
+# movement_history). A default is never stored: the key is popped instead.
+# ---------------------------------------------------------------------------
+
+MOVED = {"x_min": 0, "x_max": 500, "y_min": 0, "y_max": 500}
+
+
+def _stored_zone(hass, device_id: str, zone_id: int = 1) -> dict[str, Any]:
+    return get_store(hass).devices[device_id][STORE_ZONES][zone_id]
+
+
+def _zone_events(hass) -> list:
+    events: list = []
+    hass.bus.async_listen(EVENT_ZONE_UPDATED, events.append)
+    return events
+
+
+async def test_hold_s_is_stored_and_zero_pops_it(
+    hass, init_integration, device_id
+) -> None:
+    """A hold time is stored in whole seconds, and 0, the default, forgets it."""
+    _ = init_integration
+    await _create_rect_zone(hass, device_id)
+    _, presence_id = _zone_entity_ids(hass, device_id)
+    events = _zone_events(hass)
+
+    await _update_zone(hass, {"device_id": device_id, "zone_id": 1, STORE_HOLD_S: 30.9})
+
+    zone = _stored_zone(hass, device_id)
+    assert zone == {"shape": "rect", "data": RECT, "hold_s": 30}
+    assert type(zone["hold_s"]) is int
+    assert hass.states.get(presence_id).attributes["held"] is False
+    # Like a map unit, a hold time counts even when it is the one stored.
+    await _update_zone(hass, {"device_id": device_id, "zone_id": 1, STORE_HOLD_S: 30})
+    assert len(events) == 2
+
+    await _update_zone(hass, {"device_id": device_id, "zone_id": 1, STORE_HOLD_S: 0})
+
+    assert _stored_zone(hass, device_id) == {"shape": "rect", "data": RECT}
+    assert "held" not in hass.states.get(presence_id).attributes
+    assert len(events) == 3
+
+
+async def test_zone_settings_survive_a_redraw(
+    hass, init_integration, device_id
+) -> None:
+    """A redraw keeps a zone's name, type and hold time; its own settings win."""
+    _ = init_integration
+    await _create_rect_zone(hass, device_id)
+    # A zone switched to ignore keeps its hold time stored, for when it is
+    # switched back, so both settings can sit on one zone.
+    await _update_zone(
+        hass,
+        {
+            "device_id": device_id,
+            "zone_id": 1,
+            "name": "Fan",
+            STORE_ZONE_TYPE: "ignore",
+            STORE_HOLD_S: 45,
+        },
+    )
+
+    await _update_zone(
+        hass, {"device_id": device_id, "zone_id": 1, "shape": "rect", "data": MOVED}
+    )
+
+    assert _stored_zone(hass, device_id) == {
+        "shape": "rect",
+        "data": MOVED,
+        "name": "Fan",
+        "zone_type": "ignore",
+        "hold_s": 45,
+    }
+
+    # Undo sends the earlier geometry the same way; a setting in the same call
+    # applies on top of what was carried over.
+    await _update_zone(
+        hass,
+        {
+            "device_id": device_id,
+            "zone_id": 1,
+            "shape": "polygon",
+            "data": {
+                "points": [{"x": 0, "y": 0}, {"x": 500, "y": 0}, {"x": 0, "y": 500}]
+            },
+            STORE_HOLD_S: 0,
+        },
+    )
+
+    zone = _stored_zone(hass, device_id)
+    assert zone["shape"] == "polygon"
+    assert zone["name"] == "Fan"
+    assert zone["zone_type"] == "ignore"
+    assert "hold_s" not in zone
+
+
+async def test_zone_settings_survive_shape_none(
+    hass, init_integration, device_id
+) -> None:
+    """Clearing a zone, as Clear and Clear All do, keeps its type and hold time."""
+    _ = init_integration
+    await _create_rect_zone(hass, device_id)
+    await _update_zone(
+        hass,
+        {
+            "device_id": device_id,
+            "zone_id": 1,
+            STORE_ZONE_TYPE: "ignore",
+            STORE_HOLD_S: 45,
+        },
+    )
+
+    await _update_zone(
+        hass, {"device_id": device_id, "zone_id": 1, "shape": "none", "data": None}
+    )
+
+    assert _stored_zone(hass, device_id) == {
+        "shape": "none",
+        "data": None,
+        "zone_type": "ignore",
+        "hold_s": 45,
+    }
+    _, presence_id = _zone_entity_ids(hass, device_id)
+    assert hass.states.get(presence_id).attributes["zone_type"] == "ignore"
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {STORE_HOLD_S: -1},
+        {STORE_HOLD_S: HOLD_S_MAX + 1},
+        {STORE_HOLD_S: "abc"},
+        # vol.Coerce(int) alone would read True, or YAML on, as a 1 s hold.
+        {STORE_HOLD_S: True},
+        {STORE_ZONE_TYPE: "exclude"},
+    ],
+    ids=["hold_negative", "hold_over_an_hour", "hold_text", "hold_boolean", "type"],
+)
+async def test_schema_rejects_bad_zone_settings(
+    hass, init_integration, device_id, bad
+) -> None:
+    """A bad zone setting fails the whole call, and nothing is written."""
+    _ = init_integration
+    # The rotation alone would be stored if the call got past the schema.
+    call = {"device_id": device_id, "zone_id": 1, ATTR_ROTATION_DEG: 90, **bad}
+    with pytest.raises(vol.Invalid):
+        UPDATE_ZONE_SERVICE_SCHEMA(call)
+    with pytest.raises(vol.Invalid):
+        await hass.services.async_call(DOMAIN, SERVICE_UPDATE_ZONE, call, blocking=True)
+    await hass.async_block_till_done()
+
+    assert device_id not in get_store(hass).devices
+
+
+@pytest.mark.parametrize(
+    ("settings", "expected"),
+    [
+        ({STORE_HOLD_S: 0}, {STORE_HOLD_S: 0}),
+        ({STORE_HOLD_S: HOLD_S_MAX}, {STORE_HOLD_S: HOLD_S_MAX}),
+        ({STORE_HOLD_S: "45"}, {STORE_HOLD_S: 45}),
+        ({STORE_HOLD_S: 30.9}, {STORE_HOLD_S: 30}),
+        ({STORE_ZONE_TYPE: "detect"}, {STORE_ZONE_TYPE: "detect"}),
+        ({STORE_ZONE_TYPE: "ignore"}, {STORE_ZONE_TYPE: "ignore"}),
+    ],
+    ids=["hold_zero", "hold_an_hour", "hold_text", "hold_fraction", "detect", "ignore"],
+)
+def test_schema_accepts_zone_settings(settings, expected) -> None:
+    """Hold times from 0 to an hour, in whole seconds, and both zone types pass."""
+    validated = UPDATE_ZONE_SERVICE_SCHEMA(
+        {"device_id": "abc", "zone_id": 1, **settings}
+    )
+    assert {key: validated[key] for key in expected} == expected
+
+
+@pytest.mark.parametrize(
+    ("settings", "tail"),
+    [
+        ({STORE_ZONE_TYPE: "ignore"}, "nothing was applied to it."),
+        ({STORE_HOLD_S: 30}, "nothing was applied to it."),
+        ({"name": "Fan", STORE_HOLD_S: 30}, "nothing was applied to it."),
+        # A rename alone keeps the message it always had.
+        ({"name": "Fan"}, "the name was not applied."),
+    ],
+    ids=["type", "hold", "named_hold", "rename_only"],
+)
+@pytest.mark.usefixtures("init_integration")
+async def test_zone_settings_on_a_missing_zone_are_refused(
+    hass, device_id, caplog, settings, tail
+) -> None:
+    """Settings for a zone that is not stored mint no entry and fire no event."""
+    events = _zone_events(hass)
+
+    await _update_zone(hass, {"device_id": device_id, "zone_id": 7, **settings})
+
+    assert device_id not in get_store(hass).devices
+    assert events == []
+    assert (
+        f"Apollo mmWave: update_zone for device '{device_id}' named zone 7,"
+        f" which does not exist; {tail}"
+    ) in caplog.messages
+    assert "carried nothing to change" in caplog.text
+
+    # On a radar with other zones, those zones stay exactly as they were.
+    await _create_rect_zone(hass, device_id)
+    events.clear()
+    await _update_zone(hass, {"device_id": device_id, "zone_id": 7, **settings})
+
+    assert get_store(hass).devices[device_id][STORE_ZONES] == {
+        1: {"shape": "rect", "data": RECT}
+    }
+    assert events == []
+
+
+async def test_zone_settings_without_zone_id_are_ignored(
+    hass, init_integration, device_id, caplog
+) -> None:
+    """Zone settings need a zone_id; without one they are named and dropped."""
+    _ = init_integration
+    events = _zone_events(hass)
+    warning = (
+        f"Apollo mmWave: update_zone for device '{device_id}' carried zone_type or"
+        " hold_s without a zone_id, so they were ignored."
+    )
+
+    # Alone they change nothing, so the call is refused and mints nothing.
+    await _update_zone(
+        hass, {"device_id": device_id, STORE_ZONE_TYPE: "ignore", STORE_HOLD_S: 30}
+    )
+    assert device_id not in get_store(hass).devices
+    assert events == []
+    assert warning in caplog.messages
+    assert "carried nothing to change" in caplog.text
+
+    # Beside a device-wide field, that field still lands and no zone changes.
+    await _create_rect_zone(hass, device_id)
+    events.clear()
+    caplog.clear()
+    await _update_zone(
+        hass, {"device_id": device_id, STORE_HOLD_S: 30, ATTR_ROTATION_DEG: 15}
+    )
+
+    device = get_store(hass).devices[device_id]
+    assert device[ATTR_ROTATION_DEG] == 15
+    assert device[STORE_ZONES] == {1: {"shape": "rect", "data": RECT}}
+    assert len(events) == 1
+    assert warning in caplog.messages
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {STORE_ZONE_TYPE: "detect"},
+        {STORE_HOLD_S: 0},
+        {STORE_ZONE_TYPE: "detect", STORE_HOLD_S: 0},
+    ],
+    ids=["detect", "no_hold", "both"],
+)
+async def test_default_zone_settings_alone_are_refused(
+    hass, init_integration, device_id, caplog, settings
+) -> None:
+    """A default only forgets a stored setting, so with none stored it is a no-op."""
+    _ = init_integration
+    await _create_rect_zone(hass, device_id)
+    events = _zone_events(hass)
+
+    await _update_zone(hass, {"device_id": device_id, "zone_id": 1, **settings})
+
+    assert _stored_zone(hass, device_id) == {"shape": "rect", "data": RECT}
+    assert events == []
+    assert "carried nothing to change" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("call", "stored"),
+    [
+        (
+            {"shape": "rect", "data": RECT, STORE_ZONE_TYPE: "ignore"},
+            {"shape": "rect", "data": RECT, "zone_type": "ignore"},
+        ),
+        (
+            {"shape": "rect", "data": RECT, STORE_HOLD_S: 45},
+            {"shape": "rect", "data": RECT, "hold_s": 45},
+        ),
+        # How the card saves a setting for a zone it has not stored yet.
+        (
+            {"shape": "none", "data": None, STORE_ZONE_TYPE: "ignore"},
+            {"shape": "none", "data": None, "zone_type": "ignore"},
+        ),
+        # Defaults are never stored, not even by the call that creates a zone.
+        (
+            {"shape": "rect", "data": RECT, STORE_ZONE_TYPE: "detect", STORE_HOLD_S: 0},
+            {"shape": "rect", "data": RECT},
+        ),
+    ],
+    ids=["ignore", "hold", "card_unsaved_zone", "defaults"],
+)
+async def test_zone_settings_with_shape_create_the_zone_with_them(
+    hass, init_integration, device_id, call, stored
+) -> None:
+    """The call that creates a zone can carry its settings, and they are stored."""
+    _ = init_integration
+
+    await _update_zone(hass, {"device_id": device_id, "zone_id": 1, **call})
+
+    assert _stored_zone(hass, device_id) == stored
+    _, presence_id = _zone_entity_ids(hass, device_id)
+    attributes = hass.states.get(presence_id).attributes
+    assert attributes.get("zone_type") == stored.get("zone_type")
+    assert ("held" in attributes) == ("hold_s" in stored)
+
+
+async def test_zone_type_ignore_is_stored_and_detect_pops_it(
+    hass, init_integration, device_id
+) -> None:
+    """Ignore is stored on the zone, and detect, the default, forgets it."""
+    _ = init_integration
+    await _create_rect_zone(hass, device_id)
+    _, presence_id = _zone_entity_ids(hass, device_id)
+    _set_target(hass, TRACKED[0], 0, 1000)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "on"
+    events = _zone_events(hass)
+
+    await _update_zone(
+        hass, {"device_id": device_id, "zone_id": 1, STORE_ZONE_TYPE: "ignore"}
+    )
+
+    assert _stored_zone(hass, device_id) == {
+        "shape": "rect",
+        "data": RECT,
+        "zone_type": "ignore",
+    }
+    state = hass.states.get(presence_id)
+    assert state.state == "off"
+    assert state.attributes["zone_type"] == "ignore"
+    # Ignore counts even on a zone that already is one.
+    await _update_zone(
+        hass, {"device_id": device_id, "zone_id": 1, STORE_ZONE_TYPE: "ignore"}
+    )
+    assert len(events) == 2
+
+    await _update_zone(
+        hass, {"device_id": device_id, "zone_id": 1, STORE_ZONE_TYPE: "detect"}
+    )
+
+    assert _stored_zone(hass, device_id) == {"shape": "rect", "data": RECT}
+    state = hass.states.get(presence_id)
+    assert state.state == "on"
+    assert "zone_type" not in state.attributes
+    assert len(events) == 3
+
+
+async def test_mirror_x_true_is_stored_false_pops_it(
+    hass, init_integration, device_id
+) -> None:
+    """The flip is stored as True, and turning it off forgets the key."""
+    _ = init_integration
+    events = _zone_events(hass)
+
+    await _update_zone(hass, {"device_id": device_id, STORE_MIRROR_X: True})
+
+    assert get_store(hass).devices[device_id] == {STORE_ZONES: {}, STORE_MIRROR_X: True}
+    # Like a map unit, on counts even when the flip is already on.
+    await _update_zone(hass, {"device_id": device_id, STORE_MIRROR_X: "on"})
+    assert len(events) == 2
+
+    await _update_zone(hass, {"device_id": device_id, STORE_MIRROR_X: False})
+
+    assert get_store(hass).devices[device_id] == {STORE_ZONES: {}}
+    assert len(events) == 3
+
+
+async def test_mirror_x_false_with_nothing_stored_is_refused(
+    hass, init_integration, device_id, caplog
+) -> None:
+    """Turning off a flip that was never on mints no store entry."""
+    _ = init_integration
+    events = _zone_events(hass)
+
+    await _update_zone(hass, {"device_id": device_id, STORE_MIRROR_X: False})
+
+    assert device_id not in get_store(hass).devices
+    assert events == []
+    assert "carried nothing to change" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (True, True),
+        (False, False),
+        ("on", True),
+        ("off", False),
+        ("true", True),
+        (1, True),
+        (0, False),
+    ],
+)
+@pytest.mark.parametrize("key", [STORE_MIRROR_X, STORE_MOVEMENT_HISTORY])
+def test_schema_accepts_device_flags(key, value, expected) -> None:
+    """Both radar flags take anything Home Assistant reads as a boolean."""
+    validated = UPDATE_ZONE_SERVICE_SCHEMA({"device_id": "abc", key: value})
+    assert validated[key] is expected
+
+
+async def test_movement_history_flag_round_trip(
+    hass, init_integration, device_id, hass_storage, caplog
+) -> None:
+    """The flag is saved and loads back, and turning it off forgets it."""
+    # Off with nothing stored is a no-op, as for the flip.
+    await _update_zone(hass, {"device_id": device_id, STORE_MOVEMENT_HISTORY: False})
+    assert device_id not in get_store(hass).devices
+    assert "carried nothing to change" in caplog.text
+
+    await _update_zone(hass, {"device_id": device_id, STORE_MOVEMENT_HISTORY: True})
+    assert await hass.config_entries.async_reload(init_integration.entry_id)
+    await hass.async_block_till_done()
+
+    stored = hass_storage[ZONE_STORAGE_KEY]["data"][STORE_DEVICES][device_id]
+    assert stored[STORE_MOVEMENT_HISTORY] is True
+    assert get_store(hass).devices[device_id] == {
+        STORE_ZONES: {},
+        STORE_MOVEMENT_HISTORY: True,
+    }
+
+    await _update_zone(hass, {"device_id": device_id, STORE_MOVEMENT_HISTORY: False})
+
+    assert get_store(hass).devices[device_id] == {STORE_ZONES: {}}
+    stored = hass_storage[ZONE_STORAGE_KEY]["data"][STORE_DEVICES][device_id]
+    assert STORE_MOVEMENT_HISTORY not in stored
+
+
+async def test_movement_history_off_clears_history(
+    hass, init_integration, device_id, hass_storage
+) -> None:
+    """Turning movement history off deletes the radar's history and its file."""
+    _ = init_integration
+    await _update_zone(hass, {"device_id": device_id, STORE_MOVEMENT_HISTORY: True})
+    _set_target(hass, TRACKED[0], 1371, 2903)
+    await hass.async_block_till_done()
+    history = hass.data[DOMAIN][DATA_MOVEMENT]
+    assert history.count(device_id) == 1
+    # Past the routine save delay, so the history is on disk.
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=61))
+    await hass.async_block_till_done()
+    assert device_id in hass_storage[MOVEMENT_STORAGE_KEY]["data"]["devices"]
+
+    await _update_zone(hass, {"device_id": device_id, STORE_MOVEMENT_HISTORY: False})
+    await hass.async_block_till_done(wait_background_tasks=True)
+
+    assert history.count(device_id) == 0
+    assert MOVEMENT_STORAGE_KEY not in hass_storage
+    # The target still in view is not recorded any more.
+    _set_target(hass, TRACKED[0], 1500, 2500)
+    await hass.async_block_till_done()
+    assert history.count(device_id) == 0
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {},
+        {"zone_id": 1, "shape": "rect", "data": MOVED},
+        {"zone_id": 1, "delete": True},
+    ],
+    ids=["alone", "with_a_redraw", "with_a_delete"],
+)
+async def test_turning_movement_history_off_saves_the_zone_store_at_once(
+    hass, init_integration, device_id, hass_storage, extra
+) -> None:
+    """The off state is on disk before the movement history is deleted."""
+    _ = init_integration
+    await _create_rect_zone(hass, device_id)
+    await _update_zone(hass, {"device_id": device_id, STORE_MOVEMENT_HISTORY: True})
+    # Turning it on waits for the save delay; written out here, the file shows
+    # it on before the call under test.
+    await get_store(hass).async_save()
+    stored = hass_storage[ZONE_STORAGE_KEY]["data"][STORE_DEVICES][device_id]
+    assert stored[STORE_MOVEMENT_HISTORY] is True
+    # What the movement history, or any listener, finds on disk when the zone
+    # signal reaches it: it deletes the radar's positions in answer.
+    flag_on_disk_at_signal: list[bool] = []
+
+    @callback
+    def _zones_updated(_device_id: str) -> None:
+        stored = hass_storage[ZONE_STORAGE_KEY]["data"][STORE_DEVICES][device_id]
+        flag_on_disk_at_signal.append(STORE_MOVEMENT_HISTORY in stored)
+
+    async_dispatcher_connect(hass, SIGNAL_ZONES_UPDATED, _zones_updated)
+
+    # No time passes, so only a write made by the call itself shows it off.
+    await _update_zone(
+        hass, {"device_id": device_id, STORE_MOVEMENT_HISTORY: False, **extra}
+    )
+
+    assert flag_on_disk_at_signal == [False]
+    stored = hass_storage[ZONE_STORAGE_KEY]["data"][STORE_DEVICES][device_id]
+    assert STORE_MOVEMENT_HISTORY not in stored
+
+
+async def test_name_on_the_creating_call_reaches_the_registry(
+    hass, init_integration, device_id
+) -> None:
+    """A name sent with the call that creates a zone names its entities too."""
+    _ = init_integration
+    await _update_zone(
+        hass,
+        {
+            "device_id": device_id,
+            "zone_id": 1,
+            "shape": "rect",
+            "data": RECT,
+            "name": "Couch",
+        },
+    )
+
+    registry = er.async_get(hass)
+    sensor_id, presence_id = _zone_entity_ids(hass, device_id)
+    assert registry.async_get(sensor_id).name == "Zone 1 - Couch"
+    assert registry.async_get(presence_id).name == "Zone 1 presence - Couch"
+    assert hass.states.get(sensor_id).attributes["friendly_name"] == "Zone 1 - Couch"
+    assert (
+        hass.states.get(presence_id).attributes["friendly_name"]
+        == "Zone 1 presence - Couch"
+    )
+
+
+async def test_default_name_on_the_creating_call_leaves_registry_names_alone(
+    hass, init_integration, device_id
+) -> None:
+    """Add Zone's default name is stored but never makes "Zone 1 - Zone 1"."""
+    _ = init_integration
+    # The payload the card's Add Zone button sends.
+    await _update_zone(
+        hass,
+        {
+            "device_id": device_id,
+            "zone_id": 1,
+            "shape": "none",
+            "data": None,
+            "name": "Zone 1",
+            "input_units": "mm",
+        },
+    )
+
+    assert _stored_zone(hass, device_id)["name"] == "Zone 1"
+    registry = er.async_get(hass)
+    sensor_id, presence_id = _zone_entity_ids(hass, device_id)
+    assert registry.async_get(sensor_id).name is None
+    assert registry.async_get(presence_id).name is None
+
+    # Drawing the zone's shape later carries the name and leaves them alone too.
+    await _update_zone(
+        hass, {"device_id": device_id, "zone_id": 1, "shape": "rect", "data": RECT}
+    )
+    assert registry.async_get(sensor_id).name is None
+
+    # A name the user gives it still reaches the registry.
+    await _rename_zone(hass, device_id, "Couch")
+    assert registry.async_get(sensor_id).name == "Zone 1 - Couch"
+    assert registry.async_get(presence_id).name == "Zone 1 presence - Couch"

@@ -1,6 +1,6 @@
 update_zone:
   name: Update Zone
-  description: "Create, update, clear, or delete a zone. Geometry is in millimeters (Y-down). To clear a zone set shape: none (data may be omitted or null); data without a shape is ignored. Set delete: true to remove the zone and its entities. Rotation and tracked entities are device-wide and can be updated without zone_id."
+  description: "Create, update, clear, or delete a zone. Geometry is in millimeters (Y-down). To clear a zone set shape: none (data may be omitted or null); data without a shape is ignored. Set delete: true to remove the zone and its entities. Rotation, tracked entities, map units, mirror_x and movement_history are device-wide and can be updated without zone_id."
   fields:
     device_id:
       name: Radar Device
@@ -79,6 +79,38 @@ update_zone:
             - auto
             - m
             - ft
+    zone_type:
+      name: Zone Type
+      description: "detect (the default) turns the zone's presence sensor on while a tracked target is inside it. ignore drops every target inside this zone before the radar's other zones are checked, so a fan or a curtain there turns no zone on; an ignore zone's own presence sensor always reads off. This is a mask in Home Assistant, not the LD2450 Zone Type setting of the R PRO-1 or MTR-1, and nothing is written to the radar. Needs zone_id."
+      required: false
+      selector:
+        select:
+          options:
+            - detect
+            - ignore
+    hold_s:
+      name: Hold Time (seconds)
+      description: "How long the zone stays on after someone inside it goes still and the radar loses them, 0 to 3600 seconds; 0, the default, turns the zone off as soon as nobody is in it. The zone still turns off at once if everyone who was inside is accounted for: they vanished while walking near the zone's edge or the edge of the radar's view (taken as 6 m and 120 degrees), or the radar tracks a target outside the zone within 0.6 m of where they were, plus 1.6 m for each second since, during the first 3 seconds. Anyone else in view counts, so other people moving within about 5 m can end a hold early. A hold also ends when someone is in the zone again, when the radar goes offline or reconnects, and at a restart. Detect zones only. Needs zone_id."
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 3600
+          step: 1
+          unit_of_measurement: s
+          mode: box
+    mirror_x:
+      name: Flip Map Left to Right
+      description: "Draw this radar's zone map mirrored left to right for everyone who opens it. Turn this on if a dot moves the opposite way from you. Display only: zone geometry and presence are not affected. Device-wide."
+      required: false
+      selector:
+        boolean: {}
+    movement_history:
+      name: Movement History
+      description: "Keep up to 24 hours of this radar's target positions so an administrator can replay them on the zone map. Stored in Home Assistant's .storage folder, so backups include them, and never in the support file. Turning it off deletes this radar's history from Home Assistant; backups made while it was on keep their copy. Device-wide."
+      required: false
+      selector:
+        boolean: {}
     rotation_deg:
       name: Rotation Angle (deg)
       description: "Optional device rotation angle (-180..180). Positive degrees swing the device's facing direction toward its right (+X): 90 maps (x, y) to (y, -x), so a target straight ahead at (0, d) lands at (d, 0). Device-wide; if provided without zone fields, only the angle is updated for the device."

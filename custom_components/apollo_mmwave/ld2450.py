@@ -39,7 +39,13 @@ from homeassistant.core import callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 
-from .const import DATA_PAIR_CACHE, DOMAIN, SIGNAL_ZONES_UPDATED, STORE_ENTITIES
+from .const import (
+    DATA_PAIR_CACHE,
+    DOMAIN,
+    SIGNAL_ZONES_PAYLOAD,
+    SIGNAL_ZONES_UPDATED,
+    STORE_ENTITIES,
+)
 
 if TYPE_CHECKING:
     from homeassistant.core import CALLBACK_TYPE, Event, HomeAssistant
@@ -125,6 +131,18 @@ def async_track_target_pairs(hass: HomeAssistant) -> CALLBACK_TYPE:
     @callback
     def _registry_updated(event: Event[Any]) -> None:
         entity_id = event.data["entity_id"]
+        # Only an entity id change carries old_entity_id; a zone rename changes
+        # the registry name alone and is pushed by the edit itself.
+        if event.data.get("action") == "update" and "old_entity_id" in event.data:
+            entry = er.async_get(hass).async_get(entity_id)
+            if entry is not None and entry.platform == DOMAIN and entry.device_id:
+                # The card lights a zone by its presence entity id, so a renamed
+                # id must reach it. Only the websocket forwarders listen: the
+                # platforms and the recorder have nothing to redo, and Home
+                # Assistant is removing and re-adding the renamed entity at
+                # this moment, which a platform sync must not race.
+                async_dispatcher_send(hass, SIGNAL_ZONES_PAYLOAD, entry.device_id)
+                return
         # A rename also reports the id the entity had before, and a pair cached
         # under that id is just as stale as one under the new id.
         ids = {entity_id, event.data.get("old_entity_id")} - {None}

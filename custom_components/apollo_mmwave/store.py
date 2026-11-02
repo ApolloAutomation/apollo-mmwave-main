@@ -13,15 +13,32 @@ in-memory shape is::
 
     devices = {
         "<ha_device_id>": {
-            "zones": {1: {"shape": ..., "data": ..., "name": ...}, ...},
+            "zones": {
+                1: {
+                    "shape": ..., "data": ..., "name": ...,
+                    "zone_type": "ignore",  # optional; absent means detect
+                    "hold_s": 30,  # optional, 1 to 3600; absent means no hold
+                },
+                ...
+            },
             "entities": [{"x": "<entity_id>", "y": "<entity_id>"}, ...],  # optional
             "rotation_deg": 0,          # optional
             "label": "Apollo R_PRO-1 abc123",   # optional, display only
             "aliases": ["Kitchen"],   # optional, other merged v1 names
             "input_units": "mm",  # optional; absent means millimeters
             "display_units": "ft",  # optional, "m" or "ft"; display only
+            "mirror_x": True,  # optional, only ever True; display only
+            "movement_history": True,  # optional, only ever True
         },
     }
+
+A default is never stored: ``zone_type``, ``hold_s``, ``mirror_x`` and
+``movement_history`` are absent while they are at theirs (detect, no hold,
+off, off). Zone dicts load verbatim, so a hand edit can leave anything in
+``zone_type`` or ``hold_s``; ``zone_type_of`` and ``zone_hold_s`` read what
+the service could not have written as the default, and every reader goes
+through them. The two radar flags load only when they are exactly ``True``,
+and ``device_flag`` reads them.
 
 ``entities`` is three-valued on purpose. Absent means the user never picked
 coordinate sensors, and readers fall back to the device's own LD2450 targets.
@@ -45,6 +62,7 @@ zones.
 from __future__ import annotations
 
 import logging
+import math
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.helpers import device_registry as dr
@@ -56,15 +74,22 @@ from .const import (
     ATTR_ROTATION_DEG,
     DISPLAY_UNITS,
     DOMAIN,
+    HOLD_S_MAX,
     INPUT_UNIT_FACTORS,
     STORE_ALIASES,
     STORE_DEVICES,
     STORE_DISPLAY_UNITS,
     STORE_ENTITIES,
+    STORE_HOLD_S,
     STORE_INPUT_UNITS,
     STORE_LABEL,
+    STORE_MIRROR_X,
+    STORE_MOVEMENT_HISTORY,
     STORE_ORPHANS,
+    STORE_ZONE_TYPE,
     STORE_ZONES,
+    ZONE_TYPE_DETECT,
+    ZONE_TYPE_IGNORE,
 )
 
 if TYPE_CHECKING:
@@ -81,6 +106,41 @@ def _empty_device() -> dict[str, Any]:
     # No `entities` key: a new device has never been configured, which is a
     # different thing from having been configured with nothing.
     return {STORE_ZONES: {}}
+
+
+def zone_type_of(zone_def: Any) -> str:
+    """Return "ignore" for an ignore zone, else "detect"."""
+    # Only the exact value the service stores makes a mask. Anything else a
+    # hand edit left keeps the zone detecting, as zones did before the key.
+    if isinstance(zone_def, dict) and zone_def.get(STORE_ZONE_TYPE) == ZONE_TYPE_IGNORE:
+        return ZONE_TYPE_IGNORE
+    return ZONE_TYPE_DETECT
+
+
+def zone_hold_s(zone_def: Any) -> int:
+    """
+    Return a zone's hold time in whole seconds, or 0 for no hold.
+
+    An int or a finite float above 0 counts, truncated to whole seconds the
+    way the service reads one and capped at HOLD_S_MAX. Anything else, such as
+    a bool, a str, nan or a negative number, is 0.
+    """
+    if not isinstance(zone_def, dict):
+        return 0
+    value = zone_def.get(STORE_HOLD_S)
+    # A bool is an int to Python, but True is no number of seconds anyone set.
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return 0
+    if isinstance(value, float) and not math.isfinite(value):
+        return 0
+    if value <= 0:
+        return 0
+    return min(int(value), HOLD_S_MAX)
+
+
+def device_flag(entry: Any, key: str) -> bool:
+    """Report whether a radar's flag is on: entry[key] is exactly True."""
+    return isinstance(entry, dict) and entry.get(key) is True
 
 
 def resolve_device_id(hass: HomeAssistant, location: str, entities: Any) -> str | None:
@@ -319,6 +379,12 @@ def _parse_entry(raw: Any, device_id: str | None = None) -> dict[str, Any] | Non
     display_units = raw.get(STORE_DISPLAY_UNITS)
     if isinstance(display_units, str) and display_units in DISPLAY_UNITS:
         entry[STORE_DISPLAY_UNITS] = display_units
+    # Absent means off, and only the True the service stores turns a flag on.
+    # A hand-edited "true" or 1 is dropped rather than guessed at, so nothing
+    # starts keeping positions that no administrator turned on.
+    for flag in (STORE_MIRROR_X, STORE_MOVEMENT_HISTORY):
+        if raw.get(flag) is True:
+            entry[flag] = True
     return entry
 
 

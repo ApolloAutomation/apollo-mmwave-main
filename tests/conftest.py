@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
+import struct
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import timedelta
 from functools import partial
+from itertools import accumulate, pairwise
 from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
@@ -786,3 +789,66 @@ def calibration_rig(paced_rig, fast_writes) -> CalibrationRig:
     """Return the rig with the three real-time sleeps zeroed."""
     _ = fast_writes
     return paced_rig
+
+
+# ---------------------------------------------------------------------------
+# Movement history columns, packed and read the way the spec describes them
+# (little-endian, dt uint32, s, x and y int16, base64), independently of
+# movement.py.
+# ---------------------------------------------------------------------------
+
+# The get answer's example columns, SPEC section 1.5, and the records they
+# decode to as (epoch ms, slot or -1 - slot, x mm, y mm).
+MOVEMENT_EXAMPLE: dict[str, Any] = {
+    "t0": 1767225590000,
+    "n": 4,
+    "dt": "AAAAAPQBAAAAAgAAjDoAAA==",
+    "s": "AAAAAAEA//8=",
+    "x": "eACqAOD8AAA=",
+    "y": "YAlqCRwMAAA=",
+}
+MOVEMENT_EXAMPLE_RECORDS = [
+    (1767225590000, 0, 120, 2400),
+    (1767225590500, 0, 170, 2410),
+    (1767225591012, 1, -800, 3100),
+    (1767225606000, -1, 0, 0),
+]
+_MOVEMENT_CODES = (("dt", "I"), ("s", "h"), ("x", "h"), ("y", "h"))
+
+
+def unpack_movement(columns: dict[str, Any]) -> list[tuple[int, int, int, int]]:
+    """Return the (t, s, x, y) records of packed movement columns, oldest first."""
+    count = columns["n"]
+    # struct refuses a column whose length does not match n.
+    dt, s, x, y = (
+        struct.unpack(f"<{count}{code}", base64.b64decode(columns[key], validate=True))
+        for key, code in _MOVEMENT_CODES
+    )
+    if not count:
+        assert columns["t0"] is None
+        return []
+    times = accumulate(dt[1:], initial=columns["t0"])
+    return list(zip(times, s, x, y, strict=True))
+
+
+def pack_movement(records: list[tuple[int, int, int, int]]) -> dict[str, Any]:
+    """Return (t, s, x, y) records, oldest first, as packed movement columns."""
+    times = [record[0] for record in records]
+    values = {
+        "dt": [0, *(later - earlier for earlier, later in pairwise(times))]
+        if records
+        else [],
+        "s": [record[1] for record in records],
+        "x": [record[2] for record in records],
+        "y": [record[3] for record in records],
+    }
+    return {
+        "t0": times[0] if records else None,
+        "n": len(records),
+        **{
+            key: base64.b64encode(
+                struct.pack(f"<{len(values[key])}{code}", *values[key])
+            ).decode("ascii")
+            for key, code in _MOVEMENT_CODES
+        },
+    }
