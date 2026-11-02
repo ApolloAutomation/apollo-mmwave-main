@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import itertools
 import math
+from typing import TYPE_CHECKING
 
 import pytest
 
 from custom_components.apollo_mmwave.hold import (
+    HOLD_FIRST_SEEN_S,
     HoldTracker,
     Occupant,
     Reading,
@@ -14,6 +17,9 @@ from custom_components.apollo_mmwave.hold import (
     edge_distance_mm,
     half_vanished,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
 
 # Zone 1 of the entity tests: 2 m wide, from the radar out to 2 m.
 RECT = {"x_min": -1000, "x_max": 1000, "y_min": 0, "y_max": 2000}
@@ -31,7 +37,8 @@ L_SHAPE = {
         {"x": 0, "y": 2000},
     ]
 }
-# Readings 0.35 s apart: about what the radar reports while someone walks.
+# Readings 0.35 s apart, X and Y together: a radar reporting far more often
+# than the R PRO-1's LD2450, which writes each axis about once a second.
 STEP_S = 0.35
 # Toward RECT's right edge, 150 mm a step, ending 50 mm from it at 1.75 s.
 WALK_TO_RIGHT_EDGE = [(200 + 150 * step, 1000) for step in range(6)]
@@ -56,6 +63,47 @@ def _walked(points: list[tuple[float, float]], step_s: float = STEP_S) -> Occupa
     for index, point in enumerate(points[1:], start=1):
         person.update(_reading(0, *point), index * step_s)
     return person
+
+
+# The R PRO-1's LD2450 writes each axis about once a second, Y about 0.45 s
+# after X, so the next X lands about 0.62 s after a Y.
+X_TO_Y_S = 0.45
+Y_TO_X_S = 0.62
+
+
+def _x_then_y(
+    position: Callable[[float], tuple[float, float]], until_s: float
+) -> list[tuple[float, float, float, str]]:
+    """
+    Return (t, x, y, axis written) as presence reads a target, until until_s.
+
+    Both axes at time 0, then X and Y in turn, each written at its own time with
+    the target's position then.
+    """
+    t, (x, y) = 0.0, position(0.0)
+    readings = [(t, x, y, "xy")]
+    while True:
+        t += Y_TO_X_S
+        if t > until_s:
+            return readings
+        x = position(t)[0]
+        readings.append((t, x, y, "x"))
+        t += X_TO_Y_S
+        if t > until_s:
+            return readings
+        y = position(t)[1]
+        readings.append((t, x, y, "y"))
+
+
+def _followed(
+    readings: list[tuple[float, float, float, str]],
+) -> Iterator[tuple[float, str, Occupant]]:
+    """Feed slot 0's readings to one person, yielding them after each write."""
+    t, x, y, _axis = readings[0]
+    person = Occupant.first(_reading(0, x, y), t)
+    for t, x, y, axis in readings[1:]:
+        person.update(_reading(0, x, y), t)
+        yield t, axis, person
 
 
 def _occupied(points: list[tuple[float, float]]) -> HoldTracker:
@@ -227,6 +275,40 @@ def test_motion_needs_fresh_evidence() -> None:
     # still, which holds the zone.
     sparse = _walked([(0, 1000), (0, 1800), (0, 2600)], step_s=1.5)
     assert not sparse.moving_at(3.0)
+
+
+def test_jitter_at_one_reading_a_second_is_not_motion() -> None:
+    """A still person's reading changes about once a second; jitter is not motion."""
+    writes = itertools.count()
+
+    def position(_t: float) -> tuple[float, float]:
+        # Up to 40 mm either way on each axis, new at every write.
+        index = next(writes)
+        return 300 + 40 * math.sin(2.4 * index), 2000 + 40 * math.sin(1.7 * index + 1)
+
+    for t, _axis, person in _followed(_x_then_y(position, 30.0)):
+        if t - person.first_seen >= HOLD_FIRST_SEEN_S:
+            assert not person.moving_at(t), t
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="rule 2 is tuned for 0.35 s steps; see the hold retune question",
+)
+def test_motion_with_x_then_y_half_a_second_later_counts() -> None:
+    """Walking at 1.2 m/s reads as moving after a Y write, not only after an X."""
+
+    def position(t: float) -> tuple[float, float]:
+        return -1000 + 720 * t, 1000 + 960 * t
+
+    after_y = [
+        person.moving_at(t)
+        for t, axis, person in _followed(_x_then_y(position, 6.0))
+        if axis == "y" and t >= 2.5
+    ]
+
+    assert after_y
+    assert all(after_y)
 
 
 def test_first_seen_counts_as_moving() -> None:
