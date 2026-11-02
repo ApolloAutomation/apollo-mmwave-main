@@ -88,7 +88,8 @@ STORAGE_VERSION = 1
 STORAGE_KEY = f"{DOMAIN}.movement"
 
 # A slot's new point is recorded once it is this far from its last one;
-# anything closer is the radar's jitter.
+# anything closer is the radar's jitter. On an R PRO-1, a still object it
+# tracked gave 53 records in 10 minutes, where the heartbeat alone gives 40.
 MOVEMENT_MIN_MOVE_MM = 50
 # A slot's points are at least this far apart, so a walk is kept as two
 # points a second. Gone markers are never held back.
