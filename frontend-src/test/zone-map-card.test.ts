@@ -7890,6 +7890,38 @@ describe("zone map card walk", () => {
     });
   });
 
+  it("scales the dashed preview and the rings' lines with the card", async () => {
+    // At 326 CSS px a backing px is about 0.4 CSS px, so 3 px lines drew
+    // about 1.2 CSS px wide on a phone, faint beside the trails and dots.
+    const { card, at } = await walkCard();
+    layOut(card, 326);
+    $(card, "btnModeWalk").click();
+    markCorner(card, at, -3000, 1000);
+    markCorner(card, at, -1000, 3000);
+
+    const draws = frame(card);
+
+    const scale = card._frameScale;
+    expect(scale).toBeCloseTo(800 / 326, 9);
+    // The two-corner preview is the frame's only rect path: its dash is set
+    // just before it, and its stroke follows it.
+    const rect = draws.findIndex((d) => d.name === "rect");
+    expect(rect).toBeGreaterThan(-1);
+    const dash = draws
+      .slice(0, rect)
+      .filter((d) => d.name === "setLineDash")
+      .pop();
+    expect(dash?.args[0]).toEqual([10 * scale, 6 * scale]);
+    const preview = draws.slice(rect).find((d) => d.name === "stroke");
+    expect(preview?.lineWidth).toBe(3 * scale);
+    // Each ring, as wide in CSS px as at the desktop's 1:1.
+    const r = Math.max(14, Math.round(14 * scale));
+    const ringStrokes = draws.filter(
+      (d, i) => d.name === "stroke" && draws[i - 1]?.name === "arc" && draws[i - 1].args[2] === r
+    );
+    expect(ringStrokes.map((d) => d.lineWidth)).toEqual([3 * scale, 3 * scale]);
+  });
+
   it("keeps the corners in the radar's own frame through a rotation change", async () => {
     const { card, hass, at } = await walkCard();
     $(card, "btnModeWalk").click();

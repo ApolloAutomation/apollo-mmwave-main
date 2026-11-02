@@ -5237,7 +5237,9 @@ export class ZoneMapCard extends HTMLElement {
   /**
    * The zone the corners walked so far make, dashed: two as the rectangle
    * between them, three or more as the polygon through them in walking
-   * order. _drawWalkReadout gives its size.
+   * order. _drawWalkReadout gives its size. Its line and dash follow the
+   * card's width, as the rings, trails and dots do, so they do not thin out
+   * on a phone.
    */
   _drawWalkPreview(ctx) {
     const corners = this._walkMapCorners();
@@ -5246,13 +5248,14 @@ export class ZoneMapCard extends HTMLElement {
       x: this.valueToPixels(c.x, 'x'),
       y: this.valueToPixels(c.y, 'y'),
     }));
+    const scale = this._frameScale || 1;
     ctx.save();
     ctx.strokeStyle = this.darkMode
       ? COLOR.canvas.polygonStrokeDark
       : COLOR.canvas.polygonStrokeLight;
-    ctx.lineWidth = 3;
+    ctx.lineWidth = 3 * scale;
     // A dash of its own, apart from a drawn shape's rubber band and a zone.
-    ctx.setLineDash([10, 6]);
+    ctx.setLineDash([10 * scale, 6 * scale]);
     ctx.beginPath();
     if (points.length === 2) {
       const [a, b] = points;
@@ -5360,7 +5363,7 @@ export class ZoneMapCard extends HTMLElement {
     const plate = this.darkMode ? COLOR.ui.darkCanvasBackground : COLOR.ui.lightCanvasBackground;
     const pad = 2 * scale;
     ctx.save();
-    ctx.lineWidth = 3;
+    ctx.lineWidth = 3 * scale;
     ctx.font = `bold ${r}px sans-serif`;
     ctx.textAlign = 'left';
     ctx.textBaseline = 'bottom';
