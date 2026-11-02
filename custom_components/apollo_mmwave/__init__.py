@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 from typing import TYPE_CHECKING, Any
@@ -734,7 +735,7 @@ def _write_zone_geometry(
 def _build_update_zone_handler(
     hass: HomeAssistant,
 ) -> Callable[[ServiceCall], Coroutine[Any, Any, None]]:
-    async def handle_update_zone(call: ServiceCall) -> None:
+    async def update_zone(call: ServiceCall) -> None:
         store = get_store(hass)
         device_id = _resolve_target_device(hass, store, call)
         if device_id is None:
@@ -794,6 +795,18 @@ def _build_update_zone_handler(
             # zone's entities inside it, so a name sent with the call that
             # creates the zone reaches the registry too.
             _update_registry_names(hass, device_id, zone_id, registry_name)
+
+    # One call at a time. Turning movement history off saves the zone store
+    # before the zone signal that deletes the history, and that save is the
+    # only await above: a call run inside it, such as a second administrator
+    # turning history back on, would set the flag again before that signal,
+    # which then keeps the history the first call was to delete, or would
+    # send its own zone signal while the off state is not yet on disk.
+    lock = asyncio.Lock()
+
+    async def handle_update_zone(call: ServiceCall) -> None:
+        async with lock:
+            await update_zone(call)
 
     return handle_update_zone
 

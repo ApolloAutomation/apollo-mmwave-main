@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
@@ -2537,6 +2538,64 @@ async def test_movement_history_off_clears_history(
     _set_target(hass, TRACKED[0], 1500, 2500)
     await hass.async_block_till_done()
     assert history.count(device_id) == 0
+
+
+async def test_movement_history_off_then_on_concurrently_deletes_the_old_history(
+    hass, init_integration, device_id, monkeypatch
+) -> None:
+    """An on call made while an off call saves runs after it: the history goes."""
+    _ = init_integration
+    await _update_zone(hass, {"device_id": device_id, STORE_MOVEMENT_HISTORY: True})
+    # Someone walked by: a point and a gone marker.
+    _set_target(hass, TRACKED[0], 1371, 2903)
+    await hass.async_block_till_done()
+    _set_target(hass, TRACKED[0], 0, 0)
+    await hass.async_block_till_done()
+    history = hass.data[DOMAIN][DATA_MOVEMENT]
+    assert history.count(device_id) == 2
+    # The off call's save of the zone store waits on the disk, as on a slow
+    # SD card.
+    zone_file = get_store(hass)._store  # noqa: SLF001 - its Store
+    writing, written = asyncio.Event(), asyncio.Event()
+    real_write = zone_file._async_write_data  # noqa: SLF001 - the write itself
+
+    async def _slow_write(data: dict) -> None:
+        writing.set()
+        await written.wait()
+        await real_write(data)
+
+    monkeypatch.setattr(zone_file, "_async_write_data", _slow_write)
+
+    off = hass.async_create_task(
+        hass.services.async_call(
+            DOMAIN,
+            SERVICE_UPDATE_ZONE,
+            {"device_id": device_id, STORE_MOVEMENT_HISTORY: False},
+            blocking=True,
+        )
+    )
+    await writing.wait()
+    # Meanwhile another administrator, or a quick second tick, turns it on.
+    on = hass.async_create_task(
+        hass.services.async_call(
+            DOMAIN,
+            SERVICE_UPDATE_ZONE,
+            {"device_id": device_id, STORE_MOVEMENT_HISTORY: True},
+            blocking=True,
+        )
+    )
+    for _ in range(10):
+        await asyncio.sleep(0)
+    written.set()
+    await asyncio.gather(off, on)
+    await hass.async_block_till_done(wait_background_tasks=True)
+
+    assert get_store(hass).devices[device_id][STORE_MOVEMENT_HISTORY] is True
+    # Nothing from before the off call is left, and recording goes on.
+    assert history.count(device_id) == 0
+    _set_target(hass, TRACKED[0], 1500, 2500)
+    await hass.async_block_till_done()
+    assert history.count(device_id) == 1
 
 
 @pytest.mark.parametrize(
