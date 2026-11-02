@@ -19,17 +19,21 @@ left unaccounted for:
    emptied, gets the growing radius: a target the radar was already
    tracking elsewhere then, someone else or a still object, counts only
    within 600 mm.
-2. Walked out: the person was walking when the zone emptied and was last
-   seen near the zone's edge or the edge of the radar's view, or heading
-   for one: within 300 mm of it, or of a point on their way on from their
-   last report along their last step, up to what their speed covers from
-   that report to the loss and 0.75 s more, and at most 1.2 m on. An edge
-   behind or beside them counts only within 300 mm, and so does every edge
-   when their last step is under 250 mm. Walking means two steps in a row
-   of at least 250 mm between their own reports 0.9 s or more apart, or
-   one step at 850 mm/s or more. The LD2450's jump of about 0.5 m in its
-   last report before it loses someone sitting still is one slower step,
-   so it holds.
+2. Walked out: the person was moving when the zone emptied and was last
+   seen near the zone's edge or the edge of the radar's view, or, walking,
+   heading for one: within 300 mm of it, or of a point on their way on
+   from their last report along their last step, up to what their speed
+   covers from that report to the loss and 0.75 s more, and at most 1.2 m
+   on. An edge behind or beside them counts only within 300 mm. Walking
+   means two steps in a row of at least 250 mm between their own reports
+   0.9 s or more apart, or one step at 850 mm/s or more. The LD2450's jump
+   of about 0.5 m in its last report before it loses someone sitting still
+   is one slower step, so it holds. Someone first seen inside under 1.2 s
+   before counts as moving too, but unless their steps show walking only
+   the 300 mm around their last report counts for them, as in 2.4.0b1:
+   someone who walks into a couch or bed zone and is lost as they sit
+   down is held, and so, often, is someone who walks slowly through a
+   zone and out of view that soon.
 
 The numbers are tuned for the LD2450 of an R PRO-1 on firmware 26.10.21.1,
 which writes each axis about once a second, Y usually about 0.45 s after X,
@@ -100,7 +104,10 @@ HOLD_MOTION_FRESH_S = 1.6
 # measure motion, which reads as still: the hold is the safe side. Two steps
 # take about 2.1 s, and this leaves room for a report that was skipped.
 HOLD_MOTION_WINDOW_S = 3.5
-# A target seen inside for less than this counts as moving.
+# A target seen inside for less than this counts as moving. Unless its steps
+# show walking (below), that is no way on: only HOLD_EXIT_MARGIN_MM around
+# its last report counts, so someone lost as they sit down after a short
+# walk in is held.
 HOLD_FIRST_SEEN_S = 1.2
 # After that, moving means two steps in a row of at least this, well past
 # the LD2450's jitter of a still target. The radar can jump about 0.5 m in
@@ -112,11 +119,12 @@ HOLD_MOVE_MIN_MM = 250.0
 # one report only.
 HOLD_BRISK_MM_PER_S = 850.0
 # How near an edge a moving person has to be lost to count as walking out:
-# this, plus, for an edge ahead of them along their last step, how far they
-# walk at their speed between their last report and the loss, and for
-# HOLD_AXIS_LAG_S more, the most by which the axis that report did not write
-# can be older (from a Y write to the next X), up to HOLD_EXIT_MARGIN_MAX_MM.
-# An edge behind or beside them gets no more than this.
+# this, plus, for someone walking and an edge ahead of them along their last
+# step, how far they walk at their speed between their last report and the
+# loss, and for HOLD_AXIS_LAG_S more, the most by which the axis that report
+# did not write can be older (from a Y write to the next X), up to
+# HOLD_EXIT_MARGIN_MAX_MM. An edge behind or beside them, and every edge for
+# someone moving only by HOLD_FIRST_SEEN_S, gets no more than this.
 HOLD_EXIT_MARGIN_MM = 300.0
 HOLD_EXIT_MARGIN_MAX_MM = 1500.0
 HOLD_AXIS_LAG_S = 0.75
@@ -278,14 +286,13 @@ class Occupant:
         seen_t, here, here_raw = self.reports[-1]
         path = [(here, here_raw)]
         before = self._report_by(seen_t - HOLD_ANCHOR_STEP_S)
-        if before is None:
+        if before is None or not self._walking():
+            # Moving only because they were seen inside for under
+            # HOLD_FIRST_SEEN_S: their last step, jitter or someone walking
+            # in to sit down, is no way to have walked on.
             return path
         _before_t, before_map, before_raw = before
         step = math.dist(here, before_map)
-        if step < HOLD_MOVE_MIN_MM:
-            # Jitter, from someone seen inside for under HOLD_FIRST_SEEN_S,
-            # is no way to have walked on.
-            return path
         # On from their last report the way their last step went, not toward
         # an edge behind or beside them. Each frame moves along its own step,
         # so the view's edge is still measured in the raw frame whatever the

@@ -2667,6 +2667,38 @@ async def test_walking_into_the_room_and_lost_there_holds(
     assert released == []
 
 
+@pytest.mark.parametrize("lost_after_s", [0.5, 1.0])
+async def test_sitting_down_after_a_short_walk_into_the_couch_holds(
+    hass, freezer, entity_registry, setup_entry_with_zone, lost_after_s
+) -> None:
+    """Seen inside for about a second, then lost as they sit: they are held."""
+    # In from the room at 0.7 m/s, 1 m into the couch to its middle, 1 m
+    # from its far edge, and lost 0.5 s or 1 s after sitting. Someone seen
+    # inside that briefly counts as moving, but their last step, which
+    # points at the far edge, carries them nowhere: no step was 850 mm/s.
+    device_id, _ = setup_entry_with_zone
+    presence_id = _presence_id(entity_registry, device_id)
+    path, arrive_s = _sit_then_walk((0.0, 3000.0), COUCH_SEAT, 0.7, 10)
+    released = []
+    for index, phase_s in enumerate(RADAR_PHASES_S):
+        for y_lag, y_lag_s in Y_LAGS.items():
+            await _restart_hold(hass, device_id, _hold_zone(COUCH_ZONE))
+            await _report_at_radar_cadence(
+                hass,
+                freezer,
+                TARGET_1,
+                (_jittered(path, start=7 * index), arrive_s + lost_after_s),
+                Cadence(y_lag_s, phase_s),
+            )
+            assert _hold_state(hass, presence_id) == ("on", False)
+            await _lose(hass, TARGET_1)
+            await _advance(hass, freezer, 5)
+            if _hold_state(hass, presence_id) != ("on", True):
+                released.append((round(phase_s, 2), y_lag))
+
+    assert released == []
+
+
 async def test_a_brisk_walk_out_into_view_turns_off_as_it_leaves(
     hass, freezer, entity_registry, setup_entry_with_zone
 ) -> None:

@@ -596,6 +596,24 @@ def test_a_jitter_size_step_carries_nobody_on() -> None:
     assert tracker.step(1.95, [], [], "rect", RECT)
 
 
+def test_a_first_seen_step_that_is_no_walk_carries_nobody_on() -> None:
+    """Moving only by the first-seen rule, they walked out only within 300 mm."""
+    # Seen inside for 1 s, at one report a second: 600 mm in toward the far
+    # edge, then lost 0.5 s later 600 mm from it. That step's 600 mm/s would
+    # carry them 750 mm on, past the edge, but they are not walking: someone
+    # who walked in to sit down.
+    tracker = HoldTracker()
+    assert tracker.step(0.0, [_reading(0, 0, 800)], [], "rect", RECT)
+    assert tracker.step(1.0, [_reading(0, 0, 1400)], [], "rect", RECT)
+    assert tracker.step(1.5, [], [], "rect", RECT)
+
+    # A step at 850 mm/s or more is walking, first seen or not.
+    tracker = HoldTracker()
+    assert tracker.step(0.0, [_reading(0, 0, 500)], [], "rect", RECT)
+    assert tracker.step(1.0, [_reading(0, 0, 1400)], [], "rect", RECT)
+    assert not tracker.step(1.5, [], [], "rect", RECT)
+
+
 def test_someone_inside_again_ends_the_hold() -> None:
     """The people inside now are the only ones a later emptying accounts for."""
     tracker = _occupied([(0, 1000)])
