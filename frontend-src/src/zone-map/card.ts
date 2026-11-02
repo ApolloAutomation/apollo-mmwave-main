@@ -1944,7 +1944,9 @@ export class ZoneMapCard extends HTMLElement {
    * One target dot at map-frame mm (x, y), with `label` (its number) on it.
    * A dot is a filled core with a soft halo, so it reads over a lit zone; a
    * target presence ignores (`hollow`) is a grey ring with a grey number
-   * instead. The radius is _dotRadius().
+   * instead, the number outlined in the canvas color: the ring has no fill,
+   * and the target's own grey trail runs under it. The radius is
+   * _dotRadius().
    */
   drawCurrentPosition(
     x,
@@ -1985,10 +1987,20 @@ export class ZoneMapCard extends HTMLElement {
       ctx.stroke();
     }
     if (label !== null && label !== undefined && label !== '') {
-      ctx.fillStyle = textColor;
       ctx.font = `bold ${Math.round(r * 1.1)}px sans-serif`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
+      if (hollow) {
+        // A fan's sweep keeps the trail inside the ring, where it scribbled
+        // through a number in the same grey.
+        ctx.strokeStyle = this.darkMode
+          ? COLOR.ui.darkCanvasBackground
+          : COLOR.ui.lightCanvasBackground;
+        ctx.lineWidth = 4 * (this._frameScale || 1);
+        ctx.lineJoin = 'round';
+        ctx.strokeText(String(label), pixelX, pixelY);
+      }
+      ctx.fillStyle = textColor;
       ctx.fillText(String(label), pixelX, pixelY);
     }
     ctx.restore();

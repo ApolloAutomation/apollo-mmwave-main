@@ -1817,6 +1817,13 @@ describe("zone map card target dots", () => {
     expect(inside.filter((d) => d.name === "fillText").map((d) => [d.args[0], d.fill])).toEqual([
       ["1", "#757575"],
     ]);
+    // Outlined first in the canvas color, 4 px wide at scale 1, so the
+    // target's own grey trail inside the ring does not run through it.
+    const outline = inside.filter((d) => d.name === "strokeText");
+    expect(outline.map((d) => [d.args, d.stroke, d.lineWidth])).toEqual([
+      [["1", 240, 160], "#ffffff", 4],
+    ]);
+    expect(inside.indexOf(outline[0])).toBeLessThan(inside.findIndex((d) => d.name === "fillText"));
     // Target 2 is not: its halo, its blue core with a white rim, a black number.
     expect(outside.filter((d) => d.name === "arc").map((d) => d.args[2])).toEqual([17, 10]);
     expect(outside.filter((d) => d.name === "fill").map((d) => [d.fill, d.alpha])).toEqual([
@@ -1825,13 +1832,18 @@ describe("zone map card target dots", () => {
     ]);
     expect(outside.filter((d) => d.name === "stroke").map((d) => d.stroke)).toEqual(["#ffffff"]);
     expect(outside.filter((d) => d.name === "fillText").map((d) => d.fill)).toEqual(["#000000"]);
+    // A filled dot's number needs no outline.
+    expect(outside.filter((d) => d.name === "strokeText")).toEqual([]);
 
-    // The grey follows a dark card.
+    // The grey and the outline follow a dark card.
     const dark = await dotsCard(readings, fan, { dark_mode: true });
     const darkDraws = drawRecordingContext();
     dark.card.ctx = darkDraws.ctx;
     dark.card._drawTrackedTargets();
     expect(darkDraws.draws.find((d) => d.name === "stroke")?.stroke).toBe("#8a8f98");
+    expect(darkDraws.draws.filter((d) => d.name === "strokeText").map((d) => d.stroke)).toEqual([
+      "#121316",
+    ]);
   });
 });
 
