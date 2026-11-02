@@ -531,6 +531,27 @@ async def test_zone_creation_push_already_carries_the_presence_entity_id(
     assert pushed["zones"]["1"][KEY_PRESENCE_ENTITY_ID] == PRESENCE_1
 
 
+async def test_creating_a_named_zone_pushes_exactly_once(
+    hass, hass_ws_client, init_integration, device_id
+) -> None:
+    """Naming a new zone's entities after its zone signal is no second change."""
+    _ = init_integration
+    client = await hass_ws_client(hass)
+    await _subscribe_zones(client, device_id)
+
+    await hass.services.async_call(
+        DOMAIN,
+        "update_zone",
+        {"device_id": device_id, **RECT_CALL, "name": "Couch"},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+
+    [pushed] = await _drain(client)
+    assert pushed["zones"]["1"]["name"] == "Couch"
+    assert pushed["zones"]["1"][KEY_PRESENCE_ENTITY_ID] == PRESENCE_1
+
+
 @pytest.mark.usefixtures("init_integration")
 async def test_presence_entity_rename_pushes_the_new_id(
     hass, hass_ws_client, entity_registry, device_id, monkeypatch

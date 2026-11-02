@@ -2019,8 +2019,9 @@ async def test_empty_name_clears_the_zone_name(
     """Renaming to '' drops the name, and a later rename still applies."""
     _ = init_integration
     await _create_rect_zone(hass, device_id)
-    # Renamed in its own call: a name sent with the creating call reaches the
-    # store but not the registry, since the entities do not exist yet.
+    # Named in a call of its own, as the card's Save button names a stored
+    # zone. A name sent with the creating call reaches the registry as well
+    # (test_name_on_the_creating_call_reaches_the_registry).
     await _rename_zone(hass, device_id, "Couch")
     registry = er.async_get(hass)
     sensor_id, presence_id = _zone_entity_ids(hass, device_id)
@@ -2550,3 +2551,66 @@ async def test_turning_movement_history_off_saves_the_zone_store_at_once(
     assert flag_on_disk_at_signal == [False]
     stored = hass_storage[ZONE_STORAGE_KEY]["data"][STORE_DEVICES][device_id]
     assert STORE_MOVEMENT_HISTORY not in stored
+
+
+async def test_name_on_the_creating_call_reaches_the_registry(
+    hass, init_integration, device_id
+) -> None:
+    """A name sent with the call that creates a zone names its entities too."""
+    _ = init_integration
+    await _update_zone(
+        hass,
+        {
+            "device_id": device_id,
+            "zone_id": 1,
+            "shape": "rect",
+            "data": RECT,
+            "name": "Couch",
+        },
+    )
+
+    registry = er.async_get(hass)
+    sensor_id, presence_id = _zone_entity_ids(hass, device_id)
+    assert registry.async_get(sensor_id).name == "Zone 1 - Couch"
+    assert registry.async_get(presence_id).name == "Zone 1 presence - Couch"
+    assert hass.states.get(sensor_id).attributes["friendly_name"] == "Zone 1 - Couch"
+    assert (
+        hass.states.get(presence_id).attributes["friendly_name"]
+        == "Zone 1 presence - Couch"
+    )
+
+
+async def test_default_name_on_the_creating_call_leaves_registry_names_alone(
+    hass, init_integration, device_id
+) -> None:
+    """Add Zone's default name is stored but never makes "Zone 1 - Zone 1"."""
+    _ = init_integration
+    # The payload the card's Add Zone button sends.
+    await _update_zone(
+        hass,
+        {
+            "device_id": device_id,
+            "zone_id": 1,
+            "shape": "none",
+            "data": None,
+            "name": "Zone 1",
+            "input_units": "mm",
+        },
+    )
+
+    assert _stored_zone(hass, device_id)["name"] == "Zone 1"
+    registry = er.async_get(hass)
+    sensor_id, presence_id = _zone_entity_ids(hass, device_id)
+    assert registry.async_get(sensor_id).name is None
+    assert registry.async_get(presence_id).name is None
+
+    # Drawing the zone's shape later carries the name and leaves them alone too.
+    await _update_zone(
+        hass, {"device_id": device_id, "zone_id": 1, "shape": "rect", "data": RECT}
+    )
+    assert registry.async_get(sensor_id).name is None
+
+    # A name the user gives it still reaches the registry.
+    await _rename_zone(hass, device_id, "Couch")
+    assert registry.async_get(sensor_id).name == "Zone 1 - Couch"
+    assert registry.async_get(presence_id).name == "Zone 1 presence - Couch"

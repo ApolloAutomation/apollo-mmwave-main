@@ -687,13 +687,14 @@ def _call_changes_something(
 
 
 def _write_zone_geometry(
-    hass: HomeAssistant,
-    store: ZoneStore,
-    device_id: str,
-    zone_id: int,
-    call: ServiceCall,
-) -> None:
-    """Store a zone's new shape, keeping its name, type and hold time."""
+    store: ZoneStore, device_id: str, zone_id: int, call: ServiceCall
+) -> str | None:
+    """
+    Store a zone's new shape, keeping its name, type and hold time.
+
+    Returns the name the zone's entities take in the registry, or None to
+    leave their registry names alone.
+    """
     shape = call.data["shape"]
     data = call.data.get("data")
     zone_name = _coerce_zone_name(call.data.get("name"))
@@ -720,11 +721,12 @@ def _write_zone_geometry(
 
     store.device(device_id)[STORE_ZONES][zone_id] = zone_entry
 
-    # TODO(REVIEW_REPORT.md X01): on the creating call the  # noqa: FIX002, TD003
-    # entities do not exist yet, so this name never reaches the registry. Fix
-    # only that call: a one-shot pending name applied when the entity is added.
-    if zone_name is not None:
-        _update_registry_names(hass, device_id, zone_id, zone_name)
+    # The card's Add Zone creates a zone with its default name. Written to the
+    # registry by that creating call, it would make the entities read
+    # "Zone 1 - Zone 1".
+    if zone_name is None or (existing is None and zone_name == f"Zone {zone_id}"):
+        return None
+    return zone_name
 
 
 def _build_update_zone_handler(
@@ -750,6 +752,7 @@ def _build_update_zone_handler(
             store.devices.get(device_id), STORE_MOVEMENT_HISTORY
         )
         device = store.device(device_id)
+        registry_name: str | None = None
 
         _apply_device_settings(device, call, rotation)
         _apply_entity_pairs(device, call)
@@ -771,7 +774,7 @@ def _build_update_zone_handler(
                     _update_registry_names(hass, device_id, zone_id, zone_name)
                 _apply_zone_settings(zone_entry, call)
         else:
-            _write_zone_geometry(hass, store, device_id, zone_id, call)
+            registry_name = _write_zone_geometry(store, device_id, zone_id, call)
 
         if history_off:
             # Turning movement history off deletes this radar's positions in
@@ -783,6 +786,12 @@ def _build_update_zone_handler(
             await store.async_save()
 
         _notify_zones_updated(hass, device_id)
+
+        if registry_name is not None:
+            # After the zone signal, not before: both platforms register a new
+            # zone's entities inside it, so a name sent with the call that
+            # creates the zone reaches the registry too.
+            _update_registry_names(hass, device_id, zone_id, registry_name)
 
     return handle_update_zone
 
