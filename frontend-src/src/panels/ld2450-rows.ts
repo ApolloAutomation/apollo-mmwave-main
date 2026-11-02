@@ -23,10 +23,12 @@ export function ld2450ControlRows(l: Ld2450Entities): Row[] {
 }
 
 /** What the radar sees right now, so a user can tell whether it reports
- *  anyone even while the zone map shows no dot. */
+ *  anyone even while the zone map shows no dot. Its presence is named for the
+ *  chip: it covers the radar's whole view, not a room or a drawn zone, and
+ *  the Radar Timeout note under LD2450 Controls calls it LD2450 Presence. */
 export function ld2450LiveRows(l: Ld2450Entities): Row[] {
   return [
-    ...row(l.presence, "Presence"),
+    ...row(l.presence, "LD2450 Presence"),
     ...row(l.moving_target, "Moving Target"),
     ...row(l.still_target, "Still Target"),
     ...row(l.presence_target_count, "Target Count"),

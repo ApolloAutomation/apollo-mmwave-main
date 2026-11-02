@@ -1079,7 +1079,7 @@ describe("LD2450 cards beside the zone map", () => {
     const live = byTitle(cards, "LD2450 Live");
     expect(live.state_color).toBe(true);
     expect(live.entities.slice(0, 6)).toEqual([
-      { entity: `binary_sensor.${RPRO}_ld2450_presence`, name: "Presence" },
+      { entity: `binary_sensor.${RPRO}_ld2450_presence`, name: "LD2450 Presence" },
       { entity: `binary_sensor.${RPRO}_ld2450_moving_target`, name: "Moving Target" },
       { entity: `binary_sensor.${RPRO}_ld2450_still_target`, name: "Still Target" },
       { entity: `sensor.${RPRO}_ld2450_presence_target_count`, name: "Target Count" },
@@ -1253,7 +1253,7 @@ describe("LD2450 cards beside the zone map", () => {
       title: "Occupancy History",
       hours_to_show: 24,
       entities: [
-        { entity: `binary_sensor.${MTR}_ld2450_presence`, name: "Presence" },
+        { entity: `binary_sensor.${MTR}_ld2450_presence`, name: "LD2450 Presence" },
         { entity: zone },
       ],
     });

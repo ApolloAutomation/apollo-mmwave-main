@@ -715,7 +715,8 @@ function cardMap(
   let anyZone = false;
   let gateRadar = false;
   const cards: Partial<DeviceCards> = {};
-  // On a tab with two radars (R PRO-1) each history line names its chip.
+  // On a tab with two radars (R PRO-1) the gate radar's history lines name
+  // its chip. The LD2450's presence line names its chip on every tab.
   const twoRadars = !!dev.profile && dev.ld2450;
   const historyRows: HistoryRow[] = [];
 
@@ -846,13 +847,7 @@ function cardMap(
     );
     cards.ld2450ControlsNote = exists(hass, l.timeout) ? noteCard(LD2450_TIMEOUT_NOTE) : undefined;
     cards.builtInZones = builtInZonesCard(hass, l);
-    historyRows.push(
-      ...ld2450HistoryEntities(
-        l,
-        zonePresenceSensors(hass, dev.deviceId),
-        twoRadars ? "LD2450" : undefined
-      )
-    );
+    historyRows.push(...ld2450HistoryEntities(l, zonePresenceSensors(hass, dev.deviceId)));
   }
 
   // One graph for every radar on the tab. Named for the chip on a gate radar
