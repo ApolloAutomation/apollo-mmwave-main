@@ -1316,6 +1316,13 @@ Lovelace resources, so dashboards stop asking for files that are gone.
 The thresholds a calibration wrote stay on the radars. Setting Apollo mmWave
 up again starts from nothing.
 
+Deleting the entry leaves the integration's files in place. On Home Assistant
+2026.11 or later, if Apollo mmWave came from HACS or the Marketplace, Home
+Assistant then asks **Also uninstall Apollo mmWave?**: **Uninstall** removes
+the files too, and **Keep** leaves them. With HACS 2.0.5, open Apollo mmWave
+in HACS and choose **Remove** from the menu (⋮). Restart Home Assistant after
+removing the files.
+
 With Lovelace resources managed in YAML, the integration cannot remove them:
 delete the two `/apollo_mmwave/` rows from your `resources:` by hand. It logs
 a warning that names them. If you removed a release older than 2.2.5, delete
