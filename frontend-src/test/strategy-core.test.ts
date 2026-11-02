@@ -19,6 +19,7 @@ import {
   ZONE_PRESENCE_HINT,
   ZONE_PRESENCE_TITLE,
   zoneConfigNote,
+  ZONE_MAP_COLUMN_SPAN,
   type RadarDevice,
 } from "../src/strategy-core";
 import { LD2410_PROFILE, LD2412_PROFILE } from "../src/profiles";
@@ -550,6 +551,11 @@ describe("deviceView / generateViews", () => {
     });
   });
 
+  it("keeps Home Assistant's own section placement on a tab with no zone map", () => {
+    expect(view).not.toHaveProperty("dense_section_placement");
+    for (const section of view.sections) expect(section).not.toHaveProperty("column_span");
+  });
+
   it("groups cards into multiple column sections", () => {
     expect(view.sections.length).toBeGreaterThan(1);
     for (const section of view.sections) {
@@ -986,11 +992,58 @@ describe("LD2450 cards beside the zone map", () => {
     expect(layout(sections)[0].slice(0, 3)).toEqual(["markdown", SETUP, "Auto-calibrate"]);
     expect(sections[0].cards[1]).toEqual({ type: SETUP, device_id: "rpro", radar: "gate" });
     expect(sections[1].cards.map((c: any) => c.type)).toEqual(["heading", SETUP, ZONE_MAP]);
-    expect(sections[1].cards[1]).toEqual({ type: SETUP, device_id: "rpro" });
+    expect(sections[1].cards[1]).toEqual({
+      type: SETUP,
+      device_id: "rpro",
+      grid_options: { columns: "full" },
+    });
     expect(layout([sections[2]])).toEqual([
       [ZONE_PRESENCE_TITLE, "LD2450 Live", "LD2450 Controls", "markdown", "conditional"],
     ]);
     expect(sections[2].cards[3]).toEqual({ type: "markdown", content: LD2450_TIMEOUT_NOTE });
+  });
+
+  // Home Assistant caps a view column at 500 px, which left the map about
+  // 36 px per meter even on a 2560 px screen. Its section now spans two
+  // columns, and HA narrows it to one on a phone.
+  it("widens the zone map's section to two columns on an R PRO-1, the map and setup card full width", () => {
+    const sections = buildDeviceSections(rproHass(), deviceOf(rproHass()));
+    expect(ZONE_MAP_COLUMN_SPAN).toBe(2);
+    expect(sections.map((s) => s.column_span)).toEqual([
+      undefined,
+      2,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    ]);
+    const [heading, setup, map] = sections[1].cards;
+    // A heading fills its section on its own; a card's default is 12 of the
+    // section's 24 grid columns, so the others ask for the full width.
+    expect(heading).toEqual({ type: "heading", heading: "Zone Map" });
+    expect(setup.grid_options).toEqual({ columns: "full" });
+    expect(map).toEqual({
+      type: ZONE_MAP,
+      device_id: "rpro",
+      title: deviceOf(rproHass()).name,
+      unit_display: true,
+      grid_options: { columns: "full" },
+    });
+    // Four columns hold column 1, the two-column map and the LD2450's cards.
+    const spans = sections.map((s) => s.column_span ?? 1);
+    expect(spans.slice(0, 3).reduce((a, b) => a + b, 0)).toBe(4);
+    // Only the dashboard's sections carry the width: the section strategy's
+    // flat card list is one column.
+    const flat = buildDeviceCards(rproHass(), deviceOf(rproHass()));
+    expect(flat.some((c) => "grid_options" in c)).toBe(false);
+  });
+
+  it("places the R PRO-1's sections densely, so two columns leave no gap beside column 1", () => {
+    const hass = rproHass();
+    const view = deviceView(hass, deviceOf(hass));
+    expect(view.dense_section_placement).toBe(true);
+    expect(view.max_columns).toBeUndefined();
+    expect(view.sections).toEqual(buildDeviceSections(hass, deviceOf(hass)));
   });
 
   it("reaches the zone map and the LD2450's cards before any threshold row on a phone", () => {
@@ -1190,6 +1243,12 @@ describe("LD2450 cards beside the zone map", () => {
     expect(sections[0].cards[0].content).toContain("**Start here**");
     expect(sections[0].cards[1]).toEqual({ type: SETUP, device_id: "mtr" });
     expect(sections[0].cards[2].type).toBe(ZONE_MAP);
+    // The help card and the setup card share a row above the map, each half
+    // of the two-column section; the map fills it.
+    expect(sections.map((s) => s.column_span)).toEqual([2, undefined, undefined]);
+    expect(sections[0].cards[0]).not.toHaveProperty("grid_options");
+    expect(sections[0].cards[2].grid_options).toEqual({ columns: "full" });
+    expect(deviceView(hass, dev).dense_section_placement).toBe(true);
     expect(buildDeviceCards(hass, dev).map((c) => c.title ?? c.type)).toEqual([
       "markdown",
       SETUP,
@@ -1265,6 +1324,11 @@ describe("LD2450 cards beside the zone map", () => {
     expect(types).not.toContain(SETUP);
     expect(types).not.toContain("conditional");
     expect(types).toContain(ZONE_MAP);
+    // With no setup card beside it, the help card fills the map's section.
+    const [help, map] = buildDeviceSections(hass, deviceOf(hass))[0].cards;
+    expect(help.type).toBe("markdown");
+    expect(help.grid_options).toEqual({ columns: "full" });
+    expect(map.type).toBe(ZONE_MAP);
   });
 
   it("keeps the setup card for Multi Target Tracking alone", () => {

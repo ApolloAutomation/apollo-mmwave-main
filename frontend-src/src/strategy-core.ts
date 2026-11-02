@@ -904,6 +904,19 @@ export function buildDeviceCards(
   ].filter(Boolean) as Record<string, any>[];
 }
 
+/** How many of the view's columns the zone map's section spans. Home
+ *  Assistant caps a column at 500 px, which left the map about 36 px per
+ *  meter on any screen; two columns about double that. Home Assistant
+ *  narrows a section to the columns the screen has, so a phone is unchanged. */
+export const ZONE_MAP_COLUMN_SPAN = 2;
+
+/** A card that fills its section's width. A card's default width is 12 of
+ *  the 12 grid columns per view column, so in a section spanning two view
+ *  columns it would take half. */
+function fullWidth(card: Record<string, any> | undefined): Record<string, any> | undefined {
+  return card ? { ...card, grid_options: { columns: "full" } } : undefined;
+}
+
 /** Sections for one device, grouped into the reference column layout. The
  *  Detection Range card sits under the distance chart, a help/wiki card on top. */
 export function buildDeviceSections(
@@ -914,23 +927,32 @@ export function buildDeviceSections(
 ): Record<string, any>[] {
   const c = cardMap(hass, dev, distanceUnit, calibration);
   type Column = (Record<string, any> | undefined)[];
+  // The zone map's column, which spans ZONE_MAP_COLUMN_SPAN view columns.
+  let wide: Column | undefined;
 
-  // LD2450 zone map gets its own column, the setup card right above it. On a
-  // shared tab (R-PRO-1) a thin heading precedes them and the LD2450's status
-  // and settings fill one more column next to the map; on a zone-only device
-  // (MTR-1) the tab title already names the device, the help card leads as on
-  // every tab, and the LD2450's cards split into two columns so each reads at
-  // a glance.
+  // LD2450 zone map gets its own wide column, the setup card right above it.
+  // On a shared tab (R-PRO-1) a thin heading precedes them, both fill the
+  // width, and the LD2450's status and settings fill one more column next to
+  // the map; on a zone-only device (MTR-1) the tab title already names the
+  // device, the help card leads as on every tab with the setup card beside
+  // it (each half the width, so neither runs a line across two columns), and
+  // the LD2450's cards split into two columns so each reads at a glance.
   const zoneColumns: Column[] = [];
   if (c.zoneMap) {
     if (dev.profile) {
-      zoneColumns.push(
-        [c.zoneHeader, c.ld2450Setup, c.zoneMap],
-        [c.zonePresence, c.ld2450Live, c.ld2450Controls, c.ld2450ControlsNote, c.builtInZones]
-      );
+      wide = [c.zoneHeader, fullWidth(c.ld2450Setup), fullWidth(c.zoneMap)];
+      zoneColumns.push(wide, [
+        c.zonePresence,
+        c.ld2450Live,
+        c.ld2450Controls,
+        c.ld2450ControlsNote,
+        c.builtInZones,
+      ]);
     } else {
+      // The help card alone would leave the other half of its row empty.
+      wide = [c.ld2450Setup ? c.help : fullWidth(c.help), c.ld2450Setup, fullWidth(c.zoneMap)];
       zoneColumns.push(
-        [c.help, c.ld2450Setup, c.zoneMap],
+        wide,
         [c.zonePresence, c.ld2450Live, c.history],
         [c.ld2450Controls, c.ld2450ControlsNote, c.builtInZones]
       );
@@ -946,7 +968,10 @@ export function buildDeviceSections(
   // Section order is also the phone's reading order. The help card leads, so
   // its steps come before the cards they point at. On a tab with both radars
   // (R-PRO-1) the zone map and the LD2450's cards follow column 1, so a phone
-  // reaches them before the 28 LD2412 threshold rows.
+  // reaches them before the 28 LD2412 threshold rows. At Home Assistant's
+  // default of four columns that is the first row exactly (column 1, the
+  // two-column zone map, the LD2450's cards), and the LD2412's tuning fills
+  // the second.
   if (dev.profile) {
     const col1: Column = [c.help, c.gateSetup, c.calibrate, c.controls, c.zone, c.zoneNote];
     const col2: Column = [c.distance, c.range, c.rangeNote];
@@ -966,11 +991,15 @@ export function buildDeviceSections(
   }
 
   const sections = columns
-    .map((col) => col.filter(Boolean) as Record<string, any>[])
-    .filter((col) => col.length > 0);
+    .map((col) => ({ cards: col.filter(Boolean) as Record<string, any>[], wide: col === wide }))
+    .filter((col) => col.cards.length > 0);
   // The Device card goes last on the tab: at the bottom of the last column.
-  sections[sections.length - 1].push(c.device);
-  return sections.map((cards) => ({ type: "grid", cards }));
+  sections[sections.length - 1].cards.push(c.device);
+  return sections.map(({ cards, wide }) => ({
+    type: "grid",
+    ...(wide ? { column_span: ZONE_MAP_COLUMN_SPAN } : {}),
+    cards,
+  }));
 }
 
 /** One full view (a tab) for a single device. */
@@ -981,13 +1010,21 @@ export function deviceView(
   path: string = dev.base,
   calibration?: CalibrationOptions
 ): Record<string, any> {
-  // TODO(REVIEW_REPORT.md X36): no max_columns, so an R-PRO-1's six sections wrap its gate
-  // tuning to a second row (HA default is 4); choose max_columns 6, a column_span, or accept it.
+  // REVIEW_REPORT.md X36, settled by the zone map's column_span: at Home
+  // Assistant's default of four columns an R PRO-1's first row is column 1,
+  // the zone map and the LD2450's cards, and its gate tuning wraps to a
+  // second row on purpose, so the view sets no max_columns. On two columns
+  // the zone map cannot sit beside column 1; dense placement moves the
+  // LD2450's cards up into that gap instead of leaving it empty (phones, on
+  // one column, keep the section order). Tabs with no wide section never
+  // leave a gap, so they keep Home Assistant's default placement.
+  const sections = buildDeviceSections(hass, dev, distanceUnit, calibration);
   return {
     title: dev.name,
     path,
     type: "sections",
-    sections: buildDeviceSections(hass, dev, distanceUnit, calibration),
+    ...(sections.some((s) => s.column_span) ? { dense_section_placement: true } : {}),
+    sections,
   };
 }
 
