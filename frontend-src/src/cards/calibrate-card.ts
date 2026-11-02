@@ -60,6 +60,7 @@ import {
   READING_SETTINGS,
   READ_SETTINGS_LABEL,
   READ_SETTINGS_WAIT_MS,
+  SIT_STILL_LINE,
   WALK_AROUND_LINE,
   canStart,
   canStop,
@@ -889,6 +890,7 @@ export class ApolloRadarCalibrateCard extends LitElement {
         ${this._renderTable(result)}
         ${this._warningLines(result).map((line) => html`<p class="warning">${line}</p>`)}
         <p>${WALK_AROUND_LINE}</p>
+        <p class="hint">${SIT_STILL_LINE}</p>
         <div class="buttons">${undo} ${again("Calibrate again")} ${this._closeButton()}</div>
       </div>
     `;
@@ -1010,6 +1012,7 @@ export class ApolloRadarCalibrateCard extends LitElement {
         </ul>
         ${offLine ? html`<p class="warning">${offLine}</p>` : nothing}
         ${factory ? html`<p class="hint">${FACTORY_HINT}</p>` : nothing}
+        <p class="hint">${SIT_STILL_LINE}</p>
       </div>
     `;
   }
