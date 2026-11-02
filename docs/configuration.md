@@ -899,7 +899,7 @@ The hold works from positions only, so it has limits:
 - If one person goes still and is lost while someone else stays in the zone,
   they are forgotten: the zone turns off when the other person leaves.
 - When the radar swaps the numbers of two people in the zone, both can look
-  as if they moved for about a second, and a vanish near an edge right then
+  as if they moved for a second or two, and a vanish near an edge right then
   turns the zone off.
 - A target seen for under 1.2 seconds counts as moving, so a ghost that
   appears and vanishes in the middle of the zone holds it for the full hold
