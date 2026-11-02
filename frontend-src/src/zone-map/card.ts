@@ -1015,12 +1015,15 @@ export class ZoneMapCard extends HTMLElement {
     });
     // A target gone right after one coordinate turned 0 left a point nobody
     // stood at, (0, old y) or (old x, 0), where its X and Y writes came in
-    // two pushes. Taken back while it is too new for Coverage to have
-    // counted, so no trail runs out to the line x = 0 or y = 0 and no cell
-    // there is painted. A real reading with a 0 in it is followed by more
-    // readings and stays.
+    // two pushes. Taken back while it still waits for its other coordinate,
+    // too new for Coverage to have counted, so no trail runs out to the line
+    // x = 0 or y = 0 and no cell there is painted. A real reading with a 0
+    // in it is followed by more readings and stays. Either way the trail
+    // ends there, and whatever the slot reads next starts a new one.
     this._trailReadings.forEach((last, slot) => {
-      if (last.halfVanished && !readings.has(slot)) this._trails.retract(slot);
+      if (readings.has(slot)) return;
+      if (last.halfVanished) this._trails.retract(slot);
+      this._trails.gone(slot);
     });
     this._trailReadings = readings;
     // Before the prune, so a position is counted before it ages out.
@@ -1036,8 +1039,9 @@ export class ZoneMapCard extends HTMLElement {
   /**
    * Count in the Coverage paint the trail samples that became final since
    * the last count: too old for the next push to replace (see
-   * TrailBuffer.takeFinal), so the in-between point of an X update without
-   * its Y never paints. A view-only card shows no coverage, so it keeps none.
+   * TrailBuffer.takeFinal), so the in-between point of an X write whose Y
+   * lands up to TRAIL_PAIR_MS later never paints. A view-only card shows no
+   * coverage, so it keeps none.
    */
   _feedCoverage(now) {
     if (this._viewOnly) return;
@@ -5255,8 +5259,10 @@ export class ZoneMapCard extends HTMLElement {
    * One trail through `points` ({ t, x, y } in the radar's own frame, oldest
    * first), as segments between consecutive points, aged against `now`: the
    * newest strongest and widest, fading to a faint thin line at TRAIL_MS. A
-   * silence over TRAIL_GAP_MS breaks it, so a target that vanished and came
-   * back elsewhere is not joined to where it was.
+   * point that starts a new run (`brk`: its target had vanished) joins none
+   * before it, and a silence over TRAIL_GAP_MS breaks it too, counted from
+   * the last write merged into the point before (`tLast`), so a target that
+   * vanished and came back elsewhere is not joined to where it was.
    */
   _drawTrail(ctx, points, now, color) {
     const scale = this._frameScale || 1;
@@ -5264,10 +5270,14 @@ export class ZoneMapCard extends HTMLElement {
     ctx.strokeStyle = color;
     ctx.lineCap = 'round';
     let previous = null;
-    points.forEach(({ t, x, y }) => {
+    points.forEach(({ t, tLast, x, y, brk }) => {
       const m = this._toMap(x, y);
-      const point = { t, x: this.valueToPixels(m.x, 'x'), y: this.valueToPixels(m.y, 'y') };
-      if (previous && t - previous.t <= TRAIL_GAP_MS) {
+      const point = {
+        t: tLast ?? t,
+        x: this.valueToPixels(m.x, 'x'),
+        y: this.valueToPixels(m.y, 'y'),
+      };
+      if (previous && !brk && t - previous.t <= TRAIL_GAP_MS) {
         const f = Math.max(0.08, 1 - (now - t) / TRAIL_MS);
         ctx.globalAlpha = 0.6 * f;
         ctx.lineWidth = scale * (1.5 + 2.5 * f);

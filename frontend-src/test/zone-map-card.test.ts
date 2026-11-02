@@ -4152,21 +4152,48 @@ describe("zone map card trails", () => {
     document.body.replaceChildren();
   });
 
-  /** Tracking the payload's detected pair, with `move` setting its reading. */
+  /** Tracking the payload's detected pair, with `move` setting its reading
+   *  in one push and `set` writing any of its states on its own. */
   async function trailCard(payload: any = { ...ZONE_PAYLOAD, rotation_deg: 0 }) {
     vi.useFakeTimers();
     const hass = fakeHass(payload);
     const card = await mountCard(hass, TEN_METER_GRID);
     let states: Record<string, any> = {};
-    const move = (x: number, y: number) => {
-      states = {
-        ...states,
-        "sensor.a_x": { state: String(x) },
-        "sensor.a_y": { state: String(y) },
-      };
+    const set = (changes: Record<string, any>) => {
+      states = { ...states, ...changes };
       card.hass = { ...hass, states };
     };
-    return { card, hass, move };
+    const move = (x: number, y: number) =>
+      set({ "sensor.a_x": { state: String(x) }, "sensor.a_y": { state: String(y) } });
+    return { card, hass, move, set };
+  }
+
+  /** A target state as the LD2450 reads on a US customary install: inches
+   *  with one decimal, or a state such as "unknown". */
+  const inch = (value: number | string) => ({
+    state: typeof value === "number" ? value.toFixed(1) : value,
+    attributes: { unit_of_measurement: "in" },
+  });
+
+  /**
+   * Target a walking through `steps`, [x, y] in mm, at the cadence an R
+   * PRO-1 on firmware 26.10.21.1 reports: each step's X, its Y 450 ms later,
+   * and the next X 620 ms after that.
+   */
+  function walkSplit(set: (changes: Record<string, any>) => void, steps: number[][]) {
+    steps.forEach(([x, y], i) => {
+      if (i > 0) vi.advanceTimersByTime(620);
+      set({ "sensor.a_x": { state: String(x) } });
+      vi.advanceTimersByTime(450);
+      set({ "sensor.a_y": { state: String(y) } });
+    });
+  }
+
+  /** The counted coverage cells as [ix, iy, count], sorted. */
+  function cells(card: any): number[][] {
+    return Array.from(card._coverage.entries() as Iterable<number[]>)
+      .map((cell) => [...cell])
+      .sort((a, b) => a[0] - b[0] || a[1] - b[1]);
   }
 
   /**
@@ -4255,6 +4282,131 @@ describe("zone map card trails", () => {
     move(0, 2000);
 
     expectSegments(segments(frame(card)), [[320, 160, 400, 160, ...strength(0)]]);
+  });
+
+  it("draws a diagonal walk at the measured cadence with no (new X, old Y) sample or cell", async () => {
+    const { card, set } = await trailCard();
+    // On the page, so fade frames take final samples between the writes.
+    document.body.appendChild(card);
+    set({ "sensor.a_x": inch("unknown"), "sensor.a_y": inch("unknown") });
+    // About 0.7 m/s along a diagonal, in inches: X every 1070 ms, its Y
+    // 450 ms after it, as an R PRO-1 on firmware 26.10.21.1 reports.
+    const steps = Array.from({ length: 8 }, (_, k) => [-90 + 20 * k, 40 + 20 * k]);
+    const mm = ([x, y]: number[]) => [parseFloat(x.toFixed(1)) * 25.4, parseFloat(y.toFixed(1)) * 25.4];
+    const reported = steps.map((step) => mm(step).map(Math.round).join());
+    const strays: string[] = [];
+    let samples = 0;
+    steps.forEach(([x, y], k) => {
+      if (k > 0) vi.advanceTimersByTime(620);
+      set({ "sensor.a_x": inch(x) });
+      vi.advanceTimersByTime(450);
+      set({ "sensor.a_y": inch(y) });
+      // Once its Y is in, every sample is a position the radar reported.
+      card._trails.samples(0).forEach((s: any) => {
+        const at = [s.x, s.y].map(Math.round).join();
+        if (!reported.includes(at)) strays.push(at);
+      });
+      samples = Math.max(samples, card._trails.samples(0).length);
+    });
+    vi.advanceTimersByTime(1000);
+
+    expect(strays).toEqual([]);
+    // One sample a step: the last 3 s hold three.
+    expect(samples).toBe(3);
+    // One count in each step's cell, and none in any other.
+    const expected = steps.map((step) => {
+      const [x, y] = mm(step);
+      return [Math.floor(x / 200), Math.floor(y / 200), 1];
+    });
+    expect(cells(card)).toEqual(expected.sort((a, b) => a[0] - b[0] || a[1] - b[1]));
+  });
+
+  it("still draws trail segments when Y lands 450 ms after X", async () => {
+    const { card, set } = await trailCard();
+    // Each sample is timed from its X, 1070 ms after the one before, but the
+    // radar went silent for only 620 ms, from the Y before.
+    walkSplit(set, [
+      [-2000, 2000],
+      [-1500, 2500],
+      [-1000, 3000],
+    ]);
+
+    // Straight from one reported position to the next: (-1500, 2000), where
+    // nobody stood, is in no segment.
+    expectSegments(segments(frame(card)), [
+      [240, 160, 280, 200, ...strength(1520)],
+      [280, 200, 320, 240, ...strength(450)],
+    ]);
+  });
+
+  it("draws no line from y = 0 for a target that appears X first in a slot that read 0/0", async () => {
+    const { card, set } = await trailCard();
+    document.body.appendChild(card);
+    // Firmware that empties a slot as (0, 0), which is no target. The
+    // target appears X first, so the card first reads (-1500, 0).
+    set({ "sensor.a_x": { state: "0" }, "sensor.a_y": { state: "0" } });
+    vi.advanceTimersByTime(1000);
+    walkSplit(set, [
+      [-1500, 3000],
+      [-1000, 3500],
+    ]);
+
+    expectSegments(segments(frame(card)), [[280, 240, 320, 280, ...strength(450)]]);
+    vi.advanceTimersByTime(1000);
+    expect(card._trails.samples(0).map((s: any) => [s.x, s.y])).toEqual([
+      [-1500, 3000],
+      [-1000, 3500],
+    ]);
+    expect(cells(card)).toEqual([
+      [-8, 15, 1],
+      [-5, 17, 1],
+    ]);
+  });
+
+  it("ends the trail at the last reading when X and Y turn unknown", async () => {
+    const { card, set } = await trailCard();
+    document.body.appendChild(card);
+    walkSplit(set, [
+      [-2000, 2000],
+      [-1500, 2500],
+      [-1000, 3000],
+    ]);
+    vi.advanceTimersByTime(300);
+    // Firmware 26.10.21.1 loses a target as unknown on both axes at once.
+    set({ "sensor.a_x": { state: "unknown" }, "sensor.a_y": { state: "unknown" } });
+
+    // No dot now, and the trail runs straight to where it was last seen.
+    const draws = frame(card);
+    expect(draws.filter((d) => d.name === "fill" && d.fill === "#f44336")).toEqual([]);
+    expectSegments(segments(draws), [
+      [240, 160, 280, 200, ...strength(1820)],
+      [280, 200, 320, 240, ...strength(750)],
+    ]);
+    vi.advanceTimersByTime(1000);
+    expect(cells(card)).toEqual([
+      [-10, 10, 1],
+      [-8, 12, 1],
+      [-5, 15, 1],
+    ]);
+  });
+
+  it("does not join a target that vanished and came back within a second", async () => {
+    const { card, move, set } = await trailCard();
+    move(-2000, 2000);
+    vi.advanceTimersByTime(200);
+    move(-1000, 2000);
+    vi.advanceTimersByTime(200);
+    set({ "sensor.a_x": { state: "unknown" }, "sensor.a_y": { state: "unknown" } });
+    // Back 0.5 s later on the other side of the room.
+    vi.advanceTimersByTime(500);
+    move(2000, 4000);
+    vi.advanceTimersByTime(200);
+    move(2500, 4000);
+
+    expectSegments(segments(frame(card)), [
+      [240, 160, 320, 160, ...strength(900)],
+      [560, 320, 600, 320, ...strength(0)],
+    ]);
   });
 
   it("draws the trail grey while its target stands in an ignore zone", async () => {
@@ -4457,13 +4609,15 @@ describe("zone map card coverage", () => {
     };
     const move = (x: number, y: number) =>
       set({ "sensor.a_x": { state: String(x) }, "sensor.a_y": { state: String(y) } });
-    /** Three positions 200 ms apart. The first two are final by the third. */
+    /** Three positions 200 ms apart, the last moving both coordinates, so
+     *  none is the second write of a split update. The first two are final
+     *  by the third. */
     const walk = () => {
       move(-2000, 2000);
       vi.advanceTimersByTime(200);
       move(-1000, 2000);
       vi.advanceTimersByTime(200);
-      move(-1000, 2200);
+      move(-800, 2200);
     };
     return { card, hass, set, move, walk };
   }
@@ -4628,9 +4782,10 @@ describe("zone map card coverage", () => {
     move(-2000, 2000);
     vi.advanceTimersByTime(200);
 
-    // Home Assistant writes a move as two state changes, X first.
+    // Home Assistant writes a move as two state changes, X first, and the
+    // LD2450 often writes the Y about 450 ms after the X.
     set({ "sensor.a_x": { state: "-1000" } });
-    vi.advanceTimersByTime(20);
+    vi.advanceTimersByTime(450);
     set({ "sensor.a_y": { state: "3000" } });
     vi.advanceTimersByTime(1000);
 
@@ -4649,11 +4804,11 @@ describe("zone map card coverage", () => {
     move(-1000, 2000);
     vi.advanceTimersByTime(200);
 
-    // The target leaves, and its X turns 0 a push before its Y does.
+    // The target leaves, and its X turns 0 about 450 ms before its Y does.
     // (0, 2000) is a point nobody stood at: a real move to x = 0 is
     // followed by more readings, not by an empty slot.
     set({ "sensor.a_x": { state: "0" } });
-    vi.advanceTimersByTime(20);
+    vi.advanceTimersByTime(450);
     set({ "sensor.a_y": { state: "0" } });
     vi.advanceTimersByTime(1000);
 
