@@ -41,8 +41,9 @@ L_SHAPE = {
 # Readings 0.35 s apart, X and Y together: a radar reporting far more often
 # than the R PRO-1's LD2450, which writes each axis about once a second.
 STEP_S = 0.35
-# Toward RECT's right edge, 150 mm a step, ending 50 mm from it at 1.75 s.
-WALK_TO_RIGHT_EDGE = [(200 + 150 * step, 1000) for step in range(6)]
+# Toward RECT's right edge, 150 mm a step, ending 50 mm from it at 2.45 s:
+# long enough for two steps of rule 2's 0.9 s.
+WALK_TO_RIGHT_EDGE = [(-100 + 150 * step, 1000) for step in range(8)]
 
 
 def _reading(slot: int, x: float, y: float) -> Reading:
@@ -261,21 +262,81 @@ def test_coverage_edge_distance(point, expected) -> None:
 
 def test_motion_needs_fresh_evidence() -> None:
     """Motion counts only while the readings that show it are recent."""
-    walker = _walked([(0, 1000 + 150 * step) for step in range(6)])  # last at 1.75 s
-    assert walker.moving_at(1.75)
-    assert walker.moving_at(2.9)
-    # 1.25 s after the last reading the person may as well have sat down:
+    walker = _walked([(0, 1000 + 150 * step) for step in range(8)])  # last at 2.45 s
+    assert walker.moving_at(2.45)
+    assert walker.moving_at(4.0)
+    # 1.65 s after the last reading the person may as well have sat down:
     # Home Assistant reports nothing while a reading does not change.
-    assert not walker.moving_at(3.0)
+    assert not walker.moving_at(4.1)
 
     # Fresh readings of someone standing still are no motion either.
-    stander = _walked([(0, 1000)] * 6)
-    assert not stander.moving_at(1.75)
+    stander = _walked([(0, 1000)] * 8)
+    assert not stander.moving_at(2.45)
 
-    # Readings too far apart to measure 0.6 to 1.2 s of movement read as
-    # still, which holds the zone.
-    sparse = _walked([(0, 1000), (0, 1800), (0, 2600)], step_s=1.5)
-    assert not sparse.moving_at(3.0)
+    # Reports too far apart for two steps of motion in 3.5 s read as still,
+    # which holds the zone.
+    sparse = _walked([(0, 1000), (0, 1800), (0, 2600)], step_s=2.0)
+    assert not sparse.moving_at(4.0)
+
+
+def test_motion_is_two_steps_in_a_row_or_one_brisk_one() -> None:
+    """The LD2450's jump before it loses someone still is one step, and no walk."""
+    # Reports a second apart, jittering 10 mm.
+    seated = [(10 * (step % 2), 1000) for step in range(6)]
+
+    # 467 mm in the last second, as the radar jumped before a loss.
+    jumped = _walked([*seated, (345, 1315)], step_s=1.0)
+    assert not jumped.moving_at(6.0)
+    # 0.9 m in a second is walking, seen for one report or not.
+    strode = _walked([*seated, (900, 1000)], step_s=1.0)
+    assert strode.moving_at(6.0)
+    # 0.3 m a second, two seconds in a row: walking slowly.
+    walked = _walked([*seated[:5], (300, 1000), (600, 1000)], step_s=1.0)
+    assert walked.moving_at(6.0)
+    # The same with the second report skipped, as Home Assistant skips a
+    # value written twice: the two steps take 3.14 s.
+    skipped = Occupant.first(_reading(0, *seated[0]), 0.0)
+    for t, point in [(1.0, seated[1]), (2.0, seated[2]), (3.0, (300, 1000))]:
+        skipped.update(_reading(0, *point), t)
+    skipped.update(_reading(0, 900, 1000), 5.14)
+    assert skipped.moving_at(5.14)
+
+
+def test_jitter_over_the_measured_range_is_not_motion() -> None:
+    """A still target the LD2450 moves up to 186 mm from report to report."""
+    # X over about 15 cm and Y over about 10 cm, as a still object read all
+    # night, from one end to the other at every report.
+    wobbling = _walked(
+        [(300 + 77 * (-1) ** step, 2000 + 52 * (-1) ** step) for step in range(8)],
+        step_s=1.07,
+    )
+    assert not wobbling.moving_at(7.49)
+
+
+def test_motion_is_measured_from_the_persons_own_reports() -> None:
+    """Another target's write reads someone again unchanged: no report of them."""
+    walker = _walked([(0, 1000 + 1000 * step) for step in range(4)], step_s=1.0)
+    for t in (3.3, 3.6, 3.9, 4.2):
+        walker.update(_reading(0, 0, 4000), t)
+
+    assert walker.seen_t == 3.0
+    assert walker.moving_at(4.2)
+    assert not walker.moving_at(4.7)
+
+
+def test_exit_margin_grows_with_speed_and_the_age_of_the_last_report() -> None:
+    """300 mm, plus their speed for the time since that report and 0.75 s more."""
+    walker = _walked([(0, 1000 + 1000 * step) for step in range(3)], step_s=1.0)
+    assert walker.exit_margin_mm(2.0) == pytest.approx(300 + 1000 * 0.75)
+    assert walker.exit_margin_mm(2.25) == pytest.approx(300 + 1000 * 1.0)
+    # At most 1.5 m.
+    assert walker.exit_margin_mm(2.5) == 1500
+    # Read again unchanged, they are no nearer the edge.
+    walker.update(_reading(0, 0, 3000), 2.2)
+    assert walker.exit_margin_mm(2.25) == pytest.approx(300 + 1000 * 1.0)
+
+    # With no report a step before the last, 300 mm.
+    assert _walked([(0, 1000)] * 3, step_s=1.0).exit_margin_mm(2.5) == 300
 
 
 def test_jitter_at_one_reading_a_second_is_not_motion() -> None:
@@ -292,10 +353,6 @@ def test_jitter_at_one_reading_a_second_is_not_motion() -> None:
             assert not person.moving_at(t), t
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="rule 2 is tuned for 0.35 s steps; see the hold retune question",
-)
 def test_motion_with_x_then_y_half_a_second_later_counts() -> None:
     """Walking at 1.2 m/s reads as moving after a Y write, not only after an X."""
 
@@ -312,6 +369,22 @@ def test_motion_with_x_then_y_half_a_second_later_counts() -> None:
     assert all(after_y)
 
 
+def test_motion_straight_away_from_the_radar_counts_after_an_x_write() -> None:
+    """Each step spans a whole report, not the X that moved 0.1 m since the Y."""
+
+    def position(t: float) -> tuple[float, float]:
+        return 100 * t, 1000 + 1200 * t
+
+    after_x = [
+        person.moving_at(t)
+        for t, axis, person in _followed(_x_then_y(position, 6.0))
+        if axis == "x" and t >= 2.5
+    ]
+
+    assert after_x
+    assert all(after_x)
+
+
 def test_first_seen_counts_as_moving() -> None:
     """For its first 1.2 s inside, a target counts as moving, even standing still."""
     blip = Occupant.first(_reading(0, 0, 1000), 10.0)
@@ -325,21 +398,30 @@ def test_first_seen_counts_as_moving() -> None:
 
 
 @pytest.mark.parametrize(
-    ("elapsed_s", "distance", "released"),
+    ("report_age_s", "elapsed_s", "distance", "released"),
     [
-        (0.0, 590, True),
-        (0.0, 610, False),
-        (0.5, 1390, True),
-        (0.5, 1410, False),
-        (2.0, 3790, True),
-        (2.0, 3810, False),
-        (3.0, 5390, True),
-        (3.1, 100, False),
+        (0.0, 0.0, 590, True),
+        (0.0, 0.0, 610, False),
+        (0.0, 0.5, 1390, True),
+        (0.0, 0.5, 1410, False),
+        (0.0, 2.0, 3790, True),
+        (0.0, 2.0, 3810, False),
+        (0.0, 3.0, 5390, True),
+        (0.0, 3.1, 100, False),
+        (0.5, 0.0, 1390, True),
+        (0.5, 0.0, 1410, False),
+        (5.0, 0.0, 2510, True),
+        (5.0, 0.0, 2530, False),
     ],
 )
-def test_reacquire_limit_grows_with_elapsed_time(elapsed_s, distance, released) -> None:
-    """600 mm, plus 1.6 mm for each millisecond since the zone emptied, for 3 s."""
-    tracker = _occupied([(0, 1000)])
+def test_reacquire_limit_grows_with_elapsed_time(
+    report_age_s, elapsed_s, distance, released
+) -> None:
+    """600 mm, plus 1.6 mm a millisecond since the zone emptied, for 3 s."""
+    # And 1.6 mm a millisecond from the person's last report until it
+    # emptied, for up to 1.2 s.
+    tracker = HoldTracker()
+    assert tracker.step(10.0 - report_age_s, [_reading(0, 0, 1000)], [], "rect", RECT)
     if elapsed_s:
         assert tracker.step(10.0, [], [], "rect", RECT)
     outside = [_reading(1, distance, 1000)]
@@ -348,6 +430,19 @@ def test_reacquire_limit_grows_with_elapsed_time(elapsed_s, distance, released) 
 
     assert on is not released
     assert tracker.holding is not released
+
+
+def test_reach_counts_from_the_persons_last_report_not_the_last_evaluation() -> None:
+    """Another target's write in between does not make their report any newer."""
+    tracker = HoldTracker()
+    # Reported 600 mm inside the right edge, then read again unchanged.
+    assert tracker.step(10.0, [_reading(0, 400, 1000)], [], "rect", RECT)
+    assert tracker.step(10.9, [_reading(0, 400, 1000)], [], "rect", RECT)
+
+    # Their next report, 1.07 s on, is 1.5 m on: within the 2.3 m that 1.07 s
+    # since their last report allows, not the 0.9 m of the 0.17 s since the
+    # last evaluation.
+    assert not tracker.step(11.07, [], [_reading(0, 1900, 1000)], "rect", RECT)
 
 
 def test_each_outside_target_accounts_for_one_person() -> None:
@@ -391,19 +486,20 @@ def test_rule_two_is_decided_when_the_zone_empties() -> None:
     # Lost 1 s after the last step near the edge: still fresh, so they walked
     # out and nothing is held.
     tracker = _walked_in(WALK_TO_RIGHT_EDGE)
-    assert not tracker.step(2.75, [], [], "rect", RECT)
+    assert not tracker.step(3.45, [], [], "rect", RECT)
     assert tracker.deadline(60) is None
 
     # Lost 2 s after it, the motion is stale when the zone empties, so the
     # zone holds. Later evaluations only look for people outside.
     tracker = _walked_in(WALK_TO_RIGHT_EDGE)
-    assert tracker.step(3.75, [], [], "rect", RECT)
-    assert tracker.step(4.0, [], [], "rect", RECT)
-    assert tracker.deadline(60) == pytest.approx(63.75)
+    assert tracker.step(4.45, [], [], "rect", RECT)
+    assert tracker.step(4.7, [], [], "rect", RECT)
+    assert tracker.deadline(60) == pytest.approx(64.45)
 
-    # The same walk lost while still moving, but far from every edge, holds.
-    tracker = _walked_in([(x - 575, y) for x, y in WALK_TO_RIGHT_EDGE])
-    assert tracker.step(1.75, [], [], "rect", RECT)
+    # The same walk lost while still moving, but far from every edge, holds:
+    # 675 mm from the nearest, past the 621 mm that walking 0.43 m/s allows.
+    tracker = _walked_in([(x - 625, y) for x, y in WALK_TO_RIGHT_EDGE])
+    assert tracker.step(2.45, [], [], "rect", RECT)
 
 
 def test_someone_inside_again_ends_the_hold() -> None:

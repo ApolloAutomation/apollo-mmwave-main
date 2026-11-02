@@ -1352,8 +1352,9 @@ HOLD_S = 60
 # walking, which hold rule 2 reads as moving, reported far more often than
 # the R PRO-1's LD2450 reports it (see RADAR_PERIOD_S).
 WALK_STEP_S = 0.35
-# Toward zone 1's right edge at x = 1000, ending 50 mm from it.
-WALK_TO_RIGHT_EDGE = [(200 + 150 * step, 1000) for step in range(6)]
+# Toward zone 1's right edge at x = 1000, ending 50 mm from it after 2.45 s:
+# long enough for two steps of hold rule 2's 0.9 s.
+WALK_TO_RIGHT_EDGE = [(-100 + 150 * step, 1000) for step in range(8)]
 # Zones that reach the edge of the radar's view, 6 m out and 60 degrees
 # either side of straight ahead, away from their own edges.
 FAR_ZONE = {
@@ -1374,9 +1375,9 @@ LEFT_ZONE = {
 # about 57 degrees to one side, 135 mm from the 60 degree line.
 EDGE_WALKS = {
     "zone-edge": (RECT_ZONE, WALK_TO_RIGHT_EDGE),
-    "range": (FAR_ZONE, [(0, 5050 + 150 * step) for step in range(6)]),
-    "angle-right": (RIGHT_ZONE, [(2500, 2350 - 150 * step) for step in range(6)]),
-    "angle-left": (LEFT_ZONE, [(-2500, 2350 - 150 * step) for step in range(6)]),
+    "range": (FAR_ZONE, [(0, 4750 + 150 * step) for step in range(8)]),
+    "angle-right": (RIGHT_ZONE, [(2500, 2650 - 150 * step) for step in range(8)]),
+    "angle-left": (LEFT_ZONE, [(-2500, 2650 - 150 * step) for step in range(8)]),
 }
 
 
@@ -1679,9 +1680,11 @@ async def test_outside_target_too_far_does_not_release(
     await _sit(hass, freezer, TARGET_1, 0, 1000)
     await _vanish(hass, TARGET_1)
 
-    # 1.5 m away 0.5 s after the zone emptied, past the 1.4 m reach then.
+    # 3.4 m away 0.5 s after the zone emptied, past the 3.3 m reach then:
+    # 600 mm, and 1.6 mm a millisecond for those 0.5 s and for the 1.2 s
+    # their last report could have aged by the time the zone emptied.
     await _advance(hass, freezer, 0.5)
-    _set_target(hass, TARGET_2, 1500, 1000)
+    _set_target(hass, TARGET_2, 3400, 1000)
     await hass.async_block_till_done()
     assert _hold_state(hass, presence_id) == ("on", True)
 
@@ -1712,7 +1715,7 @@ async def test_outside_target_after_three_seconds_does_not_release(
 async def test_another_tracked_person_4_m_away_releases_within_3_s(
     hass, freezer, entity_registry, setup_entry_with_zone
 ) -> None:
-    """The reach grows to 5.4 m in 3 s, so anyone the radar tracks nearby counts."""
+    """The reach grows past 5 m in 3 s, so anyone the radar tracks nearby counts."""
     # Rule 1 as specified, pinned on purpose: a narrower reach for targets
     # tracked elsewhere is an open question.
     device_id, _ = setup_entry_with_zone
@@ -1723,13 +1726,13 @@ async def test_another_tracked_person_4_m_away_releases_within_3_s(
     await _vanish(hass, TARGET_1)
     assert _hold_state(hass, presence_id) == ("on", True)
 
-    await _advance(hass, freezer, 1)
-    _set_target(hass, TARGET_2, 4000, 1100)  # 4 m, past the 2.2 m of 1 s
+    await _advance(hass, freezer, 0.5)
+    _set_target(hass, TARGET_2, 4000, 1100)  # 4 m, past the 3.3 m of 0.5 s
     await hass.async_block_till_done()
     assert _hold_state(hass, presence_id) == ("on", True)
 
-    await _advance(hass, freezer, 1.5)
-    _set_target(hass, TARGET_2, 4000, 1000)  # within the 4.6 m of 2.5 s
+    await _advance(hass, freezer, 2)
+    _set_target(hass, TARGET_2, 4000, 1000)  # within the 6.5 m of 2.5 s
     await hass.async_block_till_done()
     assert _hold_state(hass, presence_id) == ("off", False)
 
@@ -1807,8 +1810,8 @@ async def test_moving_person_lost_mid_zone_holds(
     device_id, _ = setup_entry_with_zone
     await _store_zone(hass, device_id)
     presence_id = _presence_id(entity_registry, device_id)
-    # The same walk 575 mm to the left, ending 625 mm from the nearest edge.
-    await _walk(hass, freezer, TARGET_1, [(x - 575, y) for x, y in WALK_TO_RIGHT_EDGE])
+    # The same walk 625 mm to the left, ending 675 mm from the nearest edge.
+    await _walk(hass, freezer, TARGET_1, [(x - 625, y) for x, y in WALK_TO_RIGHT_EDGE])
 
     await _vanish(hass, TARGET_1)
 
@@ -2553,10 +2556,6 @@ async def test_walking_out_into_view_at_the_radars_cadence_turns_off_within_3_s(
     assert held == []
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="rule 2 is tuned for 0.35 s steps; see the hold retune question",
-)
 @pytest.mark.parametrize("walk", list(OUT_OF_VIEW_WALKS))
 async def test_walking_out_of_view_at_the_radars_cadence_turns_off_at_once(
     hass, freezer, entity_registry, setup_entry_with_zone, walk
@@ -2585,11 +2584,6 @@ async def test_walking_out_of_view_at_the_radars_cadence_turns_off_at_once(
     assert held == []
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="rule 1 counts from the emptying, tuned for 0.35 s steps; see the hold"
-    " retune question",
-)
 async def test_a_brisk_walk_out_into_view_turns_off_as_it_leaves(
     hass, freezer, entity_registry, setup_entry_with_zone
 ) -> None:
@@ -2615,3 +2609,47 @@ async def test_a_brisk_walk_out_into_view_turns_off_as_it_leaves(
         await _lose(hass, TARGET_1)
 
     assert held == []
+
+
+# The one jump the LD2450 was measured making before it lost a still target:
+# 467 mm in its last report.
+LAST_REPORT_JUMP_MM = 467.0
+
+
+@pytest.mark.parametrize("y_lag", list(Y_LAGS))
+@pytest.mark.parametrize("seat", ["zone-edge", "range"])
+async def test_a_still_persons_last_report_jumping_at_the_edge_holds(
+    hass, freezer, setup_entry_with_zone, seat, y_lag
+) -> None:
+    """The radar's jump before it loses someone sitting still is no walk out."""
+    # Straight at the edge 0.7 m away, which leaves that report 233 mm from it.
+    zone, point = STILL_SEATS[seat]
+    toward = (1.0, 0.0) if seat == "zone-edge" else (point[0] / 5300, point[1] / 5300)
+    jumped = (
+        point[0] + LAST_REPORT_JUMP_MM * toward[0],
+        point[1] + LAST_REPORT_JUMP_MM * toward[1],
+    )
+    device_id, _ = setup_entry_with_zone
+    presence_id = _presence_id(er.async_get(hass), device_id)
+    for index, phase_s in enumerate(RADAR_PHASES_S):
+        await _restart_hold(hass, device_id, _hold_zone(zone))
+        # Still for 20 s, then the next report jumps, and the radar loses
+        # them 0.3 s after its last write.
+        jump_s = phase_s + RADAR_PERIOD_S * math.ceil((20 - phase_s) / RADAR_PERIOD_S)
+        await _report_at_radar_cadence(
+            hass,
+            freezer,
+            TARGET_1,
+            (
+                _jittered(
+                    lambda t, point=point, jumped=jumped: jumped if t >= 20 else point,
+                    start=7 * index,
+                ),
+                jump_s + Y_LAGS[y_lag] + 0.3,
+            ),
+            Cadence(Y_LAGS[y_lag], phase_s),
+        )
+        await _lose(hass, TARGET_1)
+        assert _hold_state(hass, presence_id) == ("on", True), phase_s
+        await _advance(hass, freezer, 3.5)
+        assert _hold_state(hass, presence_id) == ("on", True), phase_s

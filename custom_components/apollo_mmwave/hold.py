@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import pairwise
 from typing import TYPE_CHECKING, Any
 
@@ -61,21 +61,41 @@ if TYPE_CHECKING:
 HOLD_REACQUIRE_WINDOW_S = 3.0
 HOLD_REACQUIRE_BASE_MM = 600.0
 HOLD_REACQUIRE_MM_PER_MS = 1.6
-# Rule 2 measures motion between the last position and an anchor taken 0.6
-# to 1.2 s before it; the anchor moves on once it is this old.
-HOLD_ANCHOR_STEP_S = 0.6
+# The LD2450 writes each axis about once a second, so someone can walk for
+# that long after their last report before the zone empties: the radius
+# also grows with the age of that report, up to this long.
+HOLD_REPORT_AGE_MAX_S = 1.2
+# Rule 2 measures motion over steps between the person's own reports at
+# least this far apart: more than the 0.4 to 0.75 s between an X write and
+# a Y write, so each step spans a whole report of both axes, and less than
+# the 1.0 to 1.15 s from one report of an axis to the next.
+HOLD_ANCHOR_STEP_S = 0.9
 # Evidence older than this is not motion. Home Assistant only reports
 # changes, so a person who sat down produces none at all.
-HOLD_MOTION_FRESH_S = 1.2
-# A previous anchor older than this means the readings were too sparse to
-# measure motion, which reads as still: the hold is the safe side.
-HOLD_MOTION_WINDOW_S = 1.2
+HOLD_MOTION_FRESH_S = 1.6
+# Steps that do not fit in this long mean the reports were too sparse to
+# measure motion, which reads as still: the hold is the safe side. Two steps
+# take about 2.1 s, and this leaves room for a report that was skipped.
+HOLD_MOTION_WINDOW_S = 3.5
 # A target seen inside for less than this counts as moving.
 HOLD_FIRST_SEEN_S = 1.2
-# After that, moving means this far from the previous anchor.
-HOLD_MOVE_MIN_MM = 180.0
-# How near an edge a moving person has to be lost to count as walking out.
+# After that, moving means two steps in a row of at least this, well past
+# the LD2450's jitter of a still target. The radar can jump about 0.5 m in
+# the last report before it loses someone sitting still, and one step of
+# that size is not walking.
+HOLD_MOVE_MIN_MM = 250.0
+# One step this fast is walking without the step before it: about twice the
+# speed of that pre-loss jump, and a brisk walk out that the radar saw for
+# one report only.
+HOLD_BRISK_MM_PER_S = 850.0
+# How near an edge a moving person has to be lost to count as walking out:
+# this, plus how far they walk at their speed between their last report and
+# the loss, and for HOLD_AXIS_LAG_S more, the most by which the axis that
+# report did not write can be older (from a Y write to the next X), up to
+# HOLD_EXIT_MARGIN_MAX_MM.
 HOLD_EXIT_MARGIN_MM = 300.0
+HOLD_EXIT_MARGIN_MAX_MM = 1500.0
+HOLD_AXIS_LAG_S = 0.75
 # The edge of the radar's view: the LD2450's defaults, 6 m and 60 degrees
 # either side of straight ahead. The backend knows nothing better, so where
 # walls or the radar's own zone filter end the view sooner, a moving exit away
@@ -131,10 +151,10 @@ class Occupant:
     last_t: float  # time of the last evaluation that found this person inside
     last_map: tuple[float, float]
     last_raw: tuple[float, float]
-    anchor_t: float
-    anchor_map: tuple[float, float]
-    prev_anchor_t: float | None = None
-    prev_anchor_map: tuple[float, float] | None = None
+    # Each report of this person, oldest first: when their reading changed,
+    # and where to, for as long as rule 2 can use it. Any write starts an
+    # evaluation, so an evaluation is no report of this person.
+    reports: list[tuple[float, tuple[float, float]]] = field(default_factory=list)
     # When a carried reading first stood for this person: the first half of
     # a vanish, which is when the zone emptied if the second half follows.
     carried_since: float | None = None
@@ -148,38 +168,76 @@ class Occupant:
             last_t=now,
             last_map=reading.map,
             last_raw=reading.raw,
-            anchor_t=now,
-            anchor_map=reading.map,
+            reports=[(now, reading.map)],
         )
+
+    @property
+    def seen_t(self) -> float:
+        """Return when this person's reading last changed."""
+        return self.reports[-1][0]
 
     def update(self, reading: Reading, now: float) -> None:
         """Record that this person is still inside, at reading."""
-        if now - self.anchor_t >= HOLD_ANCHOR_STEP_S:
-            # The previous anchor is then 0.6 to 1.2 s old while readings
-            # keep coming.
-            self.prev_anchor_t, self.prev_anchor_map = self.anchor_t, self.anchor_map
-            self.anchor_t, self.anchor_map = now, reading.map
+        if reading.raw != self.last_raw:
+            self.reports = [
+                report
+                for report in self.reports
+                if now - report[0] <= HOLD_MOTION_WINDOW_S
+            ]
+            self.reports.append((now, reading.map))
         self.last_t, self.last_map, self.last_raw = now, reading.map, reading.raw
         self.carried_since = None
+
+    def _report_by(self, t: float) -> tuple[float, tuple[float, float]] | None:
+        # The latest report at or before t.
+        return next(
+            (report for report in reversed(self.reports) if report[0] <= t), None
+        )
 
     def moving_at(self, t: float) -> bool:
         """Report whether this person was moving at time t."""
         # Home Assistant only reports changes, so a person who sat down
         # produces no events and their last step would otherwise read as
         # motion forever. Old evidence is not motion.
-        if t - self.last_t > HOLD_MOTION_FRESH_S:
+        if t - self.seen_t > HOLD_MOTION_FRESH_S:
             return False
         if self.last_t - self.first_seen < HOLD_FIRST_SEEN_S:
             return True
-        if (
-            self.prev_anchor_t is None
-            or self.prev_anchor_map is None
-            or self.last_t - self.prev_anchor_t > HOLD_MOTION_WINDOW_S
-        ):
-            # Too sparse to measure 0.6 to 1.2 s of movement: hold, the safe
-            # side.
+        return self._walking()
+
+    def _walking(self) -> bool:
+        # Whether this person's last reports show steps of walking.
+        seen_t, here = self.reports[-1]
+        before = self._report_by(seen_t - HOLD_ANCHOR_STEP_S)
+        if before is None or seen_t - before[0] > HOLD_MOTION_WINDOW_S:
+            # Too sparse to measure a step: hold, the safe side.
             return False
-        return math.dist(self.last_map, self.prev_anchor_map) >= HOLD_MOVE_MIN_MM
+        step = math.dist(here, before[1])
+        if step < HOLD_MOVE_MIN_MM:
+            return False
+        if step / (seen_t - before[0]) >= HOLD_BRISK_MM_PER_S:
+            return True
+        # A still person's last report, when the LD2450 jumps before it
+        # loses them, is a step that follows none: walking takes the step
+        # before it too.
+        earlier = self._report_by(before[0] - HOLD_ANCHOR_STEP_S)
+        if earlier is None or seen_t - earlier[0] > HOLD_MOTION_WINDOW_S:
+            return False
+        return math.dist(before[1], earlier[1]) >= HOLD_MOVE_MIN_MM
+
+    def exit_margin_mm(self, t: float) -> float:
+        """Return how near an edge this person had to be, lost at t, to walk out."""
+        seen_t, here = self.reports[-1]
+        before = self._report_by(seen_t - HOLD_ANCHOR_STEP_S)
+        if before is None:
+            return HOLD_EXIT_MARGIN_MM
+        # They walked on at their last step's speed after their last report,
+        # whose other axis was written earlier still.
+        speed = math.dist(here, before[1]) / (seen_t - before[0])
+        return min(
+            HOLD_EXIT_MARGIN_MAX_MM,
+            HOLD_EXIT_MARGIN_MM + speed * (t - seen_t + HOLD_AXIS_LAG_S),
+        )
 
 
 def _number(value: Any) -> float | None:
@@ -450,28 +508,38 @@ class HoldTracker:
     def _match(
         self, people: list[Occupant], outside: list[Reading], now: float
     ) -> set[int]:
-        # Rule 1, by index into people. A reading stays current until it
-        # changes, so each person was inside until the zone emptied: elapsed
-        # time counts from empty_since, not from their last reading.
+        # Rule 1, by index into people.
         if self.empty_since is None:
             return set()
         elapsed_s = now - self.empty_since
         if elapsed_s > HOLD_REACQUIRE_WINDOW_S:
             return set()
-        limit = HOLD_REACQUIRE_BASE_MM + HOLD_REACQUIRE_MM_PER_MS * elapsed_s * 1000
-        # Nearest pair first over every (person, unused outside reading), so a
-        # person who walked out keeps their own reading instead of handing it
-        # to someone still sitting in the zone.
+        empty_since = self.empty_since
+
+        def reach(person: Occupant) -> float:
+            # A reading stays current until it changes, so the radius grows
+            # from when the zone emptied, and from the person's last report
+            # before that for up to HOLD_REPORT_AGE_MAX_S: at a report about
+            # once a second, a walker's last report inside can be a second
+            # old by the time one outside empties the zone.
+            age_s = min(empty_since - person.seen_t, HOLD_REPORT_AGE_MAX_S)
+            return (
+                HOLD_REACQUIRE_BASE_MM
+                + HOLD_REACQUIRE_MM_PER_MS * (elapsed_s + age_s) * 1000
+            )
+
+        # Nearest pair first over every (person, unused outside reading)
+        # within reach, so a person who walked out keeps their own reading
+        # instead of handing it to someone still sitting in the zone.
         candidates = sorted(
-            (math.dist(reading.map, person.last_map), index, reading.slot)
+            (distance, index, reading.slot)
             for index, person in enumerate(people)
             for reading in outside
             if reading.slot not in self.used_slots
+            and (distance := math.dist(reading.map, person.last_map)) <= reach(person)
         )
         matched: set[int] = set()
-        for distance, index, slot in candidates:
-            if distance > limit:
-                break
+        for _distance, index, slot in candidates:
             if index in matched or slot in self.used_slots:
                 continue
             # One outside target accounts for one person.
@@ -483,7 +551,8 @@ class HoldTracker:
         # Rule 2, read at the moment the zone emptied.
         if self.empty_since is None or not person.moving_at(self.empty_since):
             return False
+        margin = person.exit_margin_mm(self.empty_since)
         return (
-            edge_distance_mm(shape, data, *person.last_map) <= HOLD_EXIT_MARGIN_MM
-            or coverage_edge_distance_mm(*person.last_raw) <= HOLD_EXIT_MARGIN_MM
+            edge_distance_mm(shape, data, *person.last_map) <= margin
+            or coverage_edge_distance_mm(*person.last_raw) <= margin
         )
