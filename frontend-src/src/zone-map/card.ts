@@ -16,10 +16,14 @@
 
 import { registerElement } from '../register';
 import { connectZones } from './api';
+import { CELL_MM, CellGrid, bucketCells } from './cells';
 import {
   ADMIN_ONLY_NOTE,
   ADMIN_ONLY_TITLE,
   CLEAR_LOCKED_TOAST,
+  COVERAGE_CLEAR,
+  COVERAGE_LABEL,
+  COVERAGE_TITLE,
   DRAW_LOCKED_TOAST,
   HELD_SUFFIX,
   IGNORED_SUFFIX,
@@ -34,6 +38,7 @@ import {
 import { ZONE_MAP_EDITOR_TAG, firstLd2450DeviceId } from './editor';
 import { pointInZone, rotateToMap } from './geometry';
 import { fallbackPresenceId, presenceLook } from './presence';
+import { TRAIL_GAP_MS, TRAIL_MS, TrailBuffer } from './trails';
 
 const COLOR = Object.freeze({
   ui: {
@@ -128,6 +133,10 @@ const COLOR = Object.freeze({
     // A target inside an ignore zone, which presence does not see.
     ignoredTargetLight: '#757575',
     ignoredTargetDark: '#8a8f98',
+    // The Coverage paint, as the "r, g, b" an rgba() fill takes with each
+    // cell's alpha.
+    coverageLight: '255, 152, 0',
+    coverageDark: '255, 183, 77',
   },
 });
 
@@ -229,6 +238,9 @@ const LOCK_NUDGE_MS = 1200;
 // The lock reminders and the drawing toasts say each thing at most this
 // often, so a burst of taps does not stack copies of one message.
 const TOAST_THROTTLE_MS = 1500;
+// The trail fade timer paints a frame at most this often (ms), about ten a
+// second, and waits out the rest of a frame a hass push already painted.
+const TRAIL_FRAME_MS = 100;
 
 const CONE_LOCKED_HINT = 'Locked with the map. Press Locked on the map to change it.';
 const CONE_LOCKED_TOAST = 'Cone rotation is locked. Press Locked on the map to change it.';
@@ -254,6 +266,30 @@ function readStoredLock(deviceId) {
 function writeStoredLock(deviceId, locked) {
   try {
     window.localStorage.setItem(lockStorageKey(deviceId), locked ? '1' : '0');
+  } catch {
+    // Nothing to do; the toggle still applies for the current page load
+  }
+}
+
+const COVERAGE_STORAGE_PREFIX = 'apollo-mmwave.zone-map.coverage';
+
+function coverageStorageKey(deviceId) {
+  return `${COVERAGE_STORAGE_PREFIX}.${deviceId}`;
+}
+
+// The Coverage toggle is a viewer's own, remembered per radar in this browser
+// like the lock. The paint itself is page memory and never stored.
+function readStoredCoverage(deviceId) {
+  try {
+    return window.localStorage.getItem(coverageStorageKey(deviceId)) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function writeStoredCoverage(deviceId, on) {
+  try {
+    window.localStorage.setItem(coverageStorageKey(deviceId), on ? '1' : '0');
   } catch {
     // Nothing to do; the toggle still applies for the current page load
   }
@@ -373,6 +409,19 @@ export class ZoneMapCard extends HTMLElement {
     this._frameScale = 1;
     // When the canvas was last painted, on the _now() clock.
     this._lastDrawAt = 0;
+    // A few seconds of each live target's positions, page memory only: the
+    // trails behind the dots draw from it and Coverage counts from it.
+    this._trails = new TrailBuffer();
+    // Each live target's reading as last pushed into the trails, by slot.
+    this._trailReadings = new Map();
+    // The pending trail fade frame (see _kickTrailTimer), or null.
+    this._trailTimer = null;
+    // Every live position since the page loaded, in cells, and whether this
+    // viewer paints it (remembered per radar in this browser).
+    this._coverage = new CellGrid();
+    this._coverageOn = false;
+    // A card that shows only the map (view_only), with no coverage.
+    this._viewOnly = false;
     this.showZones = false;
     this.showConfig = false;
     this._polyPoints = [];
@@ -495,7 +544,11 @@ export class ZoneMapCard extends HTMLElement {
       // Retargeting the writes without retargeting the reads would leave the
       // card drawing one radar and saving to another.
       this._resetDeviceState();
+      // This viewer's Coverage toggle for the radar now shown.
+      this._coverageOn = readStoredCoverage(this.deviceId);
     }
+    // Absent, or anything but true, is the full card.
+    this._viewOnly = config.view_only === true;
     // Display only, so a user can call the card "Kitchen" and still share zone
     // data with the auto-generated dashboard. Deliberately NOT `this.title`:
     // that is a native HTMLElement accessor and would put a browser tooltip
@@ -639,6 +692,13 @@ export class ZoneMapCard extends HTMLElement {
     this._hatch = { light: null, dark: null };
     this._frameScale = 1;
     this._lastDrawAt = 0;
+    // So are the positions behind the trails and the coverage paint. The
+    // Coverage toggle is per radar, and setConfig reads the new one's.
+    this._stopTrailTimer();
+    this._trails.clear();
+    this._trailReadings = new Map();
+    this._coverage.clear();
+    this._coverageOn = false;
     this._closeHistory();
   }
 
@@ -777,8 +837,77 @@ export class ZoneMapCard extends HTMLElement {
    * them between paints samples here, once per move, before the repaint.
    */
   _onTargetsChanged(now) {
+    // Only a target whose reading changed is sampled. Another target's move
+    // says nothing new about a still one, and Coverage would count the still
+    // one's cell again for every move the other made.
+    const readings = new Map();
+    this._currentTargets().forEach(({ slot, x, y }) => {
+      readings.set(slot, { x, y });
+      const last = this._trailReadings.get(slot);
+      if (!last || last.x !== x || last.y !== y) this._trails.push(slot, now, x, y);
+    });
+    this._trailReadings = readings;
+    // Before the prune, so a position is counted before it ages out.
+    this._feedCoverage(now);
+    this._trails.prune(now);
     // The same states say whether the radar went offline or came back.
     this._renderOfflineNote();
+    // Walk's hint and Corner here follow who is in view.
+    this._renderWalkPanel();
+    this._kickTrailTimer();
+  }
+
+  /**
+   * Count in the Coverage paint the trail samples that became final since
+   * the last count: too old for the next push to replace (see
+   * TrailBuffer.takeFinal), so the in-between point of an X update without
+   * its Y never paints. A view-only card shows no coverage, so it keeps none.
+   */
+  _feedCoverage(now) {
+    if (this._viewOnly) return;
+    this._trails.takeFinal(now).forEach(({ x, y }) => this._coverage.add(x, y));
+  }
+
+  /**
+   * Keep the trails fading between hass pushes: one frame every
+   * TRAIL_FRAME_MS while some target still has a trail. One timer at a time,
+   * and only on a card that is on the page and has a canvas, so a card
+   * nobody can see schedules nothing. A replay paints on its own timer and
+   * shows no live trails.
+   */
+  _kickTrailTimer() {
+    if (this._replayShowing()) return;
+    if (!this.isConnected || !this.canvas || this._trailTimer !== null) return;
+    if (!this._trails.hasTrail(this._now())) return;
+    this._trailTimer = setTimeout(() => this._onTrailFrame(), TRAIL_FRAME_MS);
+  }
+
+  /**
+   * One fade frame: count what became final, drop what aged out, and paint,
+   * unless a hass push painted less than a frame ago. Then it waits out the
+   * rest of that frame, so a radar that pushes often is not painted twice as
+   * often. The frame after the last trail aged out paints it away, and the
+   * timer stops there.
+   */
+  _onTrailFrame() {
+    this._trailTimer = null;
+    const now = this._now();
+    this._feedCoverage(now);
+    this._trails.prune(now);
+    if (this._replayShowing()) return;
+    const since = now - this._lastDrawAt;
+    if (since < TRAIL_FRAME_MS) {
+      this._trailTimer = setTimeout(() => this._onTrailFrame(), TRAIL_FRAME_MS - since);
+      return;
+    }
+    this.drawGrid();
+    this._kickTrailTimer();
+  }
+
+  _stopTrailTimer() {
+    if (this._trailTimer === null) return;
+    clearTimeout(this._trailTimer);
+    this._trailTimer = null;
   }
 
   /**
@@ -865,6 +994,8 @@ export class ZoneMapCard extends HTMLElement {
     // listeners across a detach, so only the global ones come back here.
     this._connectZones();
     if (this.canvas && !this._onKeyDown) this._attachGlobalListeners();
+    // A trail that was fading when the card left the page fades on.
+    this._kickTrailTimer();
   }
 
   _connectZones() {
@@ -1036,6 +1167,8 @@ export class ZoneMapCard extends HTMLElement {
   /** Take the store's answer. Nothing in the card edits the pair list, so
    *  there is never an unsaved edit here to protect. */
   _applyTrackedEntities(config) {
+    const pairIds = () => JSON.stringify(this.trackedEntities.map((pair) => [pair?.x, pair?.y]));
+    const pairsBefore = pairIds();
     const suggested = Array.isArray(config.suggested_entities)
       ? config.suggested_entities
       : [];
@@ -1050,6 +1183,13 @@ export class ZoneMapCard extends HTMLElement {
       this.trackedEntities = (Array.isArray(config.entities) ? config.entities : []).map(
         (pair) => ({ ...pair }),
       );
+    }
+    if (pairIds() !== pairsBefore) {
+      // A trail belongs to a slot, a place in the pair list, and under
+      // another list that place holds another target. Coverage keeps its
+      // cells: those are places in the room.
+      this._trails.clear();
+      this._trailReadings = new Map();
     }
     this._renderEntityStatus();
     // Other pairs can be online when the old ones were not, and the other way.
@@ -1265,6 +1405,7 @@ export class ZoneMapCard extends HTMLElement {
             <button id="btnLock" class="lock-toggle" title="Lock drawing and cone rotation">🔓</button>
           </div>
         </div>
+        ${this._viewOnly ? '' : this._viewToolsTemplate()}
         <div class="controls" id="zone-buttons">
         </div>
         <div class="config">
@@ -1316,6 +1457,20 @@ export class ZoneMapCard extends HTMLElement {
     `;
   }
 
+  /**
+   * The chips under the map that change only what this viewer sees: Coverage
+   * and, while it is on, Clear coverage. _renderCoverageControls sets their
+   * state from `this`.
+   */
+  _viewToolsTemplate() {
+    return `
+        <div class="controls" id="viewTools">
+          <button id="btnCoverage" class="zone-btn" aria-pressed="false">${COVERAGE_LABEL}</button>
+          <button id="btnCoverageClear" class="zone-btn" hidden>${COVERAGE_CLEAR}</button>
+        </div>
+    `;
+  }
+
   render() {
     // TODO(REVIEW_REPORT.md X47): with a cached payload, chips, manager, status and drawGrid run
     // twice. Skipping the first pass changes selection on a same-device setConfig; decide first.
@@ -1323,6 +1478,8 @@ export class ZoneMapCard extends HTMLElement {
     // slider that are about to go, from _applyAutoLock, on a template that
     // has no Locked button to make a new one.
     this._updateLockVisual = null;
+    // Started again at the end, once the new canvas has its picture.
+    this._stopTrailTimer();
     this._detachGlobalListeners();
     this.shadowRoot.innerHTML = this._template();
     this._renderTitle();
@@ -1351,9 +1508,12 @@ export class ZoneMapCard extends HTMLElement {
     }
     // The rest of the DOM state lives on `this`, which outlives a render.
     this._renderAdminControls();
+    this._renderCoverageControls();
     this._renderWalkPanel();
     this._renderHistoryPanel();
     this._updateCanvasTouchMode();
+    // A trail fading when the theme flipped keeps fading on the new canvas.
+    this._kickTrailTimer();
   }
 
   renderZoneButtons() {
@@ -1466,6 +1626,43 @@ export class ZoneMapCard extends HTMLElement {
     this._attachUnitSwitch();
     this._attachConfigEvents();
     this._attachMapOptions();
+    this._attachViewTools();
+  }
+
+  _attachViewTools() {
+    const coverage = this.shadowRoot.getElementById('btnCoverage');
+    if (coverage) coverage.addEventListener('click', () => this._setCoverage(!this._coverageOn));
+    const clear = this.shadowRoot.getElementById('btnCoverageClear');
+    if (clear) clear.addEventListener('click', () => this._clearCoverage());
+  }
+
+  /**
+   * Paint where live targets have been, or stop, for this viewer only, and
+   * remember it for the radar in this browser. Positions are counted either
+   * way, so turning it on shows everything since the page opened.
+   */
+  _setCoverage(on) {
+    this._coverageOn = on;
+    writeStoredCoverage(this.deviceId, on);
+    this._renderCoverageControls();
+    this.drawGrid();
+  }
+
+  _clearCoverage() {
+    this._coverage.clear();
+    this.drawGrid();
+  }
+
+  /** The Coverage chip pressed or not, and Clear coverage only while on. */
+  _renderCoverageControls() {
+    const button = this.shadowRoot?.getElementById('btnCoverage');
+    if (button) {
+      button.classList.toggle('active', this._coverageOn);
+      button.setAttribute('aria-pressed', this._coverageOn ? 'true' : 'false');
+      button.title = COVERAGE_TITLE;
+    }
+    const clear = this.shadowRoot?.getElementById('btnCoverageClear');
+    if (clear) clear.hidden = !this._coverageOn;
   }
 
   _attachUnitSwitch() {
@@ -1529,7 +1726,8 @@ export class ZoneMapCard extends HTMLElement {
     if (!admin || !this._movementHistory) this._closeHistory();
   }
 
-  /** Lay the Walk panel back over a rebuilt DOM from the state on `this`.
+  /** Lay the Walk panel back over a rebuilt DOM from the state on `this`,
+   *  and bring it up to date as targets come and go (_onTargetsChanged).
    *  The card has no Walk panel yet, so there is nothing to lay back. */
   _renderWalkPanel() {}
 
@@ -3542,15 +3740,111 @@ export class ZoneMapCard extends HTMLElement {
     this._lastDrawAt = this._now();
   }
 
-  /** Cells painted under the whole map: where targets have been (coverage),
-   *  or a replay's heatmap. The card paints none yet. */
-  _drawCellLayer(ctx) {}
+  /** Cells painted under the whole map: where live targets have been, while
+   *  this viewer has Coverage on. A view-only card paints none. */
+  _drawCellLayer(ctx) {
+    if (this._viewOnly || !this._coverageOn) return;
+    this._drawCells(
+      ctx,
+      this._coverage,
+      this.darkMode ? COLOR.canvas.coverageDark : COLOR.canvas.coverageLight,
+    );
+  }
+
+  /**
+   * Paint `grid`'s cells in `rgb` ("r, g, b"), each at the alpha its value
+   * earns, with one fill style, one path and one fill per alpha (bucketCells)
+   * rather than one per cell. A cell is a square in the radar's own frame, so
+   * its corners turn and flip with the dots. Both steps are linear, so the
+   * corners of every cell are whole steps along two fixed vectors on the
+   * canvas, worked out once per frame instead of once per corner.
+   */
+  _drawCells(ctx, grid, rgb) {
+    const groups = bucketCells(grid);
+    if (!groups.length) return;
+    const toPixels = (x, y) => {
+      const m = this._toMap(x, y);
+      return { x: this.valueToPixels(m.x, 'x'), y: this.valueToPixels(m.y, 'y') };
+    };
+    const origin = toPixels(0, 0);
+    const alongX = toPixels(CELL_MM, 0);
+    const alongY = toPixels(0, CELL_MM);
+    const ux = alongX.x - origin.x;
+    const uy = alongX.y - origin.y;
+    const vx = alongY.x - origin.x;
+    const vy = alongY.y - origin.y;
+    ctx.save();
+    groups.forEach(({ alpha, cells }) => {
+      ctx.fillStyle = `rgba(${rgb}, ${alpha})`;
+      ctx.beginPath();
+      cells.forEach(([ix, iy]) => {
+        const x = origin.x + ix * ux + iy * vx;
+        const y = origin.y + ix * uy + iy * vy;
+        ctx.moveTo(x, y);
+        ctx.lineTo(x + ux, y + uy);
+        ctx.lineTo(x + ux + vx, y + uy + vy);
+        ctx.lineTo(x + vx, y + vy);
+        ctx.closePath();
+      });
+      ctx.fill();
+    });
+    ctx.restore();
+  }
 
   /** The shape a walk's corners make so far. The card has no Walk mode yet. */
   _drawWalkPreview(ctx) {}
 
-  /** The fading trail behind each live target. The card keeps no trails yet. */
-  _drawTrails(ctx) {}
+  /**
+   * The fading trail behind each live target: its last TRAIL_MS of
+   * positions in its dot's color, or grey while it stands in an ignore zone,
+   * where presence does not see it. A target that has gone keeps the color
+   * of where it was last seen until its trail fades.
+   */
+  _drawTrails(ctx) {
+    // A replay draws the trails it replays instead.
+    if (this._replayShowing()) return;
+    const now = this._now();
+    const colors = COLOR.canvas.targetPalette;
+    const grey = this.darkMode ? COLOR.canvas.ignoredTargetDark : COLOR.canvas.ignoredTargetLight;
+    this._trails.slots().forEach((slot) => {
+      const samples = this._trails.samples(slot);
+      if (samples.length < 2) return;
+      const at = this._trailReadings.get(slot) || samples[samples.length - 1];
+      const m = this._toMap(at.x, at.y);
+      const color = this._isIgnored(m.x, m.y) ? grey : colors[slot % colors.length];
+      this._drawTrail(ctx, samples, now, color);
+    });
+  }
+
+  /**
+   * One trail through `points` ({ t, x, y } in the radar's own frame, oldest
+   * first), as segments between consecutive points, aged against `now`: the
+   * newest strongest and widest, fading to a faint thin line at TRAIL_MS. A
+   * silence over TRAIL_GAP_MS breaks it, so a target that vanished and came
+   * back elsewhere is not joined to where it was.
+   */
+  _drawTrail(ctx, points, now, color) {
+    const scale = this._frameScale || 1;
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineCap = 'round';
+    let previous = null;
+    points.forEach(({ t, x, y }) => {
+      const m = this._toMap(x, y);
+      const point = { t, x: this.valueToPixels(m.x, 'x'), y: this.valueToPixels(m.y, 'y') };
+      if (previous && t - previous.t <= TRAIL_GAP_MS) {
+        const f = Math.max(0.08, 1 - (now - t) / TRAIL_MS);
+        ctx.globalAlpha = 0.6 * f;
+        ctx.lineWidth = scale * (1.5 + 2.5 * f);
+        ctx.beginPath();
+        ctx.moveTo(previous.x, previous.y);
+        ctx.lineTo(point.x, point.y);
+        ctx.stroke();
+      }
+      previous = point;
+    });
+    ctx.restore();
+  }
 
   /** A ring and number on each corner a walk marked. The card has no Walk
    *  mode yet. */
@@ -4419,6 +4713,7 @@ export class ZoneMapCard extends HTMLElement {
   disconnectedCallback() {
     this._detachGlobalListeners();
     this._disconnectZones();
+    this._stopTrailTimer();
   }
 
   _detachGlobalListeners() {

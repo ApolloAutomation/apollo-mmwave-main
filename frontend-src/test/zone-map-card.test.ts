@@ -3653,6 +3653,610 @@ describe("zone map card offline radar", () => {
 });
 
 /**
+ * Trails behind the live dots.
+ *
+ * Each target leaves about 3 s of fading trail, kept in the card element's
+ * memory only. A hass push paints the newest point. Between pushes a fade
+ * timer repaints about ten times a second, only while the card is on the page
+ * and something is left to fade, and never right after a push painted. The
+ * clock is faked, performance.now() included, so each test moves time itself.
+ * Facing ahead on the 10 m grid, a target at (-2000, 2000) mm is drawn at
+ * canvas (240, 160).
+ */
+describe("zone map card trails", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    document.body.replaceChildren();
+  });
+
+  /** Tracking the payload's detected pair, with `move` setting its reading. */
+  async function trailCard(payload: any = { ...ZONE_PAYLOAD, rotation_deg: 0 }) {
+    vi.useFakeTimers();
+    const hass = fakeHass(payload);
+    const card = await mountCard(hass, TEN_METER_GRID);
+    let states: Record<string, any> = {};
+    const move = (x: number, y: number) => {
+      states = {
+        ...states,
+        "sensor.a_x": { state: String(x) },
+        "sensor.a_y": { state: String(y) },
+      };
+      card.hass = { ...hass, states };
+    };
+    return { card, hass, move };
+  }
+
+  /**
+   * Each trail segment stroked in `color`: [x1, y1, x2, y2, alpha, width].
+   * A segment is one moveTo and one lineTo; a dot's ring, also stroked in
+   * its color, is an arc.
+   */
+  function segments(draws: Draw[], color = "#f44336"): number[][] {
+    const out: number[][] = [];
+    let path: Draw[] = [];
+    for (const draw of draws) {
+      if (draw.name === "beginPath") path = [];
+      else if (draw.name !== "stroke") path.push(draw);
+      else if (draw.stroke === color && path.map((d) => d.name).join() === "moveTo,lineTo") {
+        const [from, to] = path.map((d) => d.args);
+        out.push([...from, ...to, draw.alpha as number, draw.lineWidth as number]);
+      }
+    }
+    return out;
+  }
+
+  /** Where in `draws` the last trail segment in `color` was stroked. */
+  function lastSegmentAt(draws: Draw[], color = "#f44336"): number {
+    let at = -1;
+    draws.forEach((draw, i) => {
+      const segment = draws[i - 1]?.name === "lineTo";
+      if (draw.name === "stroke" && draw.stroke === color && segment) at = i;
+    });
+    return at;
+  }
+
+  function frame(card: any): Draw[] {
+    const { ctx, draws } = drawRecordingContext();
+    card.ctx = ctx;
+    card.drawGrid();
+    return draws;
+  }
+
+  /** A segment's [alpha, width] when its newer end is `ageMs` old. */
+  function strength(ageMs: number): number[] {
+    const f = Math.max(0.08, 1 - ageMs / 3000);
+    return [0.6 * f, 1.5 + 2.5 * f];
+  }
+
+  function expectSegments(actual: number[][], expected: number[][]) {
+    expect(actual).toHaveLength(expected.length);
+    actual.forEach((segment, i) => {
+      expect(segment.slice(0, 4)).toEqual(expected[i].slice(0, 4));
+      expect(segment[4]).toBeCloseTo(expected[i][4], 9);
+      expect(segment[5]).toBeCloseTo(expected[i][5], 9);
+    });
+  }
+
+  it("keeps a trail behind a moving target", async () => {
+    const { card, move } = await trailCard();
+    move(-2000, 2000);
+    vi.advanceTimersByTime(200);
+    move(-1000, 2000);
+    vi.advanceTimersByTime(200);
+    move(0, 2000);
+
+    // The newest segment strongest and widest, under the dot it leads to.
+    const draws = frame(card);
+    expectSegments(segments(draws), [
+      [240, 160, 320, 160, ...strength(200)],
+      [320, 160, 400, 160, ...strength(0)],
+    ]);
+    const dot = draws.findIndex((d) => d.name === "fill" && d.fill === "#f44336");
+    expect(dot).toBeGreaterThan(lastSegmentAt(draws));
+
+    // With no push for a second and a half, the same segments are fainter
+    // and thinner.
+    vi.advanceTimersByTime(1500);
+    expectSegments(segments(frame(card)), [
+      [240, 160, 320, 160, ...strength(1700)],
+      [320, 160, 400, 160, ...strength(1500)],
+    ]);
+  });
+
+  it("breaks the trail where its target went silent for over a second", async () => {
+    const { card, move } = await trailCard();
+    move(-2000, 2000);
+    vi.advanceTimersByTime(1200);
+    move(-1000, 2000);
+    vi.advanceTimersByTime(200);
+    move(0, 2000);
+
+    expectSegments(segments(frame(card)), [[320, 160, 400, 160, ...strength(0)]]);
+  });
+
+  it("draws the trail grey while its target stands in an ignore zone", async () => {
+    const fan = {
+      shape: "rect",
+      data: { x_min: -500, x_max: 500, y_min: 1000, y_max: 3000 },
+      zone_type: "ignore",
+    };
+    const { card, move } = await trailCard({
+      ...ZONE_PAYLOAD,
+      rotation_deg: 0,
+      zones: { "2": fan },
+    });
+    move(-2000, 2000);
+    vi.advanceTimersByTime(200);
+    move(0, 2000);
+
+    // The whole trail follows where the target is now.
+    let draws = frame(card);
+    expect(segments(draws)).toEqual([]);
+    expect(segments(draws, "#757575")).toHaveLength(1);
+
+    vi.advanceTimersByTime(200);
+    move(2000, 2000);
+    draws = frame(card);
+    expect(segments(draws, "#757575")).toEqual([]);
+    expect(segments(draws)).toHaveLength(2);
+  });
+
+  it("fades the trail on a timer only while the card is connected", async () => {
+    const { card, move } = await trailCard();
+    move(-2000, 2000);
+    vi.advanceTimersByTime(200);
+    move(-1000, 2000);
+    const draw = vi.spyOn(card, "drawGrid");
+
+    // Off the page nothing repaints between pushes.
+    vi.advanceTimersByTime(1000);
+    expect(draw).not.toHaveBeenCalled();
+
+    // On the page, a frame every 100 ms...
+    document.body.appendChild(card);
+    vi.advanceTimersByTime(100);
+    expect(draw).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(100);
+    expect(draw).toHaveBeenCalledTimes(2);
+
+    // ...until the older sample is 3 s old. That frame paints the trail away
+    // and is the last: frames ran from 1.3 s to 3.0 s after the first sample.
+    vi.advanceTimersByTime(5000);
+    expect(draw).toHaveBeenCalledTimes(18);
+    expect(card._trails.hasTrail(performance.now())).toBe(false);
+  });
+
+  it("the fade timer skips a frame a hass push just painted", async () => {
+    const { card, move } = await trailCard();
+    document.body.appendChild(card);
+    move(-2000, 2000);
+    vi.advanceTimersByTime(200);
+    // A trail now, so a fade frame is due 100 ms after this push.
+    move(-1000, 2000);
+    const draw = vi.spyOn(card, "drawGrid");
+
+    vi.advanceTimersByTime(60);
+    move(-500, 2000);
+    expect(draw).toHaveBeenCalledTimes(1);
+    // One fade timer at a time: the push did not start a second one.
+    expect(vi.getTimerCount()).toBe(1);
+
+    // Due, but the push painted 40 ms ago, so the frame waits out the rest.
+    vi.advanceTimersByTime(40);
+    expect(draw).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(59);
+    expect(draw).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(1);
+    expect(draw).toHaveBeenCalledTimes(2);
+    vi.advanceTimersByTime(100);
+    expect(draw).toHaveBeenCalledTimes(3);
+  });
+
+  it("restarts the fade timer after a render", async () => {
+    const { card, move } = await trailCard();
+    document.body.appendChild(card);
+    move(-2000, 2000);
+    vi.advanceTimersByTime(200);
+    move(-1000, 2000);
+    vi.advanceTimersByTime(50);
+
+    // A theme flip renders the card again: a new canvas, painted at once.
+    card.render();
+    const draw = vi.spyOn(card, "drawGrid");
+
+    // The frame that was due went with the old canvas...
+    vi.advanceTimersByTime(50);
+    expect(draw).not.toHaveBeenCalled();
+    // ...and the trail fades on, a frame after the render painted.
+    vi.advanceTimersByTime(50);
+    expect(draw).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(100);
+    expect(draw).toHaveBeenCalledTimes(2);
+  });
+
+  it("stops the fade timer on disconnect", async () => {
+    const { card, move } = await trailCard();
+    document.body.appendChild(card);
+    move(-2000, 2000);
+    vi.advanceTimersByTime(200);
+    move(-1000, 2000);
+    const draw = vi.spyOn(card, "drawGrid");
+
+    card.remove();
+    vi.advanceTimersByTime(1000);
+    expect(draw).not.toHaveBeenCalled();
+
+    // Back on the page, the trail fades on from where it got to.
+    document.body.appendChild(card);
+    vi.advanceTimersByTime(100);
+    expect(draw).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops trails when the tracked pairs change", async () => {
+    const { card, hass, move } = await trailCard();
+    move(-2000, 2000);
+    vi.advanceTimersByTime(200);
+    move(-1000, 2000);
+    vi.advanceTimersByTime(200);
+    move(0, 2000);
+    expect(card._trails.slots()).toEqual([0]);
+    expect(card._coverage.size).toBe(2);
+
+    // A payload that keeps the pairs keeps the trails.
+    hass.handlers[ZONES_SUBSCRIBE][0]({ ...ZONE_PAYLOAD, rotation_deg: 5 });
+    expect(card._trails.samples(0)).toHaveLength(3);
+
+    // Slot 0 of another pair list is another target.
+    hass.handlers[ZONES_SUBSCRIBE][0]({
+      ...ZONE_PAYLOAD,
+      rotation_deg: 0,
+      entities: [{ x: "sensor.b_x", y: "sensor.b_y" }],
+    });
+    expect(card._trails.slots()).toEqual([]);
+    expect(segments(frame(card))).toEqual([]);
+    // Coverage cells are places in the room, not slots, so they stay.
+    expect(card._coverage.size).toBe(2);
+  });
+
+  it("does not repaint a live move while a replay is showing", async () => {
+    const { card, move } = await trailCard();
+    document.body.appendChild(card);
+    move(-2000, 2000);
+    vi.advanceTimersByTime(200);
+    const replay = vi.spyOn(card, "_replayShowing").mockReturnValue(true);
+    const { ctx, calls } = recordingContext();
+    card.ctx = ctx;
+
+    move(-1000, 2000);
+    vi.advanceTimersByTime(1000);
+
+    // No paint from the push or from a fade frame, but the move is kept for
+    // when the live map comes back.
+    expect(calls.filter(([name]) => name === "clearRect")).toEqual([]);
+    expect(card._trails.samples(0).map((s: any) => s.x)).toEqual([-2000, -1000]);
+
+    replay.mockReturnValue(false);
+    move(0, 2000);
+    expect(calls.filter(([name]) => name === "clearRect")).toHaveLength(1);
+  });
+});
+
+/**
+ * Coverage paint.
+ *
+ * Every live position since the page opened is counted in 200 mm cells,
+ * whether or not the paint is shown, and a viewer's Coverage chip paints the
+ * cells under everything else on the map, at an alpha that grows with the
+ * log of the count. A position counts once it is final, so the in-between
+ * point of a split X and Y update never paints. The toggle is remembered per
+ * radar in this browser; the cells are page memory.
+ */
+describe("zone map card coverage", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    document.body.replaceChildren();
+  });
+
+  const ORANGE = "rgba(255, 152, 0, ";
+
+  async function coverageCard(
+    config: Record<string, any> = {},
+    payload: any = { ...ZONE_PAYLOAD, rotation_deg: 0 }
+  ) {
+    vi.useFakeTimers();
+    const hass = fakeHass(payload);
+    const card = await mountCard(hass, { ...TEN_METER_GRID, ...config });
+    let states: Record<string, any> = {};
+    const set = (changes: Record<string, any>) => {
+      states = { ...states, ...changes };
+      card.hass = { ...hass, states };
+    };
+    const move = (x: number, y: number) =>
+      set({ "sensor.a_x": { state: String(x) }, "sensor.a_y": { state: String(y) } });
+    /** Three positions 200 ms apart. The first two are final by the third. */
+    const walk = () => {
+      move(-2000, 2000);
+      vi.advanceTimersByTime(200);
+      move(-1000, 2000);
+      vi.advanceTimersByTime(200);
+      move(-1000, 2200);
+    };
+    return { card, hass, set, move, walk };
+  }
+
+  /** The counted cells as [ix, iy, count], sorted. */
+  function cells(card: any): number[][] {
+    return Array.from(card._coverage.entries() as Iterable<number[]>)
+      .map((cell) => [...cell])
+      .sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  }
+
+  function frame(card: any): Draw[] {
+    const { ctx, draws } = drawRecordingContext();
+    card.ctx = ctx;
+    card.drawGrid();
+    return draws;
+  }
+
+  const coverageFills = (draws: Draw[]) =>
+    draws.filter((d) => d.name === "fill" && String(d.fill).startsWith(ORANGE));
+
+  const chip = (card: any) => card.shadowRoot.getElementById("btnCoverage");
+  const clearChip = (card: any) => card.shadowRoot.getElementById("btnCoverageClear");
+
+  it("paints coverage under the zones and before the grid labels", async () => {
+    const { card, walk } = await coverageCard({ unit_display: true });
+    chip(card).click();
+    walk();
+
+    const draws = frame(card);
+
+    // One count in each of two cells: both at the strongest alpha, in one
+    // fill, inside its own save and restore.
+    const fills = coverageFills(draws);
+    expect(fills.map((d) => [d.fill, d.depth])).toEqual([["rgba(255, 152, 0, 0.5)", 1]]);
+    const at = draws.indexOf(fills[0]);
+    // Right after the clear: no grid line, label, cone or zone before it.
+    expect([...new Set(draws.slice(0, at).map((d) => d.name))]).toEqual([
+      "clearRect",
+      "save",
+      "beginPath",
+      "moveTo",
+      "lineTo",
+      "closePath",
+    ]);
+    expect(draws.findIndex((d) => d.name === "fillText")).toBeGreaterThan(at);
+    expect(draws.findIndex((d) => d.name === "fillRect")).toBeGreaterThan(at);
+    // Each cell a square of its four corners: (-2000, 2000) to (-1800, 2200)
+    // mm is canvas (240, 160) to (256, 176).
+    const quads = draws
+      .slice(0, at)
+      .filter((d) => d.name === "moveTo" || d.name === "lineTo")
+      .map((d) => d.args);
+    expect(quads).toEqual([
+      [240, 160],
+      [256, 160],
+      [256, 176],
+      [240, 176],
+      [320, 160],
+      [336, 160],
+      [336, 176],
+      [320, 176],
+    ]);
+  });
+
+  it("turns and flips the cells with the map", async () => {
+    // Rotated 90 degrees, (-2000, 2000) mm in the radar's frame is (2000,
+    // 2000) on the map; flipped, x runs from 5000 on the left.
+    const { card, move } = await coverageCard(
+      {},
+      { ...ZONE_PAYLOAD, rotation_deg: 90, mirror_x: true }
+    );
+    chip(card).click();
+    move(-2000, 2000);
+    vi.advanceTimersByTime(200);
+    move(0, 0);
+
+    const draws = frame(card);
+    const at = draws.indexOf(coverageFills(draws)[0]);
+    const corners = draws
+      .slice(0, at)
+      .filter((d) => d.name === "moveTo" || d.name === "lineTo")
+      .map((d) => d.args);
+    const expected = [
+      [240, 160],
+      [240, 144],
+      [224, 144],
+      [224, 160],
+    ];
+    expect(corners).toHaveLength(4);
+    corners.forEach(([x, y], i) => {
+      expect(x).toBeCloseTo(expected[i][0], 6);
+      expect(y).toBeCloseTo(expected[i][1], 6);
+    });
+  });
+
+  it("Clear coverage empties the cells", async () => {
+    const { card, walk } = await coverageCard();
+    chip(card).click();
+    walk();
+    expect(cells(card)).toHaveLength(2);
+    expect(clearChip(card).hidden).toBe(false);
+
+    clearChip(card).click();
+
+    expect(cells(card)).toEqual([]);
+    expect(coverageFills(frame(card))).toEqual([]);
+    // Still on, and counting again from here.
+    expect(card._coverageOn).toBe(true);
+  });
+
+  it("remembers the toggle per radar in this browser", async () => {
+    const { card } = await coverageCard();
+    expect(card._coverageOn).toBe(false);
+
+    chip(card).click();
+    expect(window.localStorage.getItem("apollo-mmwave.zone-map.coverage.dev123")).toBe("1");
+
+    // Another card for this radar, as after a reload, starts with it on.
+    const again = await mountCard(fakeHass(), TEN_METER_GRID);
+    expect(again._coverageOn).toBe(true);
+    expect(chip(again).getAttribute("aria-pressed")).toBe("true");
+    // Another radar's map does not.
+    const other = await mountCard(fakeHass(), { device_id: "devB" });
+    expect(other._coverageOn).toBe(false);
+
+    // A card pointed at another radar takes that radar's toggle, and back.
+    again.setConfig({ device_id: "devB", ...TEN_METER_GRID });
+    expect(again._coverageOn).toBe(false);
+    expect(chip(again).getAttribute("aria-pressed")).toBe("false");
+    again.setConfig({ device_id: "dev123", ...TEN_METER_GRID });
+    expect(again._coverageOn).toBe(true);
+
+    // Off is remembered too.
+    chip(again).click();
+    expect(window.localStorage.getItem("apollo-mmwave.zone-map.coverage.dev123")).toBe("0");
+    expect((await mountCard(fakeHass(), TEN_METER_GRID))._coverageOn).toBe(false);
+  });
+
+  it("accumulates while off", async () => {
+    const { card, walk } = await coverageCard();
+    expect(card._coverageOn).toBe(false);
+
+    walk();
+
+    // Counted, the newest not yet, since it can still be replaced.
+    expect(cells(card)).toEqual([
+      [-10, 10, 1],
+      [-5, 10, 1],
+    ]);
+    expect(coverageFills(frame(card))).toEqual([]);
+
+    // Turning it on shows everything since the page opened.
+    chip(card).click();
+    expect(coverageFills(frame(card))).toHaveLength(1);
+  });
+
+  it("counts a split X and Y update once, at its final position", async () => {
+    const { card, set, move } = await coverageCard();
+    // On the page, so the fade frames take final samples between pushes.
+    document.body.appendChild(card);
+    move(-2000, 2000);
+    vi.advanceTimersByTime(200);
+
+    // Home Assistant writes a move as two state changes, X first.
+    set({ "sensor.a_x": { state: "-1000" } });
+    vi.advanceTimersByTime(20);
+    set({ "sensor.a_y": { state: "3000" } });
+    vi.advanceTimersByTime(1000);
+
+    // (-1000, 2000), where nobody stood, is in no cell.
+    expect(cells(card)).toEqual([
+      [-10, 10, 1],
+      [-5, 15, 1],
+    ]);
+  });
+
+  it("counts a still target once while another one moves", async () => {
+    // Every push carries both pairs' states, but only the target that moved
+    // is sampled: the still one would otherwise be counted again for each
+    // move the other made, and its cell would outshine the whole walk.
+    const pairs = [
+      { x: "sensor.a_x", y: "sensor.a_y" },
+      { x: "sensor.b_x", y: "sensor.b_y" },
+    ];
+    const { card, set, move } = await coverageCard(
+      {},
+      { ...ZONE_PAYLOAD, rotation_deg: 0, entities: pairs }
+    );
+    set({ "sensor.b_x": { state: "2000" }, "sensor.b_y": { state: "4000" } });
+    for (let step = 0; step < 5; step += 1) {
+      vi.advanceTimersByTime(200);
+      move(-2000 + 200 * step, 2000);
+    }
+    vi.advanceTimersByTime(200);
+    move(0, 2000);
+
+    expect(card._trails.samples(1)).toHaveLength(1);
+    expect(cells(card)).toEqual([
+      [-10, 10, 1],
+      [-9, 10, 1],
+      [-8, 10, 1],
+      [-7, 10, 1],
+      [-6, 10, 1],
+      [10, 20, 1],
+    ]);
+  });
+
+  it("counts targets in ignore zones, which show where the ghosts are", async () => {
+    const fan = {
+      shape: "rect",
+      data: { x_min: -3000, x_max: -500, y_min: 1000, y_max: 3000 },
+      zone_type: "ignore",
+    };
+    const { card, walk } = await coverageCard(
+      {},
+      { ...ZONE_PAYLOAD, rotation_deg: 0, zones: { "2": fan } }
+    );
+
+    walk();
+
+    expect(cells(card)).toEqual([
+      [-10, 10, 1],
+      [-5, 10, 1],
+    ]);
+  });
+
+  it("marks the Coverage chip pressed", async () => {
+    const { card } = await coverageCard();
+    expect(chip(card).textContent).toBe("Coverage");
+    expect(chip(card).title).toBe(
+      "Paint where targets have been since this page opened (this browser only)"
+    );
+    expect(chip(card).classList.contains("zone-btn")).toBe(true);
+    expect(chip(card).getAttribute("aria-pressed")).toBe("false");
+    expect(chip(card).classList.contains("active")).toBe(false);
+    expect(clearChip(card).hidden).toBe(true);
+
+    chip(card).click();
+    expect(chip(card).getAttribute("aria-pressed")).toBe("true");
+    expect(chip(card).classList.contains("active")).toBe(true);
+    expect(clearChip(card).hidden).toBe(false);
+    expect(clearChip(card).textContent).toBe("Clear coverage");
+
+    // A render (a theme flip) rebuilds the chips as they were.
+    card.render();
+    expect(chip(card).getAttribute("aria-pressed")).toBe("true");
+    expect(clearChip(card).hidden).toBe(false);
+
+    chip(card).click();
+    expect(chip(card).getAttribute("aria-pressed")).toBe("false");
+    expect(chip(card).classList.contains("active")).toBe(false);
+    expect(clearChip(card).hidden).toBe(true);
+  });
+
+  it("shows no coverage controls in view_only", async () => {
+    // Even with the toggle remembered on for this radar.
+    window.localStorage.setItem("apollo-mmwave.zone-map.coverage.dev123", "1");
+    const { card, walk } = await coverageCard({ view_only: true });
+
+    expect(card.shadowRoot.getElementById("viewTools")).toBeNull();
+    expect(chip(card)).toBeNull();
+    expect(clearChip(card)).toBeNull();
+
+    walk();
+
+    // Nothing counted and nothing painted. The trail still shows.
+    expect(cells(card)).toEqual([]);
+    const draws = frame(card);
+    expect(coverageFills(draws)).toEqual([]);
+    expect(draws.filter((d) => d.name === "stroke" && d.stroke === "#f44336")).toHaveLength(2);
+  });
+});
+
+/**
  * Gestures that carry no shape.
  *
  * The backend keeps a rect only when x_min < x_max and y_min < y_max, and for
