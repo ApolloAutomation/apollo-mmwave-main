@@ -6060,11 +6060,17 @@ export class ZoneMapCard extends HTMLElement {
 
   /** The zone's name at its center, followed by `suffix` (" (held)" or
    *  " (ignored)") when its look needs one, moved in as far as it takes to
-   *  stay on the canvas. */
+   *  stay on the canvas. A zone wholly off the canvas gets none. */
   _drawZoneLabel(zone, bbox, suffix = '') {
     const ctx = this.ctx;
     const name = this._zoneLabel(zone.id);
     if (!name) return;
+    // A YAML grid smaller than the room can leave a zone off the canvas,
+    // and its name, pulled onto the edge, would label whatever is drawn
+    // there. A fitted map takes in every zone.
+    const { width: canvasW, height: canvasH } = this.canvas;
+    if (bbox.x >= canvasW || bbox.x + bbox.width <= 0) return;
+    if (bbox.y >= canvasH || bbox.y + bbox.height <= 0) return;
     const label = `${name}${suffix}`;
     const fontPx = 24;
     ctx.save();

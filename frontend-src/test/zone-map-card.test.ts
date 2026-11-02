@@ -7041,6 +7041,58 @@ describe("zone map card zone looks", () => {
     expect(off).toEqual([]);
   });
 
+  it("draws no label for a zone wholly off the canvas", async () => {
+    // A YAML grid smaller than the room, such as the one every card added
+    // from the picker before 2.3.0 carries, beside a radar turned 90 degrees:
+    // pulled onto the edge, the name of a zone off the map would label
+    // whatever is drawn there.
+    const rect = (x_min: number, x_max: number, y_min: number, y_max: number) => ({
+      shape: "rect",
+      data: { x_min, x_max, y_min, y_max },
+    });
+    const hass = fakeHass({
+      ...ZONE_PAYLOAD,
+      rotation_deg: 90,
+      zones: {
+        "1": { ...rect(1000, 3000, -3000, -1000), name: "Couch" },
+        "2": { ...rect(1000, 3000, 1000, 3000), name: "Desk" },
+        "3": { ...rect(-2000, -1000, -1000, 500), name: "Door" },
+        "4": { shape: "ellipse", data: { cx: 7000, cy: 5000, rx: 500, ry: 500 }, name: "Plant" },
+        "5": {
+          shape: "polygon",
+          data: {
+            points: [
+              { x: -8000, y: 1000 },
+              { x: -7000, y: 1000 },
+              { x: -7500, y: 2000 },
+            ],
+          },
+          name: "Lamp",
+        },
+        "6": { ...rect(-1000, 1000, 12500, 13500), name: "Porch" },
+      },
+    });
+    const card = await mountCard(hass, {
+      grid: { x_min: -6000, x_max: 6000, y_min: 0, y_max: 12000 },
+      grid_units: "mm",
+    });
+    const { ctx, texts } = textRecordingContext(browserTextWidth);
+    card.ctx = ctx;
+
+    card.drawZones();
+
+    // Couch is above the canvas, Plant right of it, Lamp left of it and
+    // Porch below it.
+    expect(texts.map((t) => t.text).sort()).toEqual(["Desk", "Door"]);
+    const label = (text: string) => texts.find((t) => t.text === text)!;
+    const center = (a: number, b: number, axis: "x" | "y") =>
+      (card.valueToPixels(a, axis) + card.valueToPixels(b, axis)) / 2;
+    expect(label("Desk").x).toBeCloseTo(center(1000, 3000, "x"), 9);
+    expect(label("Desk").y).toBeCloseTo(center(1000, 3000, "y"), 9);
+    // Door reaches over the top edge, so its label is pulled onto the map.
+    expect(label("Door").y).toBe(12);
+  });
+
   it("fills an ignore zone flat when no pattern can be made", async () => {
     const zones = payload(PRESENCE, { "2": { shape: "rect", data: WINDOW, zone_type: "ignore" } });
     const ignored = (draws: Draw[]) => zoneDraws(draws).slice(2);
