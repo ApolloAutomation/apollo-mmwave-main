@@ -181,8 +181,9 @@ off a fixed entity id. Calibration snapshots (the newest five per radar) live
 in a separate file, `.storage/apollo_mmwave.calibration`.
 
 Movement history, which an administrator turns on per radar, lives in
-`.storage/apollo_mmwave.movement`: up to 24 hours and 100,000 points per
-radar, stored as packed base64 columns. The file exists only while some radar
+`.storage/apollo_mmwave.movement`: up to 24 hours and about 100,000 records
+per radar (up to 105,000 before the oldest are dropped back to 100,000),
+stored as packed base64 columns. The file exists only while some radar
 has history on and has recorded something; turning a radar's history off
 deletes that radar's part within a second, and the file goes when no radar
 has any left. It holds where people were, so never log a target position or a

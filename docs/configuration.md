@@ -624,9 +624,11 @@ The zone map draws what the radar sees right now over the zones you drew:
   a number: the target number (1, 2 or 3) on Apollo radars, or the place in
   the list on a DIY radar with its own `entities` pairs. The numbers are
   readable in light and dark themes.
-- **Trails.** Each dot leaves a fading trail of about its last 3 seconds. A
-  gap of more than a second starts a new trail. Trails live in the open page
-  only, so a reload starts them over.
+- **Trails.** Each dot leaves a fading trail of about its last 3 seconds. The
+  radar reports each position about once a second, so a trail is a few
+  straight steps. A gap of more than 2.5 seconds, or the target vanishing,
+  starts a new trail. Trails live in the open page only, so a reload starts
+  them over.
 - **Held zones.** A zone that stays on because of its hold time adds
   "(held)" to its label, so a lit zone with nobody on the map explains
   itself (see [Ignore zones and hold time](#ignore-zones-and-hold-time)).
@@ -675,12 +677,12 @@ and draw on the grid, or walk the zone's corners with 🚶 (see
 - **Polygon:** click or tap each corner, then press **Finish polygon** (✓) or
   double-click or double-tap the last corner. A polygon needs at least 3
   distinct corners and finishes on its own at 32. With fewer, **Finish
-  polygon** says "A polygon needs at least 3 different points." and drops the
-  corners, while a double-click or double-tap says the same and lets you add
-  more. If no zone is selected by then, finishing says "Select a zone
-  first." Backspace or **Undo last point** removes the last corner and
-  Escape discards the polygon; keys typed into a text field go to that field
-  instead.
+  polygon** or a mouse double-click says "A polygon needs at least 3
+  different points." and drops the corners, while a double-tap says the same
+  and lets you add more. If no zone is selected by then, **Finish polygon**
+  says "Select a zone first." Backspace or **Undo last point** removes the
+  last corner and Escape discards the polygon; keys typed into a text field
+  go to that field instead.
 - Pressing anywhere else in the card, such as a zone button, **Add Zone** or
   the rotation slider, cancels a shape in progress (the buttons on the grid
   itself do not). Moving the mouse off the grid cancels a rectangle or ellipse
@@ -741,15 +743,18 @@ must be the only person the radar sees.
 
 1. Select the zone with its button. Open the drawing-mode menu (✎) and press
    🚶 (**Mark corners by walking**). A panel opens under the map.
-2. Stand still in one corner of the area and press **Corner here**.
-3. Walk along the edge to the next corner, stand still, and press **Corner
-   here** again. Go around the zone in order. Two corners make a rectangle
-   (use opposite corners), three or more a polygon, up to 32.
+2. Stand still in one corner of the area for about 3 seconds and press
+   **Corner here**.
+3. Walk along the edge to the next corner, stand still for about 3 seconds,
+   and press **Corner here** again. Go around the zone in order. Two corners
+   make a rectangle (use opposite corners), three or more a polygon, up to
+   32.
 4. Press **Finish**. The zone is saved like one you drew, and the map leaves
    Walk.
 
-The hint above the buttons says what to do next. Each corner is where you
-stood during the last 1.5 seconds, so stand still for a moment before you
+The hint above the buttons says what to do next. Each corner is where the
+radar placed you over the last 1.5 seconds, and the radar updates your
+position about once a second, so stand still for about 3 seconds before you
 press. **Corner here** refuses a corner within 30 cm of the last one ("That
 is too close to the last corner. Walk farther, then press Corner here.") and,
 once you have three corners, one back at the first ("That is where you
@@ -849,11 +854,22 @@ How a hold works:
   `true` while the zone is on only because of its hold.
 - The zone turns off once the hold time has passed since it emptied.
 - It turns off at once instead when everyone who was inside is accounted
-  for: they vanished while walking, within 0.3 m of the zone's edge or of
-  the edge of the radar's view (taken as 6 m and 120 degrees), or, in the
-  first 3 seconds, the radar tracks a target outside the zone within 0.6 m
-  of where they were, plus 1.6 m for each second since. So walking out of a
-  zone still turns it off within about a second.
+  for, by either of two rules:
+  - **Walked out.** The radar lost them while they were walking near the
+    zone's edge or the edge of the radar's view (taken as 6 m and 120
+    degrees): within 0.3 m, plus as far as their speed carries them from
+    the radar's last report of them until it lost them and 0.75 seconds
+    more, up to 1.5 m.
+  - **Seen outside.** In the first 3 seconds, the radar tracks a target
+    outside the zone within 0.6 m of where they were, plus 1.6 m for each
+    second since its last report of them, counting at most 1.2 seconds
+    before the zone emptied. A target the radar was already tracking
+    elsewhere when the zone emptied counts only within 0.6 m.
+- Walking out of a zone into the room turns it off within about 3 seconds,
+  usually as soon as the radar reports you outside it. Walking out of the
+  radar's view, or through a doorway at the zone's edge, turns it off at
+  once after about two seconds of walking in the zone (see the limits
+  below).
 - Someone in the zone again ends the hold: the zone is then on because of
   them, and follows them when they leave.
 - The radar going offline or reconnecting and a Home Assistant restart end
@@ -865,21 +881,32 @@ How a hold works:
 
 The hold works from positions only, so it has limits:
 
-- Anyone else the radar tracks within about 5 m of where the person vanished,
-  in the first 3 seconds, ends the hold early, for example someone walking
-  past.
+- The LD2450 reports each position about once a second, so it needs about
+  two seconds of walking in the zone to see someone walk. Someone it loses
+  as they walk out of its view, or through a doorway at the zone's edge,
+  after a shorter walk, for example from a seat beside the door, can keep
+  the zone held for the full hold time.
+- Before it loses someone sitting still, the radar can move their position
+  about half a meter in its last report. That alone is not walking out, but
+  if it lands outside the zone it counts as stepping out, so a seat within
+  about half a meter of the zone's edge can still turn the zone off early.
+- A person or thing the radar was already tracking elsewhere when the zone
+  emptied, such as someone across the room, a still object or a ghost, ends
+  a hold only within 0.6 m of where the person was. Someone it picks up in
+  the first 3 seconds, such as a person walking into view, can end it
+  within the growing distance above, up to about 7 m.
 - Someone passing through the zone ends a hold.
 - If one person goes still and is lost while someone else stays in the zone,
   they are forgotten: the zone turns off when the other person leaves.
-- When the radar swaps the numbers of two people in the zone, both look as
-  if they moved for about a second, and a vanish near an edge right then
+- When the radar swaps the numbers of two people in the zone, both can look
+  as if they moved for about a second, and a vanish near an edge right then
   turns the zone off.
 - A target seen for under 1.2 seconds counts as moving, so a ghost that
   appears and vanishes in the middle of the zone holds it for the full hold
   time. An ignore zone over its source, such as a fan, stops that.
 - The exit rule assumes the LD2450's 6 m and 120 degree view. Where a wall or
-  the radar's own zone filter ends the view earlier, someone walking out
-  there holds the zone for the full hold time.
+  the radar's own zone filter ends the view earlier, away from the zone's
+  edge, someone walking out there holds the zone for the full hold time.
 
 ### Zones in automations
 
@@ -894,9 +921,15 @@ is inside the zone, or while the zone is held (see
   also happens after every Home Assistant restart until the radar connects,
   so presence then goes from `unavailable` to `off` or `on`. A trigger with
   `to: "off"` and no `from:` fires on that step, after every restart and
-  whenever the radar reconnects; add `from: "on"` if it should fire only when
-  the zone empties. An ignore zone always reads `off`. Up to 2.3.0, presence
-  read `off` while the radar was offline.
+  whenever the radar reconnects. For lights-off and similar automations,
+  keep it that way, usually with `for:`: an extra `off` is harmless, and it
+  also fires when someone left while the radar was offline, which takes
+  presence from `on` to `unavailable` and then to `off`. Add `from: "on"`
+  (or `not_from: unavailable`) only where an `off` after a restart or a
+  reconnect would be wrong, such as a notification or a counter; it then
+  also skips someone who left while the radar was offline. An ignore zone
+  always reads `off`. Up to 2.3.0, presence read `off` while the radar was
+  offline.
 - A zone with a hold time adds the attribute `held` to its presence sensor:
   `true` while the zone is on only because of its hold. An ignore zone's
   presence sensor has the attribute `zone_type: ignore`. The shape sensor
@@ -908,8 +941,10 @@ is inside the zone, or while the zone is held (see
   their friendly names, so with several radars give zones distinct names, or
   rename an entity yourself in its settings (a name you set there is kept by
   later zone renames). Clearing the name sets them back to "Zone 1" and "Zone
-  1 presence", still without the radar name. The card's own zone labels are
-  not affected.
+  1 presence", still without the radar name. The zone manager saves a
+  cleared name as the default "Zone 1", which does the same for entities
+  that were named and leaves entities that never were as they are. The
+  card's own zone labels are not affected.
 - `apollo_mmwave.update_zone` changes zones from automations and scripts;
   Settings → Tools → Actions lists its fields (also in the table below). It
   takes the radar's `device_id` and a `zone_id` of 1 or more, with geometry in
@@ -991,9 +1026,12 @@ can still draw a zone while History is open, with the heatmap as a guide.
 
 Home Assistant records a point when a target appears, when it moves 5 cm or
 more (at most twice a second), and every 15 seconds while it stays in view,
-plus a mark when it leaves. Positions are kept as the radar reports them, so a
-rotation or flip you change later applies to the replay too. Targets inside
-ignore zones are not recorded.
+plus a mark when it leaves. An R PRO-1 updates each target's X and Y about
+once a second, often Y about half a second after X, and a move waits up to
+about half a second for its other coordinate, so a walk is kept as about one
+point a second, each where the radar placed the person. Positions are kept as
+the radar reports them, so a rotation or flip you change later applies to the
+replay too. Targets inside ignore zones are not recorded.
 
 Privacy and storage:
 
@@ -1001,14 +1039,17 @@ Privacy and storage:
   clear it, and only they see the **History** button and the setting. That
   includes any dashboard signed in as an administrator, such as a wall
   tablet. Other users see nothing of it.
-- **Where it is kept.** In `.storage/apollo_mmwave.movement`, a private file
-  in Home Assistant's configuration folder that only Home Assistant reads. It
-  is never served at `/local/` or any other address.
-- **How long.** Up to 24 hours, and less in a busy room: each radar keeps at
-  most 100,000 points, about 4.6 hours with three people moving all the time,
-  and drops the oldest first. Points older than 24 hours are removed also
-  while nobody is in view. Home Assistant writes the file a minute after a
-  change, so a crash can lose up to the last minute.
+- **Where it is kept.** In `.storage/apollo_mmwave.movement` in Home
+  Assistant's configuration folder. Home Assistant makes the file private to
+  its own user and never serves it at `/local/` or any other address, but
+  anything that can open the configuration folder can read it, such as the
+  Samba share and Terminal & SSH apps, and backups include it.
+- **How long.** Up to 24 hours, and less in a busy room: each radar keeps
+  about 100,000 records (up to 105,000 before the oldest are dropped back to
+  100,000), as little as about 4.6 hours with three people moving all the
+  time. Records older than 24 hours are removed also while nobody is in
+  view. Home Assistant writes the file a minute after a change, so a crash
+  can lose up to the last minute.
 - **Backups.** Home Assistant backups include the file, also backups that
   leave out the database. Turning history off does not remove it from
   backups made before.
@@ -1355,8 +1396,10 @@ the two rows yourself under Settings → Dashboards → ⋮ → **Resources**.
   restart until the radar connects. Check the radar's power and Wi-Fi;
   presence comes back on its own. Meanwhile the Zone presence card hides its
   rows. An automation triggered by `to: "off"` without `from:` fires when the
-  radar comes back, so add `from: "on"` if it should fire only when someone
-  leaves (see [Zones in automations](#zones-in-automations)).
+  radar comes back, which suits turning lights off. A notification or a
+  counter that must see someone leave can add `from: "on"`, which then also
+  skips someone who left while the radar was offline (see
+  [Zones in automations](#zones-in-automations)).
 - **A dot moves the opposite way from you.** Hold the phone with the radar's
   edge of the map ahead of you, face the radar and step to your right: the
   dot should move right. If it moves left, an administrator can tick **Flip
@@ -1366,15 +1409,18 @@ the two rows yourself under Settings → Dashboards → ⋮ → **Resources**.
 - **A zone stays on after everyone left.** If its label on the map ends in
   "(held)", and its presence sensor's `held` attribute is `true`, the zone's
   hold time keeps it on: it turns off once that time has passed since the
-  zone emptied. A hold is for someone the radar lost while they sat still;
-  someone walking out normally turns the zone off within about a second.
-  Lower the zone's **Hold**, or set it to **Off** (see
-  [Ignore zones and hold time](#ignore-zones-and-hold-time)). A ghost that
-  shows up briefly in the middle of the zone can start a hold too, so cover
-  its source, such as a fan, with an ignore zone. Without "(held)", a target
-  is still inside: look for its dot, and cover a fan or curtain that keeps
-  one there with an ignore zone. **Radar Timeout** does not hold the zones
-  you draw.
+  zone emptied. A hold is for someone the radar lost while they sat still.
+  Someone walking out into the room turns the zone off within about 3
+  seconds, and someone walking out of the radar's view after about two
+  seconds of walking in the zone turns it off at once, but a shorter walk
+  out of view, from a seat beside a door for example, can keep it held (see
+  the limits under
+  [Ignore zones and hold time](#ignore-zones-and-hold-time)). Lower the
+  zone's **Hold**, or set it to **Off**. A ghost that shows up briefly in
+  the middle of the zone can start a hold too, so cover its source, such as
+  a fan, with an ignore zone. Without "(held)", a target is still inside:
+  look for its dot, and cover a fan or curtain that keeps one there with an
+  ignore zone. **Radar Timeout** does not hold the zones you draw.
 - **Corner here is grayed out.** It needs exactly one target on the map,
   not counting targets inside ignore zones. The hint above the buttons says
   which: "Nobody is on the map. Walk into the radar's view." or "More than
@@ -1417,7 +1463,10 @@ the two rows yourself under Settings → Dashboards → ⋮ → **Resources**.
   zone store. It keeps a zone's type and hold time only until it rewrites
   that zone (a redraw, Undo, a clear, **Clear All Zones** or `shape: none`),
   and until then ignores them: ignore zones act as detect zones and nothing
-  holds.
+  holds. 2.3.0 ignores `view_only` too, so view-only cards show the full map
+  with its drawing tools again, and on a phone a swipe that starts on the
+  map does not scroll the page; remove or replace those cards before going
+  back.
 - **Still stuck?** Send Apollo a support file with your question: Settings →
   Devices & services → Apollo mmWave → ⋮ → **Download diagnostics**. It
   leaves out MAC and IP addresses and Wi-Fi names; see
