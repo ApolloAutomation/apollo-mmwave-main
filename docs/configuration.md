@@ -18,9 +18,13 @@ install the integration and run your first calibration.
   - [The calibration services](#the-calibration-services)
 - [The zone map and its cards](#the-zone-map-and-its-cards)
   - [Radar setup](#radar-setup)
+  - [What the map shows](#what-the-map-shows)
 - [Drawing zones](#drawing-zones)
+  - [Mark corners by walking](#mark-corners-by-walking)
   - [Map units and size](#map-units-and-size)
+  - [Ignore zones and hold time](#ignore-zones-and-hold-time)
   - [Zones in automations](#zones-in-automations)
+- [Movement history](#movement-history)
 - [Use your own dashboards instead](#use-your-own-dashboards-instead)
   - [Strategy options](#strategy-options)
   - [Card options](#card-options)
@@ -102,9 +106,9 @@ Copy the URLs from the warning exactly and add each one once, as a module:
 lovelace:
   resource_mode: yaml
   resources:
-    - url: /apollo_mmwave/apollo-radar-tuning.js?v=2.3.0
+    - url: /apollo_mmwave/apollo-radar-tuning.js?v=2.4.0b1
       type: module
-    - url: /apollo_mmwave/apollo-radar-zone-map-card.js?v=2.3.0
+    - url: /apollo_mmwave/apollo-radar-zone-map-card.js?v=2.4.0b1
       type: module
 ```
 
@@ -216,7 +220,9 @@ in Home Assistant, where every setting this dashboard leaves out lives.
   **LD2450 Presence** for anywhere the radar sees. An R PRO-1 without the
   optional LD2412 gets these steps too.
 
-An offline sensor's help card adds an "Offline right now" note.
+An offline sensor's help card adds an "Offline right now" note. The note is
+written when the page loads, so after the radar comes back it stays until you
+reload the page.
 
 ### Gate radar cards
 
@@ -529,11 +535,13 @@ bottom in this order:
 
 - **Radar setup** checks the radar's settings and fixes them with one tap;
   see [Radar setup](#radar-setup).
-- **The zone map** shows where the radar sees people. Draw zones on it; see
+- **The zone map** shows where the radar sees people and which zones are on
+  (see [What the map shows](#what-the-map-shows)). Draw zones on it; see
   [Drawing zones](#drawing-zones).
 - **Zone presence** lists each zone's presence sensor, colored while someone
   is in the zone. A zone you just drew shows up here after you reload the
-  page; a zone you delete leaves the list at once.
+  page; a zone you delete leaves the list at once. While the radar is
+  offline the rows hide, because zone presence then reads `unavailable`.
 - **LD2450 Live** shows what the radar reports right now: Presence, Moving
   Target, Still Target, Target Count, and each target's distance and
   direction. If the map shows no dot, check Presence here: off with you in
@@ -552,8 +560,10 @@ bottom in this order:
   setting was turned off, so most people never need it. The note under the
   card says **Radar Timeout** is how long LD2450 Presence stays on after the
   radar last sees someone. It does not hold the zones you draw: a zone turns
-  off as soon as nobody is in it. The LD2450's firmware version is on the
-  [Device card](#device-card).
+  off as soon as nobody is in it, unless you give it a hold time in the zone
+  list under Configure (see
+  [Ignore zones and hold time](#ignore-zones-and-hold-time)). The LD2450's
+  firmware version is on the [Device card](#device-card).
 - **Radar's built-in zones** shows the radar chip's own zone corners and
   counts. These are not the zones you draw on the map. The card shows only
   while Zone Type is not Disabled, and goes away when you set it to Disabled.
@@ -602,6 +612,49 @@ title: Radar setup   # optional
 
 Add `radar: gate` to check the device's LD2410 or LD2412 instead.
 
+### What the map shows
+
+The zone map draws what the radar sees right now over the zones you drew:
+
+- **Zones light up.** A zone is filled and outlined solid while its presence
+  sensor is on, and pale with a dashed outline while it is off. Each zone
+  keeps its own color either way. A zone whose presence sensor does not
+  exist yet, or reads `unknown`, is drawn as off.
+- **Targets are numbered dots.** Each person the radar tracks is a dot with
+  a number: the target number (1, 2 or 3) on Apollo radars, or the place in
+  the list on a DIY radar with its own `entities` pairs. The numbers are
+  readable in light and dark themes.
+- **Trails.** Each dot leaves a fading trail of about its last 3 seconds. A
+  gap of more than a second starts a new trail. Trails live in the open page
+  only, so a reload starts them over.
+- **Held zones.** A zone that stays on because of its hold time adds
+  "(held)" to its label, so a lit zone with nobody on the map explains
+  itself (see [Ignore zones and hold time](#ignore-zones-and-hold-time)).
+- **Ignore zones** are hatched, with a dashed outline, and add "(ignored)"
+  to their label. A target inside one is a hollow gray ring with a gray
+  number, and its trail is gray: no zone counts it.
+- **Radar offline.** While every target sensor the map tracks is
+  unavailable, the map shows "Radar offline" in its top-left corner and the
+  zones turn gray, because their presence sensors read `unavailable`.
+- **Coverage.** Press **Coverage** under the map to paint every spot a
+  target has been since the page opened, in 20 cm squares, deeper where
+  targets were seen more often. It shows where the radar picks people up,
+  ghosts inside ignore zones included, which helps you place zones.
+  **Clear coverage** empties it. The paint lives in the open page only, and
+  the browser remembers for each radar whether Coverage is on.
+- **Flip.** If a dot moves the opposite way from you, an administrator can
+  tick **Flip the map left to right (display only)** under Configure. It is
+  saved for the radar, so everyone who opens its map sees it flipped. Only
+  the drawing changes: the zones as stored, their presence sensors, movement
+  history and walked corners stay the same. The distance labels along the top
+  keep their values, so they read from high to low, and the **Cone rotation**
+  slider turns the cone the way you drag it. Other users see the box but
+  cannot change it.
+
+**History** under the map replays movement instead, when an administrator has
+turned movement history on for the radar; see
+[Movement history](#movement-history).
+
 ## Drawing zones
 
 The zone map card on R PRO-1 and MTR-1 tabs draws occupancy zones over the
@@ -611,7 +664,8 @@ draw or change zones; other users see them, and the card answers a change
 with "Could not save". A new radar has no zones yet, so open **Configure →
 Zones** on the card and press **Add Zone** first. Then pick a zone with its
 button, choose Rectangle, Ellipse or Polygon from the drawing-mode menu (✎),
-and draw on the grid:
+and draw on the grid, or walk the zone's corners with 🚶 (see
+[Mark corners by walking](#mark-corners-by-walking)):
 
 - **Rectangle:** drag out a box. A click, a tap or a perfectly straight drag
   draws and saves nothing.
@@ -620,9 +674,13 @@ and draw on the grid:
   use **Undo last zone change** (↶) if that happens.
 - **Polygon:** click or tap each corner, then press **Finish polygon** (✓) or
   double-click or double-tap the last corner. A polygon needs at least 3
-  distinct corners and finishes on its own at 32. Backspace or **Undo last
-  point** removes the last corner and Escape discards the polygon; keys typed
-  into a text field go to that field instead.
+  distinct corners and finishes on its own at 32. With fewer, **Finish
+  polygon** says "A polygon needs at least 3 different points." and drops the
+  corners, while a double-click or double-tap says the same and lets you add
+  more. If no zone is selected by then, finishing says "Select a zone
+  first." Backspace or **Undo last point** removes the last corner and
+  Escape discards the polygon; keys typed into a text field go to that field
+  instead.
 - Pressing anywhere else in the card, such as a zone button, **Add Zone** or
   the rotation slider, cancels a shape in progress (the buttons on the grid
   itself do not). Moving the mouse off the grid cancels a rectangle or ellipse
@@ -632,22 +690,90 @@ and draw on the grid:
   saves nothing. A shape in progress is also dropped, unsaved, if the card is
   hidden or collapsed before you finish it.
 
+While you draw, the shape's width and depth show right above the pointer, in
+the map's unit, such as "2.4 m × 1.8 m" or "7 ft 11 in × 9 ft 10 in". On a
+touch screen they sit higher, so your finger does not cover them, and near
+the top edge of the map they show below it instead. A polygon shows the size
+of the box around its corners. The size is the one the save stores.
+
 The map starts locked once the radar has zones, so a scroll on a phone
 cannot draw over a zone. The button in the corner of the map reads
 **Locked** (🔒); press it to unlock, and press **Unlocked** (🔓) to lock again.
-The browser remembers your choice for each radar. The lock also covers the
-**Cone rotation** slider under Configure: while the map is locked, the slider
-is gray, a scroll that starts on it scrolls the page, and a tap or drag on it
-outlines the **Locked** button and shows "Cone rotation is locked. Press
-Locked on the map to change it."
+The card answers "Drawing and cone rotation locked. Unlock the map to change
+them." or "Drawing and cone rotation unlocked. You can edit zones now." The
+browser remembers your choice for each radar. While the map is locked:
+
+- A swipe that starts on the map scrolls the page. A tap on it outlines the
+  **Locked** button and says "Unlock the map to draw zones."
+- Double-clicking a zone's button or pressing **Clear All Zones** clears
+  nothing: the **Locked** button is outlined and the card says "Unlock the
+  map to clear zones." **Clear All Zones** looks dimmed meanwhile. **Undo
+  last zone change**, renaming, **Delete** and **Add Zone** still work.
+- The **Cone rotation** slider under Configure is gray, a scroll that starts
+  on it scrolls the page, and a tap or drag on it outlines the **Locked**
+  button and shows "Cone rotation is locked. Press Locked on the map to
+  change it."
+
+An unlocked map lets a swipe scroll the page too while no zone is selected,
+or while you mark corners by walking, since nothing can be drawn then.
 
 Double-clicking a zone's button clears its shape, and **Clear All Zones**
 clears every zone; **Undo last zone change** (↶) puts them back. Under
 **Configure → Zones**, **Add Zone** adds a zone and each row renames (**Save**)
-or deletes (**Delete**) one. Saving a name for a zone that only the card's YAML
-`zones:` list names creates that zone, so the name sticks, and a name you are
-typing is kept when the card receives an update from elsewhere. **Delete**
-cannot be undone: Undo does not bring a deleted zone back.
+or deletes (**Delete**) one. A second line in each row shows the zone's size,
+or "No shape yet. Select the zone and draw it on the map.", then its **Type**
+and **Hold** (see [Ignore zones and hold time](#ignore-zones-and-hold-time)).
+Saving a name for a zone that only the card's YAML `zones:` list names
+creates that zone, so the name sticks, and a name you are typing is kept when
+the card receives an update from elsewhere. **Delete** cannot be undone: Undo
+does not bring a deleted zone back.
+
+Other users see the zones, the zone settings grayed out under "Only an
+administrator can change these." and the flip box grayed out. They get no
+🚶, no **History** and no Movement history setting.
+
+### Mark corners by walking
+
+Instead of drawing a zone, you can carry your phone around the area and mark
+its corners where you stand. You need to be an administrator, the map must be
+unlocked (on a locked map 🚶 says "Unlock the map to draw zones."), and you
+must be the only person the radar sees.
+
+1. Select the zone with its button. Open the drawing-mode menu (✎) and press
+   🚶 (**Mark corners by walking**). A panel opens under the map.
+2. Stand still in one corner of the area and press **Corner here**.
+3. Walk along the edge to the next corner, stand still, and press **Corner
+   here** again. Go around the zone in order. Two corners make a rectangle
+   (use opposite corners), three or more a polygon, up to 32.
+4. Press **Finish**. The zone is saved like one you drew, and the map leaves
+   Walk.
+
+The hint above the buttons says what to do next. Each corner is where you
+stood during the last 1.5 seconds, so stand still for a moment before you
+press. **Corner here** refuses a corner within 30 cm of the last one ("That
+is too close to the last corner. Walk farther, then press Corner here.") and,
+once you have three corners, one back at the first ("That is where you
+started. Press Finish to save the zone."): **Finish** closes the shape for
+you.
+**Finish** refuses corners that make a zone too thin to use, a rectangle
+under 30 cm on a side or a polygon under 0.09 m² ("Those corners make a zone
+too thin to use. Mark corners on opposite sides of the area."), and with no
+zone selected it says "Select a zone first." Your corners stay either way.
+
+**Corner here** is grayed out unless exactly one target is on the map, not
+counting targets inside ignore zones. With nobody in view the hint says
+"Nobody is on the map. Walk into the radar's view.", and with more than one
+target "More than one target is on the map. Only the person marking corners
+should be in view. If you are alone, a fan or curtain may be moving: add an
+ignore zone over it." After 32 corners it says "That is the most corners a
+zone can have. Press Finish."
+
+**Undo corner** removes the last corner. **Cancel** leaves Walk; with two or
+more corners it first asks "Drop the corners you marked?" with **Drop them**
+and **Keep marking**. Locking the map or choosing another drawing mode leaves
+Walk and drops the corners without asking. While you walk, a swipe on the map
+scrolls the page, and **History** stays unavailable ("Finish or cancel the
+walk first.").
 
 ### Map units and size
 
@@ -682,37 +808,235 @@ and the presence sensors work the same either way. The saved unit is kept
 with the radar's zones (`display_units` in `.storage/apollo_mmwave.zones`),
 and `apollo_mmwave.update_zone` can set it too (see below).
 
+### Ignore zones and hold time
+
+Each row under **Configure → Zones** has two settings on its second line,
+**Type** and **Hold**. A hint above the rows sums them up: "Ignore drops
+targets inside that zone, such as a fan or a curtain, before the other zones
+are checked. Hold keeps a zone on for a while after the radar loses someone
+who sat still." A change is saved for the radar as soon as you pick it. Only
+administrators can change them; anyone else sees them grayed out under "Only
+an administrator can change these."
+
+**Type** is **Detect** (the default) or **Ignore**:
+
+- A detect zone's presence sensor is on while a tracked target is inside it.
+- An ignore zone hides the targets inside it. Every target inside any of the
+  radar's ignore zones is dropped before its detect zones are checked, so a
+  fan, a moving curtain or a reflection there turns no zone on, keeps no zone
+  held and ends no hold. Movement history does not record it either. On the
+  map an ignore zone is hatched and its targets are hollow gray rings.
+- An ignore zone's own presence sensor always reads `off`, with the attribute
+  `zone_type: ignore`. It never holds and stays available while the radar is
+  offline.
+- This is a mask inside Home Assistant. It is not the LD2450 Zone Type
+  setting that the R PRO-1 and MTR-1 have (the support file reports that
+  one), and nothing is written to the radar. Keep that setting on
+  **Disabled**; see [Radar setup](#radar-setup).
+
+**Hold** keeps a detect zone on after someone inside it goes still and the
+radar loses them. The radar often loses a person who sits or lies still, so
+without a hold the zone turns off while they are still there. The card offers
+**Off** (the default), **15 s**, **30 s**, **1 min**, **2 min**, **5 min**,
+**10 min** and **30 min**. `apollo_mmwave.update_zone` takes any whole number
+of seconds from 0 to 3600 as `hold_s`, and the card then lists that value
+too. Ignore zones never hold, so their **Hold** is grayed out.
+
+How a hold works:
+
+- When the last person in the zone vanishes, the zone stays on and its label
+  on the map adds "(held)". The presence sensor's `held` attribute reads
+  `true` while the zone is on only because of its hold.
+- The zone turns off once the hold time has passed since it emptied.
+- It turns off at once instead when everyone who was inside is accounted
+  for: they vanished while walking, within 0.3 m of the zone's edge or of
+  the edge of the radar's view (taken as 6 m and 120 degrees), or, in the
+  first 3 seconds, the radar tracks a target outside the zone within 0.6 m
+  of where they were, plus 1.6 m for each second since. So walking out of a
+  zone still turns it off within about a second.
+- Someone in the zone again ends the hold: the zone is then on because of
+  them, and follows them when they leave.
+- The radar going offline or reconnecting and a Home Assistant restart end
+  every hold on that radar, and holds are not restored after a restart.
+  Redrawing the zone, changing the radar's rotation or tracked targets, or
+  changing one of its ignore zones also ends the zone's hold. A new hold time
+  counts from when the zone emptied, and **Off** releases a held zone at
+  once.
+
+The hold works from positions only, so it has limits:
+
+- Anyone else the radar tracks within about 5 m of where the person vanished,
+  in the first 3 seconds, ends the hold early, for example someone walking
+  past.
+- Someone passing through the zone ends a hold.
+- If one person goes still and is lost while someone else stays in the zone,
+  they are forgotten: the zone turns off when the other person leaves.
+- When the radar swaps the numbers of two people in the zone, both look as
+  if they moved for about a second, and a vanish near an edge right then
+  turns the zone off.
+- A target seen for under 1.2 seconds counts as moving, so a ghost that
+  appears and vanishes in the middle of the zone holds it for the full hold
+  time. An ignore zone over its source, such as a fan, stops that.
+- The exit rule assumes the LD2450's 6 m and 120 degree view. Where a wall or
+  the radar's own zone filter ends the view earlier, someone walking out
+  there holds the zone for the full hold time.
+
 ### Zones in automations
 
 Each zone has two entities on the radar's device: a sensor that holds its
 shape, and a presence binary sensor (for example
 `binary_sensor.office_radar_zone_1_presence`) that is on while a tracked target
-is inside the zone.
+is inside the zone, or while the zone is held (see
+[Ignore zones and hold time](#ignore-zones-and-hold-time)).
 
-- Presence reads `off`, not `unavailable`, while the radar is offline or still
-  reconnecting after a restart. An automation that waits for a zone to be clear
-  for some minutes should also check that the radar itself is available.
-- Naming a zone that already exists (in the zone manager, or with
-  `update_zone`'s `name`) renames its entities to "Zone 1 - Couch" and "Zone 1
-  presence - Couch". The radar's name is then no longer part of their friendly
-  names, so with several radars give zones distinct names, or rename an entity
-  yourself in its settings (a name you set there is kept by later zone
-  renames). Clearing the name sets them back to "Zone 1" and "Zone 1 presence",
-  still without the radar name. The card's own zone labels are not affected.
+- Presence reads `unavailable` while the radar is offline, that is, while
+  every target sensor it tracks that has a state reads `unavailable`. That
+  also happens after every Home Assistant restart until the radar connects,
+  so presence then goes from `unavailable` to `off` or `on`. A trigger with
+  `to: "off"` and no `from:` fires on that step, after every restart and
+  whenever the radar reconnects; add `from: "on"` if it should fire only when
+  the zone empties. An ignore zone always reads `off`. Up to 2.3.0, presence
+  read `off` while the radar was offline.
+- A zone with a hold time adds the attribute `held` to its presence sensor:
+  `true` while the zone is on only because of its hold. An ignore zone's
+  presence sensor has the attribute `zone_type: ignore`. The shape sensor
+  adds `zone_type` and `hold_s` to its attributes when they are not the
+  defaults.
+- Naming a zone (in the zone manager, or with `update_zone`'s `name`, also in
+  the call that creates the zone) renames its entities to "Zone 1 - Couch"
+  and "Zone 1 presence - Couch". The radar's name is then no longer part of
+  their friendly names, so with several radars give zones distinct names, or
+  rename an entity yourself in its settings (a name you set there is kept by
+  later zone renames). Clearing the name sets them back to "Zone 1" and "Zone
+  1 presence", still without the radar name. The card's own zone labels are
+  not affected.
 - `apollo_mmwave.update_zone` changes zones from automations and scripts;
-  Settings → Tools → Actions lists its fields. It takes the radar's `device_id`
-  and a `zone_id` of 1 or more, with geometry in millimeters. To clear a zone
-  send `shape: none`, and to remove it and its entities send `delete: true`. A
-  call that changes nothing, such as a `zone_id` alone or `data` without a
-  `shape`, is refused with a warning in the log. The `display_units` field
-  sets the map unit for everyone: `m`, `ft`, or `auto` to follow Home
-  Assistant's unit system again (`auto` with no unit saved changes nothing
-  and is refused like any other empty call). An accepted call fires
-  `apollo_mmwave_zone_updated` with the radar's `device_id`. Only
-  administrators can call the action. Automations still can, and a call made by
-  another user, from a script they run for example, is refused.
+  Settings → Tools → Actions lists its fields (also in the table below). It
+  takes the radar's `device_id` and a `zone_id` of 1 or more, with geometry in
+  millimeters. To clear a zone send `shape: none`, and to remove it and its
+  entities send `delete: true`. A call that changes nothing, such as a
+  `zone_id` alone or `data` without a `shape`, is refused with a warning in
+  the log. The `display_units` field sets the map unit for everyone: `m`,
+  `ft`, or `auto` to follow Home Assistant's unit system again (`auto` with
+  no unit saved changes nothing and is refused like any other empty call). An
+  accepted call fires `apollo_mmwave_zone_updated` with the radar's
+  `device_id`. Only administrators can call the action. Automations still
+  can, and a call made by another user, from a script they run for example,
+  is refused.
 
   [![Open your Home Assistant instance and show your action tools with a specific action selected.](https://my.home-assistant.io/badges/tools_perform_action.svg)](https://my.home-assistant.io/redirect/tools_perform_action/?service=apollo_mmwave.update_zone)
+
+| Field | What it does |
+|---|---|
+| `device_id` | The radar. Required unless the deprecated `location` is given. |
+| `location` | Deprecated: the radar's display name from before 2.0. Use `device_id` instead. |
+| `zone_id` | The zone, 1 or more. Every field from `shape` to `hold_s` needs it. |
+| `shape` | `rect`, `ellipse` or `polygon` together with `data`, or `none` to clear the zone's shape. |
+| `data` | The geometry in millimeters, read only together with `shape`: `{x_min, x_max, y_min, y_max}` for a rect, `{cx, cy, rx, ry}` for an ellipse, `{points: [{x, y}, ...]}` for a polygon. |
+| `name` | The zone's name. Naming a zone renames its entities (see above); an empty name clears it. |
+| `delete` | `true` removes the zone and its two entities. |
+| `zone_type` | `detect` (the default) or `ignore`; see [Ignore zones and hold time](#ignore-zones-and-hold-time). |
+| `hold_s` | The hold time in whole seconds, 0 to 3600; 0, the default, turns the hold off. Detect zones only. |
+| `rotation_deg` | The radar's rotation, -180 to 180. Positive swings its facing direction toward its right. Device-wide. |
+| `display_units` | The map unit for everyone: `m`, `ft`, or `auto` to follow Home Assistant's unit system. Device-wide. |
+| `mirror_x` | `true` draws this radar's map flipped left to right for everyone, `false` stops it. Display only. Device-wide. |
+| `movement_history` | `true` keeps up to 24 hours of this radar's target positions (see [Movement history](#movement-history)); `false` turns that off and deletes them. Device-wide. |
+| `input_units` | The unit of target sensors that have no length unit of their own, such as DIY template sensors. Device-wide. |
+| `entities` | DIY radars: the X/Y target sensor pairs to track. An empty list changes nothing. Device-wide. |
+| `clear_entities` | `true` empties the tracked pair list, so the radar tracks nothing. Device-wide. |
+
+A default value counts as a change only when something else is stored:
+`zone_type: detect` changes only an ignore zone, `hold_s: 0` only a zone with
+a hold, and `mirror_x: false` or `movement_history: false` only a radar that
+has them on. Otherwise the call is refused like any other empty call.
+`zone_type` and `hold_s` need a `zone_id`; without one they are ignored with a
+warning. Sent with a `shape` they apply to the new zone, and sent without one
+they need a zone that exists. Redrawing or clearing a zone keeps its type and
+hold time. To give zone 2 a two-minute hold:
+
+```yaml
+action: apollo_mmwave.update_zone
+data:
+  device_id: your_device_id
+  zone_id: 2
+  hold_s: 120
+```
+
+## Movement history
+
+Movement history keeps where the radar saw people, so you can replay it on
+the zone map: to find where a ghost comes from, see how people move through a
+room, or learn why a zone turned on. It is off for every radar until an
+administrator turns it on, one radar at a time.
+
+**Turn it on.** On the zone map, open **Configure** and tick **Movement
+history**. Its hint reads "Keeps up to 24 hours of target positions so
+administrators can replay them here. Backups include them. Turning it off
+deletes them from Home Assistant." The card answers "Movement history is on.
+Open History under the map to replay it." From then on Home Assistant records
+that radar's targets whether or not any dashboard is open. Automations can
+turn it on and off with `update_zone`'s `movement_history`.
+
+**Replay it.** Press **History** under the map. The panel has **1 h**,
+**6 h** and **24 h**, a small chart of how much was recorded over that time,
+a slider to pick a moment, **Play** and **Pause** at **1x**, **10x** or
+**60x**, and **Heatmap**, which shades where people spent the most time.
+While the panel is open the map shows the replay instead of the live view:
+"Replay" and the time in its top-right corner, numbered dots with short
+trails where the targets were, and each zone lit while a replayed dot is in
+it. As the panel's hint says, "Zones are drawn with their current shapes,
+rotation and flip." History keeps positions, not which zone was on, so a zone
+you redrew lights up where it is now. **Back to live** closes the panel. You
+can still draw a zone while History is open, with the heatmap as a guide.
+
+Home Assistant records a point when a target appears, when it moves 5 cm or
+more (at most twice a second), and every 15 seconds while it stays in view,
+plus a mark when it leaves. Positions are kept as the radar reports them, so a
+rotation or flip you change later applies to the replay too. Targets inside
+ignore zones are not recorded.
+
+Privacy and storage:
+
+- **Who can see it.** Only administrators can turn it on, open **History** or
+  clear it, and only they see the **History** button and the setting. That
+  includes any dashboard signed in as an administrator, such as a wall
+  tablet. Other users see nothing of it.
+- **Where it is kept.** In `.storage/apollo_mmwave.movement`, a private file
+  in Home Assistant's configuration folder that only Home Assistant reads. It
+  is never served at `/local/` or any other address.
+- **How long.** Up to 24 hours, and less in a busy room: each radar keeps at
+  most 100,000 points, about 4.6 hours with three people moving all the time,
+  and drops the oldest first. Points older than 24 hours are removed also
+  while nobody is in view. Home Assistant writes the file a minute after a
+  change, so a crash can lose up to the last minute.
+- **Backups.** Home Assistant backups include the file, also backups that
+  leave out the database. Turning history off does not remove it from
+  backups made before.
+- **Not the recorder.** It is separate from Home Assistant's recorder and
+  history. A recorder `exclude` or `recorder.purge_entities`, as in the
+  wiki's
+  [Minimize activity spam](https://wiki.apolloautomation.com/products/general/tutorials/minimize-mmwave-activity-spam/)
+  guide, neither stops it nor deletes it.
+- **SD cards.** Each save rewrites the whole file, so a busy radar at the cap
+  rewrites about 1.3 MB a minute.
+- **Support file.** The [support file](#support-file) says whether history
+  is on for each radar and how many points it holds, never the points.
+
+To delete it:
+
+- **Clear history** in the History panel asks "Delete this radar's movement
+  history?" and deletes it. Recording goes on.
+- Turning **Movement history** off asks "Turning this off deletes this
+  radar's movement history from Home Assistant. Backups made while it was on
+  keep their copy." **Turn off and delete** turns it off and deletes that
+  radar's history; **Keep it** leaves it on. When no radar has history left,
+  the file is removed.
+- Removing a radar from Home Assistant deletes its history. If the same
+  radar comes back with its old device id, recording starts again.
+- Deleting Apollo mmWave deletes the file (see
+  [Removing Apollo mmWave](#removing-apollo-mmwave)).
+- While the integration is disabled nothing runs, so the file keeps what it
+  had until the next start drops anything older than 24 hours.
 
 ## Use your own dashboards instead
 
@@ -851,6 +1175,22 @@ to: the cone, the live targets and the presence sensors all use the radar's
 stored rotation, which is 0 until you set it with the slider (or with
 `update_zone`'s `rotation_deg`).
 
+**View-only zone map.** Set `view_only: true` on a zone map card, or tick
+**View only (the map without drawing tools)** in its card editor, for a map
+with nothing to press: the title and the map with its lit zones, numbered
+dots, trails, the "Radar offline" note and the flip. It has no drawing tools,
+lock, undo, unit switch, zone buttons, Coverage, History, Walk or Configure,
+and a finger on it scrolls the page, which suits a phone dashboard. The card
+editor hides the lock setting while View only is ticked, since a view-only
+map has no lock. The Apollo mmWave dashboard keeps the full map.
+
+```yaml
+type: custom:apollo-radar-zone-map-card
+device_id: your_device_id
+title: Living room   # optional
+view_only: true
+```
+
 **Locked slider rows.** Two entities card rows put sliders behind the same
 lock the dashboard uses (see [Locked sliders](#locked-sliders)). Both take
 `device_id`: the radar's device id, or any text, as long as a lock row and
@@ -898,8 +1238,11 @@ versions. Apollo mmWave adds:
   - the gate radar's thresholds by gate;
   - the LD2450's Zone Type, Multi Target Tracking and the target X/Y sensors
     the zones track, with their readings and units;
-  - its zones, rotation and units as stored, and this integration's zone
-    entities;
+  - its zones as stored, with each zone's type and hold time, the radar's
+    rotation, units, flip and movement history setting, and this
+    integration's zone entities;
+  - whether movement history is on and how many points it holds, never the
+    points themselves;
   - the running calibration, the saved snapshots and the last calibration
     result.
 
@@ -915,17 +1258,19 @@ them to tell radars apart.
 Apollo's default device names, and so the entity ids, end in the last six
 characters of the device's MAC address (for example `apollo_msr_2_7a711c`).
 
-Downloading the file changes nothing: no setting, zone, dashboard or
-resource is written.
+Downloading the file changes nothing: no setting, zone, movement history,
+dashboard or resource is written.
 
 ## Removing Apollo mmWave
 
 Deleting Apollo mmWave in Settings → Devices & services (the ⋮ menu on the
 entry, then **Delete**) removes what it made: the Apollo mmWave dashboard it
 created (unless you took control of it; dashboards you made yourself are never
-touched), every zone and its two entities, and the
-saved calibration values that **Undo** uses. From 2.2.5 it also removes its
-two Lovelace resources, so dashboards stop asking for files that are gone.
+touched), every zone and its two entities, the saved calibration values that
+**Undo** uses, and the movement history file
+(`.storage/apollo_mmwave.movement`) if any radar had history on, though
+backups made before keep their copy. From 2.2.5 it also removes its two
+Lovelace resources, so dashboards stop asking for files that are gone.
 The thresholds a calibration wrote stay on the radars. Setting Apollo mmWave
 up again starts from nothing.
 
@@ -1004,6 +1349,58 @@ the two rows yourself under Settings → Dashboards → ⋮ → **Resources**.
   zones you drew while the dots were in the wrong place. From 2.2.7, the
   card's `input_units` only applies to target sensors without a length unit,
   such as DIY template sensors.
+- **Zone presence reads unavailable.** The radar is offline: every target
+  sensor the zone tracks reads `unavailable`, and the map says "Radar
+  offline". Presence also reads `unavailable` after every Home Assistant
+  restart until the radar connects. Check the radar's power and Wi-Fi;
+  presence comes back on its own. Meanwhile the Zone presence card hides its
+  rows. An automation triggered by `to: "off"` without `from:` fires when the
+  radar comes back, so add `from: "on"` if it should fire only when someone
+  leaves (see [Zones in automations](#zones-in-automations)).
+- **A dot moves the opposite way from you.** Hold the phone with the radar's
+  edge of the map ahead of you, face the radar and step to your right: the
+  dot should move right. If it moves left, an administrator can tick **Flip
+  the map left to right (display only)** under **Configure** (see
+  [What the map shows](#what-the-map-shows)). It changes only the drawing,
+  not the zones or their presence sensors.
+- **A zone stays on after everyone left.** If its label on the map ends in
+  "(held)", and its presence sensor's `held` attribute is `true`, the zone's
+  hold time keeps it on: it turns off once that time has passed since the
+  zone emptied. A hold is for someone the radar lost while they sat still;
+  someone walking out normally turns the zone off within about a second.
+  Lower the zone's **Hold**, or set it to **Off** (see
+  [Ignore zones and hold time](#ignore-zones-and-hold-time)). A ghost that
+  shows up briefly in the middle of the zone can start a hold too, so cover
+  its source, such as a fan, with an ignore zone. Without "(held)", a target
+  is still inside: look for its dot, and cover a fan or curtain that keeps
+  one there with an ignore zone. **Radar Timeout** does not hold the zones
+  you draw.
+- **Corner here is grayed out.** It needs exactly one target on the map,
+  not counting targets inside ignore zones. The hint above the buttons says
+  which: "Nobody is on the map. Walk into the radar's view." or "More than
+  one target is on the map. Only the person marking corners should be in
+  view. If you are alone, a fan or curtain may be moving: add an ignore zone
+  over it." Ask others to step out of the radar's view, or cover the fan or
+  curtain with an ignore zone. After 32 corners, press **Finish** (see
+  [Mark corners by walking](#mark-corners-by-walking)).
+- **Movement history is empty.** History says "No movement recorded in this
+  range yet." when nothing was recorded in the range you picked. Recording
+  starts when an administrator turns **Movement history** on under
+  **Configure**, and keeps nothing from before that. Targets inside ignore
+  zones are never recorded, and **Clear history**, turning it off and
+  removing the radar delete what was there. Try **24 h**. If History says
+  "Only an administrator can open movement history.", sign in as an
+  administrator (see [Movement history](#movement-history)).
+- **A tab says the radar is offline, but it works.** The help card's
+  "Offline right now" note is written when the page loads, and a radar
+  coming back does not rebuild the dashboard. Reload the page. It happens
+  most after a Home Assistant restart, when the radars reconnect after the
+  dashboard has opened.
+- **A repair says `apollo_mmwave.movement` is corrupt.** Home Assistant
+  could not read the movement history file and set it aside, so the history
+  starts over. Apollo mmWave deletes the set-aside copy, because it holds
+  where people were. Dismiss the repair: nothing needs restoring, and
+  recording carries on.
 - **Zones are missing after a restart.** If `.storage/apollo_mmwave.zones` was
   edited by hand or partly restored and has the wrong shape, the integration
   logs what it could not read and loads the rest (possibly nothing), and the
@@ -1012,6 +1409,15 @@ the two rows yourself under Settings → Dashboards → ⋮ → **Resources**.
 - **Going back to an older release.** If a future release changes the zone
   store format, an older release cannot read the newer file: setup fails and
   the file is left untouched. Restore the backup you took before upgrading.
+  Going back from 2.4.0 to 2.3.0 needs no restore, but first turn **Movement
+  history** off on every radar, which deletes `.storage/apollo_mmwave.movement`.
+  2.3.0 neither reads nor deletes that file, and removing the integration
+  under 2.3.0 leaves it on disk and in every later backup. 2.3.0 also drops
+  each radar's flip and movement history setting the next time it saves the
+  zone store. It keeps a zone's type and hold time only until it rewrites
+  that zone (a redraw, Undo, a clear, **Clear All Zones** or `shape: none`),
+  and until then ignores them: ignore zones act as detect zones and nothing
+  holds.
 - **Still stuck?** Send Apollo a support file with your question: Settings →
   Devices & services → Apollo mmWave → ⋮ → **Download diagnostics**. It
   leaves out MAC and IP addresses and Wi-Fi names; see
