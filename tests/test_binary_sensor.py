@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import itertools
 import logging
 import math
 from datetime import timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import pytest
 from homeassistant.const import (
     ATTR_UNIT_OF_MEASUREMENT,
     STATE_UNAVAILABLE,
+    STATE_UNKNOWN,
     UnitOfLength,
 )
 from homeassistant.core import callback
@@ -38,6 +40,9 @@ from custom_components.apollo_mmwave.const import (
 from custom_components.apollo_mmwave.targets import build_point_rotator
 
 from .conftest import RECT_ZONE
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 TARGET_1 = {
     "x": "sensor.r_pro_ld2450_target_1_x",
@@ -1343,11 +1348,13 @@ async def test_unknown_states_do_not_count_as_offline(
 # fixtures seed zones. The frozen clock is both Home Assistant's timer clock
 # and the hold's time.monotonic(), so _advance moves both.
 HOLD_S = 60
-# Readings 0.35 s apart, 150 mm a step: slow walking, which hold rule 2 reads
-# as moving.
+# Readings 0.35 s apart, X and Y in one loop turn, 150 mm a step: slow
+# walking, which hold rule 2 reads as moving, reported far more often than
+# the R PRO-1's LD2450 reports it (see RADAR_PERIOD_S).
 WALK_STEP_S = 0.35
-# Toward zone 1's right edge at x = 1000, ending 50 mm from it.
-WALK_TO_RIGHT_EDGE = [(200 + 150 * step, 1000) for step in range(6)]
+# Toward zone 1's right edge at x = 1000, ending 50 mm from it after 2.45 s:
+# long enough for two steps of hold rule 2's 0.9 s.
+WALK_TO_RIGHT_EDGE = [(-100 + 150 * step, 1000) for step in range(8)]
 # Zones that reach the edge of the radar's view, 6 m out and 60 degrees
 # either side of straight ahead, away from their own edges.
 FAR_ZONE = {
@@ -1368,9 +1375,9 @@ LEFT_ZONE = {
 # about 57 degrees to one side, 135 mm from the 60 degree line.
 EDGE_WALKS = {
     "zone-edge": (RECT_ZONE, WALK_TO_RIGHT_EDGE),
-    "range": (FAR_ZONE, [(0, 5050 + 150 * step) for step in range(6)]),
-    "angle-right": (RIGHT_ZONE, [(2500, 2350 - 150 * step) for step in range(6)]),
-    "angle-left": (LEFT_ZONE, [(-2500, 2350 - 150 * step) for step in range(6)]),
+    "range": (FAR_ZONE, [(0, 4750 + 150 * step) for step in range(8)]),
+    "angle-right": (RIGHT_ZONE, [(2500, 2650 - 150 * step) for step in range(8)]),
+    "angle-left": (LEFT_ZONE, [(-2500, 2650 - 150 * step) for step in range(8)]),
 }
 
 
@@ -1397,7 +1404,10 @@ async def _sit(hass, freezer, pair: dict[str, str], x: float, y: float) -> None:
     """Report a target that then sits still, so the radar reports nothing new."""
     _set_target(hass, pair, x, y)
     await hass.async_block_till_done()
-    await _advance(hass, freezer, 10)
+    # A second at a time, so each timer fires when it is due: a target on an
+    # axis line, for one, counts a second after it appears.
+    for _ in range(10):
+        await _advance(hass, freezer, 1)
 
 
 async def _walk(
@@ -1415,6 +1425,123 @@ async def _vanish(hass, pair: dict[str, str]) -> None:
     """Report the target gone: X and Y both 0, in one loop turn."""
     _set_target(hass, pair, 0, 0)
     await hass.async_block_till_done()
+
+
+# The LD2450 of an R PRO-1 on firmware 26.10.21.1, as measured on a real
+# install: each axis is written about once a second (1.0 to 1.15 s), Y
+# usually about 0.45 s after X and sometimes in the same instant, in inches
+# with one decimal where Home Assistant uses US customary units. A lost
+# target turns X and Y unknown at once.
+RADAR_PERIOD_S = 1.07
+RADAR_Y_LAG_S = 0.45
+# Where in that once-a-second cycle the radar is when someone starts to walk
+# or is lost: six phases a sixth of a period apart.
+RADAR_PHASES_S = [RADAR_PERIOD_S * index / 6 for index in range(6)]
+INCHES = {ATTR_UNIT_OF_MEASUREMENT: UnitOfLength.INCHES}
+
+type Path = Callable[[float], tuple[float, float]]
+
+
+class Cadence(NamedTuple):
+    """When the radar writes a target: X every period_s from phase_s, Y y_lag_s on."""
+
+    y_lag_s: float = RADAR_Y_LAG_S
+    phase_s: float = 0.0
+    period_s: float = RADAR_PERIOD_S
+
+
+Y_AFTER_X = Cadence()
+
+
+async def _report_at_radar_cadence(
+    hass,
+    freezer,
+    pair: dict[str, str],
+    walk: tuple[Path, float],
+    cadence: Cadence = Y_AFTER_X,
+) -> None:
+    """
+    Report a target as the R PRO-1 does, then move the clock to the walk's end.
+
+    walk is (position, until_s): position(t) is where the target is, in mm,
+    t seconds after the call. X is written every period_s from phase_s and Y
+    y_lag_s after each X, each in a loop turn of its own, or in the same turn
+    as its X when y_lag_s is 0. Each write carries the position at its own
+    time, in inches with one decimal, and a write due at or after until_s is
+    not made. A value equal to the state is no write at all: Home Assistant
+    writes nothing for it, so it starts no evaluation.
+    """
+    position, until_s = walk
+    writes: list[tuple[float, tuple[str, ...]]] = []
+    report_t = cadence.phase_s
+    while report_t < until_s:
+        if cadence.y_lag_s:
+            writes.append((report_t, ("x",)))
+            if report_t + cadence.y_lag_s < until_s:
+                writes.append((report_t + cadence.y_lag_s, ("y",)))
+        else:
+            writes.append((report_t, ("x", "y")))
+        report_t += cadence.period_s
+    now = 0.0
+    for write_t, axes in writes:
+        await _advance(hass, freezer, write_t - now)
+        now = write_t
+        point = dict(zip(("x", "y"), position(write_t), strict=True))
+        for axis in axes:
+            hass.states.async_set(pair[axis], f"{point[axis] / 25.4:.1f}", INCHES)
+        await hass.async_block_till_done()
+    await _advance(hass, freezer, until_s - now)
+
+
+async def _lose(hass, pair: dict[str, str]) -> None:
+    """Report the target lost as the R PRO-1 does: X and Y unknown, in one turn."""
+    hass.states.async_set(pair["x"], STATE_UNKNOWN, INCHES)
+    hass.states.async_set(pair["y"], STATE_UNKNOWN, INCHES)
+    await hass.async_block_till_done()
+
+
+def _jittered(path: Path, start: int = 0) -> Path:
+    """Return path with radar jitter: up to 40 mm on each axis, new at every write."""
+    writes = itertools.count(start)
+
+    def position(t: float) -> tuple[float, float]:
+        x, y = path(t)
+        index = next(writes)
+        return x + 40 * math.sin(2.4 * index), y + 40 * math.sin(1.7 * index + 1)
+
+    return position
+
+
+def _sit_then_walk(
+    seat: tuple[float, float], to: tuple[float, float], speed_m_s: float, sit_s: float
+) -> tuple[Path, float]:
+    """Return the path of someone who sits, then walks to `to`, and their arrival."""
+    length = math.dist(seat, to)
+
+    def path(t: float) -> tuple[float, float]:
+        part = min(1.0, max(0.0, t - sit_s) * speed_m_s * 1000 / length)
+        return (seat[0] + (to[0] - seat[0]) * part, seat[1] + (to[1] - seat[1]) * part)
+
+    return path, sit_s + length / (speed_m_s * 1000)
+
+
+def _record_held(hass, entity_id: str) -> list[tuple[str, bool | None]]:
+    """Record each state a presence sensor writes, with its held attribute."""
+    written: list[tuple[str, bool | None]] = []
+
+    @callback
+    def _record(event) -> None:
+        new = event.data["new_state"]
+        written.append((new.state, new.attributes.get("held")))
+
+    async_track_state_change_event(hass, [entity_id], _record)
+    return written
+
+
+async def _restart_hold(hass, device_id: str, zone: dict[str, Any]) -> None:
+    """Store the held zone 1 again with no hold time first, which drops any hold."""
+    await _store_zone(hass, device_id, {**zone, "hold_s": 0})
+    await _store_zone(hass, device_id, zone)
 
 
 async def _store_zone(hass, device_id: str, zone: dict[str, Any] | None = None) -> None:
@@ -1553,9 +1680,11 @@ async def test_outside_target_too_far_does_not_release(
     await _sit(hass, freezer, TARGET_1, 0, 1000)
     await _vanish(hass, TARGET_1)
 
-    # 1.5 m away 0.5 s after the zone emptied, past the 1.4 m reach then.
+    # 3.4 m away 0.5 s after the zone emptied, past the 3.3 m reach then:
+    # 600 mm, and 1.6 mm a millisecond for those 0.5 s and for the 1.2 s
+    # their last report could have aged by the time the zone emptied.
     await _advance(hass, freezer, 0.5)
-    _set_target(hass, TARGET_2, 1500, 1000)
+    _set_target(hass, TARGET_2, 3400, 1000)
     await hass.async_block_till_done()
     assert _hold_state(hass, presence_id) == ("on", True)
 
@@ -1583,29 +1712,69 @@ async def test_outside_target_after_three_seconds_does_not_release(
     assert _hold_state(hass, presence_id) == ("on", True)
 
 
-async def test_another_tracked_person_4_m_away_releases_within_3_s(
+async def test_another_tracked_person_counts_only_within_600_mm(
     hass, freezer, entity_registry, setup_entry_with_zone
 ) -> None:
-    """The reach grows to 5.4 m in 3 s, so anyone the radar tracks nearby counts."""
-    # Rule 1 as specified, pinned on purpose: a narrower reach for targets
-    # tracked elsewhere is an open question.
+    """Someone the radar tracked elsewhere when the zone emptied is someone else."""
+    # Unless they are right where the person was: LD2450 slots swap.
     device_id, _ = setup_entry_with_zone
     await _store_zone(hass, device_id)
     presence_id = _presence_id(entity_registry, device_id)
     _set_target(hass, TARGET_2, 4000, 1000)  # someone else, outside the zone
-    await _sit(hass, freezer, TARGET_1, 0, 1000)
+    await _sit(hass, freezer, TARGET_1, 900, 1000)
     await _vanish(hass, TARGET_1)
     assert _hold_state(hass, presence_id) == ("on", True)
 
-    await _advance(hass, freezer, 1)
-    _set_target(hass, TARGET_2, 4000, 1100)  # 4 m, past the 2.2 m of 1 s
+    # 1.1 m from where they were 2.5 s on, well within the 6.5 m reach then
+    # of a target that could be them.
+    await _advance(hass, freezer, 2.5)
+    _set_target(hass, TARGET_2, 2000, 1000)
     await hass.async_block_till_done()
     assert _hold_state(hass, presence_id) == ("on", True)
 
-    await _advance(hass, freezer, 1.5)
-    _set_target(hass, TARGET_2, 4000, 1000)  # within the 4.6 m of 2.5 s
+    await _advance(hass, freezer, 0.3)
+    _set_target(hass, TARGET_2, 1450, 1000)  # 550 mm from where they were
     await hass.async_block_till_done()
     assert _hold_state(hass, presence_id) == ("off", False)
+
+
+# A still object an R PRO-1 tracks all night, 35 cm in front of it.
+STILL_OBJECT = (-127.0, 343.0)
+
+
+@pytest.mark.parametrize(
+    "someone_walks_in", [False, True], ids=["object-only", "someone-walks-in"]
+)
+async def test_a_still_object_in_front_of_the_radar_ends_no_hold(
+    hass, freezer, entity_registry, setup_entry_with_zone, someone_walks_in
+) -> None:
+    """Tracked all along, it is not who vanished; someone walking into view can be."""
+    device_id, _ = setup_entry_with_zone
+    couch = {
+        "shape": "rect",
+        "data": {"x_min": -1000, "x_max": 1000, "y_min": 1500, "y_max": 3500},
+    }
+    await _store_zone(hass, device_id, _hold_zone(couch))
+    presence_id = _presence_id(entity_registry, device_id)
+    _set_target(hass, TARGET_2, *STILL_OBJECT)
+    # Sitting still 2 m beyond it.
+    await _sit(hass, freezer, TARGET_1, 100, 2340)
+    await _lose(hass, TARGET_1)
+    assert _hold_state(hass, presence_id) == ("on", True)
+
+    # The object's reading wobbles each second. Someone may walk into view
+    # 2 s on, 1.2 m from where the person sat.
+    for second in range(4):
+        await _advance(hass, freezer, 1)
+        _set_target(
+            hass, TARGET_2, STILL_OBJECT[0] + 10 * (second % 2), STILL_OBJECT[1]
+        )
+        if someone_walks_in and second == 1:
+            _set_target(hass, TARGET_3, 1300, 2340)
+        await hass.async_block_till_done()
+
+    expected = ("off", False) if someone_walks_in else ("on", True)
+    assert _hold_state(hass, presence_id) == expected
 
 
 async def test_one_outside_target_accounts_for_one_person(
@@ -1681,8 +1850,8 @@ async def test_moving_person_lost_mid_zone_holds(
     device_id, _ = setup_entry_with_zone
     await _store_zone(hass, device_id)
     presence_id = _presence_id(entity_registry, device_id)
-    # The same walk 575 mm to the left, ending 625 mm from the nearest edge.
-    await _walk(hass, freezer, TARGET_1, [(x - 575, y) for x, y in WALK_TO_RIGHT_EDGE])
+    # The same walk 625 mm to the left, ending 675 mm from the nearest edge.
+    await _walk(hass, freezer, TARGET_1, [(x - 625, y) for x, y in WALK_TO_RIGHT_EDGE])
 
     await _vanish(hass, TARGET_1)
 
@@ -1747,7 +1916,7 @@ async def test_transient_target_vanishing_mid_zone_holds(
     device_id, _ = setup_entry_with_zone
     await _store_zone(hass, device_id)
     presence_id = _presence_id(entity_registry, device_id)
-    _set_target(hass, TARGET_1, 0, 1000)
+    _set_target(hass, TARGET_1, 100, 1000)
     await hass.async_block_till_done()
 
     await _advance(hass, freezer, 0.5)
@@ -1830,24 +1999,141 @@ CORNER_ZONE = {
 }
 
 
+# A fan the user masked, far to the left of everything else.
+FAN_IGNORE_ZONE = {
+    "shape": "rect",
+    "data": {"x_min": -3000, "x_max": -2000, "y_min": 1000, "y_max": 2000},
+    "zone_type": "ignore",
+}
+
+
+@pytest.mark.parametrize("between", ["nothing", "masked-write", "far-write", "rename"])
 @pytest.mark.parametrize("first", ["x", "y"], ids=["x-first", "y-first"])
 async def test_vanish_reported_in_two_turns_still_holds(
-    hass, freezer, entity_registry, setup_entry_with_zone, first
+    hass, freezer, setup_entry_with_zone, first, between
 ) -> None:
-    """The first half of a vanish is nobody's position, so it releases nothing."""
+    """The first half of a vanish is nobody's position, however often it is read."""
+    # Whatever runs between the halves evaluates the zone again: a write of
+    # the masked fan, of someone 5.6 m away (past rule 1's reach), or a
+    # zone signal.
     device_id, _ = setup_entry_with_zone
+    presence_id = _presence_id(er.async_get(hass), device_id)
     await _store_zone(hass, device_id, _hold_zone(CORNER_ZONE))
-    presence_id = _presence_id(entity_registry, device_id)
+    _draw_zone(hass, device_id, FAN_IGNORE_ZONE, zone_id=2)
+    await hass.async_block_till_done()
     await _sit(hass, freezer, TARGET_1, 400, 500)
 
-    # (0, 500) or (400, 0), with a loop turn before the other write lands.
+    # (0, 500) or (400, 0), with loop turns before the other write lands.
+    # The person is where they were until it does.
     hass.states.async_set(TARGET_1[first], "0")
     await hass.async_block_till_done()
-    assert _hold_state(hass, presence_id) == ("on", True)
+    assert _hold_state(hass, presence_id) == ("on", False)
 
+    await _advance(hass, freezer, 0.2)
+    if between == "masked-write":
+        _set_target(hass, TARGET_2, -2500, 1500)
+    elif between == "far-write":
+        _set_target(hass, TARGET_2, -4000, 4000)
+    elif between == "rename":
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_UPDATE_ZONE,
+            {"device_id": device_id, "zone_id": 1, "name": "Corner"},
+            blocking=True,
+        )
+    await hass.async_block_till_done()
+    assert _hold_state(hass, presence_id) == ("on", False)
+
+    await _advance(hass, freezer, 0.25)
     hass.states.async_set(TARGET_1["y" if first == "x" else "x"], "0")
     await hass.async_block_till_done()
     assert _hold_state(hass, presence_id) == ("on", True)
+
+    await _advance(hass, freezer, 2.5)
+    assert _hold_state(hass, presence_id) == ("on", True)
+
+
+# The right half of a bed, its left edge on the radar's center line.
+BED_RIGHT_ZONE = {
+    "shape": "rect",
+    "data": {"x_min": 0, "x_max": 1000, "y_min": 1000, "y_max": 3000},
+}
+
+
+@pytest.mark.parametrize("hold_s", [0, HOLD_S], ids=["no-hold", "held"])
+async def test_a_real_x_of_zero_does_not_pulse_a_held_zone(
+    hass, freezer, entity_registry, setup_entry_with_zone, hold_s
+) -> None:
+    """An X of exactly 0 is someone on the center line: no off, as with no hold."""
+    device_id, _ = setup_entry_with_zone
+    await _store_zone(hass, device_id, _hold_zone(BED_RIGHT_ZONE, hold_s=hold_s))
+    presence_id = _presence_id(entity_registry, device_id)
+    # The sleeper 60 mm right of the line, their partner 340 mm left of it,
+    # 400 mm apart, in inches: one decimal reads anyone within 1.27 mm of
+    # the line as 0.0.
+    _set_target(hass, TARGET_1, 2.4, 78.7, ("in", "in"))
+    _set_target(hass, TARGET_2, -13.4, 78.7, ("in", "in"))
+    await hass.async_block_till_done()
+    await _advance(hass, freezer, 10)
+    assert _hold_state(hass, presence_id)[0] == "on"
+    written = _record_held(hass, presence_id)
+
+    # The sleeper's X reads 0.0, and their Y moves 0.45 s later.
+    hass.states.async_set(TARGET_1["x"], "0.0", INCHES)
+    await hass.async_block_till_done()
+    await _advance(hass, freezer, 0.45)
+    hass.states.async_set(TARGET_1["y"], "79.1", INCHES)
+    await hass.async_block_till_done()
+    await _advance(hass, freezer, 3)
+
+    assert written == []
+    assert _hold_state(hass, presence_id)[0] == "on"
+
+
+async def test_a_target_still_on_an_axis_line_counts_after_a_second(
+    hass, freezer, entity_registry, setup_entry_with_zone
+) -> None:
+    """(0, 1000) could be half an appearance; standing a second, it is someone."""
+    # Nothing else writes, so only a timer can read it again.
+    device_id, _ = setup_entry_with_zone
+    await _store_zone(hass, device_id)
+    presence_id = _presence_id(entity_registry, device_id)
+    _set_target(hass, TARGET_1, 0, 1000)
+    await hass.async_block_till_done()
+    assert _hold_state(hass, presence_id) == ("off", False)
+
+    await _advance(hass, freezer, 0.9)
+    assert _hold_state(hass, presence_id) == ("off", False)
+    await _advance(hass, freezer, 0.2)
+    assert _hold_state(hass, presence_id) == ("on", False)
+
+
+async def test_a_still_person_picked_up_again_in_two_halves_stays_held(
+    hass, freezer, entity_registry, setup_entry_with_zone
+) -> None:
+    """Picked up again X first in a slot that read 0/0: (x, 0) is nobody outside."""
+    device_id, _ = setup_entry_with_zone
+    couch = {
+        "shape": "rect",
+        "data": {"x_min": -1000, "x_max": 1000, "y_min": 2000, "y_max": 3500},
+    }
+    await _store_zone(hass, device_id, _hold_zone(couch))
+    presence_id = _presence_id(entity_registry, device_id)
+    await _sit(hass, freezer, TARGET_1, 300, 2800)
+    await _vanish(hass, TARGET_1)
+    assert _hold_state(hass, presence_id) == ("on", True)
+    written = _record_held(hass, presence_id)
+
+    # 2 s later, (300, 0) is 2.8 m from where they sat, within rule 1's
+    # 3.8 m reach then. Y lands 0.45 s after it.
+    await _advance(hass, freezer, 2)
+    hass.states.async_set(TARGET_1["x"], "300")
+    await hass.async_block_till_done()
+    await _advance(hass, freezer, 0.45)
+    hass.states.async_set(TARGET_1["y"], "2800")
+    await hass.async_block_till_done()
+
+    assert written == [("on", False)]
 
 
 async def test_ignored_target_does_not_release_a_hold(
@@ -1917,6 +2203,9 @@ async def test_zone_deletion_cancels_the_hold_timer(
     presence_id = _presence_id(er.async_get(hass), device_id)
     await _sit(hass, freezer, TARGET_1, 0, 1000)
     await _vanish(hass, TARGET_1)
+    # Half of an appearance, whose timer would read the zone again.
+    _set_target(hass, TARGET_2, 0, 1500)
+    await hass.async_block_till_done()
     assert _hold_state(hass, presence_id) == ("on", True)
     evaluated: list[str] = []
     real = ZonePresenceBinarySensor._evaluate_and_write  # noqa: SLF001 - the subject
@@ -2202,3 +2491,208 @@ async def test_ignore_zone_never_holds(
 
     await _store_zone(hass, device_id)
     assert _hold_state(hass, zone_1) == ("off", False)
+
+
+# The hold at the radar's measured cadence, through _report_at_radar_cadence.
+# Each test runs every phase in RADAR_PHASES_S, a fresh hold each time.
+# A room seen from the radar on its near wall, 3 m wide and 3.5 m deep.
+ROOM_ZONE = {
+    "shape": "rect",
+    "data": {"x_min": -1500, "x_max": 1500, "y_min": 500, "y_max": 4000},
+}
+# Zones that reach past the edge of the radar's view, 6 m out and 60 degrees
+# to the right, their own edges at least 1.5 m from the walks toward it.
+FAR_VIEW_ZONE = {
+    "shape": "rect",
+    "data": {"x_min": -2500, "x_max": 2500, "y_min": 1500, "y_max": 7500},
+}
+SIDE_VIEW_ZONE = {
+    "shape": "rect",
+    "data": {"x_min": 0, "x_max": 6500, "y_min": 1000, "y_max": 4000},
+}
+# Where the 60 degree line crosses y = 2.5 m.
+SIDE_VIEW_EDGE_X = 2500 * math.tan(math.radians(60))
+# A couch, and the room beyond its right edge, all in view.
+COUCH_ZONE = {
+    "shape": "rect",
+    "data": {"x_min": -2500, "x_max": -500, "y_min": 2500, "y_max": 3500},
+}
+COUCH_SEAT = (-1500.0, 3000.0)
+# Still people: in the middle of the room, 0.7 m from its right edge, and
+# 0.7 m short of the radar's 6 m range.
+STILL_SEATS = {
+    "mid-zone": (ROOM_ZONE, (300.0, 2200.0)),
+    "zone-edge": (ROOM_ZONE, (800.0, 2200.0)),
+    "range": (FAR_VIEW_ZONE, (300.0, math.sqrt(5300**2 - 300**2))),
+}
+# Walks of 3 m out of the radar's view: to its 6 m range, to its 60 degree
+# line, and through a doorway in the room's far wall, where the wall hides
+# them. Each is (zone, start, where they are lost, speed in m/s).
+OUT_OF_VIEW_WALKS = {
+    "6-m-range": (
+        FAR_VIEW_ZONE,
+        (400.0, 3000.0),
+        (400.0, math.sqrt(6000**2 - 400**2)),
+        1.0,
+    ),
+    "60-degree-line": (
+        SIDE_VIEW_ZONE,
+        (SIDE_VIEW_EDGE_X - 3000, 2500.0),
+        (SIDE_VIEW_EDGE_X, 2500.0),
+        1.0,
+    ),
+    "doorway": (ROOM_ZONE, (400.0, 1000.0), (400.0, 4000.0), 1.2),
+}
+Y_LAGS = {"y-after-x": RADAR_Y_LAG_S, "together": 0.0}
+
+
+@pytest.mark.parametrize("y_lag", list(Y_LAGS))
+@pytest.mark.parametrize("seat", list(STILL_SEATS))
+async def test_still_person_at_the_radars_cadence_holds_until_hold_s(
+    hass, freezer, setup_entry_with_zone, seat, y_lag
+) -> None:
+    """Someone sitting still, jittering about 40 mm, holds the zone until hold_s."""
+    zone, point = STILL_SEATS[seat]
+    device_id, _ = setup_entry_with_zone
+    presence_id = _presence_id(er.async_get(hass), device_id)
+    for index, phase_s in enumerate(RADAR_PHASES_S):
+        await _restart_hold(hass, device_id, _hold_zone(zone))
+        still = _jittered(lambda _t, point=point: point, start=7 * index)
+        await _report_at_radar_cadence(
+            hass, freezer, TARGET_1, (still, 20), Cadence(Y_LAGS[y_lag], phase_s)
+        )
+        assert _hold_state(hass, presence_id) == ("on", False)
+
+        await _lose(hass, TARGET_1)
+        assert _hold_state(hass, presence_id) == ("on", True), phase_s
+        await _advance(hass, freezer, HOLD_S - 1)
+        assert _hold_state(hass, presence_id) == ("on", True), phase_s
+        await _advance(hass, freezer, 2)
+        assert _hold_state(hass, presence_id) == ("off", False), phase_s
+
+
+@pytest.mark.parametrize("speed_m_s", [0.8, 1.0])
+async def test_walking_out_into_view_at_the_radars_cadence_turns_off_within_3_s(
+    hass, freezer, entity_registry, setup_entry_with_zone, speed_m_s
+) -> None:
+    """Seen walking on outside the zone, they are accounted for by rule 1."""
+    device_id, _ = setup_entry_with_zone
+    presence_id = _presence_id(entity_registry, device_id)
+    path, _ = _sit_then_walk(COUCH_SEAT, (3000.0, 3000.0), speed_m_s, 10)
+    # Up after 10 s, and past the couch's right edge 1 m on.
+    left_s = 10 + 1 / speed_m_s
+    held = []
+    for index, phase_s in enumerate(RADAR_PHASES_S):
+        for y_lag, y_lag_s in Y_LAGS.items():
+            await _restart_hold(hass, device_id, _hold_zone(COUCH_ZONE))
+            await _report_at_radar_cadence(
+                hass,
+                freezer,
+                TARGET_1,
+                (_jittered(path, start=7 * index), left_s + 3),
+                Cadence(y_lag_s, phase_s),
+            )
+            if _hold_state(hass, presence_id) != ("off", False):
+                held.append((round(phase_s, 2), y_lag))
+            await _lose(hass, TARGET_1)
+
+    assert held == []
+
+
+@pytest.mark.parametrize("walk", list(OUT_OF_VIEW_WALKS))
+async def test_walking_out_of_view_at_the_radars_cadence_turns_off_at_once(
+    hass, freezer, entity_registry, setup_entry_with_zone, walk
+) -> None:
+    """Lost mid-stride at the edge of the view or in a doorway, they walked out."""
+    zone, start, lost_at, speed_m_s = OUT_OF_VIEW_WALKS[walk]
+    device_id, _ = setup_entry_with_zone
+    presence_id = _presence_id(entity_registry, device_id)
+    path, lost_s = _sit_then_walk(start, lost_at, speed_m_s, 10)
+    held = []
+    for index, phase_s in enumerate(RADAR_PHASES_S):
+        for y_lag, y_lag_s in Y_LAGS.items():
+            await _restart_hold(hass, device_id, _hold_zone(zone))
+            await _report_at_radar_cadence(
+                hass,
+                freezer,
+                TARGET_1,
+                (_jittered(path, start=7 * index), lost_s),
+                Cadence(y_lag_s, phase_s),
+            )
+            await _lose(hass, TARGET_1)
+            await _advance(hass, freezer, 1)
+            if _hold_state(hass, presence_id) != ("off", False):
+                held.append((round(phase_s, 2), y_lag))
+
+    assert held == []
+
+
+async def test_a_brisk_walk_out_into_view_turns_off_as_it_leaves(
+    hass, freezer, entity_registry, setup_entry_with_zone
+) -> None:
+    """At 1.4 m/s, X and Y together, the first report outside accounts for them."""
+    # That report lands up to 1.5 m past the last one inside.
+    device_id, _ = setup_entry_with_zone
+    presence_id = _presence_id(entity_registry, device_id)
+    written = _record_held(hass, presence_id)
+    path, _ = _sit_then_walk(COUCH_SEAT, (3000.0, 3000.0), 1.4, 10)
+    held = []
+    for index, phase_s in enumerate(RADAR_PHASES_S):
+        await _restart_hold(hass, device_id, _hold_zone(COUCH_ZONE))
+        first = len(written)
+        await _report_at_radar_cadence(
+            hass,
+            freezer,
+            TARGET_1,
+            (_jittered(path, start=7 * index), 10 + 1 / 1.4 + 3),
+            Cadence(0.0, phase_s),
+        )
+        if written[first:] != [("on", False), ("off", False)]:
+            held.append(round(phase_s, 2))
+        await _lose(hass, TARGET_1)
+
+    assert held == []
+
+
+# The one jump the LD2450 was measured making before it lost a still target:
+# 467 mm in its last report.
+LAST_REPORT_JUMP_MM = 467.0
+
+
+@pytest.mark.parametrize("y_lag", list(Y_LAGS))
+@pytest.mark.parametrize("seat", ["zone-edge", "range"])
+async def test_a_still_persons_last_report_jumping_at_the_edge_holds(
+    hass, freezer, setup_entry_with_zone, seat, y_lag
+) -> None:
+    """The radar's jump before it loses someone sitting still is no walk out."""
+    # Straight at the edge 0.7 m away, which leaves that report 233 mm from it.
+    zone, point = STILL_SEATS[seat]
+    toward = (1.0, 0.0) if seat == "zone-edge" else (point[0] / 5300, point[1] / 5300)
+    jumped = (
+        point[0] + LAST_REPORT_JUMP_MM * toward[0],
+        point[1] + LAST_REPORT_JUMP_MM * toward[1],
+    )
+    device_id, _ = setup_entry_with_zone
+    presence_id = _presence_id(er.async_get(hass), device_id)
+    for index, phase_s in enumerate(RADAR_PHASES_S):
+        await _restart_hold(hass, device_id, _hold_zone(zone))
+        # Still for 20 s, then the next report jumps, and the radar loses
+        # them 0.3 s after its last write.
+        jump_s = phase_s + RADAR_PERIOD_S * math.ceil((20 - phase_s) / RADAR_PERIOD_S)
+        await _report_at_radar_cadence(
+            hass,
+            freezer,
+            TARGET_1,
+            (
+                _jittered(
+                    lambda t, point=point, jumped=jumped: jumped if t >= 20 else point,
+                    start=7 * index,
+                ),
+                jump_s + Y_LAGS[y_lag] + 0.3,
+            ),
+            Cadence(Y_LAGS[y_lag], phase_s),
+        )
+        await _lose(hass, TARGET_1)
+        assert _hold_state(hass, presence_id) == ("on", True), phase_s
+        await _advance(hass, freezer, 3.5)
+        assert _hold_state(hass, presence_id) == ("on", True), phase_s
