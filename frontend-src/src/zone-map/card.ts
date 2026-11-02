@@ -399,8 +399,11 @@ function findTouch(list, identifier) {
  * Whether a target's reading (x, y) may be the first of the two writes of a
  * target that vanishes: exactly one coordinate turned 0 since `last`, the
  * slot's previous reading. The second write, the other coordinate
- * turning 0, then shows the slot empty. The same rule as `half_vanished` in
- * hold.py, by which the hold and the movement recorder skip such a point.
+ * turning 0, then shows the slot empty. `half_vanished` in hold.py, by which
+ * the hold and the movement recorder skip such a point, has the same rule
+ * for a slot with a previous reading. It also flags the first write of a
+ * target appearing in a slot that read 0/0, which has none; here
+ * TrailBuffer.push holds that sample for its other coordinate instead.
  */
 function halfVanished(last, x, y) {
   if (!last || (x === 0) === (y === 0)) return false;
