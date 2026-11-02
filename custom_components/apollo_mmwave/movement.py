@@ -454,7 +454,7 @@ class _SlotState:
     ) -> None:
         """Follow which axes changed from previous to raw, written at time at."""
         if previous is None:
-            # A new reading: both of its axes were just read.
+            # A new reading: neither axis waits for the other.
             self.lone_axis = self.solo_axis = None
             return
         if self.lone_axis is not None and at - self.lone_at >= MOVEMENT_PAIR_MS:
@@ -683,10 +683,11 @@ class _Recorder:
         self._slots.clear()
 
     def _schedule_tick(self, mono: int) -> None:
-        # One timer per radar, and only while a slot is present: the floor of
-        # a pending move, else the next heartbeat, either one no sooner than
-        # the reading is whole. Home Assistant writes nothing for a value that
-        # repeats, so a person sitting still can send nothing for seconds.
+        # One timer per radar, and only while a slot is present or holds a
+        # reading back: the floor of a pending move, else the next heartbeat,
+        # either one no sooner than the reading is whole, or the moment a
+        # reading held back counts. Home Assistant writes nothing for a value
+        # that repeats, so a person sitting still can send nothing for seconds.
         due = min(
             (
                 slot_due
@@ -716,7 +717,8 @@ class _Recorder:
 
     @callback
     def _on_tick(self, _now: datetime) -> None:
-        # Reads the states again: a heartbeat, or a move whose floor came.
+        # Reads the states again: a heartbeat, a move whose floor came or
+        # whose other axis never did, or a reading held back long enough.
         self._tick = None
         self._tick_due = None
         self._flush()
