@@ -12,7 +12,8 @@
  * about 0.45 s after X. A push within TRAIL_COALESCE_MS of the slot's last
  * sample replaces it, as two writes of one loop turn do. A push that moved
  * one coordinate leaves its sample waiting for the other, and when that one
- * moves within TRAIL_PAIR_MS it completes the sample in place. Coverage
+ * moves within TRAIL_PAIR_MS it completes the sample in place, and when the
+ * target is lost before it does, `gone` takes the sample back. Coverage
  * paint reads only the samples that can no longer change, through
  * `takeFinal`, so it never counts the in-between point.
  */
@@ -163,15 +164,28 @@ export class TrailBuffer {
   }
 
   /**
-   * The slot's target is gone. Its newest sample waits for nothing more,
-   * and the slot's next push starts a new run (`brk`), judged as a first
-   * sample, so no trail joins where the target vanished to where it shows
-   * up next.
+   * The slot's target is gone at `now`. A newest sample still waiting for
+   * its other coordinate, which `takeFinal` has not handed out, is taken
+   * back: the LD2450 loses a target on both axes at once, at any moment, so
+   * one lost between an X write and its Y left (new X, old Y), a point
+   * nobody stood at. A target moving along one axis only loses its last
+   * step that way, as the movement recorder drops it too. What is left
+   * waits for nothing more, and the slot's next push starts a new run
+   * (`brk`), judged as a first sample, so no trail joins where the target
+   * vanished to where it shows up next.
    */
-  gone(slot: number): void {
+  gone(slot: number, now: number): void {
     const trail = this._slots.get(slot);
     if (!trail) return;
-    if (trail.samples.length === 0) {
+    const samples = trail.samples;
+    if (
+      trail.pending !== null &&
+      samples.length > trail.taken &&
+      now - samples[samples.length - 1].t < TRAIL_PAIR_MS
+    ) {
+      samples.pop();
+    }
+    if (samples.length === 0) {
       this._slots.delete(slot);
       return;
     }

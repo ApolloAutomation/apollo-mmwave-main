@@ -85,7 +85,7 @@ describe("TrailBuffer", () => {
     expect(trails.samples(0)).toEqual([{ t: 4100, x: -900, y: 2100, tLast: 4550 }]);
 
     // Once its target is gone, a slot whose samples aged out is forgotten.
-    trails.gone(0);
+    trails.gone(0, 4600);
     trails.prune(8000);
     expect(trails.push(0, 8100, -800, 2100)).toBe(true);
     expect(trails.samples(0)).toEqual([{ t: 8100, x: -800, y: 2100 }]);
@@ -315,9 +315,8 @@ describe("TrailBuffer", () => {
   it("starts a new run after gone()", () => {
     const trails = new TrailBuffer();
     trails.push(0, 0, -1000, 2000);
-    trails.push(0, 200, -900, 2000);
-    // The target vanished right after an X write: its sample waits for no Y.
-    trails.gone(0);
+    trails.push(0, 200, -900, 2100);
+    trails.gone(0, 200);
     expect(trails.takeFinal(260).map((s) => s.t)).toEqual([0, 200]);
 
     // Back where it was, or anywhere: a first sample, joined to none before.
@@ -325,7 +324,7 @@ describe("TrailBuffer", () => {
     expect(trails.push(0, 600, -800, 2000)).toBe(true);
     expect(trails.samples(0)).toEqual([
       { t: 0, x: -1000, y: 2000 },
-      { t: 200, x: -900, y: 2000 },
+      { t: 200, x: -900, y: 2100 },
       { t: 400, x: -900, y: 2000, brk: true },
       { t: 600, x: -800, y: 2000 },
     ]);
@@ -337,9 +336,44 @@ describe("TrailBuffer", () => {
     // A slot with nothing left forgets it went.
     trails.push(1, 0, 500, 1500);
     trails.retract(1);
-    trails.gone(1);
-    trails.gone(7);
+    trails.gone(1, 0);
+    trails.gone(7, 0);
     expect(trails.slots()).toEqual([0]);
+  });
+
+  it("takes back a sample still waiting for its other coordinate when its target is gone", () => {
+    const trails = new TrailBuffer();
+    trails.push(0, 0, -1000, 2000);
+    trails.push(0, 1070, -500, 2000);
+    // Lost 200 ms after an X write, before its Y: (new X, old Y) goes.
+    trails.gone(0, 1270);
+    expect(trails.samples(0)).toEqual([{ t: 0, x: -1000, y: 2000 }]);
+    expect(trails.takeFinal(5000).map((s) => s.t)).toEqual([0]);
+    // The next push starts a new run.
+    expect(trails.push(0, 2000, -400, 2100)).toBe(true);
+    expect(trails.samples(0)[1]).toEqual({ t: 2000, x: -400, y: 2100, brk: true });
+
+    // Unanswered for TRAIL_PAIR_MS, it is final and stays: a target moving
+    // along one axis only.
+    const late = new TrailBuffer();
+    late.push(0, 0, -1000, 2000);
+    late.push(0, 1070, -500, 2000);
+    late.gone(0, 1070 + TRAIL_PAIR_MS);
+    expect(late.samples(0).map((s) => s.t)).toEqual([0, 1070]);
+
+    // Handed out already, it stays too.
+    const taken = new TrailBuffer();
+    taken.push(0, 0, -1000, 2000);
+    taken.push(0, 1070, -500, 2000);
+    expect(taken.takeFinal(1070 + TRAIL_PAIR_MS).map((s) => s.t)).toEqual([0, 1070]);
+    taken.gone(0, 1070 + TRAIL_PAIR_MS);
+    expect(taken.samples(0).map((s) => s.t)).toEqual([0, 1070]);
+
+    // A slot whose only sample goes is forgotten.
+    const lone = new TrailBuffer();
+    lone.push(0, 0, 0, 1500);
+    lone.gone(0, 200);
+    expect(lone.slots()).toEqual([]);
   });
 
   it("starts pending after gone() when one coordinate is 0", () => {
@@ -347,7 +381,7 @@ describe("TrailBuffer", () => {
     // first reads (x, 0), a point nobody stood at, until its Y comes.
     const trails = new TrailBuffer();
     trails.push(0, 0, -1000, 2000);
-    trails.gone(0);
+    trails.gone(0, 100);
     expect(trails.push(0, 500, 800, 0)).toBe(true);
     expect(trails.takeFinal(1049).map((s) => s.t)).toEqual([0]);
     expect(trails.push(0, 950, 800, 2500)).toBe(false);

@@ -4633,11 +4633,40 @@ describe("zone map card trails", () => {
     ]);
   });
 
+  it("takes back the (new X, old Y) point of a target lost between its X and its Y", async () => {
+    const { card, set } = await trailCard();
+    document.body.appendChild(card);
+    walkSplit(set, [
+      [-2000, 2000],
+      [-1500, 2500],
+      [-1000, 3000],
+    ]);
+    // The next step's X, and 200 ms later, before its Y, the radar loses
+    // the target: unknown on both axes at once.
+    vi.advanceTimersByTime(620);
+    set({ "sensor.a_x": { state: "-500" } });
+    vi.advanceTimersByTime(200);
+    set({ "sensor.a_x": { state: "unknown" }, "sensor.a_y": { state: "unknown" } });
+
+    // The trail ends at (-1000, 3000), the last position the radar reported
+    // whole, and (-500, 3000), where nobody stood, is in no segment or cell.
+    expectSegments(segments(frame(card)), [
+      [240, 160, 280, 200, ...strength(2340)],
+      [280, 200, 320, 240, ...strength(1270)],
+    ]);
+    vi.advanceTimersByTime(1000);
+    expect(cells(card)).toEqual([
+      [-10, 10, 1],
+      [-8, 12, 1],
+      [-5, 15, 1],
+    ]);
+  });
+
   it("does not join a target that vanished and came back within a second", async () => {
     const { card, move, set } = await trailCard();
     move(-2000, 2000);
     vi.advanceTimersByTime(200);
-    move(-1000, 2000);
+    move(-1000, 2500);
     vi.advanceTimersByTime(200);
     set({ "sensor.a_x": { state: "unknown" }, "sensor.a_y": { state: "unknown" } });
     // Back 0.5 s later on the other side of the room.
@@ -4647,7 +4676,7 @@ describe("zone map card trails", () => {
     move(2500, 4000);
 
     expectSegments(segments(frame(card)), [
-      [240, 160, 320, 160, ...strength(900)],
+      [240, 160, 320, 200, ...strength(900)],
       [560, 320, 600, 320, ...strength(0)],
     ]);
   });

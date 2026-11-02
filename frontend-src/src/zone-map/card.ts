@@ -1040,12 +1040,14 @@ export class ZoneMapCard extends HTMLElement {
     // two pushes. Taken back while it still waits for its other coordinate,
     // too new for Coverage to have counted, so no trail runs out to the line
     // x = 0 or y = 0 and no cell there is painted. A real reading with a 0
-    // in it is followed by more readings and stays. Either way the trail
-    // ends there, and whatever the slot reads next starts a new one.
+    // in it is followed by more readings and stays. gone() takes back the
+    // (new X, old Y) of a target lost between its X write and its Y the
+    // same way. Either way the trail ends there, and whatever the slot
+    // reads next starts a new one.
     this._trailReadings.forEach((last, slot) => {
       if (readings.has(slot)) return;
       if (last.halfVanished) this._trails.retract(slot);
-      this._trails.gone(slot);
+      this._trails.gone(slot, now);
     });
     this._trailReadings = readings;
     // Before the prune, so a position is counted before it ages out.
