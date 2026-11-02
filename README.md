@@ -195,7 +195,7 @@ including what each HACS box says.
 
    ![The zone map on an R PRO-1 in feet, fitted to the radar's view with the caption Radar range 20 ft (6 m), 120°: a rectangle, a circle and a polygon drawn as zones, pale and dashed while nobody is in them, the m / ft switch and the Locked button in the corner, and under the grid a Coverage button and the zone buttons, with Clear All Zones dimmed while the map is locked](https://raw.githubusercontent.com/ApolloAutomation/apollo-mmwave-main/main/docs/images/apollo-mmwave-zone-map.png)
 
-   ![The live zone map in feet: target 1 walks from the Doorway zone to the Couch zone and back with a short fading trail behind its numbered dot, and each zone turns solid while the dot is inside it and pale and dashed once it leaves; target 2 sits still in the Desk zone, which stays lit, and the Fan zone is hatched and labeled Fan (ignored)](https://raw.githubusercontent.com/ApolloAutomation/apollo-mmwave-main/main/docs/images/apollo-mmwave-zone-map-live.gif)
+   ![The live zone map in feet: target 1 walks from the Doorway zone to the Couch zone and back with a short fading trail behind its numbered dot, moving in steps as the radar reports about once a second, and each zone turns solid while the dot is inside it and pale and dashed once it leaves; target 2 sits still in the Desk zone, which stays lit, and the Fan zone is hatched and labeled Fan (ignored)](https://raw.githubusercontent.com/ApolloAutomation/apollo-mmwave-main/main/docs/images/apollo-mmwave-zone-map-live.gif)
 
 ## If something is wrong
 
