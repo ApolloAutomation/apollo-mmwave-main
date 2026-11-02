@@ -79,7 +79,7 @@ export class ApolloLd2410GateEnergyCard extends LitElement {
     // The chip the card is for; an undetermined profile keeps the LD2410
     // wording the card has always used.
     const label = profile?.label ?? "LD2410";
-    const chart = renderGateEnergyChart(this.hass, m, label);
+    const chart = renderGateEnergyChart(this.hass, m, label, profile?.key);
     // TODO(REVIEW_REPORT.md X20): a found device with no gate entities renders blank here;
     // consider an ha-card note "No gate radar (LD2410/LD2412) entities found for this device".
     if (chart === nothing) return nothing;

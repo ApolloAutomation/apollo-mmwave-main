@@ -2,7 +2,8 @@ import { css, html, svg, nothing, type TemplateResult } from "lit";
 import type { EntityMap, HomeAssistant } from "../types";
 import { numState } from "./entity-read";
 import { gateRegisterCount } from "./geometry";
-import { callService } from "../calibration/api";
+import { callService, type ProfileKey } from "../calibration/api";
+import { gateInUse, liveGateLimits } from "../calibration/model";
 
 const MOVE_COLOR = "#4b0082";
 const MOVE_THR_COLOR = "#9467bd";
@@ -21,7 +22,19 @@ export const chartLegendStyles = css`
     gap: 4px 14px;
     margin-top: 6px;
   }
+  .chart-verdict {
+    font-size: 0.9em;
+    margin-top: 6px;
+  }
+  .chart-verdict.note {
+    color: var(--secondary-text-color);
+    margin-top: 2px;
+  }
 `;
+
+/** Opacity of a bar or threshold the radar ignores: beyond Max Move Gate or
+ *  Max Still Gate on an LD2410, outside Min Gate to Max Gate on an LD2412. */
+const OUT_OF_RANGE_OPACITY = 0.3;
 
 export interface GateRow {
   index: number;
@@ -29,6 +42,10 @@ export interface GateRow {
   still: number;
   moveThr?: number;
   stillThr?: number;
+  /** Whether the radar uses this gate for moving or still targets. An unread
+   *  range counts as in use, as in the calibration model. */
+  moveInUse: boolean;
+  stillInUse: boolean;
 }
 
 export interface GateEnergyModel {
@@ -39,7 +56,24 @@ export interface GateEnergyModel {
   unavailable: boolean;
   present: boolean;
   gates: GateRow[];
+  /** What the radar itself reports right now, from Radar Moving Target and
+   *  Radar Still Target; undefined while either is missing or unread. */
+  verdict?: string;
+  /** Both target sensors read off: the radar reports nobody. */
+  noTarget: boolean;
 }
+
+/** The radar's own answer when it reports nobody. */
+export const NO_TARGET_VERDICT = "The radar reports no target.";
+/** Under that answer while an in-range bar is above its threshold. The
+ *  LD2410 drops a person who sits very still and often waits for movement
+ *  before it reports them again, whatever the still energy does (seen on an
+ *  MSR-2 in the field and in esphome#17620), so an outline and "no target"
+ *  can sit side by side. Measured on the LD2410 only, so an LD2412 chart
+ *  leaves it out. */
+export const NEEDS_MOVEMENT_LINE =
+  "Energy above a threshold does not always mean a target. Once the LD2410 loses" +
+  " someone who sits still, it often needs them to move before it detects them again.";
 
 /** The EntityMap slots whose states gateEnergyModel and renderGateEnergyChart
  *  read, so the gate-energy card re-renders only when one of them changes. */
@@ -49,10 +83,34 @@ export const GATE_ENERGY_CHART_SLOTS: readonly (keyof EntityMap)[] = [
   "still_threshold",
   "move_energy",
   "still_energy",
+  "max_move_distance",
+  "max_still_distance",
+  "moving_target",
+  "still_target",
 ];
 
-export function gateEnergyModel(hass: HomeAssistant, m: EntityMap): GateEnergyModel {
+/** The radar's own answer under the bars, so an outline the radar does not
+ *  agree with is easy to spot. */
+function verdictLine(hass: HomeAssistant, m: EntityMap): string | undefined {
+  const read = (id?: string) => (id ? hass.states[id]?.state : undefined);
+  const moving = read(m.moving_target);
+  const still = read(m.still_target);
+  if (!["on", "off"].includes(moving ?? "") || !["on", "off"].includes(still ?? "")) {
+    return undefined;
+  }
+  if (moving === "on" && still === "on") return "The radar reports a moving and a still target.";
+  if (moving === "on") return "The radar reports a moving target.";
+  if (still === "on") return "The radar reports a still target.";
+  return NO_TARGET_VERDICT;
+}
+
+export function gateEnergyModel(
+  hass: HomeAssistant,
+  m: EntityMap,
+  profile?: ProfileKey
+): GateEnergyModel {
   let present = false;
+  const limits = liveGateLimits(hass, m, profile, null);
   const seen = (id?: string) => {
     if (id && id in hass.states) present = true;
   };
@@ -69,9 +127,12 @@ export function gateEnergyModel(hass: HomeAssistant, m: EntityMap): GateEnergyMo
       still: numState(hass, m.still_energy[n]) ?? 0,
       moveThr: numState(hass, m.move_threshold[n]),
       stillThr: numState(hass, m.still_threshold[n]),
+      moveInUse: gateInUse(profile, limits, n, "move"),
+      stillInUse: gateInUse(profile, limits, n, "still"),
     };
   });
 
+  const verdict = verdictLine(hass, m);
   return {
     engineeringMode:
       !!m.engineering_mode && hass.states[m.engineering_mode]?.state === "on",
@@ -79,6 +140,8 @@ export function gateEnergyModel(hass: HomeAssistant, m: EntityMap): GateEnergyMo
       !!m.engineering_mode && hass.states[m.engineering_mode]?.state === "unavailable",
     present,
     gates,
+    verdict,
+    noTarget: verdict === NO_TARGET_VERDICT,
   };
 }
 
@@ -102,35 +165,44 @@ function yFor(energy: number): number {
 export function renderGateEnergyChart(
   hass: HomeAssistant,
   m: EntityMap,
-  label = "LD2410"
+  label = "LD2410",
+  profile?: ProfileKey
 ): TemplateResult | typeof nothing {
-  const model = gateEnergyModel(hass, m);
+  const model = gateEnergyModel(hass, m, profile);
   if (!model.present) return nothing;
 
   const slot = (WIDTH - PAD_L) / model.gates.length;
   const barW = slot * 0.32;
   const baseY = yFor(0);
 
+  // Whether an in-range bar is outlined, for the line under the radar's answer.
+  let aboveInRange = false;
   const bars = model.gates.map((g) => {
     const cx = PAD_L + slot * g.index + slot / 2;
     const moveX = cx - barW - 2;
     const stillX = cx + 2;
     const els: TemplateResult[] = [];
-    // A bar above its threshold is the gate detecting right now; outline it
-    // in the threshold color so the walk test is visible on the chart.
+    // A bar above its threshold is outlined in the threshold color, so the
+    // walk test is visible on the chart. The radar's own answer under the
+    // chart says whether it reports a target: an outline alone does not.
     // Lit drops an attribute whose value is `nothing`, so a quiet bar carries
-    // no stroke at all.
+    // no stroke at all. A gate the radar ignores (beyond Max Move Gate or Max
+    // Still Gate, or outside Min Gate to Max Gate) is faded and never
+    // outlined: its energy does not count, however high it is.
     const moveAbove =
-      model.engineeringMode && g.moveThr !== undefined && g.move > g.moveThr;
+      model.engineeringMode && g.moveInUse && g.moveThr !== undefined && g.move > g.moveThr;
     const stillAbove =
-      model.engineeringMode && g.stillThr !== undefined && g.still > g.stillThr;
+      model.engineeringMode && g.stillInUse && g.stillThr !== undefined && g.still > g.stillThr;
+    if (moveAbove || stillAbove) aboveInRange = true;
+    const moveOpacity = g.moveInUse ? nothing : OUT_OF_RANGE_OPACITY;
+    const stillOpacity = g.stillInUse ? nothing : OUT_OF_RANGE_OPACITY;
     els.push(svg`
       <rect x=${moveX} y=${yFor(g.move)} width=${barW} height=${baseY - yFor(g.move)}
-        fill=${MOVE_COLOR}
+        fill=${MOVE_COLOR} opacity="${moveOpacity}"
         stroke="${moveAbove ? MOVE_THR_COLOR : nothing}"
         stroke-width="${moveAbove ? "2" : nothing}"></rect>
       <rect x=${stillX} y=${yFor(g.still)} width=${barW} height=${baseY - yFor(g.still)}
-        fill=${STILL_COLOR}
+        fill=${STILL_COLOR} opacity="${stillOpacity}"
         stroke="${stillAbove ? STILL_THR_COLOR : nothing}"
         stroke-width="${stillAbove ? "2" : nothing}"></rect>
       <text x=${cx} y=${HEIGHT - 7} font-size="13" text-anchor="middle"
@@ -140,14 +212,14 @@ export function renderGateEnergyChart(
       const tx = moveX + barW / 2;
       // right-pointing triangle = move threshold
       els.push(svg`<path d="M ${tx - 5} ${ty - 5} L ${tx - 5} ${ty + 5} L ${tx + 5} ${ty} Z"
-        fill=${MOVE_THR_COLOR}></path>`);
+        fill=${MOVE_THR_COLOR} opacity="${moveOpacity}"></path>`);
     }
     if (model.engineeringMode && g.stillThr !== undefined) {
       const ty = yFor(g.stillThr);
       const tx = stillX + barW / 2;
       // left-pointing triangle = still threshold
       els.push(svg`<path d="M ${tx + 5} ${ty - 5} L ${tx + 5} ${ty + 5} L ${tx - 5} ${ty} Z"
-        fill=${STILL_THR_COLOR}></path>`);
+        fill=${STILL_THR_COLOR} opacity="${stillOpacity}"></path>`);
     }
     return els;
   });
@@ -229,14 +301,22 @@ export function renderGateEnergyChart(
     <svg viewBox="0 0 ${WIDTH} ${HEIGHT}" width="100%" role="img"
       aria-label="${label} gate energy">
       <title>
-        Per-gate signal energy (bars) vs your thresholds (triangles). A gate
-        detects a target when its energy rises above the threshold. Turn on
-        Radar Engineering Mode to see live energy.
+        Per-gate signal energy (bars) vs your thresholds (triangles). A bar
+        above its threshold is outlined. Faded gates are outside the range the
+        radar uses, so their energy does not count. Turn on Radar Engineering
+        Mode to see live energy.
       </title>
       ${gridlines} ${bars} ${overlay}
     </svg>
   `;
 
+  // The legend explains fading only while some gate is faded, and the
+  // radar's own answer shows only while the bars are live. The answer sits
+  // in a wrapper so no binding is at the template root (happy-dom, the test
+  // DOM, mis-clones root-level child-part markers).
+  const faded = model.gates.some((g) => !g.moveInUse || !g.stillInUse);
+  const verdict = model.engineeringMode && model.verdict ? model.verdict : undefined;
+  const needsMovement = !!verdict && model.noTarget && aboveInRange && profile !== "ld2412";
   return html`
     <div class="chart-plot" style="position:relative">
       ${plot} ${overlayButton}
@@ -246,7 +326,12 @@ export function renderGateEnergyChart(
       <span><span style="color:${STILL_COLOR}">■</span> Still energy</span>
       <span><span style="color:${MOVE_THR_COLOR}">▶</span> Move threshold</span>
       <span><span style="color:${STILL_THR_COLOR}">◀</span> Still threshold</span>
-      <span>outlined bar = above threshold (detecting)</span>
+      <span>outlined bar = above threshold</span>
+      ${faded ? html`<span>faded = outside the radar's range (ignored)</span>` : nothing}
+    </div>
+    <div class="chart-answer">
+      ${verdict ? html`<div class="chart-verdict">${verdict}</div>` : nothing}
+      ${needsMovement ? html`<div class="chart-verdict note">${NEEDS_MOVEMENT_LINE}</div>` : nothing}
     </div>
   `;
 }

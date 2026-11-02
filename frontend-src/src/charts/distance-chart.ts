@@ -38,6 +38,9 @@ export interface DistanceBar {
   /** The row's target sensor (radar_target, moving_target or still_target)
    *  is off, so the distance sensor holds an old value, not a live one. */
   noTarget: boolean;
+  /** The target sensor is on but the distance reads unknown: the radar has
+   *  a target and no distance for it, which the zone sensors cannot use. */
+  unreported: boolean;
 }
 
 export interface DistanceZone {
@@ -127,11 +130,15 @@ export function distanceModel(
     // height does not jump, but it shows no distance. A missing, on or
     // unavailable target sensor leaves the reading as it is.
     const noTarget = !!targetId && hass.states[targetId]?.state === "off";
+    const value = noTarget ? undefined : distInUnit(hass, id, unit);
+    const unreported =
+      !!targetId && hass.states[targetId]?.state === "on" && hass.states[id]?.state === "unknown";
     bars.push({
       label,
-      value: noTarget ? 0 : (distInUnit(hass, id, unit) ?? 0),
+      value: value ?? 0,
       color,
       noTarget,
+      unreported,
     });
   };
   // Order matches the reference: Detection, Moving, Still.
@@ -200,6 +207,7 @@ const MID = BAR_H / 2 + 4; // text baseline offset to vertically center in a bar
 // Opacity of a Detection, Moving or Still row whose target sensor is off.
 const NO_TARGET_OPACITY = 0.45;
 const NO_TARGET_TEXT = "no target";
+const UNREPORTED_TEXT = "distance unknown";
 
 type Row =
   | { kind: "zones" }
@@ -222,7 +230,11 @@ function rowTip(r: Row): string {
     return "The radar splits its range into gates. Each colored segment is one distance bin (G1, G2, ...).";
   if (r.kind === "max") return r.tip ?? rangeLimitTip(r.label);
   const tip = barTip(r.bar.label);
-  return r.bar.noTarget ? `${tip} The radar reports no target right now.` : tip;
+  if (r.bar.noTarget) return `${tip} The radar reports no target right now.`;
+  if (r.bar.unreported) {
+    return `${tip} The radar reports a target, but its distance reads unknown.`;
+  }
+  return tip;
 }
 
 function barTip(label: string): string {
@@ -330,7 +342,11 @@ export function renderDistanceChart(
       });
     } else if (r.kind === "bar") {
       const xe = x(r.bar.value);
-      const text = r.bar.noTarget ? NO_TARGET_TEXT : fmt(r.bar.value);
+      const text = r.bar.noTarget
+        ? NO_TARGET_TEXT
+        : r.bar.unreported
+          ? UNREPORTED_TEXT
+          : fmt(r.bar.value);
       content = svg`
         <rect x=${LBL} y=${y} width=${Math.max(1, xe - LBL)} height=${BAR_H}
           rx="4" fill=${r.bar.color}></rect>

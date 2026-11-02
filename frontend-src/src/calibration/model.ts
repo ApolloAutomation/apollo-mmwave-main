@@ -557,8 +557,9 @@ export function liveGateLimits(
   };
 }
 
-/** The backend's `_gate_unused`, inverted. An unknown limit counts as in use. */
-function gateInUse(profile: ProfileKey | undefined, limits: GateLimits, gate: number, channel: Channel): boolean {
+/** The backend's `_gate_unused`, inverted. An unknown limit counts as in use.
+ *  The Gate Energy chart fades the gates this says the radar ignores. */
+export function gateInUse(profile: ProfileKey | undefined, limits: GateLimits, gate: number, channel: Channel): boolean {
   if (profile === "ld2412") {
     if (limits.min_gate !== null && gate < limits.min_gate) return false;
     return limits.max_gate === null || gate <= limits.max_gate;
