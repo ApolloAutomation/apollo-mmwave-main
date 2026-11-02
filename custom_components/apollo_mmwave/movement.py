@@ -612,6 +612,8 @@ class MovementHistory:
         self._recorders: dict[str, _Recorder] = {}
         # Whether a save is scheduled, see _mark_dirty.
         self._save_scheduled = False
+        # Whether a save has started in this run, see _async_remove_file.
+        self._saved = False
         # Set when the config entry is removed: nothing is written after.
         self._removed = False
         self._retention: CALLBACK_TYPE | None = None
@@ -913,14 +915,17 @@ class MovementHistory:
         )
 
     async def _async_remove_file(self) -> None:
-        # Store writes one at a time, so this empty save first waits out a
-        # write already on its way to disk, which would otherwise land after
-        # the unlink and bring the file back. It also cancels a pending
-        # delayed write.
-        await self._store.async_save({"saved_at": _now_ms(), "devices": {}})
+        if self._saved:
+            # Store writes one at a time, so this empty save first waits out a
+            # write already on its way to disk, which would otherwise land
+            # after the unlink and bring the file back. Before the first save
+            # of a run nothing can be on its way, so a clear or the flag turned
+            # off then never writes the file only to remove it.
+            await self._store.async_save({"saved_at": _now_ms(), "devices": {}})
+        # Also cancels a pending delayed write.
         await self._store.async_remove()
-        # After the remove, which cancels a delayed write scheduled while the
-        # save above ran: the check below then schedules it again.
+        # After the remove, which also cancels a delayed write scheduled while
+        # the empty save ran: the check below then schedules it again.
         self._save_scheduled = False
         await self._async_delete_corrupt_copies()
         if self._columns:
@@ -928,7 +933,10 @@ class MovementHistory:
             self._mark_dirty()
 
     def _data_to_save(self) -> dict[str, Any]:
+        # Called as a write starts, which then may still be on its way to disk
+        # when the file is removed.
         self._save_scheduled = False
+        self._saved = True
         now = _now_ms()
         self._prune(now)
         return {
@@ -990,11 +998,12 @@ class MovementHistory:
         # stops, so the slots are closed first: a replay never shows someone
         # frozen in place across the downtime.
         self._unsub_stop = None
-        self._cancel_retention()
         now = _now_ms()
         for recorder in self._recorders.values():
             recorder.stop(now)
         self._recorders.clear()
+        # After the recorders: a gone marker starts the timer when none is set.
+        self._cancel_retention()
 
     async def async_stop(self) -> None:
         """Stop recording and write what is pending (config entry unloaded)."""
@@ -1021,11 +1030,14 @@ class MovementHistory:
         if self._unsub_stop is not None:
             self._unsub_stop()
             self._unsub_stop = None
-        self._cancel_retention()
         now = _now_ms()
         for recorder in self._recorders.values():
             recorder.stop(now)
         self._recorders.clear()
+        # After the recorders, whose gone markers start the timer when none is
+        # set. Left running, it would prune this history a day later and save
+        # it, or remove the file, over the history set up after this one.
+        self._cancel_retention()
         if self._remove_task is not None:
             # A removal under way finishes first: its unlink must not land
             # after the save below, and nothing it schedules may outlive this.

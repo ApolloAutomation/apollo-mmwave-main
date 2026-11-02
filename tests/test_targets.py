@@ -76,6 +76,22 @@ def test_shape_tester_is_none_without_a_usable_shape(zone_def, shape) -> None:
     assert shape_tester(zone_def) is expected
 
 
+@pytest.mark.parametrize(
+    "radii",
+    [{"rx": 1e-200, "ry": 500}, {"rx": 500, "ry": 1e-200}],
+    ids=["rx", "ry"],
+)
+def test_ellipse_whose_radius_squares_to_zero_holds_nothing(radii) -> None:
+    """A hand-edited radius too small to square contains no point and raises not."""
+    ellipse = SHAPE_TESTERS["ellipse"]
+    data = {"cx": 0, "cy": 1000, **radii}
+
+    assert ellipse(0.0, 1000.0, data) is False
+    assert ellipse(5.0, 1003.0, data) is False
+    # A small radius that still squares keeps its center, as before.
+    assert ellipse(0.0, 1000.0, {**data, **dict.fromkeys(radii, 1e-150)}) is True
+
+
 def test_pair_ids_lists_each_entity_once_in_list_order() -> None:
     """Shared entities are listed once; anything that is not an id is skipped."""
     pairs = [

@@ -1170,6 +1170,97 @@ async def test_unload_stops_tracking_and_saves_only_when_dirty(
     assert hass_storage[STORAGE_KEY]["unwritten"] is True
 
 
+async def test_an_unloaded_history_never_touches_the_file_again(
+    hass, clock, config_entry, history_on
+) -> None:
+    """Closing a slot at unload leaves no timer behind to prune and save later."""
+    _ = history_on
+    # Someone in view, so the unload records a gone marker.
+    await _report(hass, TARGET_1, *SPOT_A)
+    await _advance(hass, clock, 1)
+    unloaded = _history(hass)
+    unloaded_store = unloaded._store  # noqa: SLF001 - the subject's Store
+
+    assert await hass.config_entries.async_reload(config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert _history(hass) is not unloaded
+    with (
+        patch.object(unloaded_store, "async_save") as save,
+        patch.object(unloaded_store, "async_delay_save") as delay_save,
+        patch.object(unloaded_store, "async_remove") as remove,
+    ):
+        # Past the day and the prune batch of every record the unloaded
+        # history held, when its retention timer would have pruned them all.
+        await _advance(hass, clock, DAY_MS / 1000 + 600)
+        await hass.async_block_till_done(wait_background_tasks=True)
+
+    save.assert_not_called()
+    delay_save.assert_not_called()
+    remove.assert_not_called()
+
+
+async def test_stop_leaves_no_retention_timer(hass, clock, history_on) -> None:
+    """The gone markers written at stop start no timer that outlives it."""
+    _ = history_on
+    await _report(hass, TARGET_1, *SPOT_A)
+    await _advance(hass, clock, 1)
+
+    hass.set_state(CoreState.stopping)
+    hass.bus.async_fire(EVENT_HOMEASSISTANT_STOP)
+    await hass.async_block_till_done()
+
+    # Home Assistant cancels its timers before STOP, so one started in answer
+    # to it would run on.
+    assert _history(hass)._retention is None  # noqa: SLF001 - the subject's timer
+
+
+@pytest.mark.parametrize("deleted_by", ["clear", "flag_off"])
+async def test_history_deleted_before_its_first_save_writes_no_file(
+    hass, clock, history_on, hass_storage, deleted_by
+) -> None:
+    """Records that never reached disk are deleted without writing the file."""
+    device_id = history_on
+    await _report(hass, TARGET_1, *SPOT_A)
+    # Gone again, so a clear has nobody in view to record at once.
+    await _report(hass, TARGET_1, 0, 0)
+    history = _history(hass)
+    store = history._store  # noqa: SLF001 - the subject's Store
+
+    with patch.object(store, "async_save", wraps=store.async_save) as save:
+        if deleted_by == "clear":
+            assert history.clear(device_id) == 2
+        else:
+            await _update_zone(
+                hass, {"device_id": device_id, STORE_MOVEMENT_HISTORY: False}
+            )
+        await hass.async_block_till_done(wait_background_tasks=True)
+        # The routine save that was pending went with the records.
+        await _advance(hass, clock, 120)
+
+    save.assert_not_called()
+    assert STORAGE_KEY not in hass_storage
+    assert history.count(device_id) == 0
+
+
+async def test_remove_after_failed_unload_writes_nothing_first(
+    hass, clock, config_entry, history_on, hass_storage
+) -> None:
+    """With nothing saved yet this run, the removal writes no file to remove."""
+    _ = history_on
+    await _report(hass, TARGET_1, *SPOT_A)
+    await _advance(hass, clock, 1)
+    store = _history(hass)._store  # noqa: SLF001 - the subject's Store
+
+    with patch.object(store, "async_save", wraps=store.async_save) as save:
+        await async_remove_entry(hass, config_entry)
+        await hass.async_block_till_done(wait_background_tasks=True)
+        await _advance(hass, clock, 60)
+
+    save.assert_not_called()
+    assert STORAGE_KEY not in hass_storage
+
+
 async def test_remove_entry_deletes_the_movement_file(
     hass, clock, config_entry, history_on, hass_storage
 ) -> None:

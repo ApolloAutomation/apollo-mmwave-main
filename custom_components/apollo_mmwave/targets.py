@@ -147,9 +147,16 @@ def _point_in_ellipse(x_val: float, y_val: float, ellipse: ShapeData) -> bool:
         return False
     if rx <= 0 or ry <= 0:
         return False
+    # A hand-edited radius so small that its square is 0 would raise here, and
+    # masking runs an ignore zone's test inside every zone's evaluation. The
+    # card's division gives Infinity or NaN there, which no point is inside.
+    rx_sq = rx * rx
+    ry_sq = ry * ry
+    if rx_sq == 0 or ry_sq == 0:
+        return False
     dx = x_val - cx
     dy = y_val - cy
-    return (dx * dx) / (rx * rx) + (dy * dy) / (ry * ry) <= 1.0
+    return (dx * dx) / rx_sq + (dy * dy) / ry_sq <= 1.0
 
 
 # Even-odd ray cast toward +x. A point exactly on a non-horizontal edge counts

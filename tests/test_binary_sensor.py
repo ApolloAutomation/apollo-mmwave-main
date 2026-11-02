@@ -1206,6 +1206,33 @@ async def test_unhashable_shape_on_an_ignore_zone_does_not_break_presence(
     assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
 
 
+async def test_tiny_ellipse_radius_on_an_ignore_zone_does_not_break_presence(
+    hass, entity_registry, setup_entry_with_zone, caplog
+) -> None:
+    """A hand-edited radius too small to square masks nothing and breaks no zone."""
+    device_id, _ = setup_entry_with_zone
+    _draw_zone(
+        hass,
+        device_id,
+        {
+            "shape": "ellipse",
+            "data": {"cx": 0, "cy": 1000, "rx": 1e-200, "ry": 500},
+            "zone_type": "ignore",
+        },
+        zone_id=2,
+    )
+    await hass.async_block_till_done()
+
+    _set_target(hass, TARGET_1, 0, 1000)
+    await hass.async_block_till_done()
+
+    assert hass.states.get(_presence_id(entity_registry, device_id)).state == "on"
+    state = hass.states.get(_presence_id(entity_registry, device_id, zone_id=2))
+    assert state.state == "off"
+    assert state.attributes["zone_type"] == "ignore"
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
 async def test_presence_reads_unavailable_when_every_tracked_state_is_unavailable(
     hass, entity_registry, setup_entry_with_zone
 ) -> None:
