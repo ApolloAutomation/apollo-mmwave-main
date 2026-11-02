@@ -14,11 +14,15 @@ sensor frame, unit converted but not rotated or mirrored, so a replay follows
 the radar's current rotation and flip.
 
 A record is a point, where a slot's target was, or a gone marker, when the
-slot lost it. The LD2450 reports several times a second, so a slot's point is
-recorded when it appears, when it has moved 50 mm or more (at most twice a
-second) and every 15 s while it stays: Home Assistant reports changes only,
-so a person sitting still sends nothing, and the heartbeat is what keeps them
-on the map through a replay. A gone marker is recorded at once.
+slot lost it. A slot's point is recorded when it appears, when it has moved
+50 mm or more (at most twice a second) and every 15 s while it stays. The
+LD2450 writes each axis about once a second; a move under 50 mm is its
+jitter, and Home Assistant writes nothing for a value that repeats, so the
+heartbeat is what keeps a person sitting still on the map through a replay.
+X and Y are separate entities, and the R PRO-1 often writes Y about 0.45 s
+after X: a move is recorded only once the reading is whole (see
+MOVEMENT_PAIR_MS), so no point pairs a new X with an old Y. A gone marker is
+recorded at once.
 
 ``.storage/apollo_mmwave.movement`` keeps each radar's records as packed
 little-endian columns, base64 encoded, about 13 bytes a record where JSON
@@ -91,6 +95,11 @@ MOVEMENT_MIN_MOVE_MM = 50
 MOVEMENT_MIN_INTERVAL_MS = 500
 # A slot that stays is recorded again this often.
 MOVEMENT_HEARTBEAT_MS = 15000
+# An axis written alone waits this long for the other axis's write, and
+# counts as moving alone after it: above the 0.40 to 0.50 s the R PRO-1
+# takes from X to Y, and below the 0.62 s from a Y to the next X, so a lone Y
+# never pairs with the next reading's X.
+MOVEMENT_PAIR_MS = 550
 MOVEMENT_RETENTION_MS = 86400000
 # The time prune runs once the oldest record is this far past the retention,
 # so it runs at most this often while history exists.
@@ -396,6 +405,65 @@ class _SlotState:
     move_pending: bool = False  # a move of 50 mm or more waits for the 0.5 s floor
     # The last reading seen, recorded or not, for half_vanished.
     seen_raw: tuple[float, float] | None = None
+    # The axis (0 for X, 1 for Y) last written alone, while the other axis's
+    # write may still follow, and when; and an axis written twice before the
+    # other, which moves alone until the other is written.
+    lone_axis: int | None = None
+    lone_at: int = 0
+    solo_axis: int | None = None
+
+    def pair(
+        self,
+        previous: tuple[float, float] | None,
+        raw: tuple[float, float],
+        at: int,
+    ) -> None:
+        """Follow which axes changed from previous to raw, written at time at."""
+        if previous is None:
+            # A new reading: both of its axes were just read.
+            self.lone_axis = self.solo_axis = None
+            return
+        if self.lone_axis is not None and at - self.lone_at >= MOVEMENT_PAIR_MS:
+            # The other axis never followed, so it did not change.
+            self.lone_axis = None
+        x_changed = raw[0] != previous[0]
+        if x_changed == (raw[1] != previous[1]):
+            if x_changed:
+                # Both in one loop turn.
+                self.lone_axis = self.solo_axis = None
+            return
+        axis = 0 if x_changed else 1
+        if self.lone_axis == axis:
+            # Written again before the other axis, which is then not changing.
+            # This keeps a radar that reports several times a second at two
+            # points a second along one axis.
+            self.lone_axis, self.solo_axis = None, axis
+        elif self.lone_axis is not None:
+            # The other axis's write: the pair is whole.
+            self.lone_axis = None
+        elif self.solo_axis is None:
+            self.lone_axis, self.lone_at = axis, at
+        elif self.solo_axis != axis:
+            # The other axis changes after all: the reading is whole, and the
+            # next axis written alone waits for its pair again.
+            self.solo_axis = None
+
+    def whole(self, at: int) -> bool:
+        """Report whether the reading at time at waits for no axis's write."""
+        return self.lone_axis is None or at - self.lone_at >= MOVEMENT_PAIR_MS
+
+    def due(self) -> int | None:
+        """Return when the tick has something to record, or None for nothing."""
+        if self.move_pending:
+            due = self.last_t + MOVEMENT_MIN_INTERVAL_MS
+        elif self.recorded_present:
+            due = self.last_t + MOVEMENT_HEARTBEAT_MS
+        else:
+            return None
+        if self.lone_axis is not None:
+            # No sooner than the reading can be whole.
+            due = max(due, self.lone_at + MOVEMENT_PAIR_MS)
+        return due
 
 
 class _Recorder:
@@ -463,8 +531,10 @@ class _Recorder:
     @callback
     def _on_state(self, _event: Event[EventStateChangedData]) -> None:
         # A target's X and Y are two entities written one after the other, so
-        # a flush inside the first write records a point no target occupied.
-        # One flush per loop turn, as presence evaluates.
+        # a flush inside the first write would see half a move. One flush per
+        # loop turn, as presence evaluates. The R PRO-1 often writes Y about
+        # 0.45 s after X, in a turn of its own: _SlotState.pair holds such a
+        # move back until its Y is written.
         if self._pending is None:
             self._pending = self._hass.loop.call_soon(self._flush_soon)
 
@@ -497,6 +567,7 @@ class _Recorder:
                 # The first of the two writes of a vanishing target: a point
                 # nobody occupied, and not yet gone either.
                 continue
+            state.pair(previous, reading.raw, now)
             self._point(reading.slot, x, y, now)
         for slot, state in self._slots.items():
             if slot not in seen:
@@ -508,22 +579,26 @@ class _Recorder:
     def _point(self, slot: int, x: int, y: int, now: int) -> None:
         state = self._slots[slot]
         due = state.last_t == 0 or now - state.last_t >= MOVEMENT_MIN_INTERVAL_MS
+        # A new X with the old Y is a point nobody occupied, so nothing is
+        # recorded until the reading is whole.
+        whole = state.whole(now)
         if (
             not state.recorded_present
             or math.dist((x, y), (state.last_x, state.last_y)) >= MOVEMENT_MIN_MOVE_MM
         ):
-            # An appearance or a move. Before the floor it waits for the tick,
-            # which records wherever the target is by then.
-            if due:
+            # An appearance or a move. Before the floor, or while one axis
+            # waits for the other, it waits for the tick, which records
+            # wherever the target is by then.
+            if due and whole:
                 self._record_point(slot, x, y, now)
             else:
                 state.move_pending = True
             return
-        if now - state.last_t >= MOVEMENT_HEARTBEAT_MS:
-            self._record_point(slot, x, y, now)
-            return
-        # Back within 50 mm of the last point before the floor came round.
+        # Within 50 mm of the last point: a move that waited came back before
+        # the floor, and the heartbeat records the person once it is due.
         state.move_pending = False
+        if now - state.last_t >= MOVEMENT_HEARTBEAT_MS and whole:
+            self._record_point(slot, x, y, now)
 
     def _gone(self, slot: int, now: int) -> None:
         state = self._slots[slot]
@@ -551,18 +626,14 @@ class _Recorder:
 
     def _schedule_tick(self, now: int) -> None:
         # One timer per radar, and only while a slot is present: the floor of
-        # a pending move, else the next heartbeat. ESPHome reports changes
-        # only, so a still person sends nothing that would record them.
+        # a pending move, else the next heartbeat, either one no sooner than
+        # the reading is whole. Home Assistant writes nothing for a value that
+        # repeats, so a person sitting still can send nothing for seconds.
         due = min(
             (
-                state.last_t
-                + (
-                    MOVEMENT_MIN_INTERVAL_MS
-                    if state.move_pending
-                    else MOVEMENT_HEARTBEAT_MS
-                )
+                slot_due
                 for state in self._slots.values()
-                if state.recorded_present or state.move_pending
+                if (slot_due := state.due()) is not None
             ),
             default=None,
         )
