@@ -141,6 +141,14 @@ def _now_ms() -> int:
     return round(time.time() * 1000)
 
 
+def _mono_ms() -> int:
+    """Return the monotonic clock in milliseconds, which the floors run on."""
+    # A clock step back stamps records at the last time (see _record), so
+    # floors timed from the stamps would not come due until the clock caught
+    # up again. No clock step moves this one.
+    return round(time.monotonic() * 1000)
+
+
 def _is_int(value: Any) -> bool:
     # A bool is an int to Python, but no count or time anyone wrote down.
     return isinstance(value, int) and not isinstance(value, bool)
@@ -419,6 +427,7 @@ class _SlotState:
 
     recorded_present: bool = False  # the last record of this slot is a point
     last_t: int = 0  # ms of the last record of this slot, point or gone marker
+    last_mono: int = 0  # the same moment on the monotonic clock, see _mono_ms
     last_x: int = 0
     last_y: int = 0
     move_pending: bool = False  # a move of 50 mm or more waits for the 0.5 s floor
@@ -480,9 +489,9 @@ class _SlotState:
         """Return when the tick has something to record, or None for nothing."""
         due: int | None = None
         if self.move_pending:
-            due = self.last_t + MOVEMENT_MIN_INTERVAL_MS
+            due = self.last_mono + MOVEMENT_MIN_INTERVAL_MS
         elif self.recorded_present:
-            due = self.last_t + MOVEMENT_HEARTBEAT_MS
+            due = self.last_mono + MOVEMENT_HEARTBEAT_MS
         if due is not None and self.lone_axis is not None:
             # No sooner than the reading can be whole.
             due = max(due, self.lone_at + MOVEMENT_PAIR_MS)
@@ -572,7 +581,9 @@ class _Recorder:
         self._flush()
 
     def _flush(self) -> None:
-        now = _now_ms()
+        # The wall clock stamps the records; the monotonic one times the
+        # floors, the heartbeat and the waits below.
+        now, mono = _now_ms(), _mono_ms()
         if self._slots and now + MOVEMENT_CLOCK_STEP_MS < max(
             state.last_t for state in self._slots.values()
         ):
@@ -593,7 +604,7 @@ class _Recorder:
             held_since = state.half_since if reading.raw == state.half_raw else None
             if _first_of_two(previous, reading.raw) or (
                 held_since is not None
-                and now - held_since < MOVEMENT_HALF_VANISH_MAX_MS
+                and mono - held_since < MOVEMENT_HALF_VANISH_MAX_MS
             ):
                 # The first of the two writes of a target vanishing (or
                 # appearing): a point nobody occupied, and not yet gone
@@ -601,30 +612,30 @@ class _Recorder:
                 # write lands. The slot's last good reading stands in for it,
                 # so a heartbeat still records the person.
                 if held_since is None:
-                    state.half_raw, state.half_since = reading.raw, now
+                    state.half_raw, state.half_since = reading.raw, mono
                 if state.good_raw is not None:
                     good_x, good_y = state.good_raw
-                    self._point(reading.slot, round(good_x), round(good_y), now)
+                    self._point(reading.slot, round(good_x), round(good_y), now, mono)
                 continue
             state.half_raw = None
             # A reading that was held back changed when it was first read.
-            changed_at = now if held_since is None else held_since
+            changed_at = mono if held_since is None else held_since
             state.pair(state.good_raw, reading.raw, changed_at)
             state.good_raw = reading.raw
-            self._point(reading.slot, x, y, now)
+            self._point(reading.slot, x, y, now, mono)
         for slot, state in self._slots.items():
             if slot not in seen:
                 state.seen_raw = state.good_raw = state.half_raw = None
-                self._gone(slot, now)
+                self._gone(slot, now, mono)
         self._history.trim(self._device_id, now)
-        self._schedule_tick(now)
+        self._schedule_tick(mono)
 
-    def _point(self, slot: int, x: int, y: int, now: int) -> None:
+    def _point(self, slot: int, x: int, y: int, now: int, mono: int) -> None:
         state = self._slots[slot]
-        due = state.last_t == 0 or now - state.last_t >= MOVEMENT_MIN_INTERVAL_MS
+        due = state.last_t == 0 or mono - state.last_mono >= MOVEMENT_MIN_INTERVAL_MS
         # A new X with the old Y is a point nobody occupied, so nothing is
         # recorded until the reading is whole.
-        whole = state.whole(now)
+        whole = state.whole(mono)
         if (
             not state.recorded_present
             or math.dist((x, y), (state.last_x, state.last_y)) >= MOVEMENT_MIN_MOVE_MM
@@ -633,41 +644,44 @@ class _Recorder:
             # waits for the other, it waits for the tick, which records
             # wherever the target is by then.
             if due and whole:
-                self._record_point(slot, x, y, now)
+                self._record_point(slot, x, y, now, mono)
             else:
                 state.move_pending = True
             return
         # Within 50 mm of the last point: a move that waited came back before
         # the floor, and the heartbeat records the person once it is due.
         state.move_pending = False
-        if now - state.last_t >= MOVEMENT_HEARTBEAT_MS and whole:
-            self._record_point(slot, x, y, now)
+        if mono - state.last_mono >= MOVEMENT_HEARTBEAT_MS and whole:
+            self._record_point(slot, x, y, now, mono)
 
-    def _gone(self, slot: int, now: int) -> None:
+    def _gone(self, slot: int, now: int, mono: int) -> None:
         state = self._slots[slot]
         state.move_pending = False
         if state.recorded_present:
-            self._record_gone(slot, now)
+            self._record_gone(slot, now, mono)
 
-    def _record_point(self, slot: int, x: int, y: int, now: int) -> None:
+    def _record_point(self, slot: int, x: int, y: int, now: int, mono: int) -> None:
         state = self._slots[slot]
         state.last_t = self._history._record(self._device_id, now, slot, x, y)  # noqa: SLF001 - its owner
+        state.last_mono = mono
         state.recorded_present = True
         state.last_x, state.last_y = x, y
         state.move_pending = False
 
-    def _record_gone(self, slot: int, now: int) -> None:
+    def _record_gone(self, slot: int, now: int, mono: int) -> None:
         state = self._slots[slot]
         state.last_t = self._history._record(self._device_id, now, -1 - slot, 0, 0)  # noqa: SLF001 - its owner
+        state.last_mono = mono
         state.recorded_present = False
 
     def _close_slots(self, now: int) -> None:
+        mono = _mono_ms()
         for slot in sorted(self._slots):
             if self._slots[slot].recorded_present:
-                self._record_gone(slot, now)
+                self._record_gone(slot, now, mono)
         self._slots.clear()
 
-    def _schedule_tick(self, now: int) -> None:
+    def _schedule_tick(self, mono: int) -> None:
         # One timer per radar, and only while a slot is present: the floor of
         # a pending move, else the next heartbeat, either one no sooner than
         # the reading is whole. Home Assistant writes nothing for a value that
@@ -689,7 +703,7 @@ class _Recorder:
         self._tick_due = due
         self._tick = async_call_later(
             self._hass,
-            max(0.05, (due - now) / 1000),
+            max(0.05, (due - mono) / 1000),
             HassJob(self._on_tick, cancel_on_shutdown=True),
         )
 

@@ -1067,6 +1067,36 @@ async def test_a_clock_step_back_keeps_columns_sorted(
     assert apollo_warnings(caplog) == []
 
 
+async def test_a_small_clock_step_back_does_not_pause_recording(
+    hass, clock, history_on, monkeypatch
+) -> None:
+    """After a correction back, a move is recorded at once, at the last time."""
+    device_id = history_on
+    await _report(hass, TARGET_1, *SPOT_A)
+    # The wall clock goes back 30 s. The loop's clock and the monotonic one,
+    # which the recorder's floors run on, go on.
+    wall_ms = movement._now_ms  # noqa: SLF001 - the clock records are stamped by
+    monkeypatch.setattr(movement, "_now_ms", lambda: wall_ms() - 30000)
+
+    await _run_until(hass, clock, 1)
+    await _report(hass, TARGET_1, *SPOT_B)
+    assert _records(hass, device_id) == [
+        (START_MS, 0, *SPOT_A),
+        (START_MS, 0, *SPOT_B),
+    ]
+
+    # A move 0.2 s later still waits for the 0.5 s floor.
+    await _run_until(hass, clock, 1.2)
+    await _report(hass, TARGET_1, *SPOT_C)
+    assert len(_records(hass, device_id)) == 2
+    await _run_until(hass, clock, 1.5)
+    assert _records(hass, device_id) == [
+        (START_MS, 0, *SPOT_A),
+        (START_MS, 0, *SPOT_B),
+        (START_MS, 0, *SPOT_C),
+    ]
+
+
 async def test_a_large_clock_step_back_drops_future_records(
     hass, clock, history_on, caplog
 ) -> None:
