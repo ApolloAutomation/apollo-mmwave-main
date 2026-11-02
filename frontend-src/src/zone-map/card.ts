@@ -513,6 +513,11 @@ export class ZoneMapCard extends HTMLElement {
     // Per zone id, what the payload says beyond the geometry:
     // { presence: entity id or null, type: 'detect' | 'ignore', holdS }.
     this._zoneMeta = new Map();
+    // The newest choice of each zone setting select whose save is still on
+    // its way, as { value, seq } keyed '<zone id>:<setting>', and the number
+    // the next save takes (see _saveZoneSetting).
+    this._zoneSettingPending = new Map();
+    this._zoneSettingSeq = 0;
     // The radar's map is drawn mirrored left to right (mirror_x).
     this._mirrorX = false;
     // An administrator keeps this radar's movement history (movement_history),
@@ -850,8 +855,10 @@ export class ZoneMapCard extends HTMLElement {
     this._storedDisplayUnits = null;
     this._viewDisplayUnits = null;
     // The zones, their sensors and the device-wide flags are the old radar's
-    // too, and the new one's first payload brings its own.
+    // too, and the new one's first payload brings its own. A setting saved
+    // on the old radar settles nothing on the new one's rows.
     this._zoneMeta = new Map();
+    this._zoneSettingPending = new Map();
     this._paintedZoneKey = null;
     this._mirrorX = false;
     this._movementHistory = false;
@@ -4786,9 +4793,20 @@ export class ZoneMapCard extends HTMLElement {
    * either, and an ignore zone never holds, so its Hold is disabled too.
    * The selects carry data-zone, never data-zone-id, which marks the name
    * inputs whose drafts a rebuild keeps.
+   *
+   * A select shows its newest choice while that choice's save is on its
+   * way, not what the store holds: the echo of an earlier save rebuilds the
+   * rows, and the next arrow key would step from the older value.
    */
   _zoneMetaLine(zoneId, admin) {
-    const meta = this._zoneMeta.get(Number(zoneId)) || { type: 'detect', holdS: 0 };
+    const stored = this._zoneMeta.get(Number(zoneId)) || { type: 'detect', holdS: 0 };
+    const pending = (setting) =>
+      this._zoneSettingPending.get(`${Number(zoneId)}:${setting}`)?.value;
+    const meta = {
+      ...stored,
+      type: pending('zone_type') ?? stored.type,
+      holdS: pending('hold_s') ?? stored.holdS,
+    };
     const line = document.createElement('div');
     line.className = 'zone-meta';
 
@@ -4861,8 +4879,12 @@ export class ZoneMapCard extends HTMLElement {
    * Save one zone setting (`{ zone_type }` or `{ hold_s }`) for zone
    * `zoneId`. A zone only the card YAML names is created with it, the way a
    * rename creates one. A setting changes nothing about how readings scale,
-   * so input_units stays out, as with the flip. Refused, the select goes back
-   * to what the store holds; accepted, the save's echo rebuilds the row.
+   * so input_units stays out, as with the flip. Each change saves, and until
+   * the newest save for this select settles, a rebuild shows its value
+   * (_zoneMetaLine). Only that save settles the select: refused, the rows
+   * are built again from what the store holds, which also puts back a Hold
+   * that a pending Ignore disabled; accepted, the save's echo rebuilt the
+   * row. An older save settles nothing, so it cannot undo a newer choice.
    */
   async _saveZoneSetting(zoneId, fields) {
     const id = Number(zoneId);
@@ -4879,10 +4901,17 @@ export class ZoneMapCard extends HTMLElement {
       ...fields,
       ...(this._zoneIsUnsaved(id) ? { shape: 'none', data: null } : {}),
     };
+    const key = `${id}:${setting}`;
+    this._zoneSettingSeq += 1;
+    const seq = this._zoneSettingSeq;
+    this._zoneSettingPending.set(key, { value: fields[setting], seq });
     const saved = await this._saveZoneUpdate(payload, `${this._zoneLabel(id)} saved`, {
       withInputUnits: false,
     });
-    if (!saved) this._revertZoneSetting(id, setting);
+    // A newer choice, or another radar since, owns the select now.
+    if (this._zoneSettingPending.get(key)?.seq !== seq) return saved;
+    this._zoneSettingPending.delete(key);
+    if (!saved) this._renderZoneManager();
     return saved;
   }
 

@@ -2637,6 +2637,103 @@ describe("zone map card zone list settings", () => {
     ]);
   });
 
+  /** Saves that wait to be answered: answers[i] settles the i-th save. */
+  function heldSaves(hass: any) {
+    const answers: Array<{ resolve: () => void; reject: (error: Error) => void }> = [];
+    hass.callService.mockImplementation(
+      () => new Promise<void>((resolve, reject) => answers.push({ resolve, reject }))
+    );
+    return answers;
+  }
+
+  const withHold = (holdS: number) => ({
+    ...ZONE_PAYLOAD,
+    zones: { "1": { ...ZONE_PAYLOAD.zones["1"], hold_s: holdS } },
+  });
+
+  it("keeps a select's newest choice through the echo of an earlier save", async () => {
+    // Each arrow key on a focused select saves. The echo of the first save
+    // rebuilt the rows from the store while the second was on its way, so
+    // the select jumped back and the next key stepped from there: the saves
+    // went out as 15, 30, 30.
+    const { card, hass, toasts } = await listCard();
+    document.body.appendChild(card);
+    const answers = heldSaves(hass);
+    holdSelect(card, 1).focus();
+    choose(holdSelect(card, 1), "15");
+    choose(holdSelect(card, 1), "30");
+
+    // The store took 15 and says so while 30 is on its way.
+    push(hass, withHold(15));
+
+    expect(holdSelect(card, 1).value).toBe("30");
+    expect(card.shadowRoot.activeElement).toBe(holdSelect(card, 1));
+    // So the next key steps on from 30.
+    const hold = holdSelect(card, 1);
+    choose(hold, hold.options[hold.selectedIndex + 1].value);
+    expect(zoneSaves(hass).map((save) => save.hold_s)).toEqual([15, 30, 60]);
+
+    answers[0].resolve();
+    await settle();
+    expect(holdSelect(card, 1).value).toBe("60");
+    answers[1].resolve();
+    push(hass, withHold(30));
+    await settle();
+    expect(holdSelect(card, 1).value).toBe("60");
+    answers[2].resolve();
+    push(hass, withHold(60));
+    await settle();
+    // Settled, the select shows the store again.
+    expect(card._zoneSettingPending.size).toBe(0);
+    expect(holdSelect(card, 1).value).toBe("60");
+    push(hass, withHold(120));
+    expect(holdSelect(card, 1).value).toBe("120");
+    expect(toasts).toEqual(["Doorway saved", "Doorway saved", "Doorway saved"]);
+  });
+
+  it("a refused older save leaves a newer choice alone", async () => {
+    const { card, hass, toasts } = await listCard();
+    const answers = heldSaves(hass);
+    choose(holdSelect(card, 1), "15");
+    choose(holdSelect(card, 1), "30");
+
+    // The older save is refused while the newer one is on its way.
+    answers[0].reject(new Error("Home Assistant is restarting"));
+    await settle();
+
+    expect(holdSelect(card, 1).value).toBe("30");
+    expect(toasts).toEqual(["Could not save: Home Assistant is restarting"]);
+    answers[1].resolve();
+    push(hass, withHold(30));
+    await settle();
+    expect(holdSelect(card, 1).value).toBe("30");
+
+    // Refused, the newest goes back to what the store holds.
+    choose(holdSelect(card, 1), "60");
+    answers[2].reject(new Error("Home Assistant is restarting"));
+    await settle();
+    expect(holdSelect(card, 1).value).toBe("30");
+  });
+
+  it("gives Hold back when a refused Ignore had disabled it", async () => {
+    const { card, hass } = await listCard(withHold(30));
+    const answers = heldSaves(hass);
+    choose(typeSelect(card, 1), "ignore");
+
+    // A payload rebuilds the rows while the save is on its way: the row
+    // shows Ignore, and an ignore zone never holds.
+    push(hass, { ...withHold(30), rotation_deg: 20 });
+    expect(typeSelect(card, 1).value).toBe("ignore");
+    expect(holdSelect(card, 1).disabled).toBe(true);
+
+    answers[0].reject(new Error("Home Assistant is restarting"));
+    await settle();
+
+    expect(typeSelect(card, 1).value).toBe("detect");
+    expect(holdSelect(card, 1).disabled).toBe(false);
+    expect(holdSelect(card, 1).value).toBe("30");
+  });
+
   it("creates a YAML-only zone when its type is saved", async () => {
     // The backend applies a setting only to a zone the store holds, so a
     // zone only the card YAML names is created with it, as a rename does.
