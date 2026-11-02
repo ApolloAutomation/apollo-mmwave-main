@@ -18,6 +18,7 @@ import {
   type MovementSeries,
   type SlotSeries,
 } from "../src/zone-map/history";
+import movementExample from "./fixtures/movement-example.json";
 
 /** The backend's example answer (the integration's contract). */
 const EXAMPLE: MovementPayload = {
@@ -127,6 +128,34 @@ describe("decodeMovement", () => {
     expect(slot0.x).toBeInstanceOf(Int32Array);
     expect(slot0.y).toBeInstanceOf(Int32Array);
     expect(slot0.gone).toBeInstanceOf(Uint8Array);
+  });
+
+  it("decodes the example the backend's suite reads to the numbers it lists", () => {
+    // tests/test_contracts.py has the backend answer these columns for these
+    // records, so a change to either side's byte order, sign or alphabet fails
+    // one suite or the other.
+    const { columns, values } = movementExample;
+    const decoded = decodeMovement({ ...EXAMPLE, ...columns });
+
+    type Plain = { t: number[]; x: number[]; y: number[]; gone: number[] };
+    const expected = new Map<number, Plain>();
+    let t = columns.t0;
+    values.s.forEach((s, i) => {
+      t += values.dt[i];
+      const slot = s < 0 ? -1 - s : s;
+      const series = expected.get(slot) ?? { t: [], x: [], y: [], gone: [] };
+      series.t.push(t);
+      series.x.push(values.x[i]);
+      series.y.push(values.y[i]);
+      series.gone.push(s < 0 ? 1 : 0);
+      expected.set(slot, series);
+    });
+    expect(decoded.count).toBe(values.s.length);
+    expect(new Map(Array.from(decoded.slots, ([slot, series]) => [slot, plain(series)]))).toEqual(
+      expected
+    );
+    // EXAMPLE above is the same example.
+    expect(EXAMPLE).toMatchObject(columns);
   });
 
   it("packs the example the way the backend does", () => {

@@ -1,0 +1,17 @@
+{
+  "description": "Packed columns of an apollo_mmwave/movement/get answer and the numbers they hold. Both suites read this file: tests/test_contracts.py checks that the backend answers these columns for these records, and test/zone-map-history.test.ts that the card decodes them back to these numbers.",
+  "columns": {
+    "t0": 1767225590000,
+    "n": 4,
+    "dt": "AAAAAPQBAAAAAgAAjDoAAA==",
+    "s": "AAAAAAEA//8=",
+    "x": "eACqAOD8AAA=",
+    "y": "YAlqCRwMAAA="
+  },
+  "values": {
+    "dt": [0, 500, 512, 14988],
+    "s": [0, 0, 1, -1],
+    "x": [120, 170, -800, 0],
+    "y": [2400, 2410, 3100, 0]
+  }
+}
