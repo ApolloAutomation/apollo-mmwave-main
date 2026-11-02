@@ -3,9 +3,12 @@ Presence binary sensor platform for Apollo mmWave.
 
 One occupancy sensor per zone: on when any tracked LD2450 target's (x, y),
 converted to millimeters by each sensor's unit and rotated by the device's
-configured rotation, falls inside the zone's shape. Reading and testing the
-targets lives in targets.py, which the movement recorder shares, so the two
-can never read a target differently.
+configured rotation, falls inside the zone's shape. A target inside any
+ignore zone of the radar is dropped before that test, so no zone sees it, and
+an ignore zone's own sensor always reads off. While the radar is offline a
+detect zone reads unavailable. Reading and testing the targets lives in
+targets.py, which the movement recorder shares, so the two can never read a
+target differently.
 Identity is the radar's Home Assistant device id plus the zone id, and the
 entity is registered against that device, so zone presence shows up on the
 radar's device page where automations are built from, and renaming it is safe.
@@ -14,7 +17,7 @@ radar's device page where automations are built from, and renaming it is safe.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
@@ -25,15 +28,15 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.event import async_track_state_change_event
 
-from .const import ATTR_DATA, ATTR_ROTATION_DEG, SIGNAL_ZONES_UPDATED
-from .ld2450 import effective_target_pairs
-from .targets import (
-    build_point_rotator,
-    fallback_factor,
-    iter_slot_points,
-    pair_ids,
-    shape_tester,
+from .const import (
+    ATTR_DATA,
+    ATTR_ZONE_TYPE,
+    SIGNAL_ZONES_UPDATED,
+    ZONE_TYPE_IGNORE,
 )
+from .ld2450 import effective_target_pairs
+from .store import zone_type_of
+from .targets import masked_readings, pair_ids, radar_offline, shape_tester
 from .zone_entities import ZoneEntityMixin, async_setup_zone_platform
 
 if TYPE_CHECKING:
@@ -44,6 +47,7 @@ if TYPE_CHECKING:
     from homeassistant.core import Event, EventStateChangedData, HomeAssistant
     from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+    from .hold import Reading
     from .store import ZoneStore
 
 _LOGGER = logging.getLogger(__name__)
@@ -70,7 +74,7 @@ async def async_setup_entry(
 
 
 class ZonePresenceBinarySensor(ZoneEntityMixin, BinarySensorEntity):
-    """Occupancy: any tracked target inside this zone's shape."""
+    """Occupancy: any tracked target no ignore zone masks, inside this zone."""
 
     _attr_should_poll = False
     _attr_icon = "mdi:motion-sensor"
@@ -85,6 +89,7 @@ class ZonePresenceBinarySensor(ZoneEntityMixin, BinarySensorEntity):
         self._device_id = device_id
         self._zone_id = zone_id
         self._attr_is_on = False
+        self._attr_extra_state_attributes = {}
         self._unsub_state_listener: Callable[[], None] | None = None
         self._pending_eval: asyncio.Handle | None = None
 
@@ -170,30 +175,53 @@ class ZonePresenceBinarySensor(ZoneEntityMixin, BinarySensorEntity):
         self._pending_eval = None
         self._evaluate_and_write()
 
+    def _readings(self) -> list[Reading]:
+        return masked_readings(
+            self.hass, self._store, self._device_id, self._tracked_pairs()
+        )
+
     def _evaluate_and_write(self, *, write: bool = True) -> None:
-        # TODO(REVIEW_REPORT.md X09): offline radar reads off.  # noqa: FIX002, TD003
-        # With every tracked coordinate unavailable this writes off, unlike HA's
-        # group and trend sensors. Suggested: unavailable when the pair list is
-        # non-empty and every tracked id that has a state is unavailable (all ids
-        # missing, or an empty list, stays off), with a test and a changelog note.
-        self._attr_is_on = self._evaluate_presence()
+        zone_def = self._store.zone(self._device_id, self._zone_id)
+        # Ignore first: an ignore zone reads off even while the radar is
+        # offline, so its zone_type attribute, which Home Assistant leaves off
+        # an unavailable entity, always says what the zone is.
+        if zone_type_of(zone_def) == ZONE_TYPE_IGNORE:
+            self._write_ignore()
+        elif radar_offline(self.hass, self._tracked_pairs()):
+            self._write_offline()
+        else:
+            self._write_detect(zone_def)
         if write:
             self.async_write_ha_state()
 
+    def _write_ignore(self) -> None:
+        # A mask, not a sensor: every target inside it is dropped before any
+        # zone is tested, this one included, so it has nothing to turn on for.
+        self._attr_available = True
+        self._attr_is_on = False
+        self._attr_extra_state_attributes = {ATTR_ZONE_TYPE: ZONE_TYPE_IGNORE}
+
+    def _write_offline(self) -> None:
+        # Every tracked coordinate is unavailable, so nothing says whether the
+        # zone is empty. Unavailable says so, as Home Assistant's group and
+        # trend sensors do, where off would claim nobody is there.
+        self._attr_available = False
+        self._attr_is_on = False
+        self._attr_extra_state_attributes = {}
+
+    def _write_detect(self, zone_def: dict[str, Any] | None) -> None:
+        self._attr_available = True
+        tester = shape_tester(zone_def)
+        data = zone_def.get(ATTR_DATA) if tester else None
+        readings = self._readings() if tester else []
+        self._attr_is_on = any(tester(*reading.map, data) for reading in readings)
+        self._attr_extra_state_attributes = {}
+
     def _evaluate_presence(self) -> bool:
+        """Report whether a live target no ignore zone masks is inside now."""
         zone_def = self._store.zone(self._device_id, self._zone_id)
         tester = shape_tester(zone_def)
-        if tester is None:
+        if tester is None or zone_type_of(zone_def) == ZONE_TYPE_IGNORE:
             return False
         data = zone_def.get(ATTR_DATA)
-
-        device = self._store.devices.get(self._device_id) or {}
-        rotate = build_point_rotator(device.get(ATTR_ROTATION_DEG))
-        fallback = fallback_factor(self._store, self._device_id)
-
-        return any(
-            tester(*rotate(x_val, y_val), data)
-            for _slot, x_val, y_val in iter_slot_points(
-                self.hass, self._tracked_pairs(), fallback
-            )
-        )
+        return any(tester(*reading.map, data) for reading in self._readings())

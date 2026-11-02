@@ -1,4 +1,4 @@
-"""Zone presence sensors: device attachment, tracked pairs, and the fallback."""
+"""Zone presence sensors: device attachment, tracked pairs, masking, offline."""
 
 from __future__ import annotations
 
@@ -6,7 +6,11 @@ import logging
 import math
 
 import pytest
-from homeassistant.const import ATTR_UNIT_OF_MEASUREMENT, UnitOfLength
+from homeassistant.const import (
+    ATTR_UNIT_OF_MEASUREMENT,
+    STATE_UNAVAILABLE,
+    UnitOfLength,
+)
 from homeassistant.core import callback
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_state_change_event
@@ -43,9 +47,9 @@ TARGET_3 = {
 }
 
 
-def _presence_id(entity_registry, device_id: str) -> str:
+def _presence_id(entity_registry, device_id: str, zone_id: int = 1) -> str:
     return entity_registry.async_get_entity_id(
-        "binary_sensor", DOMAIN, f"{device_id}_zone_1_presence"
+        "binary_sensor", DOMAIN, f"{device_id}_zone_{zone_id}_presence"
     )
 
 
@@ -790,8 +794,8 @@ async def test_a_pending_evaluation_is_cancelled_on_removal(
     assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
 
 
-def _draw_zone(hass, device_id: str, zone: dict) -> None:
-    get_store(hass).device(device_id)[STORE_ZONES][1] = zone
+def _draw_zone(hass, device_id: str, zone: dict, *, zone_id: int = 1) -> None:
+    get_store(hass).device(device_id)[STORE_ZONES][zone_id] = zone
     async_dispatcher_send(hass, SIGNAL_ZONES_UPDATED, device_id)
 
 
@@ -1016,3 +1020,287 @@ async def test_input_units_survive_a_reload(
     _set_target(hass, TARGET_1, 0, 150)
     await hass.async_block_till_done()
     assert hass.states.get(presence_id).state == "on"
+
+
+# Ignore zones are seeded straight into the store, the way the fixtures seed
+# zones. This one sits in the middle of zone 1 (RECT_ZONE), where a fan or a
+# curtain would be.
+IGNORE_ZONE = {
+    "shape": "rect",
+    "data": {"x_min": -500, "x_max": 500, "y_min": 500, "y_max": 1500},
+    "zone_type": "ignore",
+}
+
+
+def _take_radar_offline(hass) -> None:
+    """Mark every target sensor unavailable, as ESPHome does when a radar drops."""
+    for pair in (TARGET_1, TARGET_2, TARGET_3):
+        for entity_id in pair.values():
+            hass.states.async_set(entity_id, STATE_UNAVAILABLE)
+
+
+async def test_targets_inside_an_ignore_zone_do_not_turn_a_detect_zone_on(
+    hass, entity_registry, setup_entry_with_zone
+) -> None:
+    """A target an ignore zone covers is dropped before any detect zone sees it."""
+    device_id, _ = setup_entry_with_zone
+    _draw_zone(hass, device_id, dict(IGNORE_ZONE), zone_id=2)
+    await hass.async_block_till_done()
+    presence_id = _presence_id(entity_registry, device_id)
+
+    # Inside both zones.
+    _set_target(hass, TARGET_1, 0, 1000)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "off"
+
+    # Out of the ignore zone, still inside zone 1.
+    _set_target(hass, TARGET_1, 800, 1000)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "on"
+
+    # Masking drops a target, not the radar: a second target in the ignore
+    # zone leaves the first one counting.
+    _set_target(hass, TARGET_2, 0, 1000)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "on"
+
+    # Any ignore zone of the radar masks, not only the first one.
+    _draw_zone(
+        hass,
+        device_id,
+        {
+            "shape": "ellipse",
+            "data": {"cx": 800, "cy": 1000, "rx": 150, "ry": 150},
+            "zone_type": "ignore",
+        },
+        zone_id=3,
+    )
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "off"
+
+
+async def test_ignore_zones_mask_the_point_in_the_map_frame(
+    hass, entity_registry, setup_entry_with_zone
+) -> None:
+    """The mask tests the converted, rotated point, the one zones are drawn in."""
+    device_id, _ = setup_entry_with_zone
+    get_store(hass).device(device_id)[ATTR_ROTATION_DEG] = 90
+    _draw_zone(hass, device_id, dict(IGNORE_ZONE), zone_id=2)
+    await hass.async_block_till_done()
+    presence_id = _presence_id(entity_registry, device_id)
+
+    # (-1000, 0) rotates to (0, 1000), inside the ignore zone.
+    _set_target(hass, TARGET_1, -1000, 0)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "off"
+
+    # (-300, 800) rotates to (800, 300): inside zone 1 and outside the ignore
+    # zone, though the raw reading lies inside it.
+    _set_target(hass, TARGET_1, -300, 800)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "on"
+
+    # -1000 mm in inches rotates to (0, 1000) again. Taken as millimeters it
+    # would land at (0, 39), inside zone 1 and outside the ignore zone.
+    _set_target(hass, TARGET_1, -1000 / 25.4, 0, ("in", "in"))
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "off"
+
+
+async def test_ignore_zone_presence_reads_off_with_zone_type_attribute(
+    hass, entity_registry, setup_entry_with_zone
+) -> None:
+    """An ignore zone is a mask: its own sensor reads off with zone_type: ignore."""
+    device_id, _ = setup_entry_with_zone
+    _draw_zone(hass, device_id, dict(IGNORE_ZONE), zone_id=2)
+    await hass.async_block_till_done()
+    ignore_id = _presence_id(entity_registry, device_id, zone_id=2)
+
+    state = hass.states.get(ignore_id)
+    assert state.state == "off"
+    assert state.attributes["zone_type"] == "ignore"
+
+    _set_target(hass, TARGET_1, 0, 1000)  # inside it
+    await hass.async_block_till_done()
+
+    state = hass.states.get(ignore_id)
+    assert state.state == "off"
+    assert state.attributes["zone_type"] == "ignore"
+    detect = hass.states.get(_presence_id(entity_registry, device_id))
+    assert "zone_type" not in detect.attributes
+
+
+async def test_ignore_zone_reads_off_even_while_the_radar_is_offline(
+    hass, entity_registry, setup_entry_with_zone
+) -> None:
+    """An ignore zone never goes unavailable, so its zone_type stays readable."""
+    device_id, _ = setup_entry_with_zone
+    _draw_zone(hass, device_id, dict(IGNORE_ZONE), zone_id=2)
+    await hass.async_block_till_done()
+
+    _take_radar_offline(hass)
+    await hass.async_block_till_done()
+
+    detect = hass.states.get(_presence_id(entity_registry, device_id))
+    assert detect.state == STATE_UNAVAILABLE
+    ignore = hass.states.get(_presence_id(entity_registry, device_id, zone_id=2))
+    assert ignore.state == "off"
+    assert ignore.attributes["zone_type"] == "ignore"
+
+
+async def test_switching_a_zone_to_ignore_and_back_reevaluates(
+    hass, entity_registry, setup_entry_with_zone
+) -> None:
+    """A type switch takes effect on the zone signal, with no new reading."""
+    device_id, _ = setup_entry_with_zone
+    around_target = {
+        "shape": "rect",
+        "data": {"x_min": -200, "x_max": 200, "y_min": 800, "y_max": 1200},
+    }
+    _draw_zone(hass, device_id, dict(around_target), zone_id=2)
+    _set_target(hass, TARGET_1, 0, 1000)
+    await hass.async_block_till_done()
+    zone_1 = _presence_id(entity_registry, device_id)
+    zone_2 = _presence_id(entity_registry, device_id, zone_id=2)
+    assert hass.states.get(zone_1).state == "on"
+    assert hass.states.get(zone_2).state == "on"
+
+    # Zone 2 becomes a mask: it reads off, and so does zone 1, which the
+    # same signal re-evaluates.
+    _draw_zone(hass, device_id, {**around_target, "zone_type": "ignore"}, zone_id=2)
+    await hass.async_block_till_done()
+    assert hass.states.get(zone_1).state == "off"
+    state = hass.states.get(zone_2)
+    assert state.state == "off"
+    assert state.attributes["zone_type"] == "ignore"
+
+    _draw_zone(hass, device_id, dict(around_target), zone_id=2)
+    await hass.async_block_till_done()
+    assert hass.states.get(zone_1).state == "on"
+    state = hass.states.get(zone_2)
+    assert state.state == "on"
+    assert "zone_type" not in state.attributes
+
+
+async def test_unhashable_shape_on_an_ignore_zone_does_not_break_presence(
+    hass, entity_registry, setup_entry_with_zone, caplog
+) -> None:
+    """A hand-edited list shape masks nothing and breaks no zone of the radar."""
+    device_id, _ = setup_entry_with_zone
+    _draw_zone(hass, device_id, {**IGNORE_ZONE, "shape": ["rect"]}, zone_id=2)
+    await hass.async_block_till_done()
+
+    _set_target(hass, TARGET_1, 0, 1000)
+    await hass.async_block_till_done()
+
+    assert hass.states.get(_presence_id(entity_registry, device_id)).state == "on"
+    state = hass.states.get(_presence_id(entity_registry, device_id, zone_id=2))
+    assert state.state == "off"
+    assert state.attributes["zone_type"] == "ignore"
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+async def test_presence_reads_unavailable_when_every_tracked_state_is_unavailable(
+    hass, entity_registry, setup_entry_with_zone
+) -> None:
+    """An offline radar says nothing about the zone, so presence is unavailable."""
+    device_id, _ = setup_entry_with_zone
+    presence_id = _presence_id(entity_registry, device_id)
+    _set_target(hass, TARGET_1, 0, 1000)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "on"
+
+    # One target still reporting, even an empty slot, keeps the radar online.
+    _set_target(hass, TARGET_1, STATE_UNAVAILABLE, STATE_UNAVAILABLE)
+    _set_target(hass, TARGET_2, 0, 0)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "off"
+
+    # Every tracked id that has a state is unavailable. Target 3 has never
+    # reported, which says nothing either way.
+    _set_target(hass, TARGET_2, STATE_UNAVAILABLE, STATE_UNAVAILABLE)
+    await hass.async_block_till_done()
+    assert hass.states.get(TARGET_3["x"]) is None
+    assert hass.states.get(presence_id).state == STATE_UNAVAILABLE
+
+
+async def test_presence_stays_off_when_tracked_ids_have_no_state(
+    hass, entity_registry, setup_entry_with_zone
+) -> None:
+    """Ids with no state at all are no sign of an offline radar."""
+    device_id, _ = setup_entry_with_zone
+    presence_id = _presence_id(entity_registry, device_id)
+    # The fixture's target sensors are registered but have never reported.
+    assert hass.states.get(TARGET_1["x"]) is None
+    assert hass.states.get(presence_id).state == "off"
+
+    # A configured pair whose sensors no longer exist.
+    get_store(hass).device(device_id)[STORE_ENTITIES] = [
+        {"x": "sensor.removed_x", "y": "sensor.removed_y"}
+    ]
+    async_dispatcher_send(hass, SIGNAL_ZONES_UPDATED, device_id)
+    await hass.async_block_till_done()
+
+    assert hass.states.get(presence_id).state == "off"
+
+
+async def test_presence_stays_off_with_a_cleared_pair_list(
+    hass, entity_registry, setup_entry_with_zone
+) -> None:
+    """Tracking nothing leaves no radar to be offline, whatever its sensors say."""
+    device_id, _ = setup_entry_with_zone
+    presence_id = _presence_id(entity_registry, device_id)
+    _take_radar_offline(hass)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == STATE_UNAVAILABLE
+
+    get_store(hass).device(device_id)[STORE_ENTITIES] = []
+    async_dispatcher_send(hass, SIGNAL_ZONES_UPDATED, device_id)
+    await hass.async_block_till_done()
+
+    assert hass.states.get(presence_id).state == "off"
+
+
+async def test_presence_recovers_when_the_radar_comes_back(
+    hass, entity_registry, setup_entry_with_zone
+) -> None:
+    """The first readings after a reconnect bring presence back at once."""
+    device_id, _ = setup_entry_with_zone
+    presence_id = _presence_id(entity_registry, device_id)
+    _take_radar_offline(hass)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == STATE_UNAVAILABLE
+
+    # ESPHome reports every sensor again: two empty slots and a target inside.
+    _set_target(hass, TARGET_1, 0, 1000)
+    _set_target(hass, TARGET_2, 0, 0)
+    _set_target(hass, TARGET_3, 0, 0)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "on"
+
+    # Back from another drop, one target reporting an empty slot is enough
+    # to read off rather than unavailable.
+    _take_radar_offline(hass)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == STATE_UNAVAILABLE
+    _set_target(hass, TARGET_1, 0, 0)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "off"
+
+
+async def test_unknown_states_do_not_count_as_offline(
+    hass, entity_registry, setup_entry_with_zone
+) -> None:
+    """An unknown state is live: no reading, but the radar is there."""
+    device_id, _ = setup_entry_with_zone
+    presence_id = _presence_id(entity_registry, device_id)
+    for pair in (TARGET_1, TARGET_2, TARGET_3):
+        _set_target(hass, pair, "unknown", "unknown")
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "off"
+
+    # Beside unavailable ones too.
+    _set_target(hass, TARGET_1, STATE_UNAVAILABLE, STATE_UNAVAILABLE)
+    _set_target(hass, TARGET_2, STATE_UNAVAILABLE, STATE_UNAVAILABLE)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "off"
