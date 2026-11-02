@@ -6,14 +6,15 @@ everyday use are in [README.md](README.md) and
 
 ## What changed in 2.4.0
 
-2.4.0b1 is a test build of these changes. The zone map on R PRO-1 and MTR-1
-tabs now shows what each zone is doing: a zone lights up while someone is in
-it, each target is a numbered dot with a short trail, and Coverage paints
-where people have been. A zone can stay on for someone who sits still, or
-ignore a fan or a curtain. You can mark a zone's corners by walking them, read
-a zone's size while you draw it, put a view-only map on a phone dashboard,
-and, as an administrator, replay up to 24 hours of movement. On a phone, a
-locked map now scrolls the page.
+2.4.0b2 is a test build of these changes; what it changed since 2.4.0b1 is
+under [Changed since 2.4.0b1](#changed-since-240b1). The zone map on
+R PRO-1 and MTR-1 tabs now shows what each zone is doing: a zone lights up
+while someone is in it, each target is a numbered dot with a short trail,
+and Coverage paints where people have been. A zone can stay on for someone
+who sits still, or ignore a fan or a curtain. You can mark a zone's corners
+by walking them, read a zone's size while you draw it, put a view-only map
+on a phone dashboard, and, as an administrator, replay up to 24 hours of
+movement. On a phone, a locked map now scrolls the page.
 Nothing needs changing by hand unless your Lovelace resources are managed in
 YAML (replace both `?v=` URLs; see
 [Lovelace resources](docs/configuration.md#lovelace-resources)), or an
@@ -41,10 +42,10 @@ comes back (see the offline item below).
   dashboard keeps the full map. See
   [Card options](docs/configuration.md#card-options).
 - **Mark corners by walking.** An administrator can press 🚶 (**Mark corners
-  by walking**) in the drawing menu of an unlocked map, stand still in each
-  corner of an area and press **Corner here**, then **Finish**. Two corners
-  make a rectangle, three or more a polygon. Only the person walking may be
-  on the map. See
+  by walking**) in the drawing menu of an unlocked map, stand still for
+  about 3 seconds in each corner of an area and press **Corner here**, then
+  **Finish**. Two corners make a rectangle, three or more a polygon. Only
+  the person walking may be on the map. See
   [Mark corners by walking](docs/configuration.md#mark-corners-by-walking).
 - **Coverage paint.** **Coverage** under the map paints every spot a target
   has been since the page opened, so you can see where the radar picks people
@@ -54,10 +55,15 @@ comes back (see the offline item below).
   by default and up to 30 minutes in the card, or 0 to 3600 seconds with
   `apollo_mmwave.update_zone`'s new `hold_s`. It keeps the zone on after
   someone inside goes still and the radar loses them, and still turns the
-  zone off at once when the radar sees them walk out. Other people the radar
-  tracks within about 5 m can end a hold early, and a radar reconnect or a
-  Home Assistant restart ends it. The presence sensor's `held` attribute
-  says when a zone is held. See
+  zone off when the radar sees them walk out: within about 3 seconds when
+  they walk out into the room, or at once when they walk out of its view
+  after about two seconds of walking in the zone. A shorter walk out of
+  view, from a seat beside a door for example, can keep the zone held.
+  Someone new the radar picks up within a few meters in the first 3 seconds
+  can end a hold early; someone or something it was already tracking counts
+  only within 0.6 m. A radar reconnect or a Home Assistant restart ends a
+  hold. The presence sensor's `held` attribute says when a zone is held.
+  See
   [Ignore zones and hold time](docs/configuration.md#ignore-zones-and-hold-time).
 - **Ignore zones.** Set a zone's **Type** to **Ignore** to drop every target
   inside it, such as a fan or a moving curtain, before the radar's other
@@ -73,7 +79,10 @@ comes back (see the offline item below).
   happens after every Home Assistant restart until the radar connects, and
   the Zone presence rows on the dashboard hide meanwhile. An automation
   triggered by `to: "off"` without `from:` now also fires when the radar
-  comes back; add `from: "on"` where that matters. See
+  comes back, which suits lights-off automations. Add `from: "on"` only
+  where that `off` would be wrong, such as a notification or a counter: it
+  then also skips someone who left while the radar was offline, whose zone
+  goes from `on` to `unavailable` to `off`. See
   [Zones in automations](docs/configuration.md#zones-in-automations).
 - **Movement history.** Off until an administrator ticks **Movement
   history** for a radar under **Configure**. Home Assistant then keeps up to
@@ -104,13 +113,63 @@ comes back (see the offline item below).
   off on every radar. 2.3.0 neither reads nor deletes the movement history
   file, so it would stay on disk and in every later backup. 2.3.0 also
   forgets each radar's flip, treats ignore zones as detect zones and holds
-  no zone; see "Going back to an older release" under
+  no zone. It ignores `view_only`, so view-only cards show the full map with
+  its drawing tools again, and on a phone a swipe that starts on the map
+  does not scroll the page: remove or replace those cards first. See "Going
+  back to an older release" under
   [Troubleshooting](docs/configuration.md#troubleshooting).
 - **Credits.** Ideas for several of these features, such as the hold time
   and movement replay, came from
   [bb12ett/esphome-radar-suite](https://github.com/bb12ett/esphome-radar-suite)
   and [baes-cloud/ha-rmm-replay](https://github.com/baes-cloud/ha-rmm-replay),
   both MIT licensed. They were reimplemented here, and no code was copied.
+
+### Changed since 2.4.0b1
+
+2.4.0b1 was built and tested for a radar that writes a target's X and Y
+together several times a second. A real R PRO-1 writes each about once a
+second, often Y about half a second after X, and 2.4.0b2 is tuned for that.
+
+- **Hold time.** Walking out of a zone into the room now turns it off
+  within about 3 seconds, even at a brisk pace, and walking out of the
+  radar's view, or through a doorway at the zone's edge, after about two
+  seconds of walking turns it off at once. 2.4.0b1 kept the zone held for
+  most walks out of view and for many brisk ones into the room. A person or
+  thing the radar was already tracking elsewhere when the zone emptied,
+  such as someone across the room or a still object, now ends a hold only
+  within 0.6 m of where the person was, so a still object the radar keeps
+  tracking no longer ends every hold.
+- **Readings written in two halves.** On older firmware that clears a
+  target by writing 0 to X and then to Y, the point in between, which
+  nobody stood at, no longer ends a hold, lands in movement history or
+  joins a trail or Coverage, and a target that appears the same way counts
+  once both halves are in.
+- **Movement history.** A move is recorded only once the radar's reading is
+  whole, waiting up to about half a second for its other coordinate, so a
+  walk is no longer stored with points nobody stood at. Recording no longer
+  pauses after the clock is set back by up to a minute, as a time
+  correction can do, and turning history off and straight back on always
+  deletes the old history.
+- **Zone names.** Clearing a zone's name in the zone list sets its entities
+  back to "Zone 1" and "Zone 1 presence" instead of "Zone 1 - Zone 1", and
+  saving a row you did not change no longer renames them.
+- **Trails and Coverage.** They pair the radar's separate X and Y writes,
+  so a diagonal walk draws a straight trail and Coverage paints no square
+  nobody stood in. A trail ends where its target vanished, and trails join
+  readings up to 2.5 seconds apart, so they still show when X and Y arrive
+  together.
+- **Map drawing.** A target standing still repaints the map only when its
+  reading changes, about twice a second, instead of about 11 times a
+  second. Size readouts are drawn over Walk's corner rings and the dots,
+  Walk's dashed outline and rings keep their width on a phone, an ignored
+  target's number is outlined, "Radar offline" and the "Replay" time sit
+  below the distance labels along the map's top edge, zone labels stay on
+  the map, and a polygon that crosses itself is filled the way presence
+  reads it.
+- **Zone list.** A zone's **Type** or **Hold** keeps your newest choice
+  while earlier saves are still on their way.
+- **Mark corners by walking.** The hints ask you to stand still for about 3
+  seconds at each corner.
 
 ## What changed in 2.3.0
 

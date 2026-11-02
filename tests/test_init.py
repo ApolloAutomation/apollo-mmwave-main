@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
@@ -2041,6 +2042,60 @@ async def test_empty_name_clears_the_zone_name(
     assert registry.async_get(presence_id).name == "Zone 1 presence - Sofa"
 
 
+async def test_zone_list_save_with_the_default_name_clears_the_entity_names(
+    hass, init_integration, device_id
+) -> None:
+    """The zone list's Save sends "Zone 1" for a cleared name: that is a clear."""
+    _ = init_integration
+    await _create_rect_zone(hass, device_id)
+    await _rename_zone(hass, device_id, "Couch")
+    registry = er.async_get(hass)
+    sensor_id, presence_id = _zone_entity_ids(hass, device_id)
+    # What the card sends when the name field is cleared and saved.
+    cleared = {"device_id": device_id, "zone_id": 1, "name": "Zone 1"}
+
+    await _update_zone(hass, {**cleared, "input_units": "mm"})
+
+    assert registry.async_get(sensor_id).name == "Zone 1"
+    assert registry.async_get(presence_id).name == "Zone 1 presence"
+
+    # A zone made by Add Zone and saved untouched keeps no names of ours.
+    await _update_zone(
+        hass,
+        {
+            "device_id": device_id,
+            "zone_id": 2,
+            "shape": "none",
+            "data": None,
+            "name": "Zone 2",
+            "input_units": "mm",
+        },
+    )
+    await _update_zone(
+        hass,
+        {"device_id": device_id, "zone_id": 2, "name": "Zone 2", "input_units": "mm"},
+    )
+    zone_2 = [
+        registry.async_get_entity_id(domain, DOMAIN, unique_id)
+        for domain, unique_id in (
+            ("sensor", f"{device_id}_zone_2"),
+            ("binary_sensor", f"{device_id}_zone_2_presence"),
+        )
+    ]
+    assert all(entity_id is not None for entity_id in zone_2)
+    assert [registry.async_get(entity_id).name for entity_id in zone_2] == [
+        None,
+        None,
+    ]
+
+    # A name typed in the entity settings is the user's, and stays.
+    registry.async_update_entity(presence_id, name="Kitchen door")
+    await _rename_zone(hass, device_id, "Couch")
+    await _update_zone(hass, {**cleared, "input_units": "mm"})
+    assert registry.async_get(sensor_id).name == "Zone 1"
+    assert registry.async_get(presence_id).name == "Kitchen door"
+
+
 @pytest.mark.parametrize(
     "bad",
     [
@@ -2537,6 +2592,64 @@ async def test_movement_history_off_clears_history(
     _set_target(hass, TRACKED[0], 1500, 2500)
     await hass.async_block_till_done()
     assert history.count(device_id) == 0
+
+
+async def test_movement_history_off_then_on_concurrently_deletes_the_old_history(
+    hass, init_integration, device_id, monkeypatch
+) -> None:
+    """An on call made while an off call saves runs after it: the history goes."""
+    _ = init_integration
+    await _update_zone(hass, {"device_id": device_id, STORE_MOVEMENT_HISTORY: True})
+    # Someone walked by: a point and a gone marker.
+    _set_target(hass, TRACKED[0], 1371, 2903)
+    await hass.async_block_till_done()
+    _set_target(hass, TRACKED[0], 0, 0)
+    await hass.async_block_till_done()
+    history = hass.data[DOMAIN][DATA_MOVEMENT]
+    assert history.count(device_id) == 2
+    # The off call's save of the zone store waits on the disk, as on a slow
+    # SD card.
+    zone_file = get_store(hass)._store  # noqa: SLF001 - its Store
+    writing, written = asyncio.Event(), asyncio.Event()
+    real_write = zone_file._async_write_data  # noqa: SLF001 - the write itself
+
+    async def _slow_write(data: dict) -> None:
+        writing.set()
+        await written.wait()
+        await real_write(data)
+
+    monkeypatch.setattr(zone_file, "_async_write_data", _slow_write)
+
+    off = hass.async_create_task(
+        hass.services.async_call(
+            DOMAIN,
+            SERVICE_UPDATE_ZONE,
+            {"device_id": device_id, STORE_MOVEMENT_HISTORY: False},
+            blocking=True,
+        )
+    )
+    await writing.wait()
+    # Meanwhile another administrator, or a quick second tick, turns it on.
+    on = hass.async_create_task(
+        hass.services.async_call(
+            DOMAIN,
+            SERVICE_UPDATE_ZONE,
+            {"device_id": device_id, STORE_MOVEMENT_HISTORY: True},
+            blocking=True,
+        )
+    )
+    for _ in range(10):
+        await asyncio.sleep(0)
+    written.set()
+    await asyncio.gather(off, on)
+    await hass.async_block_till_done(wait_background_tasks=True)
+
+    assert get_store(hass).devices[device_id][STORE_MOVEMENT_HISTORY] is True
+    # Nothing from before the off call is left, and recording goes on.
+    assert history.count(device_id) == 0
+    _set_target(hass, TRACKED[0], 1500, 2500)
+    await hass.async_block_till_done()
+    assert history.count(device_id) == 1
 
 
 @pytest.mark.parametrize(

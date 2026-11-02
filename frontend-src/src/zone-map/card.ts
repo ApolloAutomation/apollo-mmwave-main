@@ -305,6 +305,12 @@ const TRAIL_FRAME_MS = 100;
 // drawn. A fingertip covers far more than a mouse pointer does.
 const READOUT_OFFSET_MOUSE_PX = 28;
 const READOUT_OFFSET_TOUCH_PX = 64;
+// The notes over the map's top corners ("Radar offline" and the Replay
+// badge) sit this far (CSS px) below its top edge, and are about this tall:
+// .map-note's 12 px text at line height 1.3, with 4 px padding above and
+// below.
+const MAP_NOTE_INSET_CSS_PX = 4;
+const MAP_NOTE_HEIGHT_CSS_PX = 24;
 // A movement replay that plays paints a frame this often (ms), about 15 a
 // second: smooth enough for a dot sliding between records half a second
 // apart, and a third of the work of an animation frame.
@@ -327,6 +333,12 @@ const LOCK_STORAGE_PREFIX = 'apollo-mmwave.zone-map.lock';
 
 function lockStorageKey(deviceId) {
   return `${LOCK_STORAGE_PREFIX}.${deviceId}`;
+}
+
+/** `value` moved just far enough that a box reaching `half` either side of
+ *  it stays within 0..`extent`, or the middle when the box is wider. */
+function clampOnto(value, half, extent) {
+  return half * 2 >= extent ? extent / 2 : Math.min(Math.max(value, half), extent - half);
 }
 
 // Remember the lock toggle per radar so a reload keeps the grid locked
@@ -387,8 +399,11 @@ function findTouch(list, identifier) {
  * Whether a target's reading (x, y) may be the first of the two writes of a
  * target that vanishes: exactly one coordinate turned 0 since `last`, the
  * slot's previous reading. The second write, the other coordinate
- * turning 0, then shows the slot empty. The same rule as `half_vanished` in
- * hold.py, by which the hold and the movement recorder skip such a point.
+ * turning 0, then shows the slot empty. `half_vanished` in hold.py, by which
+ * the hold and the movement recorder skip such a point, has the same rule
+ * for a slot with a previous reading. It also flags the first write of a
+ * target appearing in a slot that read 0/0, which has none; here
+ * TrailBuffer.push holds that sample for its other coordinate instead.
  */
 function halfVanished(last, x, y) {
   if (!last || (x === 0) === (y === 0)) return false;
@@ -501,6 +516,11 @@ export class ZoneMapCard extends HTMLElement {
     // Per zone id, what the payload says beyond the geometry:
     // { presence: entity id or null, type: 'detect' | 'ignore', holdS }.
     this._zoneMeta = new Map();
+    // The newest choice of each zone setting select whose save is still on
+    // its way, as { value, seq } keyed '<zone id>:<setting>', and the number
+    // the next save takes (see _saveZoneSetting).
+    this._zoneSettingPending = new Map();
+    this._zoneSettingSeq = 0;
     // The radar's map is drawn mirrored left to right (mirror_x).
     this._mirrorX = false;
     // An administrator keeps this radar's movement history (movement_history),
@@ -838,8 +858,10 @@ export class ZoneMapCard extends HTMLElement {
     this._storedDisplayUnits = null;
     this._viewDisplayUnits = null;
     // The zones, their sensors and the device-wide flags are the old radar's
-    // too, and the new one's first payload brings its own.
+    // too, and the new one's first payload brings its own. A setting saved
+    // on the old radar settles nothing on the new one's rows.
     this._zoneMeta = new Map();
+    this._zoneSettingPending = new Map();
     this._paintedZoneKey = null;
     this._mirrorX = false;
     this._movementHistory = false;
@@ -1015,12 +1037,17 @@ export class ZoneMapCard extends HTMLElement {
     });
     // A target gone right after one coordinate turned 0 left a point nobody
     // stood at, (0, old y) or (old x, 0), where its X and Y writes came in
-    // two pushes. Taken back while it is too new for Coverage to have
-    // counted, so no trail runs out to the line x = 0 or y = 0 and no cell
-    // there is painted. A real reading with a 0 in it is followed by more
-    // readings and stays.
+    // two pushes. Taken back while it still waits for its other coordinate,
+    // too new for Coverage to have counted, so no trail runs out to the line
+    // x = 0 or y = 0 and no cell there is painted. A real reading with a 0
+    // in it is followed by more readings and stays. gone() takes back the
+    // (new X, old Y) of a target lost between its X write and its Y the
+    // same way. Either way the trail ends there, and whatever the slot
+    // reads next starts a new one.
     this._trailReadings.forEach((last, slot) => {
-      if (last.halfVanished && !readings.has(slot)) this._trails.retract(slot);
+      if (readings.has(slot)) return;
+      if (last.halfVanished) this._trails.retract(slot);
+      this._trails.gone(slot, now);
     });
     this._trailReadings = readings;
     // Before the prune, so a position is counted before it ages out.
@@ -1036,8 +1063,9 @@ export class ZoneMapCard extends HTMLElement {
   /**
    * Count in the Coverage paint the trail samples that became final since
    * the last count: too old for the next push to replace (see
-   * TrailBuffer.takeFinal), so the in-between point of an X update without
-   * its Y never paints. A view-only card shows no coverage, so it keeps none.
+   * TrailBuffer.takeFinal), so the in-between point of an X write whose Y
+   * lands up to TRAIL_PAIR_MS later never paints. A view-only card shows no
+   * coverage, so it keeps none.
    */
   _feedCoverage(now) {
     if (this._viewOnly) return;
@@ -1046,24 +1074,54 @@ export class ZoneMapCard extends HTMLElement {
 
   /**
    * Keep the trails fading between hass pushes: one frame every
-   * TRAIL_FRAME_MS while some target still has a trail. One timer at a time,
-   * and only on a card that is on the page and has a canvas, so a card
-   * nobody can see schedules nothing. A replay paints on its own timer and
-   * shows no live trails.
+   * TRAIL_FRAME_MS while a frame would change a trail anyone can see (see
+   * _trailCanChange). One timer at a time, and only on a card that is on
+   * the page and has a canvas, so a card nobody can see schedules nothing.
+   * A replay paints on its own timer and shows no live trails.
    */
   _kickTrailTimer() {
     if (this._replayShowing()) return;
     if (!this.isConnected || !this.canvas || this._trailTimer !== null) return;
-    if (!this._trails.hasTrail(this._now())) return;
+    const now = this._now();
+    if (!this._trails.hasTrail(now) || !this._trailCanChange(now)) return;
     this._trailTimer = setTimeout(() => this._onTrailFrame(), TRAIL_FRAME_MS);
+  }
+
+  /**
+   * Whether a fade frame would change what the map shows: some slot has a
+   * trail, two samples from the last TRAIL_MS, and either its target is
+   * gone, so the trail has to fade out, or a sample lies farther from the
+   * newest than its dot's halo reaches. A still target's reading changes
+   * about once a second, and the trail its jitter leaves stays under its
+   * own dot, where a frame would fade nothing anyone can see; the next hass
+   * push paints it anyway. Positions are in canvas px, as drawn.
+   */
+  _trailCanChange(now) {
+    const cutoff = now - TRAIL_MS;
+    const halo = this._dotRadius() * 1.7;
+    const toCanvas = ({ x, y }) => {
+      const m = this._toMap(x, y);
+      return { x: this.valueToPixels(m.x, 'x'), y: this.valueToPixels(m.y, 'y') };
+    };
+    return this._trails.slots().some((slot) => {
+      const samples = this._trails.samples(slot);
+      if (samples.length < 2 || samples[samples.length - 2].t <= cutoff) return false;
+      if (!this._trailReadings.has(slot)) return true;
+      const newest = toCanvas(samples[samples.length - 1]);
+      return samples.some((sample) => {
+        if (sample.t <= cutoff) return false;
+        const at = toCanvas(sample);
+        return Math.hypot(at.x - newest.x, at.y - newest.y) > halo;
+      });
+    });
   }
 
   /**
    * One fade frame: count what became final, drop what aged out, and paint,
    * unless a hass push painted less than a frame ago. Then it waits out the
    * rest of that frame, so a radar that pushes often is not painted twice as
-   * often. The frame after the last trail aged out paints it away, and the
-   * timer stops there.
+   * often. The frame that paints the last of a trail away, or leaves only
+   * what a still target's dot covers, is the last: the timer stops there.
    */
   _onTrailFrame() {
     this._trailTimer = null;
@@ -1469,8 +1527,9 @@ export class ZoneMapCard extends HTMLElement {
            iOS 14 does not know pinch-zoom and keeps the first. */
         canvas.pans { touch-action: pan-y; touch-action: pan-y pinch-zoom; }
         /* A note over the map's top left corner. It takes no pointer, so a
-           press on it still lands on the canvas. */
-        .map-note { position: absolute; top: 4px; left: 4px; z-index: 1; pointer-events: none; padding: 4px 8px; border-radius: 6px; font-size: 12px; line-height: 1.3; background: ${COLOR.ui.overlayButtonLightBg}; color: ${COLOR.ui.overlayButtonText}; }
+           press on it still lands on the canvas. _placeMapNotes moves it
+           below the x labels when they run along the top edge. */
+        .map-note { position: absolute; top: var(--zm-note-top, 4px); left: 4px; z-index: 1; pointer-events: none; padding: 4px 8px; border-radius: 6px; font-size: 12px; line-height: 1.3; background: ${COLOR.ui.overlayButtonLightBg}; color: ${COLOR.ui.overlayButtonText}; }
         /* The same kind of note in the top right corner while a replay shows. */
         .map-note.replay-badge { left: auto; right: 4px; font-variant-numeric: tabular-nums; }
         .overlay-controls { position: absolute; bottom: 4px; display: flex; gap: 4px; z-index: 1; }
@@ -1725,7 +1784,7 @@ export class ZoneMapCard extends HTMLElement {
            page. Two declarations: iOS 14 does not know pinch-zoom and keeps
            the first. */
         canvas { width: 100%; height: 100%; cursor: default; touch-action: pan-y; touch-action: pan-y pinch-zoom; }
-        .map-note { position: absolute; top: 4px; left: 4px; z-index: 1; pointer-events: none; padding: 4px 8px; border-radius: 6px; font-size: 12px; line-height: 1.3; background: ${COLOR.ui.overlayButtonLightBg}; color: ${COLOR.ui.overlayButtonText}; }
+        .map-note { position: absolute; top: var(--zm-note-top, 4px); left: 4px; z-index: 1; pointer-events: none; padding: 4px 8px; border-radius: 6px; font-size: 12px; line-height: 1.3; background: ${COLOR.ui.overlayButtonLightBg}; color: ${COLOR.ui.overlayButtonText}; }
         .device-title { font-size: 1.2em; font-weight: bold; margin-bottom: 8px; }
       </style>
       <div class="container ${this.darkMode ? 'dark' : ''}">
@@ -1900,11 +1959,19 @@ export class ZoneMapCard extends HTMLElement {
     }
   }
 
+  /** A target dot's radius in backing px: it follows the card's width,
+   *  never below 10. Its halo reaches 1.7 times as far. */
+  _dotRadius() {
+    return Math.max(10, Math.round(9 * (this._frameScale || 1)));
+  }
+
   /**
    * One target dot at map-frame mm (x, y), with `label` (its number) on it.
    * A dot is a filled core with a soft halo, so it reads over a lit zone; a
    * target presence ignores (`hollow`) is a grey ring with a grey number
-   * instead. The radius follows the card's width, never below 10 backing px.
+   * instead, the number outlined in the canvas color: the ring has no fill,
+   * and the target's own grey trail runs under it. The radius is
+   * _dotRadius().
    */
   drawCurrentPosition(
     x,
@@ -1920,7 +1987,7 @@ export class ZoneMapCard extends HTMLElement {
     if (pixelX < 0 || pixelX > this.canvas.width || pixelY < 0 || pixelY > this.canvas.height) {
       return;
     }
-    const r = Math.max(10, Math.round(9 * (this._frameScale || 1)));
+    const r = this._dotRadius();
     let textColor = numberColor;
     ctx.save();
     if (hollow) {
@@ -1945,10 +2012,20 @@ export class ZoneMapCard extends HTMLElement {
       ctx.stroke();
     }
     if (label !== null && label !== undefined && label !== '') {
-      ctx.fillStyle = textColor;
       ctx.font = `bold ${Math.round(r * 1.1)}px sans-serif`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
+      if (hollow) {
+        // A fan's sweep keeps the trail inside the ring, where it scribbled
+        // through a number in the same grey.
+        ctx.strokeStyle = this.darkMode
+          ? COLOR.ui.darkCanvasBackground
+          : COLOR.ui.lightCanvasBackground;
+        ctx.lineWidth = 4 * (this._frameScale || 1);
+        ctx.lineJoin = 'round';
+        ctx.strokeText(String(label), pixelX, pixelY);
+      }
+      ctx.fillStyle = textColor;
       ctx.fillText(String(label), pixelX, pixelY);
     }
     ctx.restore();
@@ -3789,8 +3866,9 @@ export class ZoneMapCard extends HTMLElement {
   _getGridRenderState() {
     const canvasWidth = this.canvas?.width || 0;
     const canvasHeight = this.canvas?.height || 0;
-    // The labels' clear space is set in CSS px, so a resized card lays them out again.
-    const labelGap = LABEL_GAP_CSS_PX * this._canvasScale();
+    // The labels' clear space is set in CSS px, so a resized card lays them
+    // out again. The frame's scale, so a frame reads the layout once.
+    const labelGap = LABEL_GAP_CSS_PX * (this._frameScale || 1);
     const keyParts = [
       this._displayUnit(),
       this._roundKeyValue(this._fittedStep() ?? 0),
@@ -4720,9 +4798,20 @@ export class ZoneMapCard extends HTMLElement {
    * either, and an ignore zone never holds, so its Hold is disabled too.
    * The selects carry data-zone, never data-zone-id, which marks the name
    * inputs whose drafts a rebuild keeps.
+   *
+   * A select shows its newest choice while that choice's save is on its
+   * way, not what the store holds: the echo of an earlier save rebuilds the
+   * rows, and the next arrow key would step from the older value.
    */
   _zoneMetaLine(zoneId, admin) {
-    const meta = this._zoneMeta.get(Number(zoneId)) || { type: 'detect', holdS: 0 };
+    const stored = this._zoneMeta.get(Number(zoneId)) || { type: 'detect', holdS: 0 };
+    const pending = (setting) =>
+      this._zoneSettingPending.get(`${Number(zoneId)}:${setting}`)?.value;
+    const meta = {
+      ...stored,
+      type: pending('zone_type') ?? stored.type,
+      holdS: pending('hold_s') ?? stored.holdS,
+    };
     const line = document.createElement('div');
     line.className = 'zone-meta';
 
@@ -4795,8 +4884,12 @@ export class ZoneMapCard extends HTMLElement {
    * Save one zone setting (`{ zone_type }` or `{ hold_s }`) for zone
    * `zoneId`. A zone only the card YAML names is created with it, the way a
    * rename creates one. A setting changes nothing about how readings scale,
-   * so input_units stays out, as with the flip. Refused, the select goes back
-   * to what the store holds; accepted, the save's echo rebuilds the row.
+   * so input_units stays out, as with the flip. Each change saves, and until
+   * the newest save for this select settles, a rebuild shows its value
+   * (_zoneMetaLine). Only that save settles the select: refused, the rows
+   * are built again from what the store holds, which also puts back a Hold
+   * that a pending Ignore disabled; accepted, the save's echo rebuilt the
+   * row. An older save settles nothing, so it cannot undo a newer choice.
    */
   async _saveZoneSetting(zoneId, fields) {
     const id = Number(zoneId);
@@ -4813,10 +4906,17 @@ export class ZoneMapCard extends HTMLElement {
       ...fields,
       ...(this._zoneIsUnsaved(id) ? { shape: 'none', data: null } : {}),
     };
+    const key = `${id}:${setting}`;
+    this._zoneSettingSeq += 1;
+    const seq = this._zoneSettingSeq;
+    this._zoneSettingPending.set(key, { value: fields[setting], seq });
     const saved = await this._saveZoneUpdate(payload, `${this._zoneLabel(id)} saved`, {
       withInputUnits: false,
     });
-    if (!saved) this._revertZoneSetting(id, setting);
+    // A newer choice, or another radar since, owns the select now.
+    if (this._zoneSettingPending.get(key)?.seq !== seq) return saved;
+    this._zoneSettingPending.delete(key);
+    if (!saved) this._renderZoneManager();
     return saved;
   }
 
@@ -5004,9 +5104,10 @@ export class ZoneMapCard extends HTMLElement {
 
   /**
    * Paint the whole map, bottom layer first: painted cells, the grid, its
-   * labels and the cone, the zones, a shape being drawn, then the targets.
-   * While a replay shows, its zones are lit by its dots, and its trails and
-   * dots take the place of the live ones.
+   * labels and the cone, the zones, a shape being drawn, then the targets,
+   * and last the size of a shape being drawn or walked, so nothing covers
+   * it. While a replay shows, its zones are lit by its dots, and its trails
+   * and dots take the place of the live ones.
    */
   drawGrid() {
     if (!this.ctx || !this.canvas) return;
@@ -5031,6 +5132,7 @@ export class ZoneMapCard extends HTMLElement {
     // take either's, so all three are laid out before any is drawn.
     let ringLabels = [];
     let rangeLabel = null;
+    let xLabels = [];
     if (this.unitDisplay) {
       const { thetaStart, thetaEnd, radius } = this._coneSector();
       const rings = this._getConeRingsRenderState(thetaStart, thetaEnd, radius, gridMetrics);
@@ -5040,9 +5142,13 @@ export class ZoneMapCard extends HTMLElement {
         rangeLabel,
         gridState?.labelGap ?? LABEL_GAP_CSS_PX,
       );
-      if (gridState) this._drawGridLabels(ctx, labels.grid);
+      if (gridState) {
+        this._drawGridLabels(ctx, labels.grid);
+        xLabels = labels.grid.x;
+      }
       ringLabels = labels.rings;
     }
+    this._placeMapNotes(xLabels);
 
     this.drawDeviceCone(gridMetrics, ringLabels);
     this._drawRangeLabel(ctx, rangeLabel);
@@ -5061,6 +5167,11 @@ export class ZoneMapCard extends HTMLElement {
     // Corner markers over the dots, so the walker's own dot never hides the
     // newest corner.
     this._drawWalkMarkers(ctx);
+    // The size readouts over all of it. A readout sits up to 64 CSS px from
+    // its corner or finger, about 2 m on a phone's map, where an earlier
+    // corner's ring, a trail or a dot can be.
+    this._drawInProgressReadout(ctx);
+    this._drawWalkReadout(ctx);
     // The trail fade timer skips a frame a hass push painted a moment ago.
     this._lastDrawAt = this._now();
   }
@@ -5190,8 +5301,9 @@ export class ZoneMapCard extends HTMLElement {
   /**
    * The zone the corners walked so far make, dashed: two as the rectangle
    * between them, three or more as the polygon through them in walking
-   * order. Its size sits above the newest corner, as far above as over a
-   * finger, which keeps it clear of that corner's ring and number.
+   * order. _drawWalkReadout gives its size. Its line and dash follow the
+   * card's width, as the rings, trails and dots do, so they do not thin out
+   * on a phone.
    */
   _drawWalkPreview(ctx) {
     const corners = this._walkMapCorners();
@@ -5200,13 +5312,14 @@ export class ZoneMapCard extends HTMLElement {
       x: this.valueToPixels(c.x, 'x'),
       y: this.valueToPixels(c.y, 'y'),
     }));
+    const scale = this._frameScale || 1;
     ctx.save();
     ctx.strokeStyle = this.darkMode
       ? COLOR.canvas.polygonStrokeDark
       : COLOR.canvas.polygonStrokeLight;
-    ctx.lineWidth = 3;
+    ctx.lineWidth = 3 * scale;
     // A dash of its own, apart from a drawn shape's rubber band and a zone.
-    ctx.setLineDash([10, 6]);
+    ctx.setLineDash([10 * scale, 6 * scale]);
     ctx.beginPath();
     if (points.length === 2) {
       const [a, b] = points;
@@ -5218,13 +5331,25 @@ export class ZoneMapCard extends HTMLElement {
     }
     ctx.stroke();
     ctx.restore();
+  }
+
+  /**
+   * The size of the zone the corners walked so far make, above the newest
+   * corner, as far above as over a finger, which keeps it clear of that
+   * corner's ring and number. drawGrid draws it after the rings, so an
+   * earlier corner's ring never runs through it.
+   */
+  _drawWalkReadout(ctx) {
+    const corners = this._walkMapCorners();
+    if (corners.length < 2) return;
     const xs = corners.map((c) => c.x);
     const ys = corners.map((c) => c.y);
+    const newest = corners[corners.length - 1];
     this._drawSizeReadout(
       ctx,
       Math.max(...xs) - Math.min(...xs),
       Math.max(...ys) - Math.min(...ys),
-      points[points.length - 1],
+      { x: this.valueToPixels(newest.x, 'x'), y: this.valueToPixels(newest.y, 'y') },
       READOUT_OFFSET_TOUCH_PX,
     );
   }
@@ -5255,8 +5380,10 @@ export class ZoneMapCard extends HTMLElement {
    * One trail through `points` ({ t, x, y } in the radar's own frame, oldest
    * first), as segments between consecutive points, aged against `now`: the
    * newest strongest and widest, fading to a faint thin line at TRAIL_MS. A
-   * silence over TRAIL_GAP_MS breaks it, so a target that vanished and came
-   * back elsewhere is not joined to where it was.
+   * point that starts a new run (`brk`: its target had vanished) joins none
+   * before it, and a silence over TRAIL_GAP_MS breaks it too, counted from
+   * the last write merged into the point before (`tLast`), so a target that
+   * vanished and came back elsewhere is not joined to where it was.
    */
   _drawTrail(ctx, points, now, color) {
     const scale = this._frameScale || 1;
@@ -5264,10 +5391,14 @@ export class ZoneMapCard extends HTMLElement {
     ctx.strokeStyle = color;
     ctx.lineCap = 'round';
     let previous = null;
-    points.forEach(({ t, x, y }) => {
+    points.forEach(({ t, tLast, x, y, brk }) => {
       const m = this._toMap(x, y);
-      const point = { t, x: this.valueToPixels(m.x, 'x'), y: this.valueToPixels(m.y, 'y') };
-      if (previous && t - previous.t <= TRAIL_GAP_MS) {
+      const point = {
+        t: tLast ?? t,
+        x: this.valueToPixels(m.x, 'x'),
+        y: this.valueToPixels(m.y, 'y'),
+      };
+      if (previous && !brk && t - previous.t <= TRAIL_GAP_MS) {
         const f = Math.max(0.08, 1 - (now - t) / TRAIL_MS);
         ctx.globalAlpha = 0.6 * f;
         ctx.lineWidth = scale * (1.5 + 2.5 * f);
@@ -5296,7 +5427,7 @@ export class ZoneMapCard extends HTMLElement {
     const plate = this.darkMode ? COLOR.ui.darkCanvasBackground : COLOR.ui.lightCanvasBackground;
     const pad = 2 * scale;
     ctx.save();
-    ctx.lineWidth = 3;
+    ctx.lineWidth = 3 * scale;
     ctx.font = `bold ${r}px sans-serif`;
     ctx.textAlign = 'left';
     ctx.textBaseline = 'bottom';
@@ -5364,7 +5495,7 @@ export class ZoneMapCard extends HTMLElement {
     // half a label height and the label gap, so an axis label centered on the
     // arc (the 6 m one, facing ahead on a 1 m grid) keeps its place. The extra
     // px absorbs float error in the gap test.
-    const gap = LABEL_GAP_CSS_PX * this._canvasScale();
+    const gap = LABEL_GAP_CSS_PX * (this._frameScale || 1);
     const offset =
       Math.abs(dirX) * halfWidth + Math.abs(dirY) * halfHeight + halfHeight + gap + 1;
     const fits = (x, y) =>
@@ -5485,6 +5616,34 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   /**
+   * Keep the notes over the map's top corners clear of the x labels drawn
+   * this frame (`xLabels`). A fitted map has the radar, and so y = 0 and the
+   * x labels' row, on its top edge, where the notes covered the outer
+   * labels; when the row runs under them, they go MAP_NOTE_INSET_CSS_PX
+   * below it instead. Set as --zm-note-top on the canvas's container, and
+   * only when it changes. A render's new container has none, so the
+   * render's own first frame sets it again.
+   */
+  _placeMapNotes(xLabels) {
+    const container = this.canvas?.parentElement;
+    if (!container) return;
+    const scale = this._frameScale || 1;
+    let top = MAP_NOTE_INSET_CSS_PX;
+    if (xLabels.length) {
+      const boxes = xLabels.map((label) => this._labelBox(label));
+      const rowTop = Math.min(...boxes.map((box) => box.top)) / scale;
+      const rowBottom = Math.max(...boxes.map((box) => box.bottom)) / scale;
+      if (rowTop < MAP_NOTE_INSET_CSS_PX + MAP_NOTE_HEIGHT_CSS_PX) {
+        top = MAP_NOTE_INSET_CSS_PX + Math.ceil(rowBottom);
+      }
+    }
+    const value = `${top}px`;
+    if (container.style.getPropertyValue('--zm-note-top') !== value) {
+      container.style.setProperty('--zm-note-top', value);
+    }
+  }
+
+  /**
    * Each live target as a dot numbered by its pair (Target N on an Apollo
    * radar, whose pairs are in target order), hollow and grey inside an
    * ignore zone, where presence drops it.
@@ -5579,7 +5738,11 @@ export class ZoneMapCard extends HTMLElement {
           ctx.moveTo(pts[0].x, pts[0].y);
           for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
           ctx.closePath();
-          ctx.fill();
+          // By the even-odd rule, the one presence tests a point by
+          // (pointInPolygon), so a polygon that goes around an area twice,
+          // as a second lap of Walk can, is not filled where presence finds
+          // nobody.
+          ctx.fill('evenodd');
           ctx.stroke();
           // Compute bounding box
           let minX = pts[0].x,
@@ -5752,7 +5915,6 @@ export class ZoneMapCard extends HTMLElement {
         this._drawVertexDot(ctx, this.startPoint.x, this.startPoint.y);
       }
       ctx.restore();
-      this._drawPolygonSize(ctx);
     } else if (
       this.isDrawing &&
       this.startPoint &&
@@ -5790,14 +5952,31 @@ export class ZoneMapCard extends HTMLElement {
           ctx.stroke();
         }
         ctx.restore();
-        // The size of exactly what letting go would save, so the readout
-        // and the zone list agree to the mm. A rect with no area saves
-        // nothing and shows no size.
-        const payload = this._shapeFromDrag(pt, cur, this.drawMode);
-        const size = payload ? zoneSize(payload.shape, payload.data) : null;
-        if (size) this._drawSizeReadout(ctx, size.width, size.depth, cur);
       }
     }
+  }
+
+  /**
+   * The size of the shape being drawn. drawGrid draws it after the trails
+   * and dots, so none of them runs through it. A rect or an ellipse shows
+   * the size of exactly what letting go would save, so the readout and the
+   * zone list agree to the mm; a rect with no area saves nothing and shows
+   * no size.
+   */
+  _drawInProgressReadout(ctx) {
+    if (!this.isDrawing) return;
+    if (this.drawMode === DRAW_MODES.POLYGON) {
+      this._drawPolygonSize(ctx);
+      return;
+    }
+    if (this.drawMode !== DRAW_MODES.RECT && this.drawMode !== DRAW_MODES.ELLIPSE) return;
+    const pt = this.startPoint;
+    const cur = this._cursorPoint;
+    // Nothing to measure until the pointer has moved.
+    if (!pt || !cur || (cur.x === pt.x && cur.y === pt.y)) return;
+    const payload = this._shapeFromDrag(pt, cur, this.drawMode);
+    const size = payload ? zoneSize(payload.shape, payload.data) : null;
+    if (size) this._drawSizeReadout(ctx, size.width, size.depth, cur);
   }
 
   /**
@@ -5851,8 +6030,6 @@ export class ZoneMapCard extends HTMLElement {
     if (y - plateHeight / 2 < 0) y = anchorPx.y + offset;
     // A finger keeps reporting after it leaves the canvas, and the shape
     // stops at the map's edge, so the readout stays on the canvas too.
-    const clampOnto = (value, half, extent) =>
-      half * 2 >= extent ? extent / 2 : Math.min(Math.max(value, half), extent - half);
     y = clampOnto(y, plateHeight / 2, this.canvas.height);
     const x = clampOnto(anchorPx.x, plateWidth / 2, this.canvas.width);
     ctx.fillStyle = this.darkMode ? COLOR.ui.darkCanvasBackground : COLOR.ui.lightCanvasBackground;
@@ -5882,14 +6059,22 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   /** The zone's name at its center, followed by `suffix` (" (held)" or
-   *  " (ignored)") when its look needs one. */
+   *  " (ignored)") when its look needs one, moved in as far as it takes to
+   *  stay on the canvas. A zone wholly off the canvas gets none. */
   _drawZoneLabel(zone, bbox, suffix = '') {
     const ctx = this.ctx;
     const name = this._zoneLabel(zone.id);
     if (!name) return;
+    // A YAML grid smaller than the room can leave a zone off the canvas,
+    // and its name, pulled onto the edge, would label whatever is drawn
+    // there. A fitted map takes in every zone.
+    const { width: canvasW, height: canvasH } = this.canvas;
+    if (bbox.x >= canvasW || bbox.x + bbox.width <= 0) return;
+    if (bbox.y >= canvasH || bbox.y + bbox.height <= 0) return;
     const label = `${name}${suffix}`;
+    const fontPx = 24;
     ctx.save();
-    ctx.font = '24px sans-serif';
+    ctx.font = `${fontPx}px sans-serif`;
     ctx.fillStyle = this.darkMode ? COLOR.canvas.axisDark : COLOR.canvas.axisLight;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
@@ -5927,6 +6112,17 @@ export class ZoneMapCard extends HTMLElement {
         cy = Cy / (6 * A);
       }
     }
+    // Centered on a zone at a wall, a label ran off the canvas and lost its
+    // start or its " (ignored)". Measured the way _drawSizeReadout measures,
+    // with 2 px to spare at either side; one wider than the canvas is
+    // centered on it.
+    const measured = ctx.measureText?.(label)?.width;
+    const width =
+      typeof measured === 'number' && measured > 0
+        ? measured
+        : label.length * fontPx * LABEL_FALLBACK_EM_PER_CHAR;
+    cx = clampOnto(cx, width / 2 + 2, this.canvas.width);
+    cy = clampOnto(cy, fontPx / 2, this.canvas.height);
     ctx.fillText(label, cx, cy);
     ctx.restore();
   }

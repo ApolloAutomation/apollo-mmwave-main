@@ -44,14 +44,18 @@ export const WALK_CANCEL_NO = "Keep marking";
 export const WALK_HINT_NOBODY = "Nobody is on the map. Walk into the radar's view.";
 export const WALK_HINT_CROWD =
   "More than one target is on the map. Only the person marking corners should be in view. If you are alone, a fan or curtain may be moving: add an ignore zone over it.";
-export const WALK_HINT_START = "Stand still in one corner of the zone, then press Corner here.";
+// A corner is where the radar placed the walker over the last 1.5 s, and the
+// LD2450 updates each axis about once a second, so the hints ask for about
+// 3 seconds of standing still before Corner here.
+export const WALK_HINT_START =
+  "Stand still in one corner of the zone for about 3 seconds, then press Corner here.";
 
 /** The Walk hint once `n` corners are marked (`n` is 1 or more). */
 export function walkHintNext(n: number): string {
   if (n === 1) {
-    return "Corner 1 marked. Walk along the edge to the next corner, stand still, and press Corner here.";
+    return "Corner 1 marked. Walk along the edge to the next corner, stand still for about 3 seconds, and press Corner here.";
   }
-  return `Corner ${n} marked. Keep going around the zone in order. Two corners make a rectangle, three or more a polygon. Press Finish when done.`;
+  return `Corner ${n} marked. Keep going around the zone in order, and stand still for about 3 seconds at each corner. Two corners make a rectangle, three or more a polygon. Press Finish when done.`;
 }
 
 export const WALK_HINT_FULL = "That is the most corners a zone can have. Press Finish.";

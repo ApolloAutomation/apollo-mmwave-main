@@ -1137,7 +1137,12 @@ describe("zone map card axis labels", () => {
     const { ctx } = textRecordingContext(() => 30);
     card.ctx = ctx;
     card._invalidateGridCache();
-    const xTexts = () => card._getGridRenderState().labels.x.map((label: any) => label.text);
+    // A frame reads the layout once, at its start, and lays the labels out
+    // by it.
+    const xTexts = () => {
+      card.drawGrid();
+      return card._getGridRenderState().labels.x.map((label: any) => label.text);
+    };
     const halfMeters = ["-4.5", "-4", "-3.5", "-3", "-2.5", "-2", "-1.5", "-1", "-0.5"];
     const meters = ["-4", "-3", "-2", "-1"];
 
@@ -1812,6 +1817,13 @@ describe("zone map card target dots", () => {
     expect(inside.filter((d) => d.name === "fillText").map((d) => [d.args[0], d.fill])).toEqual([
       ["1", "#757575"],
     ]);
+    // Outlined first in the canvas color, 4 px wide at scale 1, so the
+    // target's own grey trail inside the ring does not run through it.
+    const outline = inside.filter((d) => d.name === "strokeText");
+    expect(outline.map((d) => [d.args, d.stroke, d.lineWidth])).toEqual([
+      [["1", 240, 160], "#ffffff", 4],
+    ]);
+    expect(inside.indexOf(outline[0])).toBeLessThan(inside.findIndex((d) => d.name === "fillText"));
     // Target 2 is not: its halo, its blue core with a white rim, a black number.
     expect(outside.filter((d) => d.name === "arc").map((d) => d.args[2])).toEqual([17, 10]);
     expect(outside.filter((d) => d.name === "fill").map((d) => [d.fill, d.alpha])).toEqual([
@@ -1820,13 +1832,18 @@ describe("zone map card target dots", () => {
     ]);
     expect(outside.filter((d) => d.name === "stroke").map((d) => d.stroke)).toEqual(["#ffffff"]);
     expect(outside.filter((d) => d.name === "fillText").map((d) => d.fill)).toEqual(["#000000"]);
+    // A filled dot's number needs no outline.
+    expect(outside.filter((d) => d.name === "strokeText")).toEqual([]);
 
-    // The grey follows a dark card.
+    // The grey and the outline follow a dark card.
     const dark = await dotsCard(readings, fan, { dark_mode: true });
     const darkDraws = drawRecordingContext();
     dark.card.ctx = darkDraws.ctx;
     dark.card._drawTrackedTargets();
     expect(darkDraws.draws.find((d) => d.name === "stroke")?.stroke).toBe("#8a8f98");
+    expect(darkDraws.draws.filter((d) => d.name === "strokeText").map((d) => d.stroke)).toEqual([
+      "#121316",
+    ]);
   });
 });
 
@@ -2618,6 +2635,103 @@ describe("zone map card zone list settings", () => {
       "Could not save: Home Assistant is restarting",
       "Could not save: Home Assistant is restarting",
     ]);
+  });
+
+  /** Saves that wait to be answered: answers[i] settles the i-th save. */
+  function heldSaves(hass: any) {
+    const answers: Array<{ resolve: () => void; reject: (error: Error) => void }> = [];
+    hass.callService.mockImplementation(
+      () => new Promise<void>((resolve, reject) => answers.push({ resolve, reject }))
+    );
+    return answers;
+  }
+
+  const withHold = (holdS: number) => ({
+    ...ZONE_PAYLOAD,
+    zones: { "1": { ...ZONE_PAYLOAD.zones["1"], hold_s: holdS } },
+  });
+
+  it("keeps a select's newest choice through the echo of an earlier save", async () => {
+    // Each arrow key on a focused select saves. The echo of the first save
+    // rebuilt the rows from the store while the second was on its way, so
+    // the select jumped back and the next key stepped from there: the saves
+    // went out as 15, 30, 30.
+    const { card, hass, toasts } = await listCard();
+    document.body.appendChild(card);
+    const answers = heldSaves(hass);
+    holdSelect(card, 1).focus();
+    choose(holdSelect(card, 1), "15");
+    choose(holdSelect(card, 1), "30");
+
+    // The store took 15 and says so while 30 is on its way.
+    push(hass, withHold(15));
+
+    expect(holdSelect(card, 1).value).toBe("30");
+    expect(card.shadowRoot.activeElement).toBe(holdSelect(card, 1));
+    // So the next key steps on from 30.
+    const hold = holdSelect(card, 1);
+    choose(hold, hold.options[hold.selectedIndex + 1].value);
+    expect(zoneSaves(hass).map((save) => save.hold_s)).toEqual([15, 30, 60]);
+
+    answers[0].resolve();
+    await settle();
+    expect(holdSelect(card, 1).value).toBe("60");
+    answers[1].resolve();
+    push(hass, withHold(30));
+    await settle();
+    expect(holdSelect(card, 1).value).toBe("60");
+    answers[2].resolve();
+    push(hass, withHold(60));
+    await settle();
+    // Settled, the select shows the store again.
+    expect(card._zoneSettingPending.size).toBe(0);
+    expect(holdSelect(card, 1).value).toBe("60");
+    push(hass, withHold(120));
+    expect(holdSelect(card, 1).value).toBe("120");
+    expect(toasts).toEqual(["Doorway saved", "Doorway saved", "Doorway saved"]);
+  });
+
+  it("a refused older save leaves a newer choice alone", async () => {
+    const { card, hass, toasts } = await listCard();
+    const answers = heldSaves(hass);
+    choose(holdSelect(card, 1), "15");
+    choose(holdSelect(card, 1), "30");
+
+    // The older save is refused while the newer one is on its way.
+    answers[0].reject(new Error("Home Assistant is restarting"));
+    await settle();
+
+    expect(holdSelect(card, 1).value).toBe("30");
+    expect(toasts).toEqual(["Could not save: Home Assistant is restarting"]);
+    answers[1].resolve();
+    push(hass, withHold(30));
+    await settle();
+    expect(holdSelect(card, 1).value).toBe("30");
+
+    // Refused, the newest goes back to what the store holds.
+    choose(holdSelect(card, 1), "60");
+    answers[2].reject(new Error("Home Assistant is restarting"));
+    await settle();
+    expect(holdSelect(card, 1).value).toBe("30");
+  });
+
+  it("gives Hold back when a refused Ignore had disabled it", async () => {
+    const { card, hass } = await listCard(withHold(30));
+    const answers = heldSaves(hass);
+    choose(typeSelect(card, 1), "ignore");
+
+    // A payload rebuilds the rows while the save is on its way: the row
+    // shows Ignore, and an ignore zone never holds.
+    push(hass, { ...withHold(30), rotation_deg: 20 });
+    expect(typeSelect(card, 1).value).toBe("ignore");
+    expect(holdSelect(card, 1).disabled).toBe(true);
+
+    answers[0].reject(new Error("Home Assistant is restarting"));
+    await settle();
+
+    expect(typeSelect(card, 1).value).toBe("detect");
+    expect(holdSelect(card, 1).disabled).toBe(false);
+    expect(holdSelect(card, 1).value).toBe("30");
   });
 
   it("creates a YAML-only zone when its type is saved", async () => {
@@ -4045,6 +4159,10 @@ describe("zone map card repaints on hass pushes", () => {
  * one that has a state is unavailable. `unknown` is a live state.
  */
 describe("zone map card offline radar", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   const UNAVAILABLE = { state: "unavailable" };
 
   async function offlineCard(payload: any = ZONE_PAYLOAD, config: Record<string, any> = {}) {
@@ -4132,6 +4250,101 @@ describe("zone map card offline radar", () => {
 
     expect(note(card).hidden).toBe(true);
   });
+
+  /** Every canvas laid out `cssWidth` CSS px wide, a render's new one too. */
+  function layOutEveryCanvas(cssWidth: number) {
+    vi.spyOn(HTMLCanvasElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLCanvasElement
+    ) {
+      const height = (cssWidth * this.height) / this.width;
+      return {
+        left: 0,
+        top: 0,
+        right: cssWidth,
+        bottom: height,
+        x: 0,
+        y: 0,
+        width: cssWidth,
+        height,
+        toJSON: () => ({}),
+      } as DOMRect;
+    });
+  }
+
+  /** Where the notes sit (--zm-note-top), and the x labels a frame draws. */
+  function notesAndLabels(card: any) {
+    const { ctx, texts } = textRecordingContext(browserTextWidth);
+    card.ctx = ctx;
+    card.drawGrid();
+    const container = card.shadowRoot.querySelector(".canvas-container");
+    // Centered on their lines, and never on a middle baseline as the ring
+    // and range labels are.
+    const xLabels = texts.filter(
+      (t) => t.size === card.unitLabelSize && t.align === "center" && t.baseline !== "middle"
+    );
+    return { top: container.style.getPropertyValue("--zm-note-top"), xLabels };
+  }
+
+  it("keeps the notes below the x labels along the top of a fitted map", async () => {
+    // A fitted map has the radar, and so the x labels' row, on its top edge,
+    // where on a phone the notes sat over "-16 ft" and "16 ft".
+    layOutEveryCanvas(326);
+    const fitted = { ...ZONE_PAYLOAD, rotation_deg: 0, display_units: "ft" };
+    const { card, push } = await offlineCard(fitted, { unit_display: true });
+    push({ "sensor.a_x": UNAVAILABLE, "sensor.a_y": UNAVAILABLE });
+
+    const { top, xLabels } = notesAndLabels(card);
+
+    const scale = card._frameScale;
+    expect(scale).toBeCloseTo(800 / 326, 9);
+    // The row runs from 2 to 20 backing px down, about 8 CSS px, and the
+    // notes go 4 CSS px below it.
+    expect(xLabels.length).toBeGreaterThan(2);
+    expect(xLabels.every((t) => t.y === 2 && t.baseline === "top")).toBe(true);
+    expect(top).toBe(`${4 + Math.ceil(20 / scale)}px`);
+    expect(parseFloat(top)).toBeGreaterThanOrEqual(4 + 20 / scale);
+    // Both notes take it: the Replay badge is a .map-note too.
+    const css = card.shadowRoot.querySelector("style").textContent;
+    expect(css).toMatch(/\.map-note \{ position: absolute; top: var\(--zm-note-top, 4px\);/);
+    expect(card.shadowRoot.getElementById("replayBadge").classList.contains("map-note")).toBe(true);
+
+    // A render brings a new container, which gets it too.
+    card.render();
+    const container = card.shadowRoot.querySelector(".canvas-container");
+    expect(container.style.getPropertyValue("--zm-note-top")).toBe(top);
+    expect(note(card).hidden).toBe(false);
+
+    // So does a view-only map.
+    const viewOnly = await offlineCard(fitted, { unit_display: true, view_only: true });
+    expect(notesAndLabels(viewOnly.card).top).toBe(top);
+    expect(viewOnly.card.shadowRoot.querySelector("style").textContent).toMatch(
+      /\.map-note \{ position: absolute; top: var\(--zm-note-top, 4px\);/
+    );
+  });
+
+  it("keeps the notes at the top while the x labels are further down", async () => {
+    // A YAML grid whose y = 0 is in the middle draws the x labels' row just
+    // above it, on a bottom baseline, clear of the notes.
+    layOutEveryCanvas(326);
+    const middle = await offlineCard(ZONE_PAYLOAD, {
+      unit_display: true,
+      grid: { x_min: -5000, x_max: 5000, y_min: -5000, y_max: 5000 },
+    });
+    const centered = notesAndLabels(middle.card);
+    expect(centered.xLabels.length).toBeGreaterThan(2);
+    expect(centered.xLabels.every((t) => t.y === 398 && t.baseline === "bottom")).toBe(true);
+    expect(centered.top).toBe("4px");
+
+    // Half a meter below the top, the same row runs under the notes, so
+    // they go below it.
+    const near = await offlineCard(ZONE_PAYLOAD, {
+      unit_display: true,
+      grid: { x_min: -5000, x_max: 5000, y_min: -500, y_max: 9500 },
+    });
+    const high = notesAndLabels(near.card);
+    expect(high.xLabels.every((t) => t.y === 38 && t.baseline === "bottom")).toBe(true);
+    expect(high.top).toBe(`${4 + Math.ceil(38 / near.card._frameScale)}px`);
+  });
 });
 
 /**
@@ -4152,21 +4365,48 @@ describe("zone map card trails", () => {
     document.body.replaceChildren();
   });
 
-  /** Tracking the payload's detected pair, with `move` setting its reading. */
+  /** Tracking the payload's detected pair, with `move` setting its reading
+   *  in one push and `set` writing any of its states on its own. */
   async function trailCard(payload: any = { ...ZONE_PAYLOAD, rotation_deg: 0 }) {
     vi.useFakeTimers();
     const hass = fakeHass(payload);
     const card = await mountCard(hass, TEN_METER_GRID);
     let states: Record<string, any> = {};
-    const move = (x: number, y: number) => {
-      states = {
-        ...states,
-        "sensor.a_x": { state: String(x) },
-        "sensor.a_y": { state: String(y) },
-      };
+    const set = (changes: Record<string, any>) => {
+      states = { ...states, ...changes };
       card.hass = { ...hass, states };
     };
-    return { card, hass, move };
+    const move = (x: number, y: number) =>
+      set({ "sensor.a_x": { state: String(x) }, "sensor.a_y": { state: String(y) } });
+    return { card, hass, move, set };
+  }
+
+  /** A target state as the LD2450 reads on a US customary install: inches
+   *  with one decimal, or a state such as "unknown". */
+  const inch = (value: number | string) => ({
+    state: typeof value === "number" ? value.toFixed(1) : value,
+    attributes: { unit_of_measurement: "in" },
+  });
+
+  /**
+   * Target a walking through `steps`, [x, y] in mm, at the cadence an R
+   * PRO-1 on firmware 26.10.21.1 reports: each step's X, its Y 450 ms later,
+   * and the next X 620 ms after that.
+   */
+  function walkSplit(set: (changes: Record<string, any>) => void, steps: number[][]) {
+    steps.forEach(([x, y], i) => {
+      if (i > 0) vi.advanceTimersByTime(620);
+      set({ "sensor.a_x": { state: String(x) } });
+      vi.advanceTimersByTime(450);
+      set({ "sensor.a_y": { state: String(y) } });
+    });
+  }
+
+  /** The counted coverage cells as [ix, iy, count], sorted. */
+  function cells(card: any): number[][] {
+    return Array.from(card._coverage.entries() as Iterable<number[]>)
+      .map((cell) => [...cell])
+      .sort((a, b) => a[0] - b[0] || a[1] - b[1]);
   }
 
   /**
@@ -4246,15 +4486,199 @@ describe("zone map card trails", () => {
     ]);
   });
 
-  it("breaks the trail where its target went silent for over a second", async () => {
+  it("breaks the trail where its target went silent for over 2.5 s", async () => {
     const { card, move } = await trailCard();
     move(-2000, 2000);
-    vi.advanceTimersByTime(1200);
+    vi.advanceTimersByTime(2600);
     move(-1000, 2000);
     vi.advanceTimersByTime(200);
     move(0, 2000);
 
     expectSegments(segments(frame(card)), [[320, 160, 400, 160, ...strength(0)]]);
+  });
+
+  it("joins readings about a second apart when X and Y come together", async () => {
+    // The LD2450 sometimes writes X and Y in the same instant, each about
+    // every 1.07 s.
+    const { card, move } = await trailCard();
+    move(-2000, 2000);
+    vi.advanceTimersByTime(1070);
+    move(-1500, 2500);
+    expectSegments(segments(frame(card)), [[240, 160, 280, 200, ...strength(0)]]);
+
+    // A value that repeats writes nothing, so the next reading can come
+    // 2.14 s later.
+    vi.advanceTimersByTime(2140);
+    move(-1000, 3000);
+    expectSegments(segments(frame(card)), [[280, 200, 320, 240, ...strength(0)]]);
+  });
+
+  it("counts a silence from the last write merged into a sample", async () => {
+    const { card, move, set } = await trailCard();
+    move(-2000, 2000);
+    vi.advanceTimersByTime(1000);
+    set({ "sensor.a_x": { state: "-1500" } });
+    vi.advanceTimersByTime(450);
+    set({ "sensor.a_y": { state: "2500" } });
+    // 2.95 s after that sample's X, but 2.5 s after its Y: one silence.
+    vi.advanceTimersByTime(2500);
+    move(-1000, 3000);
+
+    expectSegments(segments(frame(card)), [[280, 200, 320, 240, ...strength(0)]]);
+  });
+
+  it("draws a diagonal walk at the measured cadence with no (new X, old Y) sample or cell", async () => {
+    const { card, set } = await trailCard();
+    // On the page, so fade frames take final samples between the writes.
+    document.body.appendChild(card);
+    set({ "sensor.a_x": inch("unknown"), "sensor.a_y": inch("unknown") });
+    // About 0.7 m/s along a diagonal, in inches: X every 1070 ms, its Y
+    // 450 ms after it, as an R PRO-1 on firmware 26.10.21.1 reports.
+    const steps = Array.from({ length: 8 }, (_, k) => [-90 + 20 * k, 40 + 20 * k]);
+    const mm = ([x, y]: number[]) => [parseFloat(x.toFixed(1)) * 25.4, parseFloat(y.toFixed(1)) * 25.4];
+    const reported = steps.map((step) => mm(step).map(Math.round).join());
+    const strays: string[] = [];
+    let samples = 0;
+    steps.forEach(([x, y], k) => {
+      if (k > 0) vi.advanceTimersByTime(620);
+      set({ "sensor.a_x": inch(x) });
+      vi.advanceTimersByTime(450);
+      set({ "sensor.a_y": inch(y) });
+      // Once its Y is in, every sample is a position the radar reported.
+      card._trails.samples(0).forEach((s: any) => {
+        const at = [s.x, s.y].map(Math.round).join();
+        if (!reported.includes(at)) strays.push(at);
+      });
+      samples = Math.max(samples, card._trails.samples(0).length);
+    });
+    vi.advanceTimersByTime(1000);
+
+    expect(strays).toEqual([]);
+    // One sample a step: the last 3 s hold three.
+    expect(samples).toBe(3);
+    // One count in each step's cell, and none in any other.
+    const expected = steps.map((step) => {
+      const [x, y] = mm(step);
+      return [Math.floor(x / 200), Math.floor(y / 200), 1];
+    });
+    expect(cells(card)).toEqual(expected.sort((a, b) => a[0] - b[0] || a[1] - b[1]));
+  });
+
+  it("still draws trail segments when Y lands 450 ms after X", async () => {
+    const { card, set } = await trailCard();
+    // Each sample is timed from its X, 1070 ms after the one before, but the
+    // radar went silent for only 620 ms, from the Y before.
+    walkSplit(set, [
+      [-2000, 2000],
+      [-1500, 2500],
+      [-1000, 3000],
+    ]);
+
+    // Straight from one reported position to the next: (-1500, 2000), where
+    // nobody stood, is in no segment.
+    expectSegments(segments(frame(card)), [
+      [240, 160, 280, 200, ...strength(1520)],
+      [280, 200, 320, 240, ...strength(450)],
+    ]);
+  });
+
+  it("draws no line from y = 0 for a target that appears X first in a slot that read 0/0", async () => {
+    const { card, set } = await trailCard();
+    document.body.appendChild(card);
+    // Firmware that empties a slot as (0, 0), which is no target. The
+    // target appears X first, so the card first reads (-1500, 0).
+    set({ "sensor.a_x": { state: "0" }, "sensor.a_y": { state: "0" } });
+    vi.advanceTimersByTime(1000);
+    walkSplit(set, [
+      [-1500, 3000],
+      [-1000, 3500],
+    ]);
+
+    expectSegments(segments(frame(card)), [[280, 240, 320, 280, ...strength(450)]]);
+    vi.advanceTimersByTime(1000);
+    expect(card._trails.samples(0).map((s: any) => [s.x, s.y])).toEqual([
+      [-1500, 3000],
+      [-1000, 3500],
+    ]);
+    expect(cells(card)).toEqual([
+      [-8, 15, 1],
+      [-5, 17, 1],
+    ]);
+  });
+
+  it("ends the trail at the last reading when X and Y turn unknown", async () => {
+    const { card, set } = await trailCard();
+    document.body.appendChild(card);
+    walkSplit(set, [
+      [-2000, 2000],
+      [-1500, 2500],
+      [-1000, 3000],
+    ]);
+    vi.advanceTimersByTime(300);
+    // Firmware 26.10.21.1 loses a target as unknown on both axes at once.
+    set({ "sensor.a_x": { state: "unknown" }, "sensor.a_y": { state: "unknown" } });
+
+    // No dot now, and the trail runs straight to where it was last seen.
+    const draws = frame(card);
+    expect(draws.filter((d) => d.name === "fill" && d.fill === "#f44336")).toEqual([]);
+    expectSegments(segments(draws), [
+      [240, 160, 280, 200, ...strength(1820)],
+      [280, 200, 320, 240, ...strength(750)],
+    ]);
+    vi.advanceTimersByTime(1000);
+    expect(cells(card)).toEqual([
+      [-10, 10, 1],
+      [-8, 12, 1],
+      [-5, 15, 1],
+    ]);
+  });
+
+  it("takes back the (new X, old Y) point of a target lost between its X and its Y", async () => {
+    const { card, set } = await trailCard();
+    document.body.appendChild(card);
+    walkSplit(set, [
+      [-2000, 2000],
+      [-1500, 2500],
+      [-1000, 3000],
+    ]);
+    // The next step's X, and 200 ms later, before its Y, the radar loses
+    // the target: unknown on both axes at once.
+    vi.advanceTimersByTime(620);
+    set({ "sensor.a_x": { state: "-500" } });
+    vi.advanceTimersByTime(200);
+    set({ "sensor.a_x": { state: "unknown" }, "sensor.a_y": { state: "unknown" } });
+
+    // The trail ends at (-1000, 3000), the last position the radar reported
+    // whole, and (-500, 3000), where nobody stood, is in no segment or cell.
+    expectSegments(segments(frame(card)), [
+      [240, 160, 280, 200, ...strength(2340)],
+      [280, 200, 320, 240, ...strength(1270)],
+    ]);
+    vi.advanceTimersByTime(1000);
+    expect(cells(card)).toEqual([
+      [-10, 10, 1],
+      [-8, 12, 1],
+      [-5, 15, 1],
+    ]);
+  });
+
+  it("does not join a target that vanished and came back within a second", async () => {
+    const { card, move, set } = await trailCard();
+    move(-2000, 2000);
+    vi.advanceTimersByTime(200);
+    move(-1000, 2500);
+    vi.advanceTimersByTime(200);
+    set({ "sensor.a_x": { state: "unknown" }, "sensor.a_y": { state: "unknown" } });
+    // Back 0.5 s later on the other side of the room.
+    vi.advanceTimersByTime(500);
+    move(2000, 4000);
+    vi.advanceTimersByTime(200);
+    move(2500, 4000);
+
+    expectSegments(segments(frame(card)), [
+      [240, 160, 320, 200, ...strength(900)],
+      [560, 320, 600, 320, ...strength(0)],
+    ]);
   });
 
   it("draws the trail grey while its target stands in an ignore zone", async () => {
@@ -4375,6 +4799,95 @@ describe("zone map card trails", () => {
     expect(draw).toHaveBeenCalledTimes(1);
   });
 
+  /**
+   * A still target as the bench object near an R PRO-1 reads, for `steps`
+   * of 1070 ms: X wandering over about 15 cm and Y over about 10 cm, in
+   * inches, each axis written about once a second, the Y 450 ms after the
+   * X. Returns how many pushes it made.
+   */
+  function jitter(set: (changes: Record<string, any>) => void, steps: number) {
+    const xs = [-5.0, -2.4, -8.5, -4.1, -6.3, -3.0];
+    const ys = [13.5, 11.6, 15.7, 12.2, 14.8, 13.0];
+    for (let step = 0; step < steps; step += 1) {
+      set({ "sensor.a_x": inch(xs[step % xs.length]) });
+      expect(vi.getTimerCount()).toBe(0);
+      vi.advanceTimersByTime(450);
+      set({ "sensor.a_y": inch(ys[step % ys.length]) });
+      expect(vi.getTimerCount()).toBe(0);
+      vi.advanceTimersByTime(620);
+    }
+    return 2 * steps;
+  }
+
+  it("paints a still jittering target once per push", async () => {
+    const { card, set } = await trailCard();
+    document.body.appendChild(card);
+    set({ "sensor.a_x": inch("unknown"), "sensor.a_y": inch("unknown") });
+    const draw = vi.spyOn(card, "drawGrid");
+
+    // A minute of it. Its trail stays under its own dot's halo, so no fade
+    // frame runs or waits: each push paints once, and nothing else does.
+    const pushes = jitter(set, 56);
+
+    expect(draw).toHaveBeenCalledTimes(pushes);
+    expect(card._trails.hasTrail(performance.now())).toBe(true);
+  });
+
+  it("fades a lost still target's scribble away", async () => {
+    const { card, set } = await trailCard();
+    document.body.appendChild(card);
+    set({ "sensor.a_x": inch("unknown"), "sensor.a_y": inch("unknown") });
+    jitter(set, 10);
+    expect(segments(frame(card)).length).toBeGreaterThan(0);
+
+    // Lost, as unknown on both axes at once: no dot covers the trail now.
+    set({ "sensor.a_x": inch("unknown"), "sensor.a_y": inch("unknown") });
+    const draw = vi.spyOn(card, "drawGrid");
+    vi.advanceTimersByTime(100);
+    expect(draw).toHaveBeenCalledTimes(1);
+
+    // Frames run until the trail is gone, and the last one paints it away.
+    vi.advanceTimersByTime(3000);
+    expect(card._trails.samples(0).length).toBeLessThan(2);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(segments(frame(card))).toEqual([]);
+  });
+
+  it("keeps fading a walker's trail", async () => {
+    const { card, set } = await trailCard();
+    document.body.appendChild(card);
+    const draw = vi.spyOn(card, "drawGrid");
+    const start = performance.now();
+
+    // 1 m/s across the room, written at the radar's split cadence.
+    walkSplit(
+      set,
+      Array.from({ length: 8 }, (_, k) => [-4000 + 1000 * k, 2000 + 300 * k])
+    );
+
+    // A fade frame every 100 ms between the pushes, which paint too.
+    const perSecond = draw.mock.calls.length / ((performance.now() - start) / 1000);
+    expect(perSecond).toBeGreaterThan(9);
+    expect(perSecond).toBeLessThanOrEqual(11);
+  });
+
+  it("reads the canvas layout once a frame", async () => {
+    const card = await mountCard(fakeHass({ ...ZONE_PAYLOAD, rotation_deg: 0 }), {
+      ...TEN_METER_GRID,
+      unit_display: true,
+    });
+    layOut(card, 326);
+    const rect = card.canvas.getBoundingClientRect;
+    rect.mockClear();
+
+    // The grid labels and the range label keep their gap at the frame's
+    // scale, read at the top of the frame.
+    card.drawGrid();
+    card.drawGrid();
+    expect(rect).toHaveBeenCalledTimes(2);
+    expect(card._getGridRenderState().labelGap).toBeCloseTo(4 * (800 / 326), 9);
+  });
+
   it("drops trails when the tracked pairs change", async () => {
     const { card, hass, move } = await trailCard();
     move(-2000, 2000);
@@ -4457,13 +4970,15 @@ describe("zone map card coverage", () => {
     };
     const move = (x: number, y: number) =>
       set({ "sensor.a_x": { state: String(x) }, "sensor.a_y": { state: String(y) } });
-    /** Three positions 200 ms apart. The first two are final by the third. */
+    /** Three positions 200 ms apart, the last moving both coordinates, so
+     *  none is the second write of a split update. The first two are final
+     *  by the third. */
     const walk = () => {
       move(-2000, 2000);
       vi.advanceTimersByTime(200);
       move(-1000, 2000);
       vi.advanceTimersByTime(200);
-      move(-1000, 2200);
+      move(-800, 2200);
     };
     return { card, hass, set, move, walk };
   }
@@ -4628,9 +5143,10 @@ describe("zone map card coverage", () => {
     move(-2000, 2000);
     vi.advanceTimersByTime(200);
 
-    // Home Assistant writes a move as two state changes, X first.
+    // Home Assistant writes a move as two state changes, X first, and the
+    // LD2450 often writes the Y about 450 ms after the X.
     set({ "sensor.a_x": { state: "-1000" } });
-    vi.advanceTimersByTime(20);
+    vi.advanceTimersByTime(450);
     set({ "sensor.a_y": { state: "3000" } });
     vi.advanceTimersByTime(1000);
 
@@ -4649,11 +5165,11 @@ describe("zone map card coverage", () => {
     move(-1000, 2000);
     vi.advanceTimersByTime(200);
 
-    // The target leaves, and its X turns 0 a push before its Y does.
+    // The target leaves, and its X turns 0 about 450 ms before its Y does.
     // (0, 2000) is a point nobody stood at: a real move to x = 0 is
     // followed by more readings, not by an empty slot.
     set({ "sensor.a_x": { state: "0" } });
-    vi.advanceTimersByTime(20);
+    vi.advanceTimersByTime(450);
     set({ "sensor.a_y": { state: "0" } });
     vi.advanceTimersByTime(1000);
 
@@ -6441,6 +6957,142 @@ describe("zone map card zone looks", () => {
     expect(createPattern).toHaveBeenCalledTimes(1);
   });
 
+  it("fills polygon zones by the even-odd rule presence uses", async () => {
+    // A star drawn as one line goes around its center twice. Presence finds
+    // nobody there (zone-map-geometry.test.ts), and the nonzero rule filled
+    // it, or hatched it on an ignore zone. Walk can save such a shape.
+    const star = (cx: number) =>
+      [0, 2, 4, 1, 3].map((k) => ({
+        x: cx + Math.round(1500 * Math.sin((2 * Math.PI * k) / 5)),
+        y: Math.round(4000 - 1500 * Math.cos((2 * Math.PI * k) / 5)),
+      }));
+    const zones = payload(PRESENCE, {
+      "2": { shape: "polygon", data: { points: star(-2000) }, name: "Star" },
+      "3": { shape: "polygon", data: { points: star(2000) }, name: "Fan", zone_type: "ignore" },
+    });
+    const { card, draws } = await looksCard(zones);
+    const hatch = { pattern: "diagonal" };
+    card.ctx.createPattern = () => hatch;
+
+    card.drawZones();
+
+    // Doorway is a rect (fillRect); each star is filled by the even-odd
+    // rule, the ignore zone's with its hatch.
+    const fills = draws.filter((d) => d.name === "fill");
+    expect(fills.map((d) => [d.args, d.fill === hatch])).toEqual([
+      [["evenodd"], false],
+      [["evenodd"], true],
+    ]);
+  });
+
+  it("keeps each zone's label on the canvas", async () => {
+    // Centered on a zone at a wall, a label ran off the canvas edge and lost
+    // its start or its suffix.
+    const LONG = "A".repeat(70);
+    const rect = (x_min: number, x_max: number, y_min: number, y_max: number) => ({
+      shape: "rect",
+      data: { x_min, x_max, y_min, y_max },
+    });
+    const hass = fakeHass({
+      ...ZONE_PAYLOAD,
+      rotation_deg: 0,
+      display_units: "ft",
+      zones: {
+        "1": { ...rect(-5400, -4800, 1000, 3000), name: "Window curtain", zone_type: "ignore" },
+        "2": { ...rect(-1000, 1000, 2000, 3000), name: "Couch" },
+        "3": {
+          ...rect(4800, 5400, 4000, 6000),
+          name: "Desk",
+          presence_entity_id: "binary_sensor.desk",
+        },
+        "4": { ...rect(-1000, 1000, 0, 250), name: "Shelf" },
+        "5": { ...rect(-3000, 3000, 7000, 8000), name: LONG },
+      },
+    });
+    hass.states = { "binary_sensor.desk": { state: "on", attributes: { held: true } } };
+    // Fitted to the cone in feet, as the dashboard's map is.
+    const card = await mountCard(hass);
+    expect(card._gridFromConfig).toBe(false);
+    const { ctx, texts } = textRecordingContext(browserTextWidth);
+    card.ctx = ctx;
+
+    card.drawZones();
+
+    const label = (text: string) => texts.find((t) => t.text === text)!;
+    const width = card.canvas.width;
+    // In by just enough, 2 px from the edge, on either side.
+    expect(boxOf(label("Window curtain (ignored)")).left).toBeCloseTo(2, 9);
+    expect(boxOf(label("Desk (held)")).right).toBeCloseTo(width - 2, 9);
+    // Down from the top edge to half its height.
+    expect(label("Shelf").y).toBe(12);
+    // Wider than the canvas: centered on it.
+    expect(label(LONG).x).toBe(width / 2);
+    // A zone clear of the edges keeps its label on its center.
+    const couch = label("Couch");
+    const center = (a: number, b: number, axis: "x" | "y") =>
+      (card.valueToPixels(a, axis) + card.valueToPixels(b, axis)) / 2;
+    expect(couch.x).toBeCloseTo(center(-1000, 1000, "x"), 9);
+    expect(couch.y).toBeCloseTo(center(2000, 3000, "y"), 9);
+    // Every other label lies wholly on the canvas.
+    expect(texts).toHaveLength(5);
+    const off = texts.filter(
+      (t) => t.text !== LONG && (boxOf(t).left < 0 || boxOf(t).right > width)
+    );
+    expect(off).toEqual([]);
+  });
+
+  it("draws no label for a zone wholly off the canvas", async () => {
+    // A YAML grid smaller than the room, such as the one every card added
+    // from the picker before 2.3.0 carries, beside a radar turned 90 degrees:
+    // pulled onto the edge, the name of a zone off the map would label
+    // whatever is drawn there.
+    const rect = (x_min: number, x_max: number, y_min: number, y_max: number) => ({
+      shape: "rect",
+      data: { x_min, x_max, y_min, y_max },
+    });
+    const hass = fakeHass({
+      ...ZONE_PAYLOAD,
+      rotation_deg: 90,
+      zones: {
+        "1": { ...rect(1000, 3000, -3000, -1000), name: "Couch" },
+        "2": { ...rect(1000, 3000, 1000, 3000), name: "Desk" },
+        "3": { ...rect(-2000, -1000, -1000, 500), name: "Door" },
+        "4": { shape: "ellipse", data: { cx: 7000, cy: 5000, rx: 500, ry: 500 }, name: "Plant" },
+        "5": {
+          shape: "polygon",
+          data: {
+            points: [
+              { x: -8000, y: 1000 },
+              { x: -7000, y: 1000 },
+              { x: -7500, y: 2000 },
+            ],
+          },
+          name: "Lamp",
+        },
+        "6": { ...rect(-1000, 1000, 12500, 13500), name: "Porch" },
+      },
+    });
+    const card = await mountCard(hass, {
+      grid: { x_min: -6000, x_max: 6000, y_min: 0, y_max: 12000 },
+      grid_units: "mm",
+    });
+    const { ctx, texts } = textRecordingContext(browserTextWidth);
+    card.ctx = ctx;
+
+    card.drawZones();
+
+    // Couch is above the canvas, Plant right of it, Lamp left of it and
+    // Porch below it.
+    expect(texts.map((t) => t.text).sort()).toEqual(["Desk", "Door"]);
+    const label = (text: string) => texts.find((t) => t.text === text)!;
+    const center = (a: number, b: number, axis: "x" | "y") =>
+      (card.valueToPixels(a, axis) + card.valueToPixels(b, axis)) / 2;
+    expect(label("Desk").x).toBeCloseTo(center(1000, 3000, "x"), 9);
+    expect(label("Desk").y).toBeCloseTo(center(1000, 3000, "y"), 9);
+    // Door reaches over the top edge, so its label is pulled onto the map.
+    expect(label("Door").y).toBe(12);
+  });
+
   it("fills an ignore zone flat when no pattern can be made", async () => {
     const zones = payload(PRESENCE, { "2": { shape: "rect", data: WINDOW, zone_type: "ignore" } });
     const ignored = (draws: Draw[]) => zoneDraws(draws).slice(2);
@@ -6816,6 +7468,37 @@ describe("zone map card size readout", () => {
     ]);
   });
 
+  it("draws the readout over the targets", async () => {
+    // Facing ahead, so target a at (-1250, 4200) mm is at canvas (300, 336),
+    // where the readout over a finger at (300, 400) goes.
+    const hass = fakeHass({ ...ZONE_PAYLOAD, rotation_deg: 0 });
+    const card = await mountCard(hass, { ...TEN_METER_GRID, start_locked: false });
+    card._setDrawMode("rect");
+    layOut(card, 800);
+    card.hass = {
+      ...hass,
+      states: { "sensor.a_x": { state: "-1250" }, "sensor.a_y": { state: "4200" } },
+    };
+    touch(card, "touchstart", 100, 100);
+    touch(card, "touchmove", 300, 400);
+
+    const { ctx, draws } = drawRecordingContext();
+    card.ctx = ctx;
+    card.drawGrid();
+
+    const text = draws.findIndex(
+      (d) => d.name === "fillText" && String(d.args[0]).includes(" × ")
+    );
+    expect(draws[text].args.slice(1)).toEqual([300, 336]);
+    const dot = draws.filter((d) => d.name === "arc" && d.args[0] === 300 && d.args[1] === 336);
+    expect(dot.map((d) => d.args[2])).toEqual([17, 10]);
+    // The dot is drawn first, and nothing is drawn over the readout.
+    expect(draws.indexOf(dot[1])).toBeLessThan(text);
+    expect(
+      draws.slice(text + 1).filter((d) => ["arc", "fillRect", "fill", "stroke"].includes(d.name))
+    ).toEqual([]);
+  });
+
   it("measures a polygon's corners and the pointer", async () => {
     const { card } = await drawingCard("polygon");
     const click = (x: number, y: number) => {
@@ -6844,9 +7527,10 @@ describe("zone map card size readout", () => {
  * Marking a zone's corners by walking to them (Walk).
  *
  * An administrator on an unlocked map presses 🚶 in the drawing modes, walks
- * to each corner of the zone with a phone, stands still and presses Corner
- * here. The corner is where the radar saw them over the last 1.5 s, weighted
- * by time. Two corners save a rectangle and three or more a polygon, through
+ * to each corner of the zone with a phone, stands still for about 3 seconds
+ * (the radar updates each axis about once a second) and presses Corner here.
+ * The corner is where the radar saw them over the last 1.5 s, weighted by
+ * time. Two corners save a rectangle and three or more a polygon, through
  * the same commit a drawn shape takes. Only one person may be in view;
  * targets inside ignore zones do not count. Facing ahead on the 10 m grid,
  * (x, y) mm is canvas (400 + x / 12.5, y / 12.5).
@@ -6874,7 +7558,7 @@ describe("zone map card walk", () => {
     nobody: "Nobody is on the map. Walk into the radar's view.",
     crowd:
       "More than one target is on the map. Only the person marking corners should be in view. If you are alone, a fan or curtain may be moving: add an ignore zone over it.",
-    start: "Stand still in one corner of the zone, then press Corner here.",
+    start: "Stand still in one corner of the zone for about 3 seconds, then press Corner here.",
   };
 
   /**
@@ -7109,7 +7793,7 @@ describe("zone map card walk", () => {
       { x: -700, y: 2000 },
     ]);
     expect($(card, "walkHint").textContent).toBe(
-      "Corner 2 marked. Keep going around the zone in order. Two corners make a rectangle, three or more a polygon. Press Finish when done."
+      "Corner 2 marked. Keep going around the zone in order, and stand still for about 3 seconds at each corner. Two corners make a rectangle, three or more a polygon. Press Finish when done."
     );
   });
 
@@ -7118,7 +7802,7 @@ describe("zone map card walk", () => {
     $(card, "btnModeWalk").click();
     markCorner(card, at, -2000, 2000);
     expect($(card, "walkHint").textContent).toBe(
-      "Corner 1 marked. Walk along the edge to the next corner, stand still, and press Corner here."
+      "Corner 1 marked. Walk along the edge to the next corner, stand still for about 3 seconds, and press Corner here."
     );
     markCorner(card, at, 2000, 2000);
     markCorner(card, at, 2000, 5000);
@@ -7317,7 +8001,7 @@ describe("zone map card walk", () => {
     expect(card._walk.corners).toEqual([{ x: -3000, y: 1000 }]);
     expect($(card, "btnWalkFinish").disabled).toBe(true);
     expect($(card, "walkHint").textContent).toBe(
-      "Corner 1 marked. Walk along the edge to the next corner, stand still, and press Corner here."
+      "Corner 1 marked. Walk along the edge to the next corner, stand still for about 3 seconds, and press Corner here."
     );
     undo.click();
     expect(card._walk.corners).toEqual([]);
@@ -7496,6 +8180,52 @@ describe("zone map card walk", () => {
     expect(readouts(draws)).toEqual([["2.0 m × 4.0 m", 240, 336]]);
   });
 
+  it("draws the size over the rings of earlier corners", async () => {
+    // On a phone's map the readout sits about 2 m above the newest corner,
+    // a common zone depth. Walking a couch's near side first put it on the
+    // rings of corners 1 and 2, which were stroked across its text.
+    const { card, at } = await walkCard({
+      config: { grid: undefined },
+      payload: { display_units: "ft" },
+    });
+    layOut(card, 326);
+    $(card, "btnModeWalk").click();
+    markCorner(card, at, -3000, 2000);
+    markCorner(card, at, -1900, 2000);
+    markCorner(card, at, -1900, 4200);
+    // The walker moves on.
+    at("a", -3000, 4200);
+
+    const draws = frame(card);
+
+    const text = draws.findIndex(
+      (d) => d.name === "fillText" && String(d.args[0]).includes(" × ")
+    );
+    expect(draws[text].args[0]).toBe("3 ft 7 in × 7 ft 3 in");
+    const plate = draws[text - 1];
+    expect(plate.name).toBe("fillRect");
+    const [left, top, width, height] = plate.args;
+    /** Whether an arc's or a fillRect's box overlaps the plate. */
+    const covers = (d: Draw) => {
+      const [x, y, w, h] =
+        d.name === "arc"
+          ? [d.args[0] - d.args[2], d.args[1] - d.args[2], 2 * d.args[2], 2 * d.args[2]]
+          : d.args;
+      return x < left + width && left < x + w && y < top + height && top < y + h;
+    };
+    // The rings of corners 1 and 2 reach under the plate...
+    const ringRadius = Math.max(14, Math.round(14 * card._frameScale));
+    const rings = draws.filter((d) => d.name === "arc" && d.args[2] === ringRadius);
+    expect(rings).toHaveLength(3);
+    expect(rings.map(covers)).toEqual([true, true, false]);
+    // ...and no ring, dot or plate is drawn over the readout.
+    const after = draws
+      .slice(text + 1)
+      .filter((d) => (d.name === "arc" && d.args[2] >= 14) || d.name === "fillRect");
+    expect(after.filter(covers)).toEqual([]);
+    expect(draws.indexOf(rings[2])).toBeLessThan(text);
+  });
+
   it("rings each corner with its number over the dots", async () => {
     const { card, at } = await walkCard();
     $(card, "btnModeWalk").click();
@@ -7533,6 +8263,38 @@ describe("zone map card walk", () => {
       const plate = draws[draws.indexOf(number) - 1];
       expect([plate.name, plate.fill]).toEqual(["fillRect", "#ffffff"]);
     });
+  });
+
+  it("scales the dashed preview and the rings' lines with the card", async () => {
+    // At 326 CSS px a backing px is about 0.4 CSS px, so 3 px lines drew
+    // about 1.2 CSS px wide on a phone, faint beside the trails and dots.
+    const { card, at } = await walkCard();
+    layOut(card, 326);
+    $(card, "btnModeWalk").click();
+    markCorner(card, at, -3000, 1000);
+    markCorner(card, at, -1000, 3000);
+
+    const draws = frame(card);
+
+    const scale = card._frameScale;
+    expect(scale).toBeCloseTo(800 / 326, 9);
+    // The two-corner preview is the frame's only rect path: its dash is set
+    // just before it, and its stroke follows it.
+    const rect = draws.findIndex((d) => d.name === "rect");
+    expect(rect).toBeGreaterThan(-1);
+    const dash = draws
+      .slice(0, rect)
+      .filter((d) => d.name === "setLineDash")
+      .pop();
+    expect(dash?.args[0]).toEqual([10 * scale, 6 * scale]);
+    const preview = draws.slice(rect).find((d) => d.name === "stroke");
+    expect(preview?.lineWidth).toBe(3 * scale);
+    // Each ring, as wide in CSS px as at the desktop's 1:1.
+    const r = Math.max(14, Math.round(14 * scale));
+    const ringStrokes = draws.filter(
+      (d, i) => d.name === "stroke" && draws[i - 1]?.name === "arc" && draws[i - 1].args[2] === r
+    );
+    expect(ringStrokes.map((d) => d.lineWidth)).toEqual([3 * scale, 3 * scale]);
   });
 
   it("keeps the corners in the radar's own frame through a rotation change", async () => {
