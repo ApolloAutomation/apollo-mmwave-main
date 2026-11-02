@@ -2042,6 +2042,60 @@ async def test_empty_name_clears_the_zone_name(
     assert registry.async_get(presence_id).name == "Zone 1 presence - Sofa"
 
 
+async def test_zone_list_save_with_the_default_name_clears_the_entity_names(
+    hass, init_integration, device_id
+) -> None:
+    """The zone list's Save sends "Zone 1" for a cleared name: that is a clear."""
+    _ = init_integration
+    await _create_rect_zone(hass, device_id)
+    await _rename_zone(hass, device_id, "Couch")
+    registry = er.async_get(hass)
+    sensor_id, presence_id = _zone_entity_ids(hass, device_id)
+    # What the card sends when the name field is cleared and saved.
+    cleared = {"device_id": device_id, "zone_id": 1, "name": "Zone 1"}
+
+    await _update_zone(hass, {**cleared, "input_units": "mm"})
+
+    assert registry.async_get(sensor_id).name == "Zone 1"
+    assert registry.async_get(presence_id).name == "Zone 1 presence"
+
+    # A zone made by Add Zone and saved untouched keeps no names of ours.
+    await _update_zone(
+        hass,
+        {
+            "device_id": device_id,
+            "zone_id": 2,
+            "shape": "none",
+            "data": None,
+            "name": "Zone 2",
+            "input_units": "mm",
+        },
+    )
+    await _update_zone(
+        hass,
+        {"device_id": device_id, "zone_id": 2, "name": "Zone 2", "input_units": "mm"},
+    )
+    zone_2 = [
+        registry.async_get_entity_id(domain, DOMAIN, unique_id)
+        for domain, unique_id in (
+            ("sensor", f"{device_id}_zone_2"),
+            ("binary_sensor", f"{device_id}_zone_2_presence"),
+        )
+    ]
+    assert all(entity_id is not None for entity_id in zone_2)
+    assert [registry.async_get(entity_id).name for entity_id in zone_2] == [
+        None,
+        None,
+    ]
+
+    # A name typed in the entity settings is the user's, and stays.
+    registry.async_update_entity(presence_id, name="Kitchen door")
+    await _rename_zone(hass, device_id, "Couch")
+    await _update_zone(hass, {**cleared, "input_units": "mm"})
+    assert registry.async_get(sensor_id).name == "Zone 1"
+    assert registry.async_get(presence_id).name == "Kitchen door"
+
+
 @pytest.mark.parametrize(
     "bad",
     [

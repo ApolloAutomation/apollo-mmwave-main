@@ -322,6 +322,9 @@ def _update_registry_names(
     # name that is still one of ours, so "Kitchen door" stays "Kitchen door".
     registry = er.async_get(hass)
     sensor_uid, presence_uid = _zone_entity_unique_ids(device_id, zone_id)
+    # The zone list's Save sends the default name for a cleared field, and
+    # for a row nobody touched: a clear, never "Zone 1 - Zone 1".
+    default = zone_name == f"Zone {zone_id}"
 
     for domain, unique_id, base in (
         ("sensor", sensor_uid, f"Zone {zone_id}"),
@@ -333,8 +336,12 @@ def _update_registry_names(
         entry = registry.async_get(entity_id)
         if entry is not None and not _is_generated_name(entry.name, base):
             continue
+        if default and (entry is None or entry.name is None):
+            # Never named, so there is nothing to clear.
+            continue
         registry.async_update_entity(
-            entity_id, name=f"{base} - {zone_name}" if zone_name else base
+            entity_id,
+            name=f"{base} - {zone_name}" if zone_name and not default else base,
         )
 
 
