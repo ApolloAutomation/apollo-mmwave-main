@@ -310,6 +310,8 @@ interface HelpContext {
   /** Whether the gate radar's presence sensor exists. An R PRO-1 built
    *  without the optional LD2412 has none to recommend. */
   gatePresence: boolean;
+  /** Whether the LD2410's any-zone sensor exists (MSR-1, MSR-2). */
+  anyZone: boolean;
   /** Whether the device has any of the gate radar's entities. An R PRO-1
    *  built without the optional LD2412 keeps the LD2412 profile from its
    *  registry model, but has only the LD2450. */
@@ -351,6 +353,22 @@ function numbered(steps: string[]): string {
 const LD2450_AUTOMATIONS =
   "**In automations**, use a zone's presence sensor, or **LD2450 Presence** for" +
   " anywhere the radar sees.";
+
+/**
+ * For automations on a tab with a gate radar alone (MSR-1, MSR-2): Radar
+ * Target, which the wiki recommends too. It needs no distance, while the zone
+ * sensors do, and the MSR firmware can hold a distance at unknown while the
+ * radar reports someone. The LD2410 drops a person who sits very still once
+ * still energy dips for longer than Radar Timeout, so a longer one keeps them.
+ * `anyZone` adds what the any-zone sensor is still for.
+ */
+export function gateAutomations(anyZone: boolean): string {
+  return (
+    "**In automations**, use **Radar Target** for the whole room. If it turns off" +
+    " while someone sits still, raise **Radar Timeout** to 60 s or more." +
+    (anyZone ? " To ignore people past End Zone 3, use **Any zone** instead." : "")
+  );
+}
 
 /** The gate radar's first steps. On a tab with two radars they name the chip. */
 function gateSteps(p: RadarProfile, ctx: HelpContext, twoRadars: boolean): string[] {
@@ -409,6 +427,7 @@ function helpCardBody(dev: RadarDevice, ctx: HelpContext): Record<string, any> {
       content:
         `**${name}**, Apollo ${p.label} radar.\n\n` +
         `**Start here**\n${numbered(gateSteps(p, ctx, false))}\n\n` +
+        (ctx.gatePresence ? `${gateAutomations(ctx.anyZone)}\n\n` : "") +
         links,
     };
   }
@@ -459,8 +478,10 @@ export const LD2450_TIMEOUT_NOTE =
 /**
  * Under the LD2410 Zone Config card. The boxes are template numbers in cm, and
  * Home Assistant converts no number entity's unit but temperature, so they
- * stay cm on a US customary system too. `anyZone` adds the automation advice
- * only when the any-zone sensor exists.
+ * stay cm on a US customary system too. `anyZone` says what the any-zone
+ * sensor is for only when it exists. Automations for the room go to Radar
+ * Target, as in the help card (`gateAutomations`): the zone sensors need the
+ * radar's distance, which the MSR firmware can hold at unknown.
  */
 export function zoneConfigNote(unit: LengthUnit, anyZone: boolean): string {
   return (
@@ -468,9 +489,11 @@ export function zoneConfigNote(unit: LengthUnit, anyZone: boolean): string {
     " The zones sit back to back: Zone 1 runs from Start Zone 1 to End Zone 1," +
     " Zone 2 from there to End Zone 2, and Zone 3 from there to End Zone 3." +
     (anyZone
-      ? " In automations, use **Any zone**: it is on while someone is in any of the" +
-        " three zones, so it ignores people past End Zone 3."
-      : "")
+      ? " **Any zone** is on while someone is in any of the three zones, so it ignores" +
+        " people past End Zone 3."
+      : "") +
+    " For the whole room, use **Radar Target** in automations: the zone sensors also" +
+    " need the radar's distance, which can read unknown while someone is there."
   );
 }
 
@@ -689,6 +712,7 @@ function cardMap(
   const unit = lengthUnit(hass);
   let gateSizeM = DEFAULT_GATE_SIZE_M;
   let gatePresence = false;
+  let anyZone = false;
   let gateRadar = false;
   const cards: Partial<DeviceCards> = {};
   // On a tab with two radars (R PRO-1) each history line names its chip.
@@ -720,6 +744,7 @@ function cardMap(
       : undefined;
     gateSizeM = gateSizeMeters(hass, m);
     gatePresence = exists(hass, m.radar_target);
+    anyZone = exists(hass, m.zone_occupancy);
     // The help card and the Device card's restart describe the radars the
     // device has, not the ones its registry model can carry.
     gateRadar = !!cards.gateSetup || gatePresence;
@@ -762,7 +787,7 @@ function cardMap(
       presentRows(hass, zoneConfigRows(m))
     );
     cards.zoneNote = cards.zone
-      ? noteCard(zoneConfigNote(unit, exists(hass, m.zone_occupancy)))
+      ? noteCard(zoneConfigNote(unit, anyZone))
       : undefined;
     // TODO(REVIEW_REPORT.md X35): emitted even for offline or unresolvable devices (deliberate,
     // per OFFLINE_NOTE); at most drop device_base_name when dev.base === dev.deviceId.
@@ -841,6 +866,7 @@ function cardMap(
     gateSetup: !!cards.gateSetup,
     ld2450Setup: !!cards.ld2450Setup,
     gatePresence,
+    anyZone,
     gateRadar,
   });
   cards.device = deviceCard(hass, dev, gateRadar);

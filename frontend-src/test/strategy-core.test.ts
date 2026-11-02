@@ -12,6 +12,7 @@ import {
   BUILT_IN_ZONES_TITLE,
   DEVICE_TITLE,
   LD2450_TIMEOUT_NOTE,
+  gateAutomations,
   SUPPORT_FILE_NOTE,
   WEAK_WIFI_DBM,
   WEAK_WIFI_NOTE,
@@ -1447,14 +1448,53 @@ describe("plain help, labels and the Device card", () => {
     const zone = cards.findIndex((c) => c.title === "LD2410 Zone Config");
     expect(cards[zone + 1]).toEqual({ type: "markdown", content: zoneConfigNote("ft", true) });
     expect(zoneConfigNote("ft", true)).toContain("in cm (100 cm is about 3.3 ft)");
-    expect(zoneConfigNote("ft", true)).toContain("use **Any zone**");
     expect(zoneConfigNote("m", true)).toContain("The boxes are in cm.");
     expect(cardsOf(msrHass()).map((c) => c.content)).toContain(zoneConfigNote("m", true));
-    // Without the any-zone sensor, the note does not point at it.
+    // Without the any-zone sensor, the note does not mention it.
     const noAnyZone = msrHass();
     delete noAnyZone.states[m.zone_occupancy!];
     expect(cardsOf(noAnyZone).map((c) => c.content)).toContain(zoneConfigNote("m", false));
     expect(zoneConfigNote("m", false)).not.toContain("Any zone");
+  });
+
+  // The zone sensors need the radar's distance, which the MSR firmware can
+  // hold at unknown while Radar Target is on, so automations for the room go
+  // to Radar Target, as the wiki says. 2.3.0 pointed them at Any zone.
+  it("points room automations at Radar Target under Zone Config, and says what Any zone is for", () => {
+    for (const anyZone of [true, false]) {
+      const note = zoneConfigNote("m", anyZone);
+      expect(note).toContain("For the whole room, use **Radar Target** in automations");
+      expect(note).toContain("need the radar's distance, which can read unknown");
+      expect(note).not.toContain("use **Any zone**");
+      expect(note).not.toContain("\u2014");
+    }
+    expect(zoneConfigNote("m", true)).toContain(
+      "**Any zone** is on while someone is in any of the three zones, so it ignores" +
+        " people past End Zone 3."
+    );
+  });
+
+  it("points MSR automations at Radar Target in the help card", () => {
+    const content = help(msrHass());
+    expect(content).toContain(gateAutomations(true));
+    expect(gateAutomations(true)).toBe(
+      "**In automations**, use **Radar Target** for the whole room. If it turns off" +
+        " while someone sits still, raise **Radar Timeout** to 60 s or more." +
+        " To ignore people past End Zone 3, use **Any zone** instead."
+    );
+    expect(content).not.toContain("covers still people");
+    // The advice sits between the steps and the links.
+    expect(content.indexOf("**In automations**")).toBeGreaterThan(content.indexOf("5. Walk"));
+    expect(content.indexOf("**In automations**")).toBeLessThan(content.indexOf("[Full tuning guide"));
+    // Without the any-zone sensor, Any zone goes unmentioned.
+    const noAnyZone = msrHass();
+    delete noAnyZone.states[m.zone_occupancy!];
+    expect(help(noAnyZone)).toContain(gateAutomations(false));
+    expect(gateAutomations(false)).not.toContain("Any zone");
+    // Without Radar Target there is nothing to recommend.
+    const noTarget = msrHass();
+    delete noTarget.states[m.radar_target!];
+    expect(help(noTarget)).not.toContain("**In automations**");
   });
 
   it("colors Target / Occupancy and ends it with Any zone", () => {
