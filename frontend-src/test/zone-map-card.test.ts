@@ -799,11 +799,19 @@ interface DrawnText {
   align: string;
   baseline: string;
   size: number;
+  /** The whole font string, weight included ("bold 11px sans-serif"). */
+  font?: string;
+  fill?: unknown;
+}
+
+/** The px size a canvas font string names, past any weight before it. */
+function fontPx(font: string): number {
+  return parseFloat(String(font).replace(/^\D+/, ""));
 }
 
 /**
  * A 2D context whose measureText answers with `measure`, and that notes each
- * fillText with the font size, alignment and baseline it ran under.
+ * fillText with the font size, alignment, baseline and fill it ran under.
  */
 function textRecordingContext(measure: (text: string, fontPx: number) => number) {
   const texts: DrawnText[] = [];
@@ -815,7 +823,7 @@ function textRecordingContext(measure: (text: string, fontPx: number) => number)
   const ctx = new Proxy(state, {
     get(target, prop) {
       if (prop === "measureText") {
-        return (text: string) => ({ width: measure(text, parseFloat(target.font)) });
+        return (text: string) => ({ width: measure(text, fontPx(target.font)) });
       }
       if (prop === "fillText") {
         return (text: string, x: number, y: number) => {
@@ -825,7 +833,9 @@ function textRecordingContext(measure: (text: string, fontPx: number) => number)
             y,
             align: target.textAlign,
             baseline: target.textBaseline,
-            size: parseFloat(target.font),
+            size: fontPx(target.font),
+            font: target.font,
+            fill: target.fillStyle,
           });
         };
       }
@@ -1637,6 +1647,176 @@ describe("zone map card target pairs", () => {
     );
 
     expect(drawn).toEqual([]);
+  });
+});
+
+/**
+ * Numbered target dots.
+ *
+ * With two or three people in view the map showed same-sized circles that
+ * said nothing about which target each was. Each dot now carries its pair's
+ * number (Target N on an Apollo radar, whose pairs are in target order), in
+ * black or white, whichever reads better on its color, and a soft halo so it
+ * stands out on a lit zone. A target inside an ignore zone, which presence
+ * drops, is a hollow grey ring instead.
+ */
+describe("zone map card target dots", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const PAIRS = [1, 2, 3, 4, 5].map((n) => ({ x: `sensor.t${n}_x`, y: `sensor.t${n}_y` }));
+
+  /** Tracking the first `readings.length` pairs at those (x, y) mm, facing
+   *  ahead on the 10 m grid, with `zones`. */
+  async function dotsCard(
+    readings: [number, number][],
+    zones: any = {},
+    config: Record<string, any> = {}
+  ) {
+    const hass = fakeHass({
+      ...ZONE_PAYLOAD,
+      zones,
+      rotation_deg: 0,
+      entities: PAIRS.slice(0, readings.length),
+    });
+    const card = await mountCard(hass, { ...TEN_METER_GRID, ...config });
+    hass.states = Object.fromEntries(
+      readings.flatMap(([x, y], i) => [
+        [PAIRS[i].x, { state: String(x) }],
+        [PAIRS[i].y, { state: String(y) }],
+      ])
+    );
+    return { card, hass };
+  }
+
+  it("numbers each target dot with its pair index + 1", async () => {
+    // Pair 2 reads (0, 0), an LD2450's empty slot, so it has no dot, and
+    // pair 3 keeps its own number.
+    const { card } = await dotsCard([
+      [-2000, 2000],
+      [0, 0],
+      [2000, 6000],
+    ]);
+    const { ctx, texts } = textRecordingContext(browserTextWidth);
+    card.ctx = ctx;
+
+    card.drawGrid();
+
+    expect(texts.map((t) => [t.text, t.x, t.y, t.align, t.baseline])).toEqual([
+      ["1", 240, 160, "center", "middle"],
+      ["3", 560, 480, "center", "middle"],
+    ]);
+    // 11 px at scale 1, bold, and never the axis labels' size, which the
+    // label layout tests pick drawn labels out by.
+    expect(texts.map((t) => t.font)).toEqual(["bold 11px sans-serif", "bold 11px sans-serif"]);
+    expect(card.unitLabelSize).toBe(18);
+    expect(texts.filter((t) => t.size === card.unitLabelSize)).toEqual([]);
+  });
+
+  it("writes white on the purple dot and black on the others", async () => {
+    const { card } = await dotsCard([
+      [-4000, 1000],
+      [-2000, 2000],
+      [0, 3000],
+      [2000, 4000],
+      [4000, 5000],
+    ]);
+    const { ctx, draws } = drawRecordingContext();
+    card.ctx = ctx;
+
+    card._drawTrackedTargets();
+
+    const numbers = draws.filter((draw) => draw.name === "fillText");
+    expect(numbers.map((draw) => [draw.args[0], draw.fill])).toEqual([
+      ["1", "#000000"],
+      ["2", "#000000"],
+      ["3", "#000000"],
+      ["4", "#000000"],
+      ["5", "#ffffff"],
+    ]);
+    // On red, blue, green, amber and purple dots.
+    const cores = draws.filter((draw) => draw.name === "fill" && draw.alpha === 1);
+    expect(cores.map((draw) => draw.fill)).toEqual([
+      "#f44336",
+      "#2196f3",
+      "#4caf50",
+      "#ffc107",
+      "#9c27b0",
+    ]);
+  });
+
+  it("keeps the dot radius 10 on an unscaled canvas", async () => {
+    const { card } = await dotsCard([[0, 4000]]);
+    /** The radii drawn at the target's spot, with the canvas `cssWidth` wide. */
+    function radii(cssWidth: number | null) {
+      if (cssWidth !== null) layOut(card, cssWidth);
+      const { ctx, draws } = drawRecordingContext();
+      card.ctx = ctx;
+      card.drawGrid();
+      const at = draws.filter(
+        (draw) => draw.name === "arc" && draw.args[0] === 400 && draw.args[1] === 320
+      );
+      const label = draws.find((draw) => draw.name === "fillText");
+      return [...at.map((draw) => draw.args[2]), label?.font];
+    }
+
+    // No layout box (a hidden tab) and a canvas shown at its own 800 px.
+    expect(radii(null)).toEqual([17, 10, "bold 11px sans-serif"]);
+    expect(radii(800)).toEqual([17, 10, "bold 11px sans-serif"]);
+    // Shown at 400 CSS px, each backing px is half as big, so the dot grows
+    // to stay about 9 CSS px.
+    expect(radii(400)).toEqual([18 * 1.7, 18, "bold 20px sans-serif"]);
+    // Shown wider than its backing store, it never drops below 10.
+    expect(radii(1600)).toEqual([17, 10, "bold 11px sans-serif"]);
+  });
+
+  it("draws targets inside an ignore zone hollow and grey", async () => {
+    const fan = {
+      "1": {
+        shape: "rect",
+        data: { x_min: -3000, x_max: -1000, y_min: 1000, y_max: 3000 },
+        zone_type: "ignore",
+      },
+    };
+    const readings: [number, number][] = [
+      [-2000, 2000],
+      [2000, 2000],
+    ];
+    const { card } = await dotsCard(readings, fan);
+    const { ctx, draws } = drawRecordingContext();
+    card.ctx = ctx;
+
+    card._drawTrackedTargets();
+
+    const split = draws.findIndex((draw) => draw.name === "restore") + 1;
+    const inside = draws.slice(0, split);
+    const outside = draws.slice(split);
+    // Target 1 is in the ignore zone: a grey ring with a grey number, no
+    // halo and no fill.
+    expect(inside.filter((d) => d.name === "arc").map((d) => d.args[2])).toEqual([10]);
+    expect(inside.filter((d) => d.name === "fill")).toEqual([]);
+    expect(inside.filter((d) => d.name === "stroke").map((d) => [d.stroke, d.lineWidth])).toEqual([
+      ["#757575", 3],
+    ]);
+    expect(inside.filter((d) => d.name === "fillText").map((d) => [d.args[0], d.fill])).toEqual([
+      ["1", "#757575"],
+    ]);
+    // Target 2 is not: its halo, its blue core with a white rim, a black number.
+    expect(outside.filter((d) => d.name === "arc").map((d) => d.args[2])).toEqual([17, 10]);
+    expect(outside.filter((d) => d.name === "fill").map((d) => [d.fill, d.alpha])).toEqual([
+      ["#2196f3", 0.25],
+      ["#2196f3", 1],
+    ]);
+    expect(outside.filter((d) => d.name === "stroke").map((d) => d.stroke)).toEqual(["#ffffff"]);
+    expect(outside.filter((d) => d.name === "fillText").map((d) => d.fill)).toEqual(["#000000"]);
+
+    // The grey follows a dark card.
+    const dark = await dotsCard(readings, fan, { dark_mode: true });
+    const darkDraws = drawRecordingContext();
+    dark.card.ctx = darkDraws.ctx;
+    dark.card._drawTrackedTargets();
+    expect(darkDraws.draws.find((d) => d.name === "stroke")?.stroke).toBe("#8a8f98");
   });
 });
 
@@ -3391,6 +3571,88 @@ describe("zone map card repaints on hass pushes", () => {
 });
 
 /**
+ * The "Radar offline" note.
+ *
+ * While a radar is offline its target sensors read unavailable: the map has no
+ * dots and every zone greys out, which on its own looks like an empty room. A
+ * note over the map's top left corner says what is going on, by the rule zone
+ * presence uses to go unavailable: some tracked sensor has a state, and every
+ * one that has a state is unavailable. `unknown` is a live state.
+ */
+describe("zone map card offline radar", () => {
+  const UNAVAILABLE = { state: "unavailable" };
+
+  async function offlineCard(payload: any = ZONE_PAYLOAD) {
+    const hass = fakeHass(payload);
+    const card = await mountCard(hass);
+    const push = (states: Record<string, any>) => {
+      card.hass = { ...hass, states };
+    };
+    return { card, hass, push };
+  }
+
+  const note = (card: any) => card.shadowRoot.getElementById("offlineNote");
+
+  it("shows Radar offline when every tracked target is unavailable", async () => {
+    const { card, push } = await offlineCard();
+    expect(note(card).hidden).toBe(true);
+    expect(note(card).textContent).toBe("Radar offline");
+    expect(note(card).getAttribute("role")).toBe("status");
+
+    push({ "sensor.a_x": UNAVAILABLE, "sensor.a_y": UNAVAILABLE });
+
+    expect(note(card).hidden).toBe(false);
+    // A render rebuilds the map with the note still up.
+    card.render();
+    expect(note(card).hidden).toBe(false);
+  });
+
+  it("hides the note when the radar is back", async () => {
+    const { card, push } = await offlineCard();
+    push({ "sensor.a_x": UNAVAILABLE, "sensor.a_y": UNAVAILABLE });
+    expect(note(card).hidden).toBe(false);
+
+    push({ "sensor.a_x": { state: "0" }, "sensor.a_y": { state: "0" } });
+    expect(note(card).hidden).toBe(true);
+
+    // Half a radar is not an offline radar, and unknown is a state a live
+    // sensor can be in.
+    push({ "sensor.a_x": UNAVAILABLE, "sensor.a_y": { state: "unknown" } });
+    expect(note(card).hidden).toBe(true);
+  });
+
+  it("keeps the note off with no tracked pairs", async () => {
+    // Cleared on purpose: nothing is tracked, so nothing can be offline.
+    const cleared = await offlineCard({ ...ZONE_PAYLOAD, entities: [], suggested_entities: [] });
+    cleared.push({ "sensor.a_x": UNAVAILABLE, "sensor.a_y": UNAVAILABLE });
+    expect(note(cleared.card).hidden).toBe(true);
+
+    // Pairs whose sensors have no state at all say nothing either way.
+    const missing = await offlineCard();
+    missing.push({ "sensor.kitchen_light": UNAVAILABLE });
+    expect(note(missing.card).hidden).toBe(true);
+  });
+
+  it("follows a payload that tracks other pairs", async () => {
+    const { card, hass, push } = await offlineCard();
+    push({
+      "sensor.a_x": UNAVAILABLE,
+      "sensor.a_y": UNAVAILABLE,
+      "sensor.b_x": { state: "500" },
+      "sensor.b_y": { state: "2000" },
+    });
+    expect(note(card).hidden).toBe(false);
+
+    hass.handlers[ZONES_SUBSCRIBE][0]({
+      ...ZONE_PAYLOAD,
+      entities: [{ x: "sensor.b_x", y: "sensor.b_y" }],
+    });
+
+    expect(note(card).hidden).toBe(true);
+  });
+});
+
+/**
  * Gestures that carry no shape.
  *
  * The backend keeps a rect only when x_min < x_max and y_min < y_max, and for
@@ -4406,6 +4668,53 @@ describe("zone map card non-primary mouse buttons", () => {
 });
 
 
+interface Draw {
+  name: string;
+  args: any[];
+  fill: unknown;
+  stroke: unknown;
+  lineWidth: unknown;
+  alpha: unknown;
+  font: unknown;
+  /** How many save() calls are open when this call runs. */
+  depth: number;
+}
+
+/**
+ * A 2D context that notes every call with its arguments and the styles and
+ * save depth it ran under. Styles are plain properties: restore() does not
+ * put them back, so read the style a call ran under, not what a later call
+ * inherits.
+ */
+function drawRecordingContext() {
+  const draws: Draw[] = [];
+  let depth = 0;
+  const ctx = new Proxy({} as Record<string | symbol, any>, {
+    get(target, prop) {
+      if (prop in target) return target[prop];
+      return (...args: any[]) => {
+        if (prop === "restore") depth -= 1;
+        draws.push({
+          name: String(prop),
+          args,
+          fill: target.fillStyle,
+          stroke: target.strokeStyle,
+          lineWidth: target.lineWidth,
+          alpha: target.globalAlpha,
+          font: target.font,
+          depth,
+        });
+        if (prop === "save") depth += 1;
+      };
+    },
+    set(target, prop, value) {
+      target[prop] = value;
+      return true;
+    },
+  });
+  return { ctx, draws };
+}
+
 /** A 2D context that notes the fill and stroke style each call ran under. */
 function styleRecordingContext() {
   const draws: Array<[string, any, any]> = [];
@@ -4427,12 +4736,14 @@ function styleRecordingContext() {
 /**
  * The colors a zone and an in-progress shape are painted in.
  *
- * A zone fills with its palette color at 0.30 alpha and outlines it at full
- * alpha, picked by zone id so a zone keeps its color when another one goes.
+ * A zone's hue comes from its palette pair, picked by zone id so a zone keeps
+ * its color when another one goes, and is outlined at full alpha. The fill's
+ * alpha says whether its presence sensor is on: 0.45 on, 0.18 off, which is
+ * also how a zone with no presence sensor draws.
  */
 describe("zone map card drawing colors", () => {
-  const RED = ["rgba(244, 67, 54, 0.30)", "rgba(244, 67, 54, 1)"];
-  const BLUE = ["rgba(33, 150, 243, 0.30)", "rgba(33, 150, 243, 1)"];
+  const RED = ["rgba(244, 67, 54, 0.18)", "rgba(244, 67, 54, 1)"];
+  const BLUE = ["rgba(33, 150, 243, 0.18)", "rgba(33, 150, 243, 1)"];
 
   it("fills and outlines each zone with its id's palette pair", async () => {
     const hass = fakeHass({
@@ -4513,6 +4824,273 @@ describe("zone map card drawing colors", () => {
       ["fill", "#ffffff"],
       ["stroke", "rgba(0,0,0,0.6)"],
     ]);
+  });
+});
+
+/**
+ * Zones lit by their presence sensors, and ignore zones.
+ *
+ * The map used to draw every zone the same whatever its presence sensor said,
+ * so it could not show which zone a target turned on. A detect zone now keeps
+ * its hue and shows its sensor's state by alpha and dash: on is a strong fill
+ * with a solid outline, off a faint fill with an [8, 6] dash, unavailable (the
+ * radar is offline) a dashed grey. An ignore zone, where presence drops every
+ * target before the other zones see it, is hatched grey and labeled so.
+ */
+describe("zone map card zone looks", () => {
+  const PRESENCE = "binary_sensor.office_zone_1_presence";
+  const RED_ON = "rgba(244, 67, 54, 0.45)";
+  const RED_OFF = "rgba(244, 67, 54, 0.18)";
+  const RED = "rgba(244, 67, 54, 1)";
+  const WINDOW = { x_min: -4000, x_max: -2000, y_min: 1000, y_max: 3000 };
+
+  /** ZONE_PAYLOAD's Doorway, naming `presence` as its sensor unless null,
+   *  plus `extra` zones. */
+  function payload(presence: string | null = PRESENCE, extra: Record<string, any> = {}) {
+    const doorway: Record<string, any> = { ...ZONE_PAYLOAD.zones["1"] };
+    if (presence !== null) doorway.presence_entity_id = presence;
+    return { ...ZONE_PAYLOAD, zones: { "1": doorway, ...extra } };
+  }
+
+  async function looksCard(
+    zones: any,
+    states: Record<string, any> = {},
+    config: Record<string, any> = {}
+  ) {
+    const hass = fakeHass(zones);
+    const card = await mountCard(hass, { ...TEN_METER_GRID, ...config });
+    hass.states = states;
+    const { ctx, draws } = drawRecordingContext();
+    card.ctx = ctx;
+    return { card, hass, draws };
+  }
+
+  /** Each fill and stroke of a zone's shape, with the dash set before it. */
+  function zoneDraws(draws: Draw[]) {
+    let dash: number[] | null = null;
+    const out: any[] = [];
+    for (const draw of draws) {
+      if (draw.name === "setLineDash") dash = draw.args[0];
+      if (["fillRect", "fill"].includes(draw.name)) out.push([draw.name, draw.fill]);
+      if (["strokeRect", "stroke"].includes(draw.name)) {
+        out.push([draw.name, draw.stroke, draw.lineWidth, dash]);
+      }
+    }
+    return out;
+  }
+
+  const labels = (draws: Draw[]) =>
+    draws.filter((draw) => draw.name === "fillText").map((draw) => draw.args[0]);
+
+  it("lights a zone whose presence sensor is on", async () => {
+    const { card, draws } = await looksCard(payload(), {
+      [PRESENCE]: { state: "on", attributes: {} },
+    });
+
+    card.drawZones();
+
+    expect(zoneDraws(draws)).toEqual([
+      ["fillRect", RED_ON],
+      ["strokeRect", RED, 3, []],
+    ]);
+    expect(labels(draws)).toEqual(["Doorway"]);
+  });
+
+  it("dashes a zone whose presence sensor is off", async () => {
+    const { card, draws } = await looksCard(payload(), {
+      [PRESENCE]: { state: "off", attributes: {} },
+    });
+
+    card.drawZones();
+
+    expect(zoneDraws(draws)).toEqual([
+      ["fillRect", RED_OFF],
+      ["strokeRect", RED, 2, [8, 6]],
+    ]);
+    // Set inside the zone's own save and restore, so it ends with the zone.
+    const dashes = draws.filter((draw) => draw.name === "setLineDash");
+    expect(dashes.map((draw) => [draw.args[0], draw.depth])).toEqual([[[8, 6], 1]]);
+    const saves = draws.filter((draw) => draw.name === "save" && draw.depth === 0).length;
+    const restores = draws.filter((draw) => draw.name === "restore" && draw.depth === 0).length;
+    expect(saves).toBe(restores);
+  });
+
+  it("greys a zone whose presence sensor is unavailable", async () => {
+    const offline = { [PRESENCE]: { state: "unavailable", attributes: {} } };
+    const light = await looksCard(payload(), offline, { dark_mode: false });
+    light.card.drawZones();
+    expect(zoneDraws(light.draws)).toEqual([
+      ["fillRect", "rgba(158, 158, 158, 0.18)"],
+      ["strokeRect", "rgba(117, 117, 117, 0.9)", 2, [4, 4]],
+    ]);
+
+    const dark = await looksCard(payload(), offline, { dark_mode: true });
+    dark.card.drawZones();
+    expect(zoneDraws(dark.draws)).toEqual([
+      ["fillRect", "rgba(138, 143, 152, 0.22)"],
+      ["strokeRect", "rgba(160, 165, 175, 0.9)", 2, [4, 4]],
+    ]);
+  });
+
+  it("draws a zone with no presence entity as off", async () => {
+    // No id in the payload and none in the registry, a null id, a sensor
+    // with no state yet, and one that is unknown all read as off.
+    const cases: [any, Record<string, any>][] = [
+      [payload(null), {}],
+      [payload(null, {}), { [PRESENCE]: { state: "on", attributes: {} } }],
+      [{ ...payload(null), zones: { "1": { ...payload(null).zones["1"], presence_entity_id: null } } }, {}],
+      [payload(), {}],
+      [payload(), { [PRESENCE]: { state: "unknown", attributes: {} } }],
+    ];
+    for (const [zones, states] of cases) {
+      const { card, draws } = await looksCard(zones, states);
+      card.drawZones();
+      expect(zoneDraws(draws)).toEqual([
+        ["fillRect", RED_OFF],
+        ["strokeRect", RED, 2, [8, 6]],
+      ]);
+    }
+  });
+
+  it("labels a held zone (held)", async () => {
+    // A held zone is on with nobody on the map, so its label says why.
+    const { card, hass, draws } = await looksCard(payload(), {
+      [PRESENCE]: { state: "on", attributes: { held: true } },
+    });
+
+    card.drawZones();
+    expect(labels(draws)).toEqual(["Doorway (held)"]);
+    expect(zoneDraws(draws)[0]).toEqual(["fillRect", RED_ON]);
+
+    draws.length = 0;
+    hass.states = { [PRESENCE]: { state: "on", attributes: { held: false } } };
+    card.drawZones();
+    expect(labels(draws)).toEqual(["Doorway"]);
+  });
+
+  it("finds a zone's presence sensor by its entity id pattern when the payload has none", async () => {
+    // A 2.3.0 backend names no presence entity. The integration's own id for
+    // zone 1's sensor on this radar still lights it.
+    const { card, hass, draws } = await looksCard(payload(null), {
+      [PRESENCE]: { state: "on", attributes: {} },
+    });
+    hass.entities = {
+      "binary_sensor.office_zone_2_presence": { device_id: "dev123", platform: "apollo_mmwave" },
+      [PRESENCE]: { device_id: "dev123", platform: "apollo_mmwave" },
+      "binary_sensor.hall_zone_1_presence": { device_id: "other", platform: "apollo_mmwave" },
+    };
+
+    card.drawZones();
+
+    expect(card._presenceEntityFor(1)).toBe(PRESENCE);
+    expect(zoneDraws(draws)[0]).toEqual(["fillRect", RED_ON]);
+
+    // The id the payload names wins over the pattern.
+    const named = await looksCard(payload("binary_sensor.renamed"), {
+      [PRESENCE]: { state: "on", attributes: {} },
+      "binary_sensor.renamed": { state: "off", attributes: {} },
+    });
+    named.hass.entities = hass.entities;
+    named.card.drawZones();
+    expect(named.card._presenceEntityFor(1)).toBe("binary_sensor.renamed");
+    expect(zoneDraws(named.draws)[0]).toEqual(["fillRect", RED_OFF]);
+  });
+
+  it("does not leak a line dash into the next frame", async () => {
+    // Every dash a zone or a preview sets is undone by its own restore, so
+    // the next frame's grid lines, previews and dots start solid.
+    const { card, hass, draws } = await looksCard(
+      payload(PRESENCE, {
+        "2": {
+          shape: "ellipse",
+          data: { cx: 2500, cy: 6000, rx: 1000, ry: 800 },
+          presence_entity_id: "binary_sensor.office_zone_2_presence",
+        },
+        "3": { shape: "rect", data: WINDOW, zone_type: "ignore" },
+      }),
+      {
+        [PRESENCE]: { state: "off", attributes: {} },
+        "binary_sensor.office_zone_2_presence": { state: "unavailable", attributes: {} },
+        "sensor.a_x": { state: "500" },
+        "sensor.a_y": { state: "2000" },
+      },
+      { start_locked: false, unit_display: true }
+    );
+    card._setSelectedZone(1);
+    card.drawMode = "rect";
+    card.isDrawing = true;
+    card.startPoint = { x: 100, y: 100 };
+    card._cursorPoint = { x: 300, y: 250 };
+    card.hass = { ...hass };
+
+    draws.length = 0;
+    card.drawGrid();
+    card.drawGrid();
+
+    const dashes = draws.filter((draw) => draw.name === "setLineDash");
+    expect(dashes.map((draw) => draw.args[0])).toEqual(
+      expect.arrayContaining([[8, 6], [4, 4], [6, 4], [5, 5]])
+    );
+    expect(dashes.filter((draw) => draw.depth < 1)).toEqual([]);
+    // Every save is restored within the frame.
+    const last = draws[draws.length - 1];
+    const depthAfter = last.depth + (last.name === "save" ? 1 : 0);
+    expect(depthAfter).toBe(0);
+    expect(draws.filter((draw) => draw.depth < 0)).toEqual([]);
+  });
+
+  it("hatches ignore zones and labels them (ignored)", async () => {
+    const zones = payload(PRESENCE, { "2": { shape: "rect", data: WINDOW, name: "Fan", zone_type: "ignore" } });
+    const { card, draws } = await looksCard(zones, { [PRESENCE]: { state: "on", attributes: {} } });
+    const hatch = { pattern: "diagonal" };
+    const createPattern = vi.fn((_tile: unknown, _repetition: string) => hatch);
+    card.ctx.createPattern = createPattern;
+
+    card.drawZones();
+
+    // The ignore zone draws last, over any detect zone it overlaps.
+    expect(zoneDraws(draws)).toEqual([
+      ["fillRect", RED_ON],
+      ["strokeRect", RED, 3, []],
+      ["fillRect", hatch],
+      ["strokeRect", "rgba(97, 97, 97, 0.9)", 2, [6, 4]],
+    ]);
+    expect(labels(draws)).toEqual(["Doorway", "Fan (ignored)"]);
+    expect(createPattern).toHaveBeenCalledTimes(1);
+    expect(createPattern.mock.calls[0][1]).toBe("repeat");
+    expect((createPattern.mock.calls[0][0] as HTMLCanvasElement).width).toBe(12);
+
+    // Made once, not on every frame.
+    card.drawZones();
+    expect(createPattern).toHaveBeenCalledTimes(1);
+  });
+
+  it("fills an ignore zone flat when no pattern can be made", async () => {
+    const zones = payload(PRESENCE, { "2": { shape: "rect", data: WINDOW, zone_type: "ignore" } });
+    const ignored = (draws: Draw[]) => zoneDraws(draws).slice(2);
+
+    // A context whose createPattern makes nothing, like the test contexts'.
+    const light = await looksCard(zones, {}, { dark_mode: false });
+    light.card.drawZones();
+    expect(ignored(light.draws)).toEqual([
+      ["fillRect", "rgba(97, 97, 97, 0.18)"],
+      ["strokeRect", "rgba(97, 97, 97, 0.9)", 2, [6, 4]],
+    ]);
+
+    const dark = await looksCard(zones, {}, { dark_mode: true });
+    dark.card.ctx.createPattern = () => {
+      throw new Error("no patterns here");
+    };
+    dark.card.drawZones();
+    expect(ignored(dark.draws)).toEqual([
+      ["fillRect", "rgba(189, 189, 189, 0.16)"],
+      ["strokeRect", "rgba(189, 189, 189, 0.9)", 2, [6, 4]],
+    ]);
+
+    const none = await looksCard(zones, {}, { dark_mode: false });
+    none.card.ctx.createPattern = () => null;
+    none.card.drawZones();
+    expect(ignored(none.draws)[0]).toEqual(["fillRect", "rgba(97, 97, 97, 0.18)"]);
   });
 });
 

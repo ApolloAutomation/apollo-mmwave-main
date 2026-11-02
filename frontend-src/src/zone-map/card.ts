@@ -21,16 +21,19 @@ import {
   ADMIN_ONLY_TITLE,
   CLEAR_LOCKED_TOAST,
   DRAW_LOCKED_TOAST,
+  HELD_SUFFIX,
+  IGNORED_SUFFIX,
   LOCK_OFF_TOAST,
   LOCK_ON_TOAST,
   MIRROR_HINT,
   MIRROR_LABEL,
+  OFFLINE_NOTE,
   POLY_TOO_FEW_TOAST,
   SELECT_ZONE_TOAST,
 } from './copy';
 import { ZONE_MAP_EDITOR_TAG, firstLd2450DeviceId } from './editor';
 import { pointInZone, rotateToMap } from './geometry';
-import { fallbackPresenceId } from './presence';
+import { fallbackPresenceId, presenceLook } from './presence';
 
 const COLOR = Object.freeze({
   ui: {
@@ -77,14 +80,54 @@ const COLOR = Object.freeze({
     drawStrokeDark: 'rgba(255,255,255,0.75)',
     deviceConeFill: 'rgba(128, 233, 31, 0.06)',
     deviceConeStroke: 'rgba(117, 243, 33, 0.6)',
+    // Hue says which zone it is; the fill's alpha (and the stroke's dash)
+    // says whether its presence sensor is on.
     zonePalette: [
-      { fill: 'rgba(244, 67, 54, 0.30)', stroke: 'rgba(244, 67, 54, 1)' },
-      { fill: 'rgba(33, 150, 243, 0.30)', stroke: 'rgba(33, 150, 243, 1)' },
-      { fill: 'rgba(76, 175, 80, 0.30)', stroke: 'rgba(76, 175, 80, 1)' },
-      { fill: 'rgba(255, 193, 7, 0.30)', stroke: 'rgba(255, 193, 7, 1)' },
-      { fill: 'rgba(156, 39, 176, 0.30)', stroke: 'rgba(156, 39, 176, 1)' },
+      {
+        fillOn: 'rgba(244, 67, 54, 0.45)',
+        fillOff: 'rgba(244, 67, 54, 0.18)',
+        stroke: 'rgba(244, 67, 54, 1)',
+      },
+      {
+        fillOn: 'rgba(33, 150, 243, 0.45)',
+        fillOff: 'rgba(33, 150, 243, 0.18)',
+        stroke: 'rgba(33, 150, 243, 1)',
+      },
+      {
+        fillOn: 'rgba(76, 175, 80, 0.45)',
+        fillOff: 'rgba(76, 175, 80, 0.18)',
+        stroke: 'rgba(76, 175, 80, 1)',
+      },
+      {
+        fillOn: 'rgba(255, 193, 7, 0.45)',
+        fillOff: 'rgba(255, 193, 7, 0.18)',
+        stroke: 'rgba(255, 193, 7, 1)',
+      },
+      {
+        fillOn: 'rgba(156, 39, 176, 0.45)',
+        fillOff: 'rgba(156, 39, 176, 0.18)',
+        stroke: 'rgba(156, 39, 176, 1)',
+      },
     ],
+    // A detect zone whose presence sensor is unavailable (the radar is offline).
+    zoneUnavailableFillLight: 'rgba(158, 158, 158, 0.18)',
+    zoneUnavailableFillDark: 'rgba(138, 143, 152, 0.22)',
+    zoneUnavailableStrokeLight: 'rgba(117, 117, 117, 0.9)',
+    zoneUnavailableStrokeDark: 'rgba(160, 165, 175, 0.9)',
+    // Ignore zones: a grey hatch, or a flat grey where no pattern can be made.
+    ignoreHatchLight: 'rgba(97, 97, 97, 0.45)',
+    ignoreHatchDark: 'rgba(189, 189, 189, 0.40)',
+    ignoreFillLight: 'rgba(97, 97, 97, 0.18)',
+    ignoreFillDark: 'rgba(189, 189, 189, 0.16)',
+    ignoreStrokeLight: 'rgba(97, 97, 97, 0.9)',
+    ignoreStrokeDark: 'rgba(189, 189, 189, 0.9)',
     targetPalette: ['#f44336', '#2196f3', '#4caf50', '#ffc107', '#9c27b0'],
+    // The number on each target dot, by the same index: black on red, blue,
+    // green and amber, white on purple, whichever contrasts more.
+    targetNumber: ['#000000', '#000000', '#000000', '#000000', '#ffffff'],
+    // A target inside an ignore zone, which presence does not see.
+    ignoredTargetLight: '#757575',
+    ignoredTargetDark: '#8a8f98',
   },
 });
 
@@ -322,6 +365,10 @@ export class ZoneMapCard extends HTMLElement {
     this._movementHistory = false;
     // When _notifyThrottled last showed each message, by message.
     this._toastAt = new Map();
+    // Whether the "Radar offline" note is showing (see _renderOfflineNote).
+    this._offlineShown = false;
+    // The ignore zones' hatch pattern per theme, made once per context.
+    this._hatch = { light: null, dark: null };
     // Canvas backing px per CSS px, read once at the top of each frame.
     this._frameScale = 1;
     // When the canvas was last painted, on the _now() clock.
@@ -588,6 +635,8 @@ export class ZoneMapCard extends HTMLElement {
     this._mirrorX = false;
     this._movementHistory = false;
     this._toastAt = new Map();
+    this._offlineShown = false;
+    this._hatch = { light: null, dark: null };
     this._frameScale = 1;
     this._lastDrawAt = 0;
     this._closeHistory();
@@ -726,9 +775,44 @@ export class ZoneMapCard extends HTMLElement {
   /**
    * The live targets moved (or appeared, or went). Everything that follows
    * them between paints samples here, once per move, before the repaint.
-   * Nothing does yet.
    */
-  _onTargetsChanged(now) {}
+  _onTargetsChanged(now) {
+    // The same states say whether the radar went offline or came back.
+    this._renderOfflineNote();
+  }
+
+  /**
+   * Whether the radar is offline, decided the way zone presence decides it:
+   * the tracked pairs name some sensor, at least one of them has a state, and
+   * every one that has a state is unavailable. Ids with no state at all (a
+   * pair list naming sensors that never existed) say nothing either way.
+   */
+  _radarOffline() {
+    const states = this._hass?.states;
+    if (!states) return false;
+    const ids = [];
+    (this.trackedEntities || []).forEach((pair) => {
+      [pair?.x, pair?.y].forEach((id) => {
+        if (typeof id === 'string' && id && !ids.includes(id)) ids.push(id);
+      });
+    });
+    const present = ids.map((id) => states[id]).filter(Boolean);
+    return present.length > 0 && present.every((stateObj) => stateObj.state === 'unavailable');
+  }
+
+  /**
+   * Show "Radar offline" over the map while _radarOffline holds: the zones
+   * grey out from their own unavailable states, and an empty map would
+   * otherwise read as an empty room. Touches the DOM only when the answer
+   * changes; the template draws the note from _offlineShown after a render.
+   */
+  _renderOfflineNote() {
+    const offline = this._radarOffline();
+    if (offline === this._offlineShown) return;
+    this._offlineShown = offline;
+    const note = this.shadowRoot?.getElementById('offlineNote');
+    if (note) note.hidden = !offline;
+  }
 
   /**
    * Each live target with a reading, in mm in the radar's own frame (unit
@@ -968,6 +1052,8 @@ export class ZoneMapCard extends HTMLElement {
       );
     }
     this._renderEntityStatus();
+    // Other pairs can be online when the old ones were not, and the other way.
+    this._renderOfflineNote();
   }
 
   processEntityConfig(entityConfig) {
@@ -1060,6 +1146,9 @@ export class ZoneMapCard extends HTMLElement {
            selected) lets a vertical swipe scroll the page. Two declarations:
            iOS 14 does not know pinch-zoom and keeps the first. */
         canvas.pans { touch-action: pan-y; touch-action: pan-y pinch-zoom; }
+        /* A note over the map's top left corner. It takes no pointer, so a
+           press on it still lands on the canvas. */
+        .map-note { position: absolute; top: 4px; left: 4px; z-index: 1; pointer-events: none; padding: 4px 8px; border-radius: 6px; font-size: 12px; line-height: 1.3; background: ${COLOR.ui.overlayButtonLightBg}; color: ${COLOR.ui.overlayButtonText}; }
         .overlay-controls { position: absolute; bottom: 4px; display: flex; gap: 4px; z-index: 1; }
         .overlay-controls-left { left: 4px; flex-direction: column; align-items: flex-start; }
         .overlay-controls-right { right: 4px; }
@@ -1155,6 +1244,7 @@ export class ZoneMapCard extends HTMLElement {
         <div class="device-title" id="deviceTitle"></div>
         <div class="canvas-container">
           <canvas id="zoneCanvas"></canvas>
+          <div class="map-note" id="offlineNote" role="status" ${this._offlineShown ? '' : 'hidden'}>${OFFLINE_NOTE}</div>
           <div class="overlay-controls overlay-controls-left" id="overlayControlsLeft">
             <div id="modeGroup" style="display: ${this.showModeMenu ? 'flex' : 'none'}; flex-direction: column; gap: 4px;">
               <button id="btnPolyFinish" title="Finish polygon">✓</button>
@@ -1314,21 +1404,58 @@ export class ZoneMapCard extends HTMLElement {
     }
   }
 
-  drawCurrentPosition(x, y, color = COLOR.canvas.defaultTarget) {
+  /**
+   * One target dot at map-frame mm (x, y), with `label` (its number) on it.
+   * A dot is a filled core with a soft halo, so it reads over a lit zone; a
+   * target presence ignores (`hollow`) is a grey ring with a grey number
+   * instead. The radius follows the card's width, never below 10 backing px.
+   */
+  drawCurrentPosition(
+    x,
+    y,
+    color = COLOR.canvas.defaultTarget,
+    label = null,
+    { hollow = false, numberColor = '#000000' } = {},
+  ) {
     if (!this.ctx || !this.canvas) return;
     const ctx = this.ctx;
     const pixelX = this.valueToPixels(x, 'x');
     const pixelY = this.valueToPixels(y, 'y');
-
-    if (pixelX >= 0 && pixelX <= this.canvas.width && pixelY >= 0 && pixelY <= this.canvas.height) {
-      ctx.fillStyle = color;
+    if (pixelX < 0 || pixelX > this.canvas.width || pixelY < 0 || pixelY > this.canvas.height) {
+      return;
+    }
+    const r = Math.max(10, Math.round(9 * (this._frameScale || 1)));
+    let textColor = numberColor;
+    ctx.save();
+    if (hollow) {
+      textColor = this.darkMode ? COLOR.canvas.ignoredTargetDark : COLOR.canvas.ignoredTargetLight;
+      ctx.strokeStyle = textColor;
+      ctx.lineWidth = 3;
       ctx.beginPath();
-      ctx.arc(pixelX, pixelY, 10, 0, 2 * Math.PI);
+      ctx.arc(pixelX, pixelY, r, 0, 2 * Math.PI);
+      ctx.stroke();
+    } else {
+      ctx.fillStyle = color;
+      ctx.globalAlpha = 0.25;
+      ctx.beginPath();
+      ctx.arc(pixelX, pixelY, r * 1.7, 0, 2 * Math.PI);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.beginPath();
+      ctx.arc(pixelX, pixelY, r, 0, 2 * Math.PI);
       ctx.fill();
       ctx.strokeStyle = COLOR.canvas.targetStroke;
       ctx.lineWidth = 3;
       ctx.stroke();
     }
+    if (label !== null && label !== undefined && label !== '') {
+      ctx.fillStyle = textColor;
+      ctx.font = `bold ${Math.round(r * 1.1)}px sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(String(label), pixelX, pixelY);
+    }
+    ctx.restore();
   }
 
   attachEventListeners() {
@@ -3362,12 +3489,19 @@ export class ZoneMapCard extends HTMLElement {
     this._refitAndDraw();
   }
 
+  /**
+   * Paint the whole map, bottom layer first: painted cells, the grid, its
+   * labels and the cone, the zones, a shape being drawn, then the targets.
+   */
   drawGrid() {
     if (!this.ctx || !this.canvas) return;
     const ctx = this.ctx;
     // One layout read per frame; what is sized in CSS px reads it from here.
     this._frameScale = this._canvasScale();
     ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    // First, so no grid, ring or range label is tinted by the cells, and
+    // still under the zones.
+    this._drawCellLayer(ctx);
 
     const gridState = this._getGridRenderState();
     const gridMetrics = gridState?.metrics;
@@ -3397,9 +3531,30 @@ export class ZoneMapCard extends HTMLElement {
 
     this.drawZones();
     this._drawInProgress();
+    this._drawWalkPreview(ctx);
+    // Trails under the dots, which they lead up to.
+    this._drawTrails(ctx);
     this._drawTrackedTargets();
+    // Corner markers over the dots, so the walker's own dot never hides the
+    // newest corner.
+    this._drawWalkMarkers(ctx);
+    // The trail fade timer skips a frame a hass push painted a moment ago.
     this._lastDrawAt = this._now();
   }
+
+  /** Cells painted under the whole map: where targets have been (coverage),
+   *  or a replay's heatmap. The card paints none yet. */
+  _drawCellLayer(ctx) {}
+
+  /** The shape a walk's corners make so far. The card has no Walk mode yet. */
+  _drawWalkPreview(ctx) {}
+
+  /** The fading trail behind each live target. The card keeps no trails yet. */
+  _drawTrails(ctx) {}
+
+  /** A ring and number on each corner a walk marked. The card has no Walk
+   *  mode yet. */
+  _drawWalkMarkers(ctx) {}
 
   /**
    * Where the "Radar range 6 m (20 ft), 120°" label goes, in canvas px, or
@@ -3559,12 +3714,21 @@ export class ZoneMapCard extends HTMLElement {
     ctx.restore();
   }
 
+  /**
+   * Each live target as a dot numbered by its pair (Target N on an Apollo
+   * radar, whose pairs are in target order), hollow and grey inside an
+   * ignore zone, where presence drops it.
+   */
   _drawTrackedTargets() {
     if (!this._hass) return;
     const colors = COLOR.canvas.targetPalette;
+    const numbers = COLOR.canvas.targetNumber;
     this._currentTargets().forEach(({ slot, x, y }) => {
       const m = this._toMap(x, y);
-      this.drawCurrentPosition(m.x, m.y, colors[slot % colors.length]);
+      this.drawCurrentPosition(m.x, m.y, colors[slot % colors.length], String(slot + 1), {
+        hollow: this._isIgnored(m.x, m.y),
+        numberColor: numbers[slot % numbers.length],
+      });
     });
   }
 
@@ -3585,16 +3749,31 @@ export class ZoneMapCard extends HTMLElement {
     return known ? SENSOR_LENGTH_UNITS[unit] : this.inputUnitMultiplier || 1;
   }
 
-  drawZones() {
+  /**
+   * Every zone with a shape, in id order, ignore zones last so their hatch
+   * shows over a detect zone they overlap. `lit`, a Set of zone ids, stands
+   * in for the presence sensors when a replay draws zones as they were.
+   */
+  drawZones({ lit = null } = {}) {
     const ctx = this.ctx;
+    if (!ctx) return;
     const colors = COLOR.canvas.zonePalette;
-    const orderedZones = [...this.zones].sort((a, b) => Number(a.id) - Number(b.id));
+    const byId = [...this.zones].sort((a, b) => Number(a.id) - Number(b.id));
+    const orderedZones = [
+      ...byId.filter((zone) => !this._isIgnoreZone(zone?.id)),
+      ...byId.filter((zone) => this._isIgnoreZone(zone?.id)),
+    ];
     orderedZones.forEach((zone, idx) => {
       if (!zone || !zone.shape || !zone.data) return;
       const color = colors[(Number(zone.id) - 1) % colors.length] || colors[idx % colors.length];
-      ctx.strokeStyle = color.stroke;
-      ctx.fillStyle = color.fill;
-      ctx.lineWidth = 3;
+      const look = this._zoneLook(zone.id, color, lit);
+      // Each zone in its own save and restore, so its dash never reaches the
+      // grid lines, a shape being drawn or the dots.
+      ctx.save();
+      ctx.strokeStyle = look.stroke;
+      ctx.fillStyle = look.fill;
+      ctx.lineWidth = look.lineWidth;
+      ctx.setLineDash(look.dash);
       let bbox = null; // {x,y,width,height}
       if (zone.shape === DRAW_MODES.RECT) {
         const { x_min, x_max, y_min, y_max } = zone.data;
@@ -3646,10 +3825,107 @@ export class ZoneMapCard extends HTMLElement {
           bbox = { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
         }
       }
+      ctx.restore();
       if (bbox && bbox.width > 20 && bbox.height > 14) {
-        this._drawZoneLabel(zone, bbox);
+        this._drawZoneLabel(zone, bbox, look.suffix);
       }
     });
+  }
+
+  /** Whether zone `zoneId` is an ignore zone, by the payload's zone_type. */
+  _isIgnoreZone(zoneId) {
+    return this._zoneMeta.get(Number(zoneId))?.type === 'ignore';
+  }
+
+  /**
+   * How zone `zoneId` is drawn: `{ fill, stroke, dash, lineWidth, suffix }`.
+   * A detect zone keeps its hue, `color`, so on and off show by alpha and
+   * dash alone: on is a strong fill with a solid outline, off (and unknown,
+   * or no sensor at all) a faint fill with a dashed one. Unavailable, the
+   * radar being offline, greys it out. A held zone's label says so, since it
+   * is lit with nobody on the map. An ignore zone, whose sensor always reads
+   * off, is hatched grey.
+   */
+  _zoneLook(zoneId, color, lit) {
+    const dark = this.darkMode;
+    if (this._isIgnoreZone(zoneId)) {
+      return {
+        fill:
+          this._hatchPattern(dark) ||
+          (dark ? COLOR.canvas.ignoreFillDark : COLOR.canvas.ignoreFillLight),
+        stroke: dark ? COLOR.canvas.ignoreStrokeDark : COLOR.canvas.ignoreStrokeLight,
+        dash: [6, 4],
+        lineWidth: 2,
+        suffix: IGNORED_SUFFIX,
+      };
+    }
+    let state = null;
+    let held = false;
+    if (lit) {
+      state = lit.has(Number(zoneId)) ? 'on' : 'off';
+    } else {
+      const entityId = this._presenceEntityFor(zoneId);
+      const stateObj = entityId ? this._hass?.states?.[entityId] : null;
+      state = presenceLook(stateObj?.state);
+      held = stateObj?.attributes?.held === true;
+    }
+    const suffix = held ? HELD_SUFFIX : '';
+    if (state === 'on') {
+      return { fill: color.fillOn, stroke: color.stroke, dash: [], lineWidth: 3, suffix };
+    }
+    if (state === 'unavailable') {
+      return {
+        fill: dark ? COLOR.canvas.zoneUnavailableFillDark : COLOR.canvas.zoneUnavailableFillLight,
+        stroke: dark
+          ? COLOR.canvas.zoneUnavailableStrokeDark
+          : COLOR.canvas.zoneUnavailableStrokeLight,
+        dash: [4, 4],
+        lineWidth: 2,
+        suffix,
+      };
+    }
+    // A longer dash than the previews' [5, 5] and [6, 6], so a zone at rest
+    // does not look like a shape being drawn.
+    return { fill: color.fillOff, stroke: color.stroke, dash: [8, 6], lineWidth: 2, suffix };
+  }
+
+  /**
+   * The ignore zones' fill: one diagonal grey line on a 12 x 12 px tile,
+   * repeated. Made once per theme and per context (a render brings a new
+   * canvas). null when the context cannot make a pattern (createPattern
+   * missing, throwing or returning nothing, as in some browsers), and the
+   * zone is then filled flat.
+   */
+  _hatchPattern(dark) {
+    const key = dark ? 'dark' : 'light';
+    const cached = this._hatch[key];
+    if (cached && cached.ctx === this.ctx) return cached.pattern;
+    let pattern = null;
+    try {
+      const tile = document.createElement('canvas');
+      tile.width = 12;
+      tile.height = 12;
+      const tileCtx = tile.getContext('2d');
+      if (tileCtx && typeof this.ctx?.createPattern === 'function') {
+        tileCtx.strokeStyle = dark ? COLOR.canvas.ignoreHatchDark : COLOR.canvas.ignoreHatchLight;
+        tileCtx.lineWidth = 2;
+        tileCtx.beginPath();
+        // The diagonal, then its ends in the two other corners, so the tiles
+        // join into unbroken stripes.
+        tileCtx.moveTo(0, 12);
+        tileCtx.lineTo(12, 0);
+        tileCtx.moveTo(-2, 2);
+        tileCtx.lineTo(2, -2);
+        tileCtx.moveTo(10, 14);
+        tileCtx.lineTo(14, 10);
+        tileCtx.stroke();
+        pattern = this.ctx.createPattern(tile, 'repeat') || null;
+      }
+    } catch {
+      pattern = null;
+    }
+    this._hatch[key] = { ctx: this.ctx, pattern };
+    return pattern;
   }
 
   _drawInProgress() {
@@ -3764,10 +4040,13 @@ export class ZoneMapCard extends HTMLElement {
     ctx.stroke();
   }
 
-  _drawZoneLabel(zone, bbox) {
+  /** The zone's name at its center, followed by `suffix` (" (held)" or
+   *  " (ignored)") when its look needs one. */
+  _drawZoneLabel(zone, bbox, suffix = '') {
     const ctx = this.ctx;
-    const label = this._zoneLabel(zone.id);
-    if (!label) return;
+    const name = this._zoneLabel(zone.id);
+    if (!name) return;
+    const label = `${name}${suffix}`;
     ctx.save();
     ctx.font = '24px sans-serif';
     ctx.fillStyle = this.darkMode ? COLOR.canvas.axisDark : COLOR.canvas.axisLight;
