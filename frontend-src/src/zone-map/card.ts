@@ -305,6 +305,12 @@ const TRAIL_FRAME_MS = 100;
 // drawn. A fingertip covers far more than a mouse pointer does.
 const READOUT_OFFSET_MOUSE_PX = 28;
 const READOUT_OFFSET_TOUCH_PX = 64;
+// The notes over the map's top corners ("Radar offline" and the Replay
+// badge) sit this far (CSS px) below its top edge, and are about this tall:
+// .map-note's 12 px text at line height 1.3, with 4 px padding above and
+// below.
+const MAP_NOTE_INSET_CSS_PX = 4;
+const MAP_NOTE_HEIGHT_CSS_PX = 24;
 // A movement replay that plays paints a frame this often (ms), about 15 a
 // second: smooth enough for a dot sliding between records half a second
 // apart, and a third of the work of an animation frame.
@@ -1503,8 +1509,9 @@ export class ZoneMapCard extends HTMLElement {
            iOS 14 does not know pinch-zoom and keeps the first. */
         canvas.pans { touch-action: pan-y; touch-action: pan-y pinch-zoom; }
         /* A note over the map's top left corner. It takes no pointer, so a
-           press on it still lands on the canvas. */
-        .map-note { position: absolute; top: 4px; left: 4px; z-index: 1; pointer-events: none; padding: 4px 8px; border-radius: 6px; font-size: 12px; line-height: 1.3; background: ${COLOR.ui.overlayButtonLightBg}; color: ${COLOR.ui.overlayButtonText}; }
+           press on it still lands on the canvas. _placeMapNotes moves it
+           below the x labels when they run along the top edge. */
+        .map-note { position: absolute; top: var(--zm-note-top, 4px); left: 4px; z-index: 1; pointer-events: none; padding: 4px 8px; border-radius: 6px; font-size: 12px; line-height: 1.3; background: ${COLOR.ui.overlayButtonLightBg}; color: ${COLOR.ui.overlayButtonText}; }
         /* The same kind of note in the top right corner while a replay shows. */
         .map-note.replay-badge { left: auto; right: 4px; font-variant-numeric: tabular-nums; }
         .overlay-controls { position: absolute; bottom: 4px; display: flex; gap: 4px; z-index: 1; }
@@ -1759,7 +1766,7 @@ export class ZoneMapCard extends HTMLElement {
            page. Two declarations: iOS 14 does not know pinch-zoom and keeps
            the first. */
         canvas { width: 100%; height: 100%; cursor: default; touch-action: pan-y; touch-action: pan-y pinch-zoom; }
-        .map-note { position: absolute; top: 4px; left: 4px; z-index: 1; pointer-events: none; padding: 4px 8px; border-radius: 6px; font-size: 12px; line-height: 1.3; background: ${COLOR.ui.overlayButtonLightBg}; color: ${COLOR.ui.overlayButtonText}; }
+        .map-note { position: absolute; top: var(--zm-note-top, 4px); left: 4px; z-index: 1; pointer-events: none; padding: 4px 8px; border-radius: 6px; font-size: 12px; line-height: 1.3; background: ${COLOR.ui.overlayButtonLightBg}; color: ${COLOR.ui.overlayButtonText}; }
         .device-title { font-size: 1.2em; font-weight: bold; margin-bottom: 8px; }
       </style>
       <div class="container ${this.darkMode ? 'dark' : ''}">
@@ -5085,6 +5092,7 @@ export class ZoneMapCard extends HTMLElement {
     // take either's, so all three are laid out before any is drawn.
     let ringLabels = [];
     let rangeLabel = null;
+    let xLabels = [];
     if (this.unitDisplay) {
       const { thetaStart, thetaEnd, radius } = this._coneSector();
       const rings = this._getConeRingsRenderState(thetaStart, thetaEnd, radius, gridMetrics);
@@ -5094,9 +5102,13 @@ export class ZoneMapCard extends HTMLElement {
         rangeLabel,
         gridState?.labelGap ?? LABEL_GAP_CSS_PX,
       );
-      if (gridState) this._drawGridLabels(ctx, labels.grid);
+      if (gridState) {
+        this._drawGridLabels(ctx, labels.grid);
+        xLabels = labels.grid.x;
+      }
       ringLabels = labels.rings;
     }
+    this._placeMapNotes(xLabels);
 
     this.drawDeviceCone(gridMetrics, ringLabels);
     this._drawRangeLabel(ctx, rangeLabel);
@@ -5561,6 +5573,34 @@ export class ZoneMapCard extends HTMLElement {
     }
 
     ctx.restore();
+  }
+
+  /**
+   * Keep the notes over the map's top corners clear of the x labels drawn
+   * this frame (`xLabels`). A fitted map has the radar, and so y = 0 and the
+   * x labels' row, on its top edge, where the notes covered the outer
+   * labels; when the row runs under them, they go MAP_NOTE_INSET_CSS_PX
+   * below it instead. Set as --zm-note-top on the canvas's container, and
+   * only when it changes. A render brings a new container, which this
+   * frame's value is set on again.
+   */
+  _placeMapNotes(xLabels) {
+    const container = this.canvas?.parentElement;
+    if (!container) return;
+    const scale = this._frameScale || 1;
+    let top = MAP_NOTE_INSET_CSS_PX;
+    if (xLabels.length) {
+      const boxes = xLabels.map((label) => this._labelBox(label));
+      const rowTop = Math.min(...boxes.map((box) => box.top)) / scale;
+      const rowBottom = Math.max(...boxes.map((box) => box.bottom)) / scale;
+      if (rowTop < MAP_NOTE_INSET_CSS_PX + MAP_NOTE_HEIGHT_CSS_PX) {
+        top = MAP_NOTE_INSET_CSS_PX + Math.ceil(rowBottom);
+      }
+    }
+    const value = `${top}px`;
+    if (container.style.getPropertyValue('--zm-note-top') !== value) {
+      container.style.setProperty('--zm-note-top', value);
+    }
   }
 
   /**

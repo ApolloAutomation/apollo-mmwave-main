@@ -4062,6 +4062,10 @@ describe("zone map card repaints on hass pushes", () => {
  * one that has a state is unavailable. `unknown` is a live state.
  */
 describe("zone map card offline radar", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   const UNAVAILABLE = { state: "unavailable" };
 
   async function offlineCard(payload: any = ZONE_PAYLOAD, config: Record<string, any> = {}) {
@@ -4148,6 +4152,101 @@ describe("zone map card offline radar", () => {
     });
 
     expect(note(card).hidden).toBe(true);
+  });
+
+  /** Every canvas laid out `cssWidth` CSS px wide, a render's new one too. */
+  function layOutEveryCanvas(cssWidth: number) {
+    vi.spyOn(HTMLCanvasElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLCanvasElement
+    ) {
+      const height = (cssWidth * this.height) / this.width;
+      return {
+        left: 0,
+        top: 0,
+        right: cssWidth,
+        bottom: height,
+        x: 0,
+        y: 0,
+        width: cssWidth,
+        height,
+        toJSON: () => ({}),
+      } as DOMRect;
+    });
+  }
+
+  /** Where the notes sit (--zm-note-top), and the x labels a frame draws. */
+  function notesAndLabels(card: any) {
+    const { ctx, texts } = textRecordingContext(browserTextWidth);
+    card.ctx = ctx;
+    card.drawGrid();
+    const container = card.shadowRoot.querySelector(".canvas-container");
+    // Centered on their lines, and never on a middle baseline as the ring
+    // and range labels are.
+    const xLabels = texts.filter(
+      (t) => t.size === card.unitLabelSize && t.align === "center" && t.baseline !== "middle"
+    );
+    return { top: container.style.getPropertyValue("--zm-note-top"), xLabels };
+  }
+
+  it("keeps the notes below the x labels along the top of a fitted map", async () => {
+    // A fitted map has the radar, and so the x labels' row, on its top edge,
+    // where on a phone the notes sat over "-16 ft" and "16 ft".
+    layOutEveryCanvas(326);
+    const fitted = { ...ZONE_PAYLOAD, rotation_deg: 0, display_units: "ft" };
+    const { card, push } = await offlineCard(fitted, { unit_display: true });
+    push({ "sensor.a_x": UNAVAILABLE, "sensor.a_y": UNAVAILABLE });
+
+    const { top, xLabels } = notesAndLabels(card);
+
+    const scale = card._frameScale;
+    expect(scale).toBeCloseTo(800 / 326, 9);
+    // The row runs from 2 to 20 backing px down, about 8 CSS px, and the
+    // notes go 4 CSS px below it.
+    expect(xLabels.length).toBeGreaterThan(2);
+    expect(xLabels.every((t) => t.y === 2 && t.baseline === "top")).toBe(true);
+    expect(top).toBe(`${4 + Math.ceil(20 / scale)}px`);
+    expect(parseFloat(top)).toBeGreaterThanOrEqual(4 + 20 / scale);
+    // Both notes take it: the Replay badge is a .map-note too.
+    const css = card.shadowRoot.querySelector("style").textContent;
+    expect(css).toMatch(/\.map-note \{ position: absolute; top: var\(--zm-note-top, 4px\);/);
+    expect(card.shadowRoot.getElementById("replayBadge").classList.contains("map-note")).toBe(true);
+
+    // A render brings a new container, which gets it too.
+    card.render();
+    const container = card.shadowRoot.querySelector(".canvas-container");
+    expect(container.style.getPropertyValue("--zm-note-top")).toBe(top);
+    expect(note(card).hidden).toBe(false);
+
+    // So does a view-only map.
+    const viewOnly = await offlineCard(fitted, { unit_display: true, view_only: true });
+    expect(notesAndLabels(viewOnly.card).top).toBe(top);
+    expect(viewOnly.card.shadowRoot.querySelector("style").textContent).toMatch(
+      /\.map-note \{ position: absolute; top: var\(--zm-note-top, 4px\);/
+    );
+  });
+
+  it("keeps the notes at the top while the x labels are further down", async () => {
+    // A YAML grid whose y = 0 is in the middle draws the x labels' row just
+    // above it, on a bottom baseline, clear of the notes.
+    layOutEveryCanvas(326);
+    const middle = await offlineCard(ZONE_PAYLOAD, {
+      unit_display: true,
+      grid: { x_min: -5000, x_max: 5000, y_min: -5000, y_max: 5000 },
+    });
+    const centered = notesAndLabels(middle.card);
+    expect(centered.xLabels.length).toBeGreaterThan(2);
+    expect(centered.xLabels.every((t) => t.y === 398 && t.baseline === "bottom")).toBe(true);
+    expect(centered.top).toBe("4px");
+
+    // Half a meter below the top, the same row runs under the notes, so
+    // they go below it.
+    const near = await offlineCard(ZONE_PAYLOAD, {
+      unit_display: true,
+      grid: { x_min: -5000, x_max: 5000, y_min: -500, y_max: 9500 },
+    });
+    const high = notesAndLabels(near.card);
+    expect(high.xLabels.every((t) => t.y === 38 && t.baseline === "bottom")).toBe(true);
+    expect(high.top).toBe(`${4 + Math.ceil(38 / near.card._frameScale)}px`);
   });
 });
 
