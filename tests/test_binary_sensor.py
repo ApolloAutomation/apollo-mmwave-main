@@ -14,10 +14,7 @@ from homeassistant.util.unit_conversion import DistanceConverter
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.apollo_mmwave import get_store, ld2450
-from custom_components.apollo_mmwave.binary_sensor import (
-    ZonePresenceBinarySensor,
-    _build_point_rotator,
-)
+from custom_components.apollo_mmwave.binary_sensor import ZonePresenceBinarySensor
 from custom_components.apollo_mmwave.const import (
     ATTR_ROTATION_DEG,
     DOMAIN,
@@ -28,6 +25,7 @@ from custom_components.apollo_mmwave.const import (
     STORE_INPUT_UNITS,
     STORE_ZONES,
 )
+from custom_components.apollo_mmwave.targets import build_point_rotator
 
 from .conftest import RECT_ZONE
 
@@ -250,7 +248,7 @@ def test_point_rotator_matches_the_cards_rotation(rotation, expected) -> None:
     """The card draws targets with the same formula, so both must agree."""
     # frontend-src/src/zone-map/card.ts `_drawTrackedTargets` is the twin, and
     # zone-map-card.test.ts pins the same 90 and 45 degree results there.
-    rotate = _build_point_rotator(rotation)
+    rotate = build_point_rotator(rotation)
 
     assert rotate(1000, 0) == pytest.approx(expected, abs=1e-6)
 
