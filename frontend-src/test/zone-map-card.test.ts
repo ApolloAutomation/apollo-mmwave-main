@@ -7095,6 +7095,37 @@ describe("zone map card size readout", () => {
     ]);
   });
 
+  it("draws the readout over the targets", async () => {
+    // Facing ahead, so target a at (-1250, 4200) mm is at canvas (300, 336),
+    // where the readout over a finger at (300, 400) goes.
+    const hass = fakeHass({ ...ZONE_PAYLOAD, rotation_deg: 0 });
+    const card = await mountCard(hass, { ...TEN_METER_GRID, start_locked: false });
+    card._setDrawMode("rect");
+    layOut(card, 800);
+    card.hass = {
+      ...hass,
+      states: { "sensor.a_x": { state: "-1250" }, "sensor.a_y": { state: "4200" } },
+    };
+    touch(card, "touchstart", 100, 100);
+    touch(card, "touchmove", 300, 400);
+
+    const { ctx, draws } = drawRecordingContext();
+    card.ctx = ctx;
+    card.drawGrid();
+
+    const text = draws.findIndex(
+      (d) => d.name === "fillText" && String(d.args[0]).includes(" × ")
+    );
+    expect(draws[text].args.slice(1)).toEqual([300, 336]);
+    const dot = draws.filter((d) => d.name === "arc" && d.args[0] === 300 && d.args[1] === 336);
+    expect(dot.map((d) => d.args[2])).toEqual([17, 10]);
+    // The dot is drawn first, and nothing is drawn over the readout.
+    expect(draws.indexOf(dot[1])).toBeLessThan(text);
+    expect(
+      draws.slice(text + 1).filter((d) => ["arc", "fillRect", "fill", "stroke"].includes(d.name))
+    ).toEqual([]);
+  });
+
   it("measures a polygon's corners and the pointer", async () => {
     const { card } = await drawingCard("polygon");
     const click = (x: number, y: number) => {
@@ -7773,6 +7804,51 @@ describe("zone map card walk", () => {
       ["stroke", []],
     ]);
     expect(readouts(draws)).toEqual([["2.0 m × 4.0 m", 240, 336]]);
+  });
+
+  it("draws the size over the rings of earlier corners", async () => {
+    // On a phone's map the readout sits about 2 m above the newest corner,
+    // a common zone depth. Walking a couch's near side first put it on the
+    // rings of corners 1 and 2, which were stroked across its text.
+    const { card, at } = await walkCard({
+      config: { grid: undefined },
+      payload: { display_units: "ft" },
+    });
+    layOut(card, 326);
+    $(card, "btnModeWalk").click();
+    markCorner(card, at, -3000, 2000);
+    markCorner(card, at, -1900, 2000);
+    markCorner(card, at, -1900, 4200);
+    // The walker moves on.
+    at("a", -3000, 4200);
+
+    const draws = frame(card);
+
+    const text = draws.findIndex(
+      (d) => d.name === "fillText" && String(d.args[0]).includes(" × ")
+    );
+    expect(draws[text].args[0]).toBe("3 ft 7 in × 7 ft 3 in");
+    const plate = draws[text - 1];
+    expect(plate.name).toBe("fillRect");
+    const [left, top, width, height] = plate.args;
+    const covers = (d: Draw) => {
+      const [x0, y0, x1, y1] =
+        d.name === "arc"
+          ? [d.args[0] - d.args[2], d.args[1] - d.args[2], d.args[0] + d.args[2], d.args[1] + d.args[2]]
+          : [d.args[0], d.args[1], d.args[0] + d.args[2], d.args[1] + d.args[3]];
+      return x0 < left + width && left < x1 && y0 < top + height && top < y1;
+    };
+    // The rings of corners 1 and 2 reach under the plate...
+    const ringRadius = Math.max(14, Math.round(14 * card._frameScale));
+    const rings = draws.filter((d) => d.name === "arc" && d.args[2] === ringRadius);
+    expect(rings).toHaveLength(3);
+    expect(rings.map(covers)).toEqual([true, true, false]);
+    // ...and no ring, dot or plate is drawn over the readout.
+    const after = draws
+      .slice(text + 1)
+      .filter((d) => (d.name === "arc" && d.args[2] >= 14) || d.name === "fillRect");
+    expect(after.filter(covers)).toEqual([]);
+    expect(draws.indexOf(rings[2])).toBeLessThan(text);
   });
 
   it("rings each corner with its number over the dots", async () => {

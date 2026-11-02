@@ -5045,9 +5045,10 @@ export class ZoneMapCard extends HTMLElement {
 
   /**
    * Paint the whole map, bottom layer first: painted cells, the grid, its
-   * labels and the cone, the zones, a shape being drawn, then the targets.
-   * While a replay shows, its zones are lit by its dots, and its trails and
-   * dots take the place of the live ones.
+   * labels and the cone, the zones, a shape being drawn, then the targets,
+   * and last the size of a shape being drawn or walked, so nothing covers
+   * it. While a replay shows, its zones are lit by its dots, and its trails
+   * and dots take the place of the live ones.
    */
   drawGrid() {
     if (!this.ctx || !this.canvas) return;
@@ -5102,6 +5103,11 @@ export class ZoneMapCard extends HTMLElement {
     // Corner markers over the dots, so the walker's own dot never hides the
     // newest corner.
     this._drawWalkMarkers(ctx);
+    // The size readouts over all of it. A readout sits up to 64 CSS px from
+    // its corner or finger, about 2 m on a phone's map, where an earlier
+    // corner's ring, a trail or a dot can be.
+    this._drawInProgressReadout(ctx);
+    this._drawWalkReadout(ctx);
     // The trail fade timer skips a frame a hass push painted a moment ago.
     this._lastDrawAt = this._now();
   }
@@ -5231,8 +5237,7 @@ export class ZoneMapCard extends HTMLElement {
   /**
    * The zone the corners walked so far make, dashed: two as the rectangle
    * between them, three or more as the polygon through them in walking
-   * order. Its size sits above the newest corner, as far above as over a
-   * finger, which keeps it clear of that corner's ring and number.
+   * order. _drawWalkReadout gives its size.
    */
   _drawWalkPreview(ctx) {
     const corners = this._walkMapCorners();
@@ -5259,13 +5264,25 @@ export class ZoneMapCard extends HTMLElement {
     }
     ctx.stroke();
     ctx.restore();
+  }
+
+  /**
+   * The size of the zone the corners walked so far make, above the newest
+   * corner, as far above as over a finger, which keeps it clear of that
+   * corner's ring and number. drawGrid draws it after the rings, so an
+   * earlier corner's ring never runs through it.
+   */
+  _drawWalkReadout(ctx) {
+    const corners = this._walkMapCorners();
+    if (corners.length < 2) return;
     const xs = corners.map((c) => c.x);
     const ys = corners.map((c) => c.y);
+    const newest = corners[corners.length - 1];
     this._drawSizeReadout(
       ctx,
       Math.max(...xs) - Math.min(...xs),
       Math.max(...ys) - Math.min(...ys),
-      points[points.length - 1],
+      { x: this.valueToPixels(newest.x, 'x'), y: this.valueToPixels(newest.y, 'y') },
       READOUT_OFFSET_TOUCH_PX,
     );
   }
@@ -5799,7 +5816,6 @@ export class ZoneMapCard extends HTMLElement {
         this._drawVertexDot(ctx, this.startPoint.x, this.startPoint.y);
       }
       ctx.restore();
-      this._drawPolygonSize(ctx);
     } else if (
       this.isDrawing &&
       this.startPoint &&
@@ -5837,14 +5853,31 @@ export class ZoneMapCard extends HTMLElement {
           ctx.stroke();
         }
         ctx.restore();
-        // The size of exactly what letting go would save, so the readout
-        // and the zone list agree to the mm. A rect with no area saves
-        // nothing and shows no size.
-        const payload = this._shapeFromDrag(pt, cur, this.drawMode);
-        const size = payload ? zoneSize(payload.shape, payload.data) : null;
-        if (size) this._drawSizeReadout(ctx, size.width, size.depth, cur);
       }
     }
+  }
+
+  /**
+   * The size of the shape being drawn. drawGrid draws it after the trails
+   * and dots, so none of them runs through it. A rect or an ellipse shows
+   * the size of exactly what letting go would save, so the readout and the
+   * zone list agree to the mm; a rect with no area saves nothing and shows
+   * no size.
+   */
+  _drawInProgressReadout(ctx) {
+    if (!this.isDrawing) return;
+    if (this.drawMode === DRAW_MODES.POLYGON) {
+      this._drawPolygonSize(ctx);
+      return;
+    }
+    if (this.drawMode !== DRAW_MODES.RECT && this.drawMode !== DRAW_MODES.ELLIPSE) return;
+    const pt = this.startPoint;
+    const cur = this._cursorPoint;
+    // Nothing to measure until the pointer has moved.
+    if (!pt || !cur || (cur.x === pt.x && cur.y === pt.y)) return;
+    const payload = this._shapeFromDrag(pt, cur, this.drawMode);
+    const size = payload ? zoneSize(payload.shape, payload.data) : null;
+    if (size) this._drawSizeReadout(ctx, size.width, size.depth, cur);
   }
 
   /**
