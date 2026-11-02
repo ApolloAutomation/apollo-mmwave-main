@@ -476,20 +476,20 @@ async def test_moves_of_50_mm_record_at_most_twice_a_second(
 ) -> None:
     """A walk reported ten times a second is kept as two points a second."""
     device_id = history_on
-    await _report(hass, TARGET_1, 0, 1000)
+    await _report(hass, TARGET_1, 100, 1000)
     for step in range(1, 21):
         await _advance(hass, clock, 0.1)
-        await _report(hass, TARGET_1, 60 * step, 1000)
+        await _report(hass, TARGET_1, 100 + 60 * step, 1000)
     # The last move's floor.
     await _advance(hass, clock, 0.5)
 
     assert _records(hass, device_id) == [
-        (START_MS, 0, 0, 1000),
-        (START_MS + 500, 0, 240, 1000),
-        (START_MS + 1000, 0, 540, 1000),
-        (START_MS + 1500, 0, 840, 1000),
-        (START_MS + 2000, 0, 1140, 1000),
-        (START_MS + 2500, 0, 1200, 1000),
+        (START_MS, 0, 100, 1000),
+        (START_MS + 500, 0, 340, 1000),
+        (START_MS + 1000, 0, 640, 1000),
+        (START_MS + 1500, 0, 940, 1000),
+        (START_MS + 2000, 0, 1240, 1000),
+        (START_MS + 2500, 0, 1300, 1000),
     ]
 
 
@@ -800,6 +800,102 @@ async def test_half_vanished_reading_is_not_recorded(hass, clock, history_on) ->
     ]
 
 
+@pytest.mark.parametrize("between", ["other_target", "floor_tick", "heartbeat"])
+async def test_a_flush_between_the_two_vanish_writes_records_no_phantom(
+    hass, clock, history_on, between
+) -> None:
+    """However often the slot is read between X = 0 and Y = 0, (0, y) is no point."""
+    device_id = history_on
+    # Someone else in view, whose moves flush the radar too.
+    await _report(hass, TARGET_2, *SPOT_B)
+    await _report(hass, TARGET_1, 1000, 2000)
+    vanish_at = {"other_target": 1.0, "floor_tick": 0.4, "heartbeat": 14.8}[between]
+    if between == "floor_tick":
+        # Still walking: this move waits for the floor at 0.5 s.
+        await _run_until(hass, clock, 0.3)
+        await _report(hass, TARGET_1, 1200, 2100)
+    await _run_until(hass, clock, vanish_at)
+    hass.states.async_set(TARGET_1["x"], "0")
+    await hass.async_block_till_done()
+    if between == "other_target":
+        await _run_until(hass, clock, vanish_at + 0.2)
+        await _report(hass, TARGET_2, SPOT_B[0] + 100, SPOT_B[1] + 100)
+    await _run_until(hass, clock, vanish_at + 0.45)
+    hass.states.async_set(TARGET_1["y"], "0")
+    await hass.async_block_till_done()
+    await _run_until(hass, clock, vanish_at + 5)
+
+    # The floor and the heartbeat record where the person was.
+    expected = {
+        "other_target": [
+            (START_MS, 0, 1000, 2000),
+            (START_MS + 1450, -1, 0, 0),
+        ],
+        "floor_tick": [
+            (START_MS, 0, 1000, 2000),
+            (START_MS + 500, 0, 1200, 2100),
+            (START_MS + 850, -1, 0, 0),
+        ],
+        "heartbeat": [
+            (START_MS, 0, 1000, 2000),
+            (START_MS + 15000, 0, 1000, 2000),
+            (START_MS + 15250, -1, 0, 0),
+        ],
+    }
+    records = _records(hass, device_id)
+    assert [record for record in records if record[1] in (0, -1)] == expected[between]
+
+
+async def test_a_target_appearing_x_first_from_0_0_records_no_point_on_an_axis(
+    hass, clock, history_on
+) -> None:
+    """In a slot that reads 0/0, a new target's X lands first: (x, 0) is no point."""
+    device_id = history_on
+    await _report(hass, TARGET_1, *SPOT_A)
+    await _run_until(hass, clock, 2)
+    await _report(hass, TARGET_1, 0, 0)
+    await _run_until(hass, clock, 10)
+
+    hass.states.async_set(TARGET_1["x"], str(SPOT_B[0]))
+    await hass.async_block_till_done()
+    await _run_until(hass, clock, 10.45)
+    hass.states.async_set(TARGET_1["y"], str(SPOT_B[1]))
+    await hass.async_block_till_done()
+    await _run_until(hass, clock, 12)
+
+    assert _records(hass, device_id) == [
+        (START_MS, 0, *SPOT_A),
+        (START_MS + 2000, -1, 0, 0),
+        (START_MS + 10450, 0, *SPOT_B),
+    ]
+
+
+@pytest.mark.parametrize("arrives", ["steps_onto_it", "appears_on_it"])
+async def test_a_reading_on_an_axis_line_counts_after_a_second(
+    hass, clock, history_on, arrives
+) -> None:
+    """A reading held back as half a vanish is a real one once it stands for 1 s."""
+    device_id = history_on
+    before: list[tuple[int, int, int, int]] = []
+    if arrives == "steps_onto_it":
+        await _report(hass, TARGET_1, 60, 2000)
+        before.append((START_MS, 0, 60, 2000))
+        await _run_until(hass, clock, 1)
+        # Someone 60 mm off the line steps onto it, and their Y stays.
+        hass.states.async_set(TARGET_1["x"], "0")
+        await hass.async_block_till_done()
+    else:
+        await _run_until(hass, clock, 1)
+        await _report(hass, TARGET_1, 0, 2000)
+
+    await _run_until(hass, clock, 1.999)
+    assert _records(hass, device_id) == before
+
+    # Nothing else is written: the recorder looks again by itself.
+    await _run_until(hass, clock, 2)
+    assert _records(hass, device_id) == [*before, (START_MS + 2000, 0, 0, 2000)]
+
+
 async def test_points_are_unit_converted_and_not_rotated(hass, history_on) -> None:
     """Points are millimeters in the radar's own frame, whatever the map shows."""
     device_id = history_on
@@ -1005,7 +1101,7 @@ async def test_delayed_save_is_scheduled_once_per_dirty_period(
         store, "async_delay_save", wraps=store.async_delay_save
     ) as delay_save:
         for step in range(20):
-            await _report(hass, TARGET_1, 100 * step, 2000)
+            await _report(hass, TARGET_1, 100 + 100 * step, 2000)
             await _advance(hass, clock, 1)
         await _report(hass, TARGET_1, 0, 0)
         assert delay_save.call_count == 1

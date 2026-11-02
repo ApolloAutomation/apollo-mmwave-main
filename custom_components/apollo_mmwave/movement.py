@@ -100,6 +100,11 @@ MOVEMENT_HEARTBEAT_MS = 15000
 # takes from X to Y, and below the 0.62 s from a Y to the next X, so a lone Y
 # never pairs with the next reading's X.
 MOVEMENT_PAIR_MS = 550
+# A reading held back as the first of a target's two vanishing writes counts
+# once it has stood unchanged this long: the second write lands about 0.45 s
+# after the first, and someone who really stands on an axis line is recorded
+# after a second.
+MOVEMENT_HALF_VANISH_MAX_MS = 1000
 MOVEMENT_RETENTION_MS = 86400000
 # The time prune runs once the oldest record is this far past the retention,
 # so it runs at most this often while history exists.
@@ -144,6 +149,20 @@ def _is_int(value: Any) -> bool:
 def _slot_of(value: int) -> int:
     """Return the slot of an s column value: a gone marker is -1 - slot."""
     return value if value >= 0 else -1 - value
+
+
+def _first_of_two(
+    previous: tuple[float, float] | None, raw: tuple[float, float]
+) -> bool:
+    """Report whether raw is the first write of a target vanishing or appearing."""
+    # Radars that empty a slot as 0/0 write X and Y one after the other, so
+    # a target that vanishes first reads (0, old y) or (old x, 0), which
+    # half_vanished finds. One that appears in such a slot first reads (x, 0)
+    # or (0, y), and the slot has no previous reading: neither is a point
+    # anyone occupied.
+    if previous is None:
+        return (raw[0] == 0.0) != (raw[1] == 0.0)
+    return half_vanished(previous, raw)
 
 
 def _b64(column: array[int]) -> str:
@@ -405,6 +424,11 @@ class _SlotState:
     move_pending: bool = False  # a move of 50 mm or more waits for the 0.5 s floor
     # The last reading seen, recorded or not, for half_vanished.
     seen_raw: tuple[float, float] | None = None
+    # The last reading not held back, which stands in for one that is, and
+    # the reading held back as the first of two writes, since when.
+    good_raw: tuple[float, float] | None = None
+    half_raw: tuple[float, float] | None = None
+    half_since: int = 0
     # The axis (0 for X, 1 for Y) last written alone, while the other axis's
     # write may still follow, and when; and an axis written twice before the
     # other, which moves alone until the other is written.
@@ -454,15 +478,18 @@ class _SlotState:
 
     def due(self) -> int | None:
         """Return when the tick has something to record, or None for nothing."""
+        due: int | None = None
         if self.move_pending:
             due = self.last_t + MOVEMENT_MIN_INTERVAL_MS
         elif self.recorded_present:
             due = self.last_t + MOVEMENT_HEARTBEAT_MS
-        else:
-            return None
-        if self.lone_axis is not None:
+        if due is not None and self.lone_axis is not None:
             # No sooner than the reading can be whole.
             due = max(due, self.lone_at + MOVEMENT_PAIR_MS)
+        if self.half_raw is not None:
+            # When a reading held back counts, if nothing is written before.
+            counts_at = self.half_since + MOVEMENT_HALF_VANISH_MAX_MS
+            due = counts_at if due is None else min(due, counts_at)
         return due
 
 
@@ -563,15 +590,31 @@ class _Recorder:
             state = self._slots.setdefault(reading.slot, _SlotState())
             previous, state.seen_raw = state.seen_raw, reading.raw
             seen.add(reading.slot)
-            if half_vanished(previous, reading.raw):
-                # The first of the two writes of a vanishing target: a point
-                # nobody occupied, and not yet gone either.
+            held_since = state.half_since if reading.raw == state.half_raw else None
+            if _first_of_two(previous, reading.raw) or (
+                held_since is not None
+                and now - held_since < MOVEMENT_HALF_VANISH_MAX_MS
+            ):
+                # The first of the two writes of a target vanishing (or
+                # appearing): a point nobody occupied, and not yet gone
+                # either, however often the slot is read before the second
+                # write lands. The slot's last good reading stands in for it,
+                # so a heartbeat still records the person.
+                if held_since is None:
+                    state.half_raw, state.half_since = reading.raw, now
+                if state.good_raw is not None:
+                    good_x, good_y = state.good_raw
+                    self._point(reading.slot, round(good_x), round(good_y), now)
                 continue
-            state.pair(previous, reading.raw, now)
+            state.half_raw = None
+            # A reading that was held back changed when it was first read.
+            changed_at = now if held_since is None else held_since
+            state.pair(state.good_raw, reading.raw, changed_at)
+            state.good_raw = reading.raw
             self._point(reading.slot, x, y, now)
         for slot, state in self._slots.items():
             if slot not in seen:
-                state.seen_raw = None
+                state.seen_raw = state.good_raw = state.half_raw = None
                 self._gone(slot, now)
         self._history.trim(self._device_id, now)
         self._schedule_tick(now)
