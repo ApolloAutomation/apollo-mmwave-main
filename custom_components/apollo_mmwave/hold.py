@@ -30,6 +30,7 @@ them. Nothing here imports Home Assistant and time is passed in, as seconds of
 
 from __future__ import annotations
 
+import dataclasses
 import math
 from dataclasses import dataclass
 from itertools import pairwise
@@ -81,6 +82,10 @@ HOLD_EXIT_MARGIN_MM = 300.0
 # from the zone's edge holds for the full hold time.
 COVERAGE_RANGE_MM = 6000.0
 COVERAGE_HALF_FOV_DEG = 60.0
+# How long the same half-vanished reading stays one: the second half lands
+# about 0.45 s after the first, and someone who really stands on an axis
+# line counts after a second.
+HALF_VANISH_MAX_S = 1.0
 
 
 @dataclass(slots=True)
@@ -92,6 +97,9 @@ class Reading:
     slot: int
     raw: tuple[float, float]  # mm, raw sensor frame
     map: tuple[float, float]  # rotated by rotation_deg
+    # The slot's last good reading, standing in for a half-vanished one (see
+    # HoldTracker.usable): where the target was, not a new position.
+    carried: bool = False
 
 
 def half_vanished(prev: tuple[float, float] | None, raw: tuple[float, float]) -> bool:
@@ -101,14 +109,16 @@ def half_vanished(prev: tuple[float, float] | None, raw: tuple[float, float]) ->
     # (0, old y) or (old x, 0), that no person occupied: as a hold anchor it
     # fakes motion, and as an outside target it can release the hold at once.
     # So: exactly one coordinate is exactly 0, and that coordinate was not 0
-    # in the slot's previous reading. A slot with no previous reading has
-    # nothing to have vanished from.
-    if prev is None:
-        return False
+    # in the slot's previous reading. A slot with no previous reading (it
+    # read 0/0, or nothing) is appearing, and the first write of an
+    # appearance from 0/0, (x, 0) or (0, y), is no more a position than the
+    # first write of a vanish.
     x_zero = raw[0] == 0.0
     y_zero = raw[1] == 0.0
     if x_zero == y_zero:
         return False
+    if prev is None:
+        return True
     return prev[0 if x_zero else 1] != 0.0
 
 
@@ -125,6 +135,9 @@ class Occupant:
     anchor_map: tuple[float, float]
     prev_anchor_t: float | None = None
     prev_anchor_map: tuple[float, float] | None = None
+    # When a carried reading first stood for this person: the first half of
+    # a vanish, which is when the zone emptied if the second half follows.
+    carried_since: float | None = None
 
     @classmethod
     def first(cls, reading: Reading, now: float) -> Occupant:
@@ -147,6 +160,7 @@ class Occupant:
             self.prev_anchor_t, self.prev_anchor_map = self.anchor_t, self.anchor_map
             self.anchor_t, self.anchor_map = now, reading.map
         self.last_t, self.last_map, self.last_raw = now, reading.map, reading.raw
+        self.carried_since = None
 
     def moving_at(self, t: float) -> bool:
         """Report whether this person was moving at time t."""
@@ -300,6 +314,10 @@ class HoldTracker:
         self.empty_since: float | None = None
         # Each slot's raw reading at the previous evaluation.
         self._last_raw: dict[int, tuple[float, float]] = {}
+        # Each slot's half-vanished raw reading with when it was first
+        # flagged, and its last reading that was not one (see usable).
+        self._flagged: dict[int, tuple[tuple[float, float], float]] = {}
+        self._good: dict[int, Reading] = {}
 
     def reset(self) -> None:
         """Forget everyone, which ends any hold."""
@@ -308,6 +326,8 @@ class HoldTracker:
         self.used_slots = set()
         self.empty_since = None
         self._last_raw = {}
+        self._flagged = {}
+        self._good = {}
 
     @property
     def holding(self) -> bool:
@@ -320,13 +340,48 @@ class HoldTracker:
             return None
         return self.empty_since + hold_s
 
-    def usable(self, readings: list[Reading]) -> list[Reading]:
-        """Drop half-vanished readings, then remember every slot's raw reading."""
-        kept = [
-            reading
-            for reading in readings
-            if not half_vanished(self._last_raw.get(reading.slot), reading.raw)
-        ]
+    def flag_expiry(self) -> float | None:
+        """Return when the oldest half-vanished reading would count as real."""
+        if not self._flagged:
+            return None
+        return min(since for _raw, since in self._flagged.values()) + HALF_VANISH_MAX_S
+
+    def usable(self, readings: list[Reading], now: float) -> list[Reading]:
+        """
+        Return the readings, each half-vanished one carried or dropped.
+
+        A half-vanished reading is nobody's position, so the slot's last good
+        reading stands in for it, marked carried: the zone does not empty for
+        it, and it is no phantom target outside. A slot with no good reading,
+        one appearing in two halves, has nothing to carry and is dropped. The
+        same raw reading stays flagged for HALF_VANISH_MAX_S from when it was
+        first flagged, however many evaluations other writes start in the
+        meantime; after that it is someone on an axis line. Every slot's raw
+        reading is remembered for the next evaluation.
+        """
+        kept: list[Reading] = []
+        flagged: dict[int, tuple[tuple[float, float], float]] = {}
+        good: dict[int, Reading] = {}
+        for reading in readings:
+            slot = reading.slot
+            flag = self._flagged.get(slot)
+            if half_vanished(self._last_raw.get(slot), reading.raw):
+                flagged[slot] = (reading.raw, now)
+            elif (
+                flag is not None
+                and flag[0] == reading.raw
+                and now - flag[1] < HALF_VANISH_MAX_S
+            ):
+                flagged[slot] = flag
+            else:
+                good[slot] = reading
+                kept.append(reading)
+                continue
+            if (last_good := self._good.get(slot)) is not None:
+                good[slot] = last_good
+                kept.append(dataclasses.replace(last_good, carried=True))
+        # A slot with no reading now forgets both.
+        self._flagged, self._good = flagged, good
         self._last_raw = {reading.slot: reading.raw for reading in readings}
         return kept
 
@@ -340,15 +395,27 @@ class HoldTracker:
     ) -> bool:
         """Run one evaluation and report whether the zone reads on."""
         if inside:
-            self.occupants = {
-                reading.slot: self._occupant(reading, now) for reading in inside
-            }
+            occupants: dict[int, Occupant] = {}
+            for reading in inside:
+                if (occupant := self._occupant(reading, now)) is not None:
+                    occupants[reading.slot] = occupant
+            self.occupants = occupants
             self.pending, self.used_slots, self.empty_since = [], set(), None
             return True
         if self.occupants:
-            # The zone emptied with this evaluation.
+            # The zone emptied with this evaluation, or, for people a carried
+            # reading stood for, with the first half of their vanish: rule
+            # 1's radius, rule 2's freshness and the deadline count from it.
             people = sorted(self.occupants.values(), key=lambda person: person.slot)
-            self.occupants, self.used_slots, self.empty_since = {}, set(), now
+            self.occupants, self.used_slots = {}, set()
+            self.empty_since = min(
+                (
+                    person.carried_since
+                    for person in people
+                    if person.carried_since is not None
+                ),
+                default=now,
+            )
             matched = self._match(people, outside, now)
             # Rule 2 is decided here, once: motion freshness and the last
             # positions are fixed at the emptying, so later evaluations only
@@ -367,8 +434,14 @@ class HoldTracker:
         ]
         return bool(self.pending)
 
-    def _occupant(self, reading: Reading, now: float) -> Occupant:
+    def _occupant(self, reading: Reading, now: float) -> Occupant | None:
         occupant = self.occupants.get(reading.slot)
+        if reading.carried:
+            # Where someone already inside was: nothing new about them, and
+            # nobody new either.
+            if occupant is not None and occupant.carried_since is None:
+                occupant.carried_since = now
+            return occupant
         if occupant is None:
             return Occupant.first(reading, now)
         occupant.update(reading, now)

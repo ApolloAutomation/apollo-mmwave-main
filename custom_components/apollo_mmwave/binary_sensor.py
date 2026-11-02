@@ -116,6 +116,8 @@ class ZonePresenceBinarySensor(ZoneEntityMixin, BinarySensorEntity):
         self._hold = HoldTracker()
         self._unsub_hold: CALLBACK_TYPE | None = None
         self._hold_deadline: float | None = None
+        self._unsub_flag: CALLBACK_TYPE | None = None
+        self._flag_expiry: float | None = None
         # What presence read this zone by at the last zone signal (see
         # _hold_fingerprint), or None before the entity is added.
         self._fingerprint: str | None = None
@@ -170,8 +172,9 @@ class ZonePresenceBinarySensor(ZoneEntityMixin, BinarySensorEntity):
         self._evaluate_and_write(write=False)
 
     async def async_will_remove_from_hass(self) -> None:
-        """Stop tracking coordinate entities and drop the hold timer."""
+        """Stop tracking coordinate entities and drop the hold timers."""
         self._cancel_hold_timer()
+        self._cancel_flag_timer()
         if self._pending_eval is not None:
             self._pending_eval.cancel()
             self._pending_eval = None
@@ -299,7 +302,7 @@ class ZonePresenceBinarySensor(ZoneEntityMixin, BinarySensorEntity):
         now = time.monotonic()
         inside: list[Reading] = []
         outside: list[Reading] = []
-        for reading in self._hold.usable(readings):
+        for reading in self._hold.usable(readings, now):
             (inside if tester(*reading.map, data) else outside).append(reading)
         is_on = self._hold.step(now, inside, outside, zone_def.get(ATTR_SHAPE), data)
         deadline = self._hold.deadline(hold_s)
@@ -310,6 +313,7 @@ class ZonePresenceBinarySensor(ZoneEntityMixin, BinarySensorEntity):
             is_on = bool(inside)
         self._attr_is_on = is_on
         self._schedule_hold_expiry(now, self._hold.deadline(hold_s))
+        self._schedule_flag_expiry(now, self._hold.flag_expiry())
         self._attr_extra_state_attributes = {ATTR_HELD: self._hold.holding}
 
     def _schedule_hold_expiry(self, now: float, deadline: float | None) -> None:
@@ -336,15 +340,46 @@ class ZonePresenceBinarySensor(ZoneEntityMixin, BinarySensorEntity):
         self._hold.pending = []
         self._evaluate_and_write()
 
+    def _schedule_flag_expiry(self, now: float, expiry: float | None) -> None:
+        # A half-vanished reading that stands for a second is someone on an
+        # axis line. Readings only change with a write, so a target that
+        # stands still on the line, with nothing else writing, needs a timer
+        # to be read again and counted.
+        if expiry is None:
+            self._cancel_flag_timer()
+            return
+        if self._unsub_flag is not None and self._flag_expiry == expiry:
+            return
+        self._cancel_flag_timer()
+        self._flag_expiry = expiry
+        self._unsub_flag = async_call_later(
+            self.hass,
+            max(0.0, expiry - now),
+            HassJob(self._flag_expired, cancel_on_shutdown=True),
+        )
+
+    @callback
+    def _flag_expired(self, _now: datetime) -> None:
+        self._unsub_flag = None
+        self._flag_expiry = None
+        self._evaluate_and_write()
+
     def _drop_hold(self) -> None:
         self._hold.reset()
         self._cancel_hold_timer()
+        self._cancel_flag_timer()
 
     def _cancel_hold_timer(self) -> None:
         if self._unsub_hold is not None:
             self._unsub_hold()
             self._unsub_hold = None
         self._hold_deadline = None
+
+    def _cancel_flag_timer(self) -> None:
+        if self._unsub_flag is not None:
+            self._unsub_flag()
+            self._unsub_flag = None
+        self._flag_expiry = None
 
     def _evaluate_presence(self) -> bool:
         """Report whether a live target no ignore zone masks is inside now."""

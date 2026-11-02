@@ -1403,7 +1403,10 @@ async def _sit(hass, freezer, pair: dict[str, str], x: float, y: float) -> None:
     """Report a target that then sits still, so the radar reports nothing new."""
     _set_target(hass, pair, x, y)
     await hass.async_block_till_done()
-    await _advance(hass, freezer, 10)
+    # A second at a time, so each timer fires when it is due: a target on an
+    # axis line, for one, counts a second after it appears.
+    for _ in range(10):
+        await _advance(hass, freezer, 1)
 
 
 async def _walk(
@@ -1870,7 +1873,7 @@ async def test_transient_target_vanishing_mid_zone_holds(
     device_id, _ = setup_entry_with_zone
     await _store_zone(hass, device_id)
     presence_id = _presence_id(entity_registry, device_id)
-    _set_target(hass, TARGET_1, 0, 1000)
+    _set_target(hass, TARGET_1, 100, 1000)
     await hass.async_block_till_done()
 
     await _advance(hass, freezer, 0.5)
@@ -1953,24 +1956,141 @@ CORNER_ZONE = {
 }
 
 
+# A fan the user masked, far to the left of everything else.
+FAN_IGNORE_ZONE = {
+    "shape": "rect",
+    "data": {"x_min": -3000, "x_max": -2000, "y_min": 1000, "y_max": 2000},
+    "zone_type": "ignore",
+}
+
+
+@pytest.mark.parametrize("between", ["nothing", "masked-write", "far-write", "rename"])
 @pytest.mark.parametrize("first", ["x", "y"], ids=["x-first", "y-first"])
 async def test_vanish_reported_in_two_turns_still_holds(
-    hass, freezer, entity_registry, setup_entry_with_zone, first
+    hass, freezer, setup_entry_with_zone, first, between
 ) -> None:
-    """The first half of a vanish is nobody's position, so it releases nothing."""
+    """The first half of a vanish is nobody's position, however often it is read."""
+    # Whatever runs between the halves evaluates the zone again: a write of
+    # the masked fan, of someone 5.6 m away (past rule 1's reach), or a
+    # zone signal.
     device_id, _ = setup_entry_with_zone
+    presence_id = _presence_id(er.async_get(hass), device_id)
     await _store_zone(hass, device_id, _hold_zone(CORNER_ZONE))
-    presence_id = _presence_id(entity_registry, device_id)
+    _draw_zone(hass, device_id, FAN_IGNORE_ZONE, zone_id=2)
+    await hass.async_block_till_done()
     await _sit(hass, freezer, TARGET_1, 400, 500)
 
-    # (0, 500) or (400, 0), with a loop turn before the other write lands.
+    # (0, 500) or (400, 0), with loop turns before the other write lands.
+    # The person is where they were until it does.
     hass.states.async_set(TARGET_1[first], "0")
     await hass.async_block_till_done()
-    assert _hold_state(hass, presence_id) == ("on", True)
+    assert _hold_state(hass, presence_id) == ("on", False)
 
+    await _advance(hass, freezer, 0.2)
+    if between == "masked-write":
+        _set_target(hass, TARGET_2, -2500, 1500)
+    elif between == "far-write":
+        _set_target(hass, TARGET_2, -4000, 4000)
+    elif between == "rename":
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_UPDATE_ZONE,
+            {"device_id": device_id, "zone_id": 1, "name": "Corner"},
+            blocking=True,
+        )
+    await hass.async_block_till_done()
+    assert _hold_state(hass, presence_id) == ("on", False)
+
+    await _advance(hass, freezer, 0.25)
     hass.states.async_set(TARGET_1["y" if first == "x" else "x"], "0")
     await hass.async_block_till_done()
     assert _hold_state(hass, presence_id) == ("on", True)
+
+    await _advance(hass, freezer, 2.5)
+    assert _hold_state(hass, presence_id) == ("on", True)
+
+
+# The right half of a bed, its left edge on the radar's center line.
+BED_RIGHT_ZONE = {
+    "shape": "rect",
+    "data": {"x_min": 0, "x_max": 1000, "y_min": 1000, "y_max": 3000},
+}
+
+
+@pytest.mark.parametrize("hold_s", [0, HOLD_S], ids=["no-hold", "held"])
+async def test_a_real_x_of_zero_does_not_pulse_a_held_zone(
+    hass, freezer, entity_registry, setup_entry_with_zone, hold_s
+) -> None:
+    """An X of exactly 0 is someone on the center line: no off, as with no hold."""
+    device_id, _ = setup_entry_with_zone
+    await _store_zone(hass, device_id, _hold_zone(BED_RIGHT_ZONE, hold_s=hold_s))
+    presence_id = _presence_id(entity_registry, device_id)
+    # The sleeper 60 mm right of the line, their partner 340 mm left of it,
+    # 400 mm apart, in inches: one decimal reads anyone within 1.27 mm of
+    # the line as 0.0.
+    _set_target(hass, TARGET_1, 2.4, 78.7, ("in", "in"))
+    _set_target(hass, TARGET_2, -13.4, 78.7, ("in", "in"))
+    await hass.async_block_till_done()
+    await _advance(hass, freezer, 10)
+    assert _hold_state(hass, presence_id)[0] == "on"
+    written = _record_held(hass, presence_id)
+
+    # The sleeper's X reads 0.0, and their Y moves 0.45 s later.
+    hass.states.async_set(TARGET_1["x"], "0.0", INCHES)
+    await hass.async_block_till_done()
+    await _advance(hass, freezer, 0.45)
+    hass.states.async_set(TARGET_1["y"], "79.1", INCHES)
+    await hass.async_block_till_done()
+    await _advance(hass, freezer, 3)
+
+    assert written == []
+    assert _hold_state(hass, presence_id)[0] == "on"
+
+
+async def test_a_target_still_on_an_axis_line_counts_after_a_second(
+    hass, freezer, entity_registry, setup_entry_with_zone
+) -> None:
+    """(0, 1000) could be half an appearance; standing a second, it is someone."""
+    # Nothing else writes, so only a timer can read it again.
+    device_id, _ = setup_entry_with_zone
+    await _store_zone(hass, device_id)
+    presence_id = _presence_id(entity_registry, device_id)
+    _set_target(hass, TARGET_1, 0, 1000)
+    await hass.async_block_till_done()
+    assert _hold_state(hass, presence_id) == ("off", False)
+
+    await _advance(hass, freezer, 0.9)
+    assert _hold_state(hass, presence_id) == ("off", False)
+    await _advance(hass, freezer, 0.2)
+    assert _hold_state(hass, presence_id) == ("on", False)
+
+
+async def test_a_still_person_picked_up_again_in_two_halves_stays_held(
+    hass, freezer, entity_registry, setup_entry_with_zone
+) -> None:
+    """Picked up again X first in a slot that read 0/0: (x, 0) is nobody outside."""
+    device_id, _ = setup_entry_with_zone
+    couch = {
+        "shape": "rect",
+        "data": {"x_min": -1000, "x_max": 1000, "y_min": 2000, "y_max": 3500},
+    }
+    await _store_zone(hass, device_id, _hold_zone(couch))
+    presence_id = _presence_id(entity_registry, device_id)
+    await _sit(hass, freezer, TARGET_1, 300, 2800)
+    await _vanish(hass, TARGET_1)
+    assert _hold_state(hass, presence_id) == ("on", True)
+    written = _record_held(hass, presence_id)
+
+    # 2 s later, (300, 0) is 2.8 m from where they sat, within rule 1's
+    # 3.8 m reach then. Y lands 0.45 s after it.
+    await _advance(hass, freezer, 2)
+    hass.states.async_set(TARGET_1["x"], "300")
+    await hass.async_block_till_done()
+    await _advance(hass, freezer, 0.45)
+    hass.states.async_set(TARGET_1["y"], "2800")
+    await hass.async_block_till_done()
+
+    assert written == [("on", False)]
 
 
 async def test_ignored_target_does_not_release_a_hold(

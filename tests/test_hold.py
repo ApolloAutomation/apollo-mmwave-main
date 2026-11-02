@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import itertools
 import math
 from typing import TYPE_CHECKING
@@ -426,7 +427,8 @@ def test_someone_inside_again_ends_the_hold() -> None:
         ((500, 1000), (0, 1200), True),
         ((0, 1000), (0, 1200), False),
         ((500, 0), (700, 0), False),
-        (None, (0, 1000), False),
+        (None, (0, 1000), True),
+        (None, (500, 1000), False),
         ((500, 1000), (600, 1100), False),
         ((500, 1000), (500, 1000), False),
     ],
@@ -437,41 +439,109 @@ def test_someone_inside_again_ends_the_hold() -> None:
         "x-already-zero",
         "y-already-zero",
         "no-previous-reading",
+        "no-previous-reading-off-the-axes",
         "moved",
         "unchanged",
     ],
 )
 def test_half_vanished_needs_one_coordinate_just_zeroed(prev, raw, expected) -> None:
-    """Exactly one coordinate is exactly 0, and it was not 0 the reading before."""
+    """One coordinate is exactly 0, and it was not 0 or unread the reading before."""
     assert half_vanished(prev, raw) is expected
 
 
-def test_half_vanished_reading_is_dropped() -> None:
-    """The hold skips a half-written vanish, and judges the next reading by it."""
+def test_half_vanished_reading_is_carried() -> None:
+    """The slot's last good reading stands in for a half-written vanish."""
     tracker = HoldTracker()
     first = _reading(0, 500, 1000)
     other = _reading(1, -300, 800)
-    assert tracker.usable([first, other]) == [first, other]
+    assert tracker.usable([first, other], 10.0) == [first, other]
 
     # Slot 0's X landed in a turn of its own: (0, 1000) is nobody's position.
     half = _reading(0, 0, 1000)
-    assert tracker.usable([half, other]) == [other]
+    carried = dataclasses.replace(first, carried=True)
+    assert tracker.usable([half, other], 10.2) == [carried, other]
+    # Another slot's write evaluates again before the other half lands, and
+    # the half is still nobody's position.
+    moved = _reading(1, -350, 800)
+    assert tracker.usable([half, moved], 10.4) == [carried, moved]
 
-    # It is still the slot's last reading, so the next is judged against it:
-    # x was 0 already.
+    # A changed Y means someone is on the x = 0 line after all.
     along = _reading(0, 0, 1100)
-    assert tracker.usable([along, other]) == [along, other]
+    assert tracker.usable([along, moved], 10.6) == [along, moved]
+
+
+def test_a_half_that_stands_for_a_second_is_someone_on_the_axis() -> None:
+    """The same half-vanished reading counts as real once it is a second old."""
+    tracker = HoldTracker()
+    first = _reading(0, 500, 1000)
+    tracker.usable([first], 10.0)
+    on_the_line = _reading(0, 0, 1000)
+    carried = dataclasses.replace(first, carried=True)
+
+    assert tracker.usable([on_the_line], 10.1) == [carried]
+    assert tracker.usable([on_the_line], 11.0) == [carried]
+    assert tracker.usable([on_the_line], 11.1) == [on_the_line]
+
+
+def test_half_an_appearance_is_dropped() -> None:
+    """A slot with no good reading has nothing to carry for its first half."""
+    tracker = HoldTracker()
+    assert tracker.usable([_reading(0, 300, 0)], 10.0) == []
+    whole = _reading(0, 300, 2800)
+    assert tracker.usable([whole], 10.45) == [whole]
+
+
+def _evaluate(tracker: HoldTracker, now: float, readings: list[Reading]) -> bool:
+    """Run one evaluation of RECT the way presence does, half vanishes and all."""
+    inside: list[Reading] = []
+    outside: list[Reading] = []
+    for reading in tracker.usable(readings, now):
+        x, y = reading.map
+        within = (
+            RECT["x_min"] <= x <= RECT["x_max"] and RECT["y_min"] <= y <= RECT["y_max"]
+        )
+        (inside if within else outside).append(reading)
+    return tracker.step(now, inside, outside, "rect", RECT)
+
+
+def test_half_a_vanish_moves_nobody_and_the_hold_counts_from_it() -> None:
+    """A carried reading keeps the person as they were, and the hold starts at it."""
+    tracker = HoldTracker()
+    assert _evaluate(tracker, 0.0, [_reading(0, 500, 1000)])
+
+    # X = 0 at 10 s, a turn of its own, and Y = 0 0.45 s later.
+    assert _evaluate(tracker, 10.0, [_reading(0, 0, 1000)])
+    person = tracker.occupants[0]
+    assert (person.last_map, person.last_t) == ((500, 1000), 0.0)
+    assert not tracker.holding
+    assert _evaluate(tracker, 10.45, [])
+    assert tracker.holding
+    assert tracker.deadline(60) == pytest.approx(70.0)
+
+
+def test_a_real_reading_after_a_half_ends_the_carry() -> None:
+    """Someone on the x = 0 line after all is lost when they are lost."""
+    tracker = HoldTracker()
+    assert _evaluate(tracker, 0.0, [_reading(0, 500, 1000)])
+    assert _evaluate(tracker, 10.0, [_reading(0, 0, 1000)])
+    assert _evaluate(tracker, 10.45, [_reading(0, 0, 1050)])
+    assert tracker.occupants[0].last_map == (0, 1050)
+
+    assert _evaluate(tracker, 20.0, [])
+    assert tracker.deadline(60) == pytest.approx(80.0)
 
 
 def test_reset_forgets_everyone() -> None:
     """A dropped hold leaves nothing to account for and no reading to compare."""
     tracker = _occupied([(0, 1000)])
     assert tracker.step(10.0, [], [], "rect", RECT)
-    tracker.usable([_reading(0, 500, 1000)])
+    tracker.usable([_reading(0, 500, 1000)], 10.0)
 
     tracker.reset()
 
     assert not tracker.holding
     assert tracker.deadline(60) is None
     assert not tracker.step(10.5, [], [], "rect", RECT)
-    assert tracker.usable([_reading(0, 0, 1000)]) == [_reading(0, 0, 1000)]
+    # No good reading is left to carry for half of a vanish, and none to
+    # judge the next reading by: (500, 0) is half of an appearance.
+    assert tracker.usable([_reading(0, 500, 0)], 10.5) == []
