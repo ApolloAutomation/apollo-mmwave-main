@@ -5616,8 +5616,8 @@ export class ZoneMapCard extends HTMLElement {
    * x labels' row, on its top edge, where the notes covered the outer
    * labels; when the row runs under them, they go MAP_NOTE_INSET_CSS_PX
    * below it instead. Set as --zm-note-top on the canvas's container, and
-   * only when it changes. A render brings a new container, which this
-   * frame's value is set on again.
+   * only when it changes. A render's new container has none, so the
+   * render's own first frame sets it again.
    */
   _placeMapNotes(xLabels) {
     const container = this.canvas?.parentElement;
@@ -5733,9 +5733,10 @@ export class ZoneMapCard extends HTMLElement {
           ctx.moveTo(pts[0].x, pts[0].y);
           for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
           ctx.closePath();
-          // By the even-odd rule presence tests a point by (pointInPolygon),
-          // so a polygon that goes around an area twice, as a second lap of
-          // Walk can, is not filled where presence finds nobody.
+          // By the even-odd rule, the one presence tests a point by
+          // (pointInPolygon), so a polygon that goes around an area twice,
+          // as a second lap of Walk can, is not filled where presence finds
+          // nobody.
           ctx.fill('evenodd');
           ctx.stroke();
           // Compute bounding box

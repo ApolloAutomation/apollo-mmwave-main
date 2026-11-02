@@ -8124,12 +8124,13 @@ describe("zone map card walk", () => {
     const plate = draws[text - 1];
     expect(plate.name).toBe("fillRect");
     const [left, top, width, height] = plate.args;
+    /** Whether an arc's or a fillRect's box overlaps the plate. */
     const covers = (d: Draw) => {
-      const [x0, y0, x1, y1] =
+      const [x, y, w, h] =
         d.name === "arc"
-          ? [d.args[0] - d.args[2], d.args[1] - d.args[2], d.args[0] + d.args[2], d.args[1] + d.args[2]]
-          : [d.args[0], d.args[1], d.args[0] + d.args[2], d.args[1] + d.args[3]];
-      return x0 < left + width && left < x1 && y0 < top + height && top < y1;
+          ? [d.args[0] - d.args[2], d.args[1] - d.args[2], 2 * d.args[2], 2 * d.args[2]]
+          : d.args;
+      return x < left + width && left < x + w && y < top + height && top < y + h;
     };
     // The rings of corners 1 and 2 reach under the plate...
     const ringRadius = Math.max(14, Math.round(14 * card._frameScale));
