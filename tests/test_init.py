@@ -39,6 +39,7 @@ from custom_components.apollo_mmwave.const import (
     DASHBOARD_STRATEGY_TYPE,
     DASHBOARD_TITLE,
     DASHBOARD_URL_PATH,
+    DATA_MOVEMENT,
     DATA_STORE,
     DISPLAY_UNITS,
     DOMAIN,
@@ -99,6 +100,7 @@ TRACKED = [
 MAX_SAFE_INT = 2**53 - 1
 
 ZONE_STORAGE_KEY = f"{DOMAIN}.zones"
+MOVEMENT_STORAGE_KEY = f"{DOMAIN}.movement"
 
 # The real Store.async_remove, taken at import, before the hass_storage fixture
 # swaps in a mock that only drops the key and leaves a pending write scheduled.
@@ -2509,6 +2511,32 @@ async def test_movement_history_flag_round_trip(
     assert get_store(hass).devices[device_id] == {STORE_ZONES: {}}
     stored = hass_storage[ZONE_STORAGE_KEY]["data"][STORE_DEVICES][device_id]
     assert STORE_MOVEMENT_HISTORY not in stored
+
+
+async def test_movement_history_off_clears_history(
+    hass, init_integration, device_id, hass_storage
+) -> None:
+    """Turning movement history off deletes the radar's history and its file."""
+    _ = init_integration
+    await _update_zone(hass, {"device_id": device_id, STORE_MOVEMENT_HISTORY: True})
+    _set_target(hass, TRACKED[0], 1371, 2903)
+    await hass.async_block_till_done()
+    history = hass.data[DOMAIN][DATA_MOVEMENT]
+    assert history.count(device_id) == 1
+    # Past the routine save delay, so the history is on disk.
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=61))
+    await hass.async_block_till_done()
+    assert device_id in hass_storage[MOVEMENT_STORAGE_KEY]["data"]["devices"]
+
+    await _update_zone(hass, {"device_id": device_id, STORE_MOVEMENT_HISTORY: False})
+    await hass.async_block_till_done(wait_background_tasks=True)
+
+    assert history.count(device_id) == 0
+    assert MOVEMENT_STORAGE_KEY not in hass_storage
+    # The target still in view is not recorded any more.
+    _set_target(hass, TRACKED[0], 1500, 2500)
+    await hass.async_block_till_done()
+    assert history.count(device_id) == 0
 
 
 @pytest.mark.parametrize(

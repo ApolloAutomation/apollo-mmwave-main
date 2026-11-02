@@ -12,6 +12,10 @@ entity was the storage.
 These two commands are the replacement. The store is the single source of
 truth, the Home Assistant device id is the key, and nothing here builds an
 entity id.
+
+The movement commands read and clear a radar's movement history
+(movement.py). They are the only admin-only commands here: positions over
+time say far more about a household than the zones do.
 """
 
 from __future__ import annotations
@@ -29,6 +33,7 @@ from .const import (
     ATTR_ROTATION_DEG,
     DATA_CALIBRATION_JOBS,
     DATA_CALIBRATION_STORE,
+    DATA_MOVEMENT,
     DATA_STORE,
     DOMAIN,
     KEY_PRESENCE_ENTITY_ID,
@@ -47,16 +52,21 @@ from .const import (
     ZONE_TYPE_IGNORE,
 )
 from .ld2450 import resolve_target_pairs
+from .movement import _now_ms
 from .store import device_flag, zone_hold_s, zone_type_of
 
 if TYPE_CHECKING:
     from homeassistant.components.websocket_api import ActiveConnection
     from homeassistant.core import CALLBACK_TYPE, HomeAssistant
 
+    from .movement import MovementHistory
+
 TYPE_GET = f"{DOMAIN}/zones/get"
 TYPE_SUBSCRIBE = f"{DOMAIN}/zones/subscribe"
 TYPE_CALIBRATION_GET = f"{DOMAIN}/calibration/get"
 TYPE_CALIBRATION_SUBSCRIBE = f"{DOMAIN}/calibration/subscribe"
+TYPE_MOVEMENT_GET = f"{DOMAIN}/movement/get"
+TYPE_MOVEMENT_CLEAR = f"{DOMAIN}/movement/clear"
 
 # Detected pairs the user has not chosen, offered so the card can say "using the
 # radar's own targets" instead of demanding a manual pick.
@@ -76,6 +86,8 @@ def async_register(hass: HomeAssistant) -> CALLBACK_TYPE:
     # (a reload) replaces the handlers rather than stacking them.
     websocket_api.async_register_command(hass, ws_get_zones)
     websocket_api.async_register_command(hass, ws_subscribe_zones)
+    websocket_api.async_register_command(hass, ws_get_movement)
+    websocket_api.async_register_command(hass, ws_clear_movement)
     websocket_api.async_register_command(hass, ws_get_calibration)
     websocket_api.async_register_command(hass, ws_subscribe_calibration)
     hass.data.setdefault(DOMAIN, {}).setdefault(DATA_SUBSCRIPTIONS, set())
@@ -267,6 +279,73 @@ def ws_subscribe_zones(
     active.add(_teardown)
     connection.subscriptions[msg["id"]] = _teardown
     connection.send_result(msg["id"])
+
+
+def _movement_answerable(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> MovementHistory | None:
+    """Return the movement history if a request can be served, else send the error."""
+    from . import _device_is_registered  # noqa: PLC0415 - avoid a module import cycle
+
+    data = hass.data.get(DOMAIN, {})
+    movement: MovementHistory | None = data.get(DATA_MOVEMENT)
+    # The history reads its flags from the zone store, and the entry's
+    # teardown pops the two at different moments.
+    if movement is None or DATA_STORE not in data:
+        connection.send_error(msg["id"], ERR_NOT_LOADED, "Apollo mmWave is not loaded.")
+        return None
+    device_id = msg["device_id"]
+    if not _device_is_registered(hass, device_id):
+        connection.send_error(
+            msg["id"],
+            websocket_api.ERR_NOT_FOUND,
+            f"No Home Assistant device with id {device_id}",
+        )
+        return None
+    return movement
+
+
+# Admin only, unlike the zone commands: replaying where people were is not
+# something every user of a dashboard should be able to do. A non-admin gets
+# `unauthorized` for any well-formed request. Home Assistant checks the schema
+# first, so a malformed one gets `invalid_format` whoever sends it. Neither
+# command mints a zone store entry, and a radar whose history is off answers
+# `enabled: false` with no records rather than an error.
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): TYPE_MOVEMENT_GET,
+        vol.Required("device_id"): str,
+        # Epoch milliseconds; the answer clamps it to the last 24 hours.
+        vol.Optional("since"): vol.All(vol.Coerce(int), vol.Range(min=0)),
+    }
+)
+@websocket_api.require_admin
+@callback
+def ws_get_movement(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Return one radar's movement history since a time, as packed columns."""
+    movement = _movement_answerable(hass, connection, msg)
+    if movement is None:
+        return
+    connection.send_result(
+        msg["id"], movement.payload(msg["device_id"], msg.get("since"), _now_ms())
+    )
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): TYPE_MOVEMENT_CLEAR, vol.Required("device_id"): str}
+)
+@websocket_api.require_admin
+@callback
+def ws_clear_movement(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Delete one radar's movement history; recording goes on."""
+    movement = _movement_answerable(hass, connection, msg)
+    if movement is None:
+        return
+    connection.send_result(msg["id"], {"cleared": movement.clear(msg["device_id"])})
 
 
 def _calibration_loaded(hass: HomeAssistant) -> bool:

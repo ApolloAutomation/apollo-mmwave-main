@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import copy
+import json
 import logging
+import time
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 import pytest
 from homeassistant.core import callback
@@ -19,6 +23,7 @@ from custom_components.apollo_mmwave import get_store
 from custom_components.apollo_mmwave.const import (
     DATA_CALIBRATION_JOBS,
     DATA_CALIBRATION_STORE,
+    DATA_MOVEMENT,
     DATA_STORE,
     DOMAIN,
     KEY_PRESENCE_ENTITY_ID,
@@ -30,7 +35,18 @@ from custom_components.apollo_mmwave.const import (
 )
 from custom_components.apollo_mmwave.zone_entities import ZoneEntityMixin
 
-from .conftest import RADAR_TARGET_COUNT, RadarIds, finish_job, radar_ids
+from .conftest import (
+    MOVEMENT_EXAMPLE,
+    MOVEMENT_EXAMPLE_RECORDS,
+    RADAR_TARGET_COUNT,
+    RadarIds,
+    finish_job,
+    radar_ids,
+    unpack_movement,
+)
+
+if TYPE_CHECKING:
+    from custom_components.apollo_mmwave.movement import MovementHistory
 
 GET = "apollo_mmwave/zones/get"
 SUBSCRIBE = "apollo_mmwave/zones/subscribe"
@@ -753,6 +769,265 @@ async def test_zones_subscription_end_drops_both_forwarders(
 
     assert _forwarder_count(hass) == 0
     assert _forwarder_count(hass, SIGNAL_ZONES_PAYLOAD) == 0
+
+
+# ---------------------------------------------------------------------------
+# Movement history commands, administrators only
+# ---------------------------------------------------------------------------
+
+MOVEMENT_GET = "apollo_mmwave/movement/get"
+MOVEMENT_CLEAR = "apollo_mmwave/movement/clear"
+DAY_MS = 86400000
+
+
+@pytest.fixture
+def example_now(freezer) -> None:
+    """Freeze time at the now of SPEC 1.5's example answer."""
+    freezer.move_to(datetime(2026, 1, 1, 1, tzinfo=UTC))
+
+
+def _now_ms() -> int:
+    return round(time.time() * 1000)
+
+
+async def _history_on(hass, device_id: str) -> MovementHistory:
+    """Turn movement history on for the radar and return the history."""
+    await hass.services.async_call(
+        DOMAIN,
+        "update_zone",
+        {"device_id": device_id, "movement_history": True},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+    return hass.data[DOMAIN][DATA_MOVEMENT]
+
+
+async def _ask(client, message: dict) -> dict:
+    await client.send_json_auto_id(message)
+    return await client.receive_json()
+
+
+async def test_movement_get_requires_admin(
+    hass, hass_ws_client, hass_read_only_access_token, init_integration, device_id
+) -> None:
+    """A non-admin gets unauthorized first; a malformed request is invalid_format."""
+    _ = init_integration
+    await _history_on(hass, device_id)
+    user = await hass_ws_client(hass, hass_read_only_access_token)
+    admin = await hass_ws_client(hass)
+
+    # Unauthorized comes before not_found, whatever the device.
+    for device in (device_id, "no-such-device"):
+        reply = await _ask(user, {"type": MOVEMENT_GET, "device_id": device})
+        assert reply["success"] is False
+        assert reply["error"]["code"] == "unauthorized"
+
+    # Home Assistant checks the schema before the admin check.
+    for client in (user, admin):
+        for message in (
+            {"type": MOVEMENT_GET},
+            {"type": MOVEMENT_GET, "device_id": device_id, "since": -1},
+        ):
+            reply = await _ask(client, message)
+            assert reply["error"]["code"] == "invalid_format"
+    reply = await _ask(admin, {"type": MOVEMENT_GET, "device_id": device_id})
+    assert reply["success"] is True
+
+
+async def test_movement_clear_requires_admin(
+    hass, hass_ws_client, hass_read_only_access_token, init_integration, device_id
+) -> None:
+    """A non-admin cannot clear a radar's history, and it stays."""
+    _ = init_integration
+    history = await _history_on(hass, device_id)
+    history._record(device_id, _now_ms(), 0, 1371, 2903)  # noqa: SLF001 - a record
+    user = await hass_ws_client(hass, hass_read_only_access_token)
+
+    reply = await _ask(user, {"type": MOVEMENT_CLEAR, "device_id": device_id})
+
+    assert reply["success"] is False
+    assert reply["error"]["code"] == "unauthorized"
+    assert history.count(device_id) == 1
+
+
+async def test_movement_get_returns_packed_columns(
+    hass, example_now, hass_ws_client, init_integration, device_id
+) -> None:
+    """The answer is SPEC 1.5's example: little-endian columns in base64."""
+    _ = (example_now, init_integration)
+    history = await _history_on(hass, device_id)
+    for record in MOVEMENT_EXAMPLE_RECORDS:
+        history._record(device_id, *record)  # noqa: SLF001 - the example's records
+    client = await hass_ws_client(hass)
+
+    reply = await _ask(client, {"type": MOVEMENT_GET, "device_id": device_id})
+
+    assert reply["result"] == {
+        "enabled": True,
+        "now": 1767229200000,
+        "since": 1767229200000 - DAY_MS,
+        "retention_s": 86400,
+        **MOVEMENT_EXAMPLE,
+    }
+    assert unpack_movement(reply["result"]) == MOVEMENT_EXAMPLE_RECORDS
+
+
+async def test_movement_get_since_filters_and_carries_in_the_last_point(
+    hass, hass_ws_client, init_integration, device_id
+) -> None:
+    """A window starts at since, after each slot's last point up to 30 s before."""
+    _ = init_integration
+    history = await _history_on(hass, device_id)
+    since = _now_ms() - 3600000
+    records = [
+        # Slot 2's last point, more than 30 s before the window.
+        (since - 40000, 2, 900, 900),
+        (since - 10000, 0, 120, 2400),
+        # Slot 0's last point before the window: carried in.
+        (since - 9500, 0, 170, 2410),
+        (since - 8988, 1, -800, 3100),
+        # Slot 1 left before the window, so nothing of it is carried in.
+        (since - 5000, -2, 0, 0),
+        (since + 6000, -1, 0, 0),
+        (since + 7000, 1, 300, 1500),
+    ]
+    for record in records:
+        history._record(device_id, *record)  # noqa: SLF001 - an hour ago
+    client = await hass_ws_client(hass)
+
+    result = (
+        await _ask(
+            client, {"type": MOVEMENT_GET, "device_id": device_id, "since": since}
+        )
+    )["result"]
+
+    assert result["since"] == since
+    assert result["t0"] == since - 9500
+    assert unpack_movement(result) == [records[2], records[5], records[6]]
+
+    # No since, or one before the 24 hours: the whole 24 hours.
+    for message in (
+        {"type": MOVEMENT_GET, "device_id": device_id},
+        {"type": MOVEMENT_GET, "device_id": device_id, "since": 0},
+    ):
+        result = (await _ask(client, message))["result"]
+        assert result["since"] == result["now"] - DAY_MS
+        assert unpack_movement(result) == records
+    # A since after now is now.
+    result = (
+        await _ask(
+            client,
+            {
+                "type": MOVEMENT_GET,
+                "device_id": device_id,
+                "since": since + 2 * 3600000,
+            },
+        )
+    )["result"]
+    assert result["since"] == result["now"]
+    assert result["n"] == 0
+
+
+async def test_movement_get_at_the_cap_stays_under_2_mb(
+    hass, hass_ws_client, init_integration, device_id
+) -> None:
+    """A full radar, cap and slack, answers in under 2 MB."""
+    _ = init_integration
+    history = await _history_on(hass, device_id)
+    count = 105000
+    first = _now_ms() - count * 500
+    for index in range(count):
+        history._record(  # noqa: SLF001 - fills the cap fast
+            device_id, first + index * 500, index % 3, index % 6000 - 3000, index % 5000
+        )
+    client = await hass_ws_client(hass)
+
+    reply = await _ask(client, {"type": MOVEMENT_GET, "device_id": device_id})
+
+    assert reply["result"]["n"] == count
+    assert len(json.dumps(reply["result"])) < 2_000_000
+
+
+async def test_movement_get_unknown_device_is_not_found(
+    hass, hass_ws_client, init_integration
+) -> None:
+    """A device id Home Assistant does not know is an error for both commands."""
+    _ = init_integration
+    client = await hass_ws_client(hass)
+
+    for command in (MOVEMENT_GET, MOVEMENT_CLEAR):
+        reply = await _ask(client, {"type": command, "device_id": "no-such-device"})
+        assert reply["success"] is False
+        assert reply["error"]["code"] == "not_found"
+    assert get_store(hass).devices == {}
+
+
+async def test_movement_get_not_loaded_after_unload(
+    hass, hass_ws_client, hass_read_only_access_token, init_integration, device_id
+) -> None:
+    """Without the history or the zone store, both commands say not loaded."""
+    client = await hass_ws_client(hass)
+    user = await hass_ws_client(hass, hass_read_only_access_token)
+    data = hass.data[DOMAIN]
+    # Mid-unload, the teardowns pop the two at different moments.
+    for key in (DATA_MOVEMENT, DATA_STORE):
+        saved = data.pop(key)
+        reply = await _ask(client, {"type": MOVEMENT_GET, "device_id": device_id})
+        assert reply["error"]["code"] == "not_loaded"
+        data[key] = saved
+
+    assert await hass.config_entries.async_unload(init_integration.entry_id)
+    await hass.async_block_till_done()
+
+    for command in (MOVEMENT_GET, MOVEMENT_CLEAR):
+        reply = await _ask(client, {"type": command, "device_id": device_id})
+        assert reply["success"] is False
+        assert reply["error"]["code"] == "not_loaded"
+    # Unauthorized comes first, then not_loaded, then not_found.
+    reply = await _ask(user, {"type": MOVEMENT_GET, "device_id": device_id})
+    assert reply["error"]["code"] == "unauthorized"
+    reply = await _ask(client, {"type": MOVEMENT_GET, "device_id": "no-such-device"})
+    assert reply["error"]["code"] == "not_loaded"
+
+
+async def test_movement_commands_do_not_mint_a_store_entry(
+    hass, hass_ws_client, init_integration, device_id
+) -> None:
+    """A radar with history off answers empty, and asking writes nothing down."""
+    _ = init_integration
+    client = await hass_ws_client(hass)
+
+    result = (await _ask(client, {"type": MOVEMENT_GET, "device_id": device_id}))[
+        "result"
+    ]
+    assert result["enabled"] is False
+    assert (result["n"], result["t0"]) == (0, None)
+    assert [result[key] for key in ("dt", "s", "x", "y")] == ["", "", "", ""]
+    reply = await _ask(client, {"type": MOVEMENT_CLEAR, "device_id": device_id})
+    assert reply["result"] == {"cleared": 0}
+
+    assert get_store(hass).devices == {}
+
+
+async def test_movement_clear_empties_and_reports_the_count(
+    hass, hass_ws_client, init_integration, device_id
+) -> None:
+    """Clear says how many records went, and keeps the flag on."""
+    _ = init_integration
+    history = await _history_on(hass, device_id)
+    now = _now_ms()
+    for offset in (3000, 2000, 1000):
+        history._record(device_id, now - offset, 0, 1000 + offset, 2000)  # noqa: SLF001
+    client = await hass_ws_client(hass)
+
+    reply = await _ask(client, {"type": MOVEMENT_CLEAR, "device_id": device_id})
+
+    assert reply["result"] == {"cleared": 3}
+    result = (await _ask(client, {"type": MOVEMENT_GET, "device_id": device_id}))[
+        "result"
+    ]
+    assert result["enabled"] is True
+    assert result["n"] == 0
 
 
 # ---------------------------------------------------------------------------

@@ -42,6 +42,7 @@ from .const import (
     CONF_DASHBOARD_ID,
     CONF_DASHBOARD_URL_PATH,
     DASHBOARD_URL_PATH,
+    DATA_MOVEMENT,
     DATA_STORE,
     DISPLAY_UNITS,
     DISPLAY_UNITS_AUTO,
@@ -94,6 +95,7 @@ from .migration import (
     async_migrate_legacy,
     async_migrate_unique_ids,
 )
+from .movement import MovementHistory, async_remove_movement_store
 from .store import ZoneStore, device_flag, zone_hold_s, zone_type_of
 from .websocket import async_register as async_register_websocket
 
@@ -909,8 +911,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """
     Set up Apollo mmWave from a config entry.
 
-    Loads (or migrates) the zone store, registers the update service, forwards
-    the sensor/binary_sensor platforms and serves the bundled frontend.
+    Loads (or migrates) the zone store, loads the movement history, registers
+    the update service, forwards the sensor/binary_sensor platforms and serves
+    the bundled frontend.
 
     Setup never creates, rewrites or deletes a dashboard. The Apollo mmWave
     dashboard is created once, when an administrator asks for it in the config
@@ -930,10 +933,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # otherwise be abandoned and recreated fresh, losing its name and area.
     await async_migrate_unique_ids(hass, store)
     hass.data.setdefault(DOMAIN, {})[DATA_STORE] = store
+    # Loaded after the zone store, whose flags decide which radars keep their
+    # history, and before anything can ask for it.
+    movement = MovementHistory(hass, store)
+    await movement.async_load()
+    hass.data[DOMAIN][DATA_MOVEMENT] = movement
 
     # Before the platforms, so no entity can resolve pairs without the cache in
     # place and then hold a stale answer.
     entry.async_on_unload(async_track_target_pairs(hass))
+
+    # Recording starts with the pair cache in place. The teardown is a hook,
+    # as for the zone store below, so it also runs when a later step raises.
+    # Hooks run last registered first, so the zone teardown has popped the
+    # zone store by then; the history holds its own reference to it.
+    movement.async_start()
+
+    def _movement_teardown() -> Coroutine[Any, Any, None]:
+        hass.data.get(DOMAIN, {}).pop(DATA_MOVEMENT, None)
+        return movement.async_stop()
+
+    entry.async_on_unload(_movement_teardown)
 
     # Admin only: a call rewrites the zone configuration and creates, renames
     # and removes zone entities. Automations carry no user and still run; a
@@ -993,7 +1013,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Delete our dashboard, resources and both stores when the entry is removed."""
+    """Delete our dashboard, resources and every store when the entry is removed."""
     # Only the row this entry recorded, and only while its config is still our
     # strategy (frontend.async_remove_dashboard). An entry that owns none
     # leaves every dashboard alone.
@@ -1017,3 +1037,5 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     store = hass.data.get(DOMAIN, {}).get(DATA_STORE) or ZoneStore(hass)
     await store.async_remove()
     await CalibrationStore(hass).async_remove()
+    # Every position goes with the entry, and the copies of a corrupt file too.
+    await async_remove_movement_store(hass)
