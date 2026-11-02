@@ -93,12 +93,20 @@ export function historyError(message: string): string {
   return `Could not load movement history: ${message}`;
 }
 
+/** The end of `historyError` for an answer that is not movement history,
+ *  as from a backend whose answer changed shape. */
+export const HISTORY_UNREADABLE = "Home Assistant sent an answer this card cannot read.";
 export const HISTORY_UNAUTHORIZED = "Only an administrator can open movement history.";
 export const HISTORY_CLEAR = "Clear history";
 export const HISTORY_CLEAR_CONFIRM = "Delete this radar's movement history?";
 export const HISTORY_CLEAR_YES = "Delete";
 export const HISTORY_CLEAR_NO = "Cancel";
 export const HISTORY_CLEARED_TOAST = "Movement history cleared";
+
+/** What the card says when Clear history was refused. */
+export function historyClearError(message: string): string {
+  return `Could not clear movement history: ${message}`;
+}
 export const HISTORY_LIVE = "Back to live";
 
 /** The badge over a replayed map. `time` is already formatted for the

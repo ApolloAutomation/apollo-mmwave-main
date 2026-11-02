@@ -10,7 +10,13 @@
 
 import { afterEach, describe, it, expect, vi } from "vitest";
 import { ZoneMapCard } from "../src/zone-map/card";
-import { CONFIG_ENTRIES_SUBSCRIBE, ZONES_GET, ZONES_SUBSCRIBE } from "../src/zone-map/api";
+import {
+  CONFIG_ENTRIES_SUBSCRIBE,
+  MOVEMENT_CLEAR,
+  MOVEMENT_GET,
+  ZONES_GET,
+  ZONES_SUBSCRIBE,
+} from "../src/zone-map/api";
 import type { ZoneConfig } from "../src/zone-map/api";
 
 type Handler = (message: any) => void;
@@ -7352,15 +7358,36 @@ describe("zone map card walk", () => {
     expect(card._walk.corners).toHaveLength(3);
   });
 
-  it("entering Walk closes History", async () => {
+  it("entering Walk closes History and disables the History chip", async () => {
     // History's replay would hide the dot of the person walking.
-    const { card } = await walkCard();
+    const { card } = await walkCard({ payload: { movement_history: true } });
+    const chip = $(card, "btnHistory");
+    chip.click();
+    expect(card._history.open).toBe(true);
+    expect($(card, "historyPanel").hidden).toBe(false);
     const close = vi.spyOn(card, "_closeHistory");
 
     $(card, "btnModeWalk").click();
 
     expect(close).toHaveBeenCalledTimes(1);
     expect(card.drawMode).toBe("walk");
+    expect(card._history.open).toBe(false);
+    expect($(card, "historyPanel").hidden).toBe(true);
+    expect(chip.hidden).toBe(false);
+    expect(chip.disabled).toBe(true);
+    expect(chip.title).toBe("Finish or cancel the walk first.");
+    expect(chip.getAttribute("aria-expanded")).toBe("false");
+    // Nothing that still reaches it opens History, and a render keeps it so.
+    card._openHistory();
+    expect(card._history.open).toBe(false);
+    card.render();
+    expect($(card, "btnHistory").disabled).toBe(true);
+
+    // Leaving Walk gives it back.
+    $(card, "btnWalkCancel").click();
+    expect(card.drawMode).toBe("rect");
+    expect($(card, "btnHistory").disabled).toBe(false);
+    expect($(card, "btnHistory").title).toBe("");
   });
 
   it("lets the canvas pan and draws nothing with the pointer in Walk", async () => {
@@ -7493,6 +7520,1147 @@ describe("zone map card walk", () => {
     $(card, "btnAddZone").click();
     expect(card.selectedZone).toBe(2);
     expect(card._walk.corners).toHaveLength(1);
+  });
+});
+
+/**
+ * Movement history: the Configure option, the History chip and panel, and
+ * the replay.
+ *
+ * An administrator turns history on for a radar in Configure, and turning it
+ * off, which deletes it, asks first. History, under the map, reads a range
+ * from the server and replays it on the map in place of the live view:
+ * numbered dots with their trails, and zones lit by the replayed dots through
+ * the zones' current shapes, rotation and flip. Its times are the server's
+ * epoch ms. Nobody else's card shows any of it or calls the movement
+ * commands. The 10 m grid puts (x, y) mm at canvas ((x + 5000) * 0.08,
+ * y * 0.08) px, unflipped.
+ */
+describe("zone map card movement history", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    document.body.replaceChildren();
+  });
+
+  /** The server's clock when it answers: 2026-01-01 01:00:00 UTC. */
+  const NOW = 1767229200000;
+  const HOUR = 3600000;
+  /** Where the default 1 h range starts. */
+  const START = NOW - HOUR;
+  const PAIRS = [
+    { x: "sensor.a_x", y: "sensor.a_y" },
+    { x: "sensor.b_x", y: "sensor.b_y" },
+  ];
+  const ORANGE = "rgba(255, 152, 0, ";
+
+  /** One record: [t, s, x, y], where s is -1 - slot on a gone marker. */
+  type Row = [t: number, s: number, x: number, y: number];
+  const point = (t: number, slot: number, x: number, y: number): Row => [t, slot, x, y];
+  const gone = (t: number, slot: number): Row => [t, -1 - slot, 0, 0];
+
+  /** Little-endian values as base64, the way the backend packs a column. */
+  function column(values: number[], bytes: 2 | 4): string {
+    const view = new DataView(new ArrayBuffer(values.length * bytes));
+    values.forEach((value, i) => {
+      if (bytes === 4) view.setUint32(i * 4, value, true);
+      else view.setInt16(i * 2, value, true);
+    });
+    let binary = "";
+    new Uint8Array(view.buffer).forEach((byte) => {
+      binary += String.fromCharCode(byte);
+    });
+    return btoa(binary);
+  }
+
+  /** The store's answer holding `rows` (sorted by time), built at `now`. */
+  function pack(rows: Row[], now = NOW, since = now - HOUR) {
+    const t = rows.map((row) => row[0]);
+    return {
+      enabled: true,
+      now,
+      since,
+      retention_s: 86400,
+      n: rows.length,
+      t0: rows.length > 0 ? t[0] : null,
+      dt: column(
+        t.map((value, i) => (i === 0 ? 0 : value - t[i - 1])),
+        4
+      ),
+      s: column(
+        rows.map((row) => row[1]),
+        2
+      ),
+      x: column(
+        rows.map((row) => row[2]),
+        2
+      ),
+      y: column(
+        rows.map((row) => row[3]),
+        2
+      ),
+    };
+  }
+
+  /**
+   * Target 1 walks in 10 s into the hour, stands still at (-500, 2000) mm
+   * from 10.5 s and leaves at 30 s; target 2 shows at (2000, 4000) mm at
+   * 20 s and sends nothing after.
+   */
+  const WALK_IN = pack([
+    point(START + 10000, 0, -1000, 2000),
+    point(START + 10500, 0, -500, 2000),
+    point(START + 20000, 1, 2000, 4000),
+    gone(START + 30000, 0),
+  ]);
+
+  /**
+   * An administrator's card for a radar that keeps movement history, on the
+   * 10 m grid with no rotation, its viewer's Home Assistant in English on a
+   * 12-hour clock in the server's time zone, UTC. The fake clock stands at
+   * NOW. A movement read answers `hass.movement` (a payload, or a function of
+   * the request); a clear answers `hass.clear(request)`.
+   */
+  async function historyCard({
+    admin = true,
+    payload = {},
+    config = {},
+    movement = WALK_IN as any,
+  }: {
+    admin?: boolean;
+    payload?: Record<string, any>;
+    config?: Record<string, any>;
+    movement?: any;
+  } = {}) {
+    vi.useFakeTimers();
+    const hass = fakeHass({
+      ...ZONE_PAYLOAD,
+      rotation_deg: 0,
+      entities: PAIRS,
+      movement_history: true,
+      ...payload,
+    });
+    hass.user = { is_admin: admin };
+    hass.locale = { language: "en", time_format: "12", time_zone: "server" };
+    hass.config = { time_zone: "UTC" };
+    hass.movement = movement;
+    hass.clear = () => ({ cleared: 4 });
+    hass.callWS = vi.fn(async (msg: any) => {
+      if (msg.type === ZONES_GET) return hass.payload;
+      if (msg.type === MOVEMENT_GET) {
+        return typeof hass.movement === "function" ? hass.movement(msg) : hass.movement;
+      }
+      if (msg.type === MOVEMENT_CLEAR) return hass.clear(msg);
+      return [];
+    });
+    const card = await mountCard(hass, { ...TEN_METER_GRID, ...config });
+    vi.setSystemTime(NOW);
+    hass.callService.mockClear();
+    const toasts = notifications(card);
+    return { card, hass, toasts };
+  }
+
+  const $ = (card: any, id: string) => card.shadowRoot.getElementById(id);
+
+  /** The movement requests of `type` the card sent, in order. */
+  const movementCalls = (hass: any, type = MOVEMENT_GET) =>
+    hass.callWS.mock.calls.map(([msg]: any[]) => msg).filter((msg: any) => msg.type === type);
+
+  /** Let the store's answer land, under the fake clock. */
+  async function settle() {
+    await vi.advanceTimersByTimeAsync(0);
+  }
+
+  async function openHistory(card: any) {
+    $(card, "btnHistory").click();
+    await settle();
+  }
+
+  /** Move the scrubber to `seconds` into the range, as a drag does. */
+  function scrub(card: any, seconds: number) {
+    const input = $(card, "historyScrub");
+    input.value = String(seconds);
+    input.dispatchEvent(new Event("input"));
+  }
+
+  const rangeChip = (card: any, hours: number) =>
+    card.shadowRoot.querySelector(`#historyPanel [data-hours="${hours}"]`);
+  const speedChip = (card: any, speed: number) =>
+    card.shadowRoot.querySelector(`#historyPanel [data-speed="${speed}"]`);
+
+  /** An element's text, with the narrow no-break space some Intl versions
+   *  put before AM read as a plain space. */
+  const text = (element: any) => String(element.textContent).replace(/ /g, " ");
+
+  /** A pushed payload for the same radar with `fields` changed. */
+  function push(hass: any, fields: Record<string, any>) {
+    hass.handlers[ZONES_SUBSCRIBE][0]({
+      ...ZONE_PAYLOAD,
+      rotation_deg: 0,
+      entities: PAIRS,
+      movement_history: true,
+      ...fields,
+    });
+  }
+
+  function frame(card: any): Draw[] {
+    const { ctx, draws } = drawRecordingContext();
+    card.ctx = ctx;
+    card.drawGrid();
+    return draws;
+  }
+
+  /** Rounded to 1e-6 px, so a rotated point compares by value. */
+  const px = (value: number) => Math.round(value * 1e6) / 1e6;
+
+  /** The numbered dots a frame drew: [number, x, y]. */
+  const dots = (draws: Draw[]) =>
+    draws
+      .filter((d) => d.name === "fillText" && /^\d+$/.test(String(d.args[0])))
+      .map((d) => [d.args[0], px(d.args[1]), px(d.args[2])]);
+
+  /** The trail segments a frame stroked in `color`: [x1, y1, x2, y2]. */
+  function segments(draws: Draw[], color = "#f44336"): number[][] {
+    return draws
+      .map((d, i) => [d, i] as const)
+      .filter(([d, i]) => d.name === "stroke" && d.stroke === color && draws[i - 1]?.name === "lineTo")
+      .map(([, i]) => [...draws[i - 2].args, ...draws[i - 1].args].map(px));
+  }
+
+  it("shows History only to administrators with movement history on", async () => {
+    const { card, hass } = await historyCard();
+    const chip = $(card, "btnHistory");
+    expect(chip.hidden).toBe(false);
+    expect(chip.textContent).toBe("History");
+    expect(chip.classList.contains("zone-btn")).toBe(true);
+    expect(chip.getAttribute("aria-expanded")).toBe("false");
+    expect(chip.getAttribute("aria-controls")).toBe("historyPanel");
+    // With the viewer's other chips under the map, and its panel under them.
+    expect(Array.from($(card, "viewTools").children, (el: any) => el.id)).toEqual([
+      "btnCoverage",
+      "btnCoverageClear",
+      "btnHistory",
+    ]);
+    expect($(card, "viewTools").nextElementSibling.id).toBe("historyPanel");
+    // Configure says it is on.
+    expect($(card, "movementOption").hidden).toBe(false);
+    expect($(card, "movementToggle").checked).toBe(true);
+
+    chip.click();
+    expect(chip.getAttribute("aria-expanded")).toBe("true");
+    expect(chip.classList.contains("active")).toBe(true);
+    expect($(card, "historyPanel").hidden).toBe(false);
+    await settle();
+    expect(card._replayShowing()).toBe(true);
+
+    // The flag going off closes it and takes the chip away...
+    push(hass, { movement_history: false });
+    expect(chip.hidden).toBe(true);
+    expect($(card, "historyPanel").hidden).toBe(true);
+    expect(card._replayShowing()).toBe(false);
+    expect($(card, "movementToggle").checked).toBe(false);
+    // ...and so does a viewer who is an administrator no more.
+    push(hass, { movement_history: true });
+    expect(chip.hidden).toBe(false);
+    await openHistory(card);
+    expect($(card, "historyPanel").hidden).toBe(false);
+    card.hass = { ...hass, user: { is_admin: false } };
+    expect($(card, "historyPanel").hidden).toBe(true);
+    expect(chip.hidden).toBe(true);
+    expect($(card, "movementOption").hidden).toBe(true);
+
+    // A radar that does not keep it shows no chip, even to an administrator,
+    // who can turn it on.
+    const off = await historyCard({ payload: { movement_history: false } });
+    expect($(off.card, "btnHistory").hidden).toBe(true);
+    expect($(off.card, "movementOption").hidden).toBe(false);
+    expect($(off.card, "movementToggle").checked).toBe(false);
+    // Anyone else's card shows neither.
+    const viewer = await historyCard({ admin: false });
+    expect($(viewer.card, "btnHistory").hidden).toBe(true);
+    expect($(viewer.card, "movementOption").hidden).toBe(true);
+    // A render keeps it so.
+    viewer.card.render();
+    expect($(viewer.card, "btnHistory").hidden).toBe(true);
+    // A view-only map has no chips, panel or badge at all.
+    const still = await historyCard({ config: { view_only: true } });
+    expect($(still.card, "btnHistory")).toBeNull();
+    expect($(still.card, "historyPanel")).toBeNull();
+    expect($(still.card, "replayBadge")).toBeNull();
+  });
+
+  it("makes no movement call for non-administrators", async () => {
+    const { card, hass } = await historyCard({ admin: false });
+
+    // Nothing that still reaches the hidden chip or the panel's buttons asks.
+    $(card, "btnHistory").click();
+    card._openHistory();
+    $(card, "btnHistoryClearYes").click();
+    await settle();
+    expect($(card, "historyPanel").hidden).toBe(true);
+    // Nor does the hidden option ask or save.
+    const toggle = $(card, "movementToggle");
+    toggle.checked = false;
+    toggle.dispatchEvent(new Event("change"));
+    expect($(card, "movementConfirm").hidden).toBe(true);
+    expect(toggle.checked).toBe(true);
+    toggle.checked = true;
+    toggle.dispatchEvent(new Event("change"));
+    $(card, "btnMovementOffYes").click();
+    await settle();
+
+    const types = hass.callWS.mock.calls.map(([msg]: any[]) => String(msg.type));
+    expect(types.filter((type: string) => type.startsWith("apollo_mmwave/movement/"))).toEqual([]);
+    expect(hass.callService).not.toHaveBeenCalled();
+    expect(toggle.checked).toBe(true);
+    expect($(card, "movementConfirm").hidden).toBe(true);
+  });
+
+  it("fetches on open and replays numbered dots at the scrub time", async () => {
+    const { card, hass } = await historyCard();
+    // Live, target 1 stands at (3000, 6000) mm.
+    card.hass = { ...hass, states: { "sensor.a_x": { state: "3000" }, "sensor.a_y": { state: "6000" } } };
+    expect(dots(frame(card))).toEqual([["1", 640, 480]]);
+
+    $(card, "btnHistory").click();
+
+    // The last hour by the server's clock, asked for at once. The live map
+    // stays until the answer comes.
+    expect(movementCalls(hass)).toEqual([{ type: MOVEMENT_GET, device_id: "dev123", since: START }]);
+    expect($(card, "historyStatus").textContent).toBe("Loading movement history...");
+    expect($(card, "historyScrub").disabled).toBe(true);
+    expect($(card, "btnHistoryPlay").disabled).toBe(true);
+    expect($(card, "replayBadge").hidden).toBe(true);
+    expect(dots(frame(card))).toEqual([["1", 640, 480]]);
+
+    await settle();
+
+    // The start of the hour, paused, where nobody was yet: no live dot either.
+    const scrubber = $(card, "historyScrub");
+    expect($(card, "historyStatus").textContent).toBe("");
+    expect([scrubber.disabled, scrubber.min, scrubber.max, scrubber.step, scrubber.value]).toEqual([
+      false,
+      "0",
+      "3600",
+      "1",
+      "0",
+    ]);
+    expect(scrubber.getAttribute("aria-label")).toBe("Replay time");
+    expect($(card, "btnHistoryPlay").disabled).toBe(false);
+    expect($(card, "btnHistoryPlay").textContent).toBe("Play");
+    expect(dots(frame(card))).toEqual([]);
+
+    // 10 s in, target 1 where it walked in at (-1000, 2000) mm.
+    scrub(card, 10);
+    expect(dots(frame(card))).toEqual([["1", 320, 160]]);
+    // Its trail half a second later, aged against the replay time.
+    scrub(card, 11);
+    let draws = frame(card);
+    expect(segments(draws)).toEqual([[320, 160, 360, 160]]);
+    const trail = draws.find(
+      (d, i) => d.name === "stroke" && d.stroke === "#f44336" && draws[i - 1]?.name === "lineTo"
+    );
+    expect(trail?.alpha).toBeCloseTo(0.6 * (1 - 500 / 3000), 9);
+    // 20 s in, target 1 standing still and target 2 come in, numbered by pair.
+    scrub(card, 20);
+    draws = frame(card);
+    expect(dots(draws)).toEqual([
+      ["1", 360, 160],
+      ["2", 560, 320],
+    ]);
+    expect(draws.filter((d) => d.name === "fillText").map((d) => d.fill)).toContain("#000000");
+    // Target 1 left at 30 s, and target 2, silent for 20 s by 41 s, is gone too.
+    scrub(card, 35);
+    expect(dots(frame(card))).toEqual([["2", 560, 320]]);
+    scrub(card, 41);
+    expect(dots(frame(card))).toEqual([]);
+
+    // The time under the scrubber, which it reads out as its value, and the
+    // badge over the map.
+    scrub(card, 20);
+    expect(text($(card, "historyTime"))).toBe("12:00:20 AM, 59 min ago");
+    expect(scrubber.getAttribute("aria-valuetext")).toBe($(card, "historyTime").textContent);
+    expect($(card, "replayBadge").hidden).toBe(false);
+    expect(text($(card, "replayBadge"))).toBe("Replay 12:00:20 AM");
+  });
+
+  it("lights zones whose current shapes contain a replayed dot", async () => {
+    const PRESENCE_1 = "binary_sensor.office_zone_1_presence";
+    const PRESENCE_2 = "binary_sensor.office_zone_2_presence";
+    const zones = {
+      // Around where target 1 stands from 10.5 s, (-500, 2000) mm.
+      "1": {
+        shape: "rect",
+        data: { x_min: -1500, x_max: 0, y_min: 1000, y_max: 3000 },
+        presence_entity_id: PRESENCE_1,
+      },
+      // Around target 2 at (2000, 4000) mm, which an ignore zone covers.
+      "2": {
+        shape: "rect",
+        data: { x_min: 1000, x_max: 3000, y_min: 3000, y_max: 5000 },
+        presence_entity_id: PRESENCE_2,
+      },
+      "3": {
+        shape: "rect",
+        data: { x_min: 1500, x_max: 2500, y_min: 3500, y_max: 4500 },
+        zone_type: "ignore",
+      },
+    };
+    // WALK_IN, with target 2 stepping in from (1900, 4000) mm half a second
+    // before it stops.
+    const { card, hass } = await historyCard({
+      payload: { zones },
+      movement: pack([
+        point(START + 10000, 0, -1000, 2000),
+        point(START + 10500, 0, -500, 2000),
+        point(START + 19500, 1, 1900, 4000),
+        point(START + 20000, 1, 2000, 4000),
+        gone(START + 30000, 0),
+      ]),
+    });
+    // Live, zone 2's presence sensor is on and zone 1's off.
+    card.hass = {
+      ...hass,
+      states: {
+        [PRESENCE_1]: { state: "off", attributes: {} },
+        [PRESENCE_2]: { state: "on", attributes: {} },
+      },
+    };
+    await openHistory(card);
+    scrub(card, 20);
+
+    const draws = frame(card);
+
+    // The replay decides, not the sensors: target 1 lights zone 1, and zone 2
+    // stays off, as target 2 stands in today's ignore zone, where presence
+    // drops it. Detect zones first, the ignore zone flat grey on top.
+    expect(draws.filter((d) => d.name === "fillRect").map((d) => d.fill)).toEqual([
+      "rgba(244, 67, 54, 0.45)",
+      "rgba(33, 150, 243, 0.18)",
+      "rgba(97, 97, 97, 0.18)",
+    ]);
+    // Target 2 a hollow grey ring with a grey number, target 1 filled.
+    const number = (n: string) => draws.find((d) => d.name === "fillText" && d.args[0] === n);
+    expect(number("2")?.fill).toBe("#757575");
+    expect(number("1")?.fill).toBe("#000000");
+    const ring = draws.findIndex(
+      (d, i) => d.name === "stroke" && d.stroke === "#757575" && draws[i - 1]?.name === "arc"
+    );
+    expect(draws[ring - 1].args.slice(0, 3).map(px)).toEqual([560, 320, 10]);
+    expect(draws.filter((d) => d.name === "fill" && d.fill === "#2196f3")).toEqual([]);
+    // And its trail grey, as a live one there is.
+    expect(segments(draws, "#757575")).toEqual([[552, 320, 560, 320]]);
+    expect(segments(draws, "#2196f3")).toEqual([]);
+
+    // Zones are lit by their shapes now: zone 1 moved off where target 1
+    // stood, and the ignore zone over target 2 is gone.
+    push(hass, {
+      zones: {
+        "1": { ...zones["1"], data: { x_min: 500, x_max: 1500, y_min: 1000, y_max: 3000 } },
+        "2": zones["2"],
+      },
+    });
+    const after = frame(card);
+    expect(after.filter((d) => d.name === "fillRect").map((d) => d.fill)).toEqual([
+      "rgba(244, 67, 54, 0.18)",
+      "rgba(33, 150, 243, 0.45)",
+    ]);
+    expect(after.find((d) => d.name === "fillText" && d.args[0] === "2")?.fill).toBe("#000000");
+    expect(segments(after, "#2196f3")).toEqual([[552, 320, 560, 320]]);
+  });
+
+  it("applies the current rotation and flip to replayed points", async () => {
+    // Turned 90 degrees, (x, y) mm in the radar's frame is (y, -x) on the
+    // map; flipped, x runs from 5000 mm at the left edge.
+    const { card, hass } = await historyCard({
+      payload: { rotation_deg: 90, mirror_x: true },
+      movement: pack([point(START + 9500, 0, -2000, 1500), point(START + 10000, 0, -2000, 2000)]),
+    });
+    await openHistory(card);
+    scrub(card, 10);
+
+    const draws = frame(card);
+
+    // (-2000, 2000) mm is (2000, 2000) on the map, 240 px from the left, and
+    // the trail comes from (-2000, 1500) mm, (1500, 2000) on the map.
+    expect(dots(draws)).toEqual([["1", 240, 160]]);
+    expect(segments(draws)).toEqual([[280, 160, 240, 160]]);
+
+    // The heatmap's cells turn and flip the same way: the 200 mm cell from
+    // (-2000, 2000) mm is the square from (240, 160) to (224, 144) px.
+    $(card, "btnHistoryHeatmap").click();
+    const heat = frame(card);
+    const lastFill = heat.map((d) => d.name === "fill" && String(d.fill).startsWith(ORANGE)).lastIndexOf(true);
+    const corners = heat
+      .slice(0, lastFill)
+      .filter((d) => d.name === "moveTo" || d.name === "lineTo")
+      .map((d) => d.args.map(px));
+    const quads = [];
+    for (let i = 0; i < corners.length; i += 4) quads.push(corners.slice(i, i + 4));
+    expect(quads).toContainEqual([
+      [240, 160],
+      [240, 144],
+      [224, 144],
+      [224, 160],
+    ]);
+
+    // A rotation changed since turns the replay with the map.
+    push(hass, { rotation_deg: 0, mirror_x: true });
+    expect(dots(frame(card))).toEqual([["1", 560, 160]]);
+  });
+
+  it("plays at 1x, 10x and 60x and stops at the end", async () => {
+    const { card } = await historyCard();
+    await openHistory(card);
+    const play = $(card, "btnHistoryPlay");
+    const elapsed = () => card._history.t - START;
+    expect(speedChip(card, 1).getAttribute("aria-pressed")).toBe("true");
+
+    play.click();
+    expect(play.textContent).toBe("Pause");
+    // A frame every 66 ms, each moving the replay on by the time since the
+    // last: ten frames by 700 ms, the last at 660.
+    vi.advanceTimersByTime(700);
+    expect(elapsed()).toBeCloseTo(660, 6);
+    expect($(card, "historyScrub").value).toBe("1");
+
+    // A new speed counts from the press, 40 ms after that frame.
+    speedChip(card, 10).click();
+    vi.advanceTimersByTime(660);
+    expect(elapsed()).toBeCloseTo(700 + 620 * 10, 6);
+
+    speedChip(card, 60).click();
+    vi.advanceTimersByTime(660);
+    expect(elapsed()).toBeCloseTo(700 + 620 * 10 + 40 * 10 + 620 * 60, 6);
+    expect(
+      [1, 10, 60].map((speed) => [
+        speedChip(card, speed).getAttribute("aria-pressed"),
+        speedChip(card, speed).classList.contains("active"),
+      ])
+    ).toEqual([
+      ["false", false],
+      ["false", false],
+      ["true", true],
+    ]);
+
+    // 10 s before the end it plays to the end and pauses there.
+    scrub(card, 3590);
+    vi.advanceTimersByTime(660);
+    expect(card._history.t).toBe(NOW);
+    expect(card._history.playing).toBe(false);
+    expect(play.textContent).toBe("Play");
+    expect($(card, "historyScrub").value).toBe("3600");
+    const draw = vi.spyOn(card, "drawGrid");
+    vi.advanceTimersByTime(1000);
+    expect(draw).not.toHaveBeenCalled();
+
+    // Play at the end plays it again from the start.
+    play.click();
+    expect(card._history.t).toBe(START);
+    expect(card._history.playing).toBe(true);
+    // Pause stops it where it got to, painted there once.
+    vi.advanceTimersByTime(100);
+    draw.mockClear();
+    play.click();
+    expect(card._history.playing).toBe(false);
+    expect(elapsed()).toBeCloseTo(100 * 60, 6);
+    expect(draw).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(1000);
+    expect(draw).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops a superseded movement answer", async () => {
+    const { card, hass } = await historyCard();
+    // Each read waits until the test answers it.
+    const answers: Array<(payload: any) => void> = [];
+    hass.movement = () => new Promise((resolve) => answers.push(resolve));
+    const hourAnswer = WALK_IN;
+    const dayAnswer = pack([point(NOW - 20 * HOUR, 0, 0, 3000)], NOW, NOW - 24 * HOUR);
+
+    $(card, "btnHistory").click();
+    rangeChip(card, 24).click();
+    rangeChip(card, 1).click();
+    expect(movementCalls(hass).map((msg: any) => msg.since)).toEqual([START, NOW - 24 * HOUR, START]);
+
+    // The newest, for the hour, is applied...
+    answers[2](hourAnswer);
+    await settle();
+    expect(card._history.since).toBe(START);
+    // ...and the slow day that comes after it is not.
+    answers[1](dayAnswer);
+    await settle();
+    expect(card._history.since).toBe(START);
+    expect($(card, "historyScrub").max).toBe("3600");
+    expect(rangeChip(card, 1).getAttribute("aria-pressed")).toBe("true");
+    scrub(card, 20);
+    expect(dots(frame(card))).toEqual([
+      ["1", 360, 160],
+      ["2", 560, 320],
+    ]);
+
+    // An answer that comes after the panel closed opens nothing.
+    $(card, "btnHistoryLive").click();
+    answers[0](hourAnswer);
+    await settle();
+    expect($(card, "historyPanel").hidden).toBe(true);
+    expect(card._history.series).toBeNull();
+    expect(card._replayShowing()).toBe(false);
+
+    // Nor does one for a radar the card no longer shows.
+    $(card, "btnHistory").click();
+    card.setConfig({ device_id: "devB", ...TEN_METER_GRID });
+    answers[3](hourAnswer);
+    await settle();
+    expect(card._history.open).toBe(false);
+    expect(card._history.series).toBeNull();
+  });
+
+  it("Clear history asks first, then clears", async () => {
+    const { card, hass, toasts } = await historyCard();
+    await openHistory(card);
+    const clear = $(card, "btnHistoryClear");
+    const confirm = $(card, "historyClearConfirm");
+    expect(clear.textContent).toBe("Clear history");
+    expect(confirm.hidden).toBe(true);
+
+    // It asks in place.
+    clear.click();
+    expect(confirm.hidden).toBe(false);
+    expect(clear.hidden).toBe(true);
+    expect(confirm.textContent).toContain("Delete this radar's movement history?");
+    expect($(card, "btnHistoryClearYes").textContent).toBe("Delete");
+    expect($(card, "btnHistoryClearNo").textContent).toBe("Cancel");
+    expect(movementCalls(hass, MOVEMENT_CLEAR)).toEqual([]);
+    // A render keeps the question.
+    card.render();
+    expect($(card, "historyClearConfirm").hidden).toBe(false);
+
+    // Cancel keeps the history.
+    $(card, "btnHistoryClearNo").click();
+    expect($(card, "historyClearConfirm").hidden).toBe(true);
+    expect($(card, "btnHistoryClear").hidden).toBe(false);
+    expect(movementCalls(hass, MOVEMENT_CLEAR)).toEqual([]);
+
+    // Delete clears it, says so, and reads what is left.
+    hass.movement = pack([]);
+    $(card, "btnHistoryClear").click();
+    $(card, "btnHistoryClearYes").click();
+    await settle();
+    expect(movementCalls(hass, MOVEMENT_CLEAR)).toEqual([{ type: MOVEMENT_CLEAR, device_id: "dev123" }]);
+    expect(toasts).toEqual(["Movement history cleared"]);
+    expect(movementCalls(hass)).toHaveLength(2);
+    expect($(card, "historyStatus").textContent).toBe("No movement recorded in this range yet.");
+    expect($(card, "historyClearConfirm").hidden).toBe(true);
+
+    // A refused clear says why and keeps the panel as it was.
+    hass.clear = () => {
+      throw { code: "home_assistant_error", message: "Home Assistant is restarting" };
+    };
+    $(card, "btnHistoryClear").click();
+    $(card, "btnHistoryClearYes").click();
+    await settle();
+    expect(toasts.slice(1)).toEqual(["Could not clear movement history: Home Assistant is restarting"]);
+    expect(movementCalls(hass)).toHaveLength(2);
+  });
+
+  it("turning movement history off asks first", async () => {
+    const { card, hass, toasts } = await historyCard();
+    await openHistory(card);
+    const toggle = $(card, "movementToggle");
+    const confirm = $(card, "movementConfirm");
+    const check = (checked: boolean) => {
+      toggle.checked = checked;
+      toggle.dispatchEvent(new Event("change"));
+    };
+    expect(toggle.closest("label").textContent.trim()).toBe("Movement history");
+    expect(confirm.hidden).toBe(true);
+
+    // Unticking asks in place, with the box still ticked.
+    check(false);
+    expect(confirm.hidden).toBe(false);
+    expect(confirm.textContent).toContain(
+      "Turning this off deletes this radar's movement history from Home Assistant. Backups made while it was on keep their copy."
+    );
+    expect($(card, "btnMovementOffYes").textContent).toBe("Turn off and delete");
+    expect($(card, "btnMovementOffNo").textContent).toBe("Keep it");
+    expect(toggle.checked).toBe(true);
+    expect(hass.callService).not.toHaveBeenCalled();
+    // A render keeps the question.
+    card.render();
+    expect($(card, "movementConfirm").hidden).toBe(false);
+
+    // Keep it changes nothing.
+    $(card, "btnMovementOffNo").click();
+    expect($(card, "movementConfirm").hidden).toBe(true);
+    expect($(card, "movementToggle").checked).toBe(true);
+    expect(hass.callService).not.toHaveBeenCalled();
+
+    // Turn off and delete saves it off, without input_units.
+    $(card, "movementToggle").checked = false;
+    $(card, "movementToggle").dispatchEvent(new Event("change"));
+    $(card, "btnMovementOffYes").click();
+    expect($(card, "movementConfirm").hidden).toBe(true);
+    expect($(card, "movementToggle").checked).toBe(false);
+    await settle();
+    expect(hass.callService.mock.calls).toEqual([
+      ["apollo_mmwave", "update_zone", { device_id: "dev123", movement_history: false }, undefined, false],
+    ]);
+    expect(toasts).toEqual(["Movement history is off, and its history is deleted."]);
+    // Its echo closes History.
+    expect($(card, "historyPanel").hidden).toBe(false);
+    push(hass, { movement_history: false });
+    expect($(card, "historyPanel").hidden).toBe(true);
+    expect($(card, "btnHistory").hidden).toBe(true);
+  });
+
+  it("turning movement history on saves it and says where to replay it", async () => {
+    const { card, hass, toasts } = await historyCard({ payload: { movement_history: false } });
+    const toggle = $(card, "movementToggle");
+    expect($(card, "movementOption").textContent).toContain(
+      "Keeps up to 24 hours of target positions so administrators can replay them here. Backups include them. Turning it off deletes them from Home Assistant."
+    );
+
+    toggle.checked = true;
+    toggle.dispatchEvent(new Event("change"));
+    await settle();
+
+    // No question for turning it on.
+    expect($(card, "movementConfirm").hidden).toBe(true);
+    expect(hass.callService.mock.calls).toEqual([
+      ["apollo_mmwave", "update_zone", { device_id: "dev123", movement_history: true }, undefined, false],
+    ]);
+    expect(toasts).toEqual(["Movement history is on. Open History under the map to replay it."]);
+    // Its echo brings the History chip.
+    expect($(card, "btnHistory").hidden).toBe(true);
+    push(hass, { movement_history: true });
+    expect($(card, "btnHistory").hidden).toBe(false);
+    expect(toggle.checked).toBe(true);
+
+    // A refused save unticks the box again.
+    push(hass, { movement_history: false });
+    hass.callService.mockRejectedValue(new Error("Home Assistant is restarting"));
+    toggle.checked = true;
+    toggle.dispatchEvent(new Event("change"));
+    await settle();
+    expect(toggle.checked).toBe(false);
+    expect(toasts.slice(1)).toEqual(["Could not save: Home Assistant is restarting"]);
+  });
+
+  it("stops playback on disconnect", async () => {
+    const { card } = await historyCard();
+    document.body.appendChild(card);
+    await openHistory(card);
+    $(card, "btnHistoryPlay").click();
+    vi.advanceTimersByTime(660);
+    expect(card._history.playing).toBe(true);
+
+    card.remove();
+
+    // Stopped, and closed: the card comes back to the page live.
+    expect(card._history.playing).toBe(false);
+    expect(card._history.timer).toBeNull();
+    expect(card._history.open).toBe(false);
+    const draw = vi.spyOn(card, "drawGrid");
+    vi.advanceTimersByTime(1000);
+    expect(draw).not.toHaveBeenCalled();
+    document.body.appendChild(card);
+    expect($(card, "historyPanel").hidden).toBe(true);
+    expect($(card, "replayBadge").hidden).toBe(true);
+    expect(card._replayShowing()).toBe(false);
+  });
+
+  it("formats the replay badge with the Home Assistant locale", async () => {
+    // 10 s into the hour is 2026-01-01 00:00:10 UTC. The test runs in UTC.
+    const { card, hass } = await historyCard();
+    await openHistory(card);
+    const badgeFor = (locale: Record<string, any>, serverZone = "Asia/Tokyo") => {
+      card.hass = { ...hass, locale, config: { time_zone: serverZone } };
+      scrub(card, 10);
+      return text($(card, "replayBadge"));
+    };
+
+    // A 12-hour clock in the server's zone.
+    expect(badgeFor({ language: "en", time_format: "12", time_zone: "server" }, "UTC")).toBe(
+      "Replay 12:00:10 AM"
+    );
+    // A 24-hour clock, with two-digit hours as Home Assistant writes them.
+    expect(badgeFor({ language: "de", time_format: "24", time_zone: "server" })).toBe(
+      "Replay 09:00:10"
+    );
+    expect(badgeFor({ language: "en", time_format: "24", time_zone: "server" }, "UTC")).toBe(
+      "Replay 00:00:10"
+    );
+    // This browser's zone unless the profile says the server's.
+    expect(badgeFor({ language: "de", time_format: "24", time_zone: "local" })).toBe(
+      "Replay 00:00:10"
+    );
+    // The language's own clock unless the profile picks one.
+    expect(badgeFor({ language: "en", time_format: "language", time_zone: "server" }, "UTC")).toBe(
+      "Replay 12:00:10 AM"
+    );
+    expect(badgeFor({ language: "en-GB", time_format: "system", time_zone: "server" }, "UTC")).toBe(
+      "Replay 00:00:10"
+    );
+    // A zone or a language Intl does not know: this browser's own format.
+    const browser = `Replay ${new Date(START + 10000).toLocaleTimeString()}`.replace(/ /g, " ");
+    expect(badgeFor({ language: "en", time_format: "24", time_zone: "server" }, "Not/AZone")).toBe(
+      browser
+    );
+    expect(badgeFor({ language: "en_US!", time_format: "24", time_zone: "local" })).toBe(browser);
+    // No locale at all, as on an older Home Assistant.
+    expect(badgeFor(undefined as any)).toBe(browser);
+    // The time under the scrubber reads the same.
+    expect(text($(card, "historyTime"))).toBe(`${browser.slice("Replay ".length)}, 59 min ago`);
+  });
+
+  it("asks again by the server's clock when this browser's is more than a minute off", async () => {
+    const { card, hass } = await historyCard();
+    // The server's clock is 2 min ahead of this browser's.
+    hass.movement = () => pack([point(START + 130000, 0, -1000, 2000)], Date.now() + 120000);
+
+    await openHistory(card);
+
+    // The second read starts from the server's hour, and its answer is the
+    // range: from 2 min after this browser's hour ago to the server's now.
+    expect(movementCalls(hass).map((msg: any) => msg.since)).toEqual([START, START + 120000]);
+    expect(card._history.since).toBe(START + 120000);
+    expect(card._history.serverNow).toBe(NOW + 120000);
+    scrub(card, 10);
+    expect(dots(frame(card))).toEqual([["1", 320, 160]]);
+
+    // The next read starts from the corrected clock, and once is enough.
+    rangeChip(card, 6).click();
+    await settle();
+    expect(movementCalls(hass).map((msg: any) => msg.since)).toEqual([
+      START,
+      START + 120000,
+      NOW + 120000 - 6 * HOUR,
+    ]);
+
+    // Under a minute off is not asked again.
+    const near = await historyCard();
+    near.hass.movement = () => pack([], Date.now() + 50000);
+    await openHistory(near.card);
+    expect(movementCalls(near.hass)).toHaveLength(1);
+    expect(near.card._history.since).toBe(START + 50000);
+  });
+
+  it("says why movement history did not load, or that nothing was recorded", async () => {
+    const { card, hass } = await historyCard();
+    const statusAfter = async (movement: any) => {
+      hass.movement = movement;
+      $(card, "btnHistoryLive").click();
+      await openHistory(card);
+      return $(card, "historyStatus").textContent;
+    };
+    const refuse = (error: any) => () => Promise.reject(error);
+
+    expect(await statusAfter(refuse({ code: "unauthorized", message: "Unauthorized" }))).toBe(
+      "Only an administrator can open movement history."
+    );
+    // Nothing to play or scrub, and the live map stays.
+    expect($(card, "btnHistoryPlay").disabled).toBe(true);
+    expect($(card, "historyScrub").disabled).toBe(true);
+    expect(card._replayShowing()).toBe(false);
+    expect($(card, "replayBadge").hidden).toBe(true);
+
+    expect(await statusAfter(refuse({ code: "not_loaded", message: "Apollo mmWave is not loaded." }))).toBe(
+      "Could not load movement history: Apollo mmWave is not loaded."
+    );
+    expect(await statusAfter(refuse({ code: "unknown_error" }))).toBe(
+      "Could not load movement history: Home Assistant rejected it."
+    );
+    // A column whose length does not match the record count.
+    expect(await statusAfter({ ...WALK_IN, x: column([1, 2, 3], 2) })).toBe(
+      "Could not load movement history: the x column has 6 bytes where 4 records need 8"
+    );
+    // Something that is not movement history at all, as Home Assistant's
+    // answer to a command it does not know is not.
+    expect(await statusAfter([])).toBe(
+      "Could not load movement history: Home Assistant sent an answer this card cannot read."
+    );
+    expect(card._replayShowing()).toBe(false);
+
+    // Nothing recorded, or only a target leaving: an empty replay.
+    expect(await statusAfter(pack([]))).toBe("No movement recorded in this range yet.");
+    expect(card._replayShowing()).toBe(true);
+    expect(dots(frame(card))).toEqual([]);
+    expect(await statusAfter(pack([gone(START + 5000, 0)]))).toBe(
+      "No movement recorded in this range yet."
+    );
+    // The status line is a polite live region.
+    expect($(card, "historyStatus").getAttribute("role")).toBe("status");
+    expect(await statusAfter(WALK_IN)).toBe("");
+  });
+
+  it("paints the heatmap in place of coverage", async () => {
+    const { card, hass } = await historyCard();
+    let states: Record<string, any> = {};
+    const move = (x: number, y: number) => {
+      states = { ...states, "sensor.a_x": { state: String(x) }, "sensor.a_y": { state: String(y) } };
+      card.hass = { ...hass, states };
+    };
+    // Live coverage on, where target 1 walked, around (-3000, 6000) mm.
+    $(card, "btnCoverage").click();
+    move(-3000, 6000);
+    vi.advanceTimersByTime(200);
+    move(-3000, 6400);
+    vi.advanceTimersByTime(200);
+    move(-3000, 6800);
+    const cellFills = (draws: Draw[]) =>
+      draws.filter((d) => d.name === "fill" && String(d.fill).startsWith(ORANGE));
+    /** The first corner of each painted cell. */
+    const cellCorners = (draws: Draw[]) => {
+      const last = draws.indexOf(cellFills(draws).slice(-1)[0]);
+      return draws.slice(0, last).filter((d) => d.name === "moveTo").map((d) => d.args.map(px));
+    };
+    const coverage = cellCorners(frame(card));
+    expect(coverage).toEqual([
+      [160, 480],
+      [160, 512],
+    ]);
+
+    // A replay with Heatmap off keeps this viewer's coverage.
+    await openHistory(card);
+    const heatmap = $(card, "btnHistoryHeatmap");
+    expect(heatmap.textContent).toBe("Heatmap");
+    expect(heatmap.getAttribute("aria-pressed")).toBe("false");
+    expect(cellCorners(frame(card))).toEqual(coverage);
+
+    // Heatmap on paints where the replayed targets spent their time, from
+    // dwell: half a second at (-1000, 2000) mm, faint, then 15 s each at
+    // (-500, 2000) and (2000, 4000), strong.
+    heatmap.click();
+    expect(heatmap.getAttribute("aria-pressed")).toBe("true");
+    expect(heatmap.classList.contains("active")).toBe(true);
+    const draws = frame(card);
+    const fills = cellFills(draws).map((d) => d.fill);
+    expect(fills).toHaveLength(2);
+    expect(fills[1]).toBe("rgba(255, 152, 0, 0.5)");
+    expect(cellCorners(draws)).toEqual([
+      [320, 160],
+      [352, 160],
+      [560, 320],
+    ]);
+    // Under everything else, as coverage is.
+    expect(draws.findIndex((d) => d.name === "fillRect")).toBeGreaterThan(
+      draws.indexOf(cellFills(draws)[1])
+    );
+
+    // Back to live, coverage again; the Heatmap pick stays for next time.
+    $(card, "btnHistoryLive").click();
+    expect(cellCorners(frame(card))).toEqual(coverage);
+    await openHistory(card);
+    expect($(card, "btnHistoryHeatmap").getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("draws the sparkline from the record counts", async () => {
+    // Three positions in the range's first 30 s and one 30 min in; a target
+    // leaving is no position.
+    const { card } = await historyCard({
+      movement: pack([
+        point(START + 1000, 0, -1000, 2000),
+        point(START + 2000, 0, -900, 2000),
+        point(START + 3000, 0, -800, 2000),
+        gone(START + 4000, 0),
+        point(START + 1800000, 1, 0, 3000),
+      ]),
+    });
+    expect($(card, "historySpark").innerHTML).toBe("");
+    await openHistory(card);
+
+    const spark = $(card, "historySpark");
+    expect(spark.getAttribute("aria-hidden")).toBe("true");
+    const svg = spark.querySelector("svg");
+    expect(svg.getAttribute("viewBox")).toBe("0 0 120 24");
+    // A bar per 30 s slice with a record, its height by the log of the count.
+    expect(
+      Array.from(spark.querySelectorAll("rect"), (rect: any) =>
+        ["x", "y", "width", "height"].map((name) => rect.getAttribute(name))
+      )
+    ).toEqual([
+      ["0", "0.00", "1", "24.00"],
+      ["60", "12.00", "1", "12.00"],
+    ]);
+    // Nothing recorded draws no bars.
+    $(card, "btnHistoryLive").click();
+    expect($(card, "historySpark").innerHTML).toBe("");
+  });
+
+  it("a range change reads the new range and replays it from its start", async () => {
+    const { card, hass } = await historyCard();
+    await openHistory(card);
+    scrub(card, 20);
+    $(card, "btnHistoryPlay").click();
+    expect(rangeChip(card, 1).getAttribute("aria-pressed")).toBe("true");
+    hass.movement = pack([point(NOW - 5 * HOUR, 0, 0, 3000)], NOW, NOW - 6 * HOUR);
+    const draw = vi.spyOn(card, "drawGrid");
+
+    rangeChip(card, 6).click();
+
+    // Stopped, the old answer dropped and the live map painted once while
+    // the six hours load.
+    expect(card._history.playing).toBe(false);
+    expect(card._replayShowing()).toBe(false);
+    expect(draw).toHaveBeenCalledTimes(1);
+    expect($(card, "historyStatus").textContent).toBe("Loading movement history...");
+    expect(
+      [1, 6, 24].map((hours) => rangeChip(card, hours).getAttribute("aria-pressed"))
+    ).toEqual(["false", "true", "false"]);
+    expect(movementCalls(hass).map((msg: any) => msg.since)).toEqual([START, NOW - 6 * HOUR]);
+
+    await settle();
+    expect(card._history.t).toBe(NOW - 6 * HOUR);
+    expect($(card, "historyScrub").max).toBe("21600");
+    expect($(card, "historyScrub").value).toBe("0");
+    expect(card._history.playing).toBe(false);
+    scrub(card, 3600);
+    expect(dots(frame(card))).toEqual([["1", 400, 240]]);
+    // Pressing the range shown asks for nothing.
+    rangeChip(card, 6).click();
+    expect(movementCalls(hass)).toHaveLength(2);
+  });
+
+  it("keeps the panel and the replay through a render", async () => {
+    const { card } = await historyCard();
+    await openHistory(card);
+    scrub(card, 20);
+    $(card, "btnHistoryHeatmap").click();
+    speedChip(card, 10).click();
+    $(card, "btnHistoryPlay").click();
+
+    // A theme flip renders the whole card again.
+    card.render();
+
+    expect($(card, "historyPanel").hidden).toBe(false);
+    expect($(card, "btnHistory").getAttribute("aria-expanded")).toBe("true");
+    expect($(card, "btnHistoryHeatmap").getAttribute("aria-pressed")).toBe("true");
+    expect(speedChip(card, 10).getAttribute("aria-pressed")).toBe("true");
+    expect(rangeChip(card, 1).getAttribute("aria-pressed")).toBe("true");
+    expect($(card, "btnHistoryPlay").textContent).toBe("Pause");
+    expect($(card, "historyScrub").value).toBe("20");
+    expect($(card, "replayBadge").hidden).toBe(false);
+    expect(text($(card, "replayBadge"))).toBe("Replay 12:00:20 AM");
+    expect($(card, "historySpark").querySelectorAll("rect")).toHaveLength(1);
+    // And plays on, on the new canvas.
+    vi.advanceTimersByTime(660);
+    expect(card._history.t - START).toBeCloseTo(20000 + 6600, 6);
+    expect($(card, "historyScrub").value).toBe("27");
+  });
+
+  it("keeps live pushes off the map while the replay shows", async () => {
+    const { card, hass } = await historyCard();
+    document.body.appendChild(card);
+    let states: Record<string, any> = {};
+    const move = (x: number) => {
+      states = { "sensor.a_x": { state: String(x) }, "sensor.a_y": { state: "2000" } };
+      card.hass = { ...hass, states };
+    };
+    move(-2000);
+    vi.advanceTimersByTime(200);
+    // A live trail now, which a fade frame would paint.
+    move(-1000);
+    await openHistory(card);
+    const draw = vi.spyOn(card, "drawGrid");
+
+    // A target's move and a fade frame paint nothing.
+    vi.advanceTimersByTime(200);
+    move(0);
+    vi.advanceTimersByTime(1000);
+    expect(draw).not.toHaveBeenCalled();
+    // A scrub paints once.
+    scrub(card, 20);
+    expect(draw).toHaveBeenCalledTimes(1);
+
+    // Back to live paints the live map once, and the live trail fades on.
+    $(card, "btnHistoryLive").click();
+    expect(draw).toHaveBeenCalledTimes(2);
+    vi.advanceTimersByTime(100);
+    expect(draw).toHaveBeenCalledTimes(3);
+    expect(dots(frame(card))).toEqual([["1", 400, 160]]);
+    expect(segments(frame(card))).toHaveLength(2);
+  });
+
+  it("closes History from Back to live, the chip, a load error, another radar and view_only", async () => {
+    const { card, hass } = await historyCard();
+    const closed = () => [
+      $(card, "historyPanel")?.hidden ?? null,
+      card._history.open,
+      card._history.series,
+      card._replayShowing(),
+    ];
+
+    await openHistory(card);
+    expect($(card, "btnHistoryLive").textContent).toBe("Back to live");
+    $(card, "btnHistoryLive").click();
+    expect(closed()).toEqual([true, false, null, false]);
+    expect($(card, "replayBadge").hidden).toBe(true);
+    expect($(card, "btnHistory").getAttribute("aria-expanded")).toBe("false");
+
+    // The chip closes it too. The range, speed and Heatmap stay picked.
+    await openHistory(card);
+    rangeChip(card, 6).click();
+    speedChip(card, 60).click();
+    $(card, "btnHistoryHeatmap").click();
+    await settle();
+    $(card, "btnHistory").click();
+    expect(closed()).toEqual([true, false, null, false]);
+    await openHistory(card);
+    expect(movementCalls(hass).slice(-1)[0].since).toBe(NOW - 6 * HOUR);
+    expect(speedChip(card, 60).getAttribute("aria-pressed")).toBe("true");
+    expect($(card, "btnHistoryHeatmap").getAttribute("aria-pressed")).toBe("true");
+
+    // So does the error screen when the store cannot answer, with nothing
+    // playing behind it, and the map comes back live.
+    $(card, "btnHistoryPlay").click();
+    card._setLoadError("Apollo mmWave is not loaded.");
+    expect([card._history.open, card._history.playing, card._history.timer]).toEqual([
+      false,
+      false,
+      null,
+    ]);
+    push(hass, {});
+    expect(closed()).toEqual([true, false, null, false]);
+    await openHistory(card);
+
+    // Pointing the card at another radar closes it.
+    card.setConfig({ device_id: "devB", ...TEN_METER_GRID });
+    expect(closed()).toEqual([true, false, null, false]);
+    await vi.waitFor(() => expect(card._zoneConfigPayload).toBeTruthy());
+
+    // So does view_only, whose map has no panel.
+    await openHistory(card);
+    expect(card._replayShowing()).toBe(true);
+    card.setConfig({ device_id: "devB", ...TEN_METER_GRID, view_only: true });
+    expect(closed()).toEqual([null, false, null, false]);
+  });
+
+  it("draws over the replay, and pressing a History control ends the shape", async () => {
+    // Drawing stays possible with History open: the heatmap is a good guide.
+    const { card } = await historyCard({ config: { start_locked: false } });
+    document.body.appendChild(card);
+    layOut(card, 800);
+    await openHistory(card);
+    scrub(card, 20);
+    const mouse = (type: string, x: number, y: number) =>
+      card.canvas.dispatchEvent(new MouseEvent(type, { clientX: x, clientY: y }));
+    mouse("mousedown", 100, 100);
+    mouse("mousemove", 300, 250);
+    expect(card.isDrawing).toBe(true);
+
+    // The rubber band and its size over the replayed zones, under its dots.
+    const draws = frame(card);
+    expect(draws.filter((d) => d.name === "setLineDash" && d.args[0].join() === "5,5")).toHaveLength(1);
+    expect(draws.some((d) => d.name === "fillText" && String(d.args[0]).includes(" × "))).toBe(true);
+    expect(dots(draws)).toEqual([
+      ["1", 360, 160],
+      ["2", 560, 320],
+    ]);
+
+    // A press on a History control ends it, as a press anywhere else in the
+    // card outside the map does.
+    pressOn($(card, "btnHistoryPlay"), "mousedown");
+    expect(card.isDrawing).toBe(false);
   });
 });
 

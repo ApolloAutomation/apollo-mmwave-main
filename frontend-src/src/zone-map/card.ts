@@ -15,7 +15,7 @@
  */
 
 import { registerElement } from '../register';
-import { connectZones } from './api';
+import { clearMovement, connectZones, fetchMovement, isMovementPayload } from './api';
 import { CELL_MM, CellGrid, bucketCells } from './cells';
 import {
   ADMIN_ONLY_NOTE,
@@ -26,6 +26,26 @@ import {
   COVERAGE_TITLE,
   DRAW_LOCKED_TOAST,
   HELD_SUFFIX,
+  HISTORY_CLEAR,
+  HISTORY_CLEAR_CONFIRM,
+  HISTORY_CLEAR_NO,
+  HISTORY_CLEAR_YES,
+  HISTORY_CLEARED_TOAST,
+  HISTORY_EMPTY,
+  HISTORY_HEATMAP,
+  HISTORY_HINT,
+  HISTORY_LABEL,
+  HISTORY_LIVE,
+  HISTORY_LOADING,
+  HISTORY_PAUSE,
+  HISTORY_PLAY,
+  HISTORY_RANGES,
+  HISTORY_SCRUB_LABEL,
+  HISTORY_SPEEDS,
+  HISTORY_TITLE,
+  HISTORY_UNAUTHORIZED,
+  HISTORY_UNREADABLE,
+  HISTORY_WALK_TITLE,
   HOLD_IGNORE_TITLE,
   HOLD_LABEL,
   HOLD_OPTIONS,
@@ -35,6 +55,13 @@ import {
   LOCK_ON_TOAST,
   MIRROR_HINT,
   MIRROR_LABEL,
+  MOVEMENT_HINT,
+  MOVEMENT_LABEL,
+  MOVEMENT_OFF_CONFIRM,
+  MOVEMENT_OFF_CONFIRM_NO,
+  MOVEMENT_OFF_CONFIRM_YES,
+  MOVEMENT_OFF_TOAST,
+  MOVEMENT_ON_TOAST,
   NO_SHAPE_TEXT,
   OFFLINE_NOTE,
   POLY_TOO_FEW_TOAST,
@@ -59,11 +86,16 @@ import {
   WALK_TOO_CLOSE_TOAST,
   WALK_UNDO,
   ZONE_SETTINGS_HINT,
+  formatAgo,
+  historyClearError,
+  historyError,
+  replayBadge,
   walkHintNext,
 } from './copy';
 import { ZONE_MAP_EDITOR_TAG, firstLd2450DeviceId } from './editor';
 import { formatHold, formatSize, zoneSize } from './format';
 import { pointInZone, rotateToMap } from './geometry';
+import { decodeMovement, heatCells, positionAt, sparkBuckets, trailAt } from './history';
 import { fallbackPresenceId, presenceLook } from './presence';
 import { TRAIL_GAP_MS, TRAIL_MS, TrailBuffer } from './trails';
 import { WALK_AVERAGE_MS, WALK_MIN_CORNER_GAP_MM, walkShape } from './walk';
@@ -273,6 +305,20 @@ const TRAIL_FRAME_MS = 100;
 // drawn. A fingertip covers far more than a mouse pointer does.
 const READOUT_OFFSET_MOUSE_PX = 28;
 const READOUT_OFFSET_TOUCH_PX = 64;
+// A movement replay that plays paints a frame this often (ms), about 15 a
+// second: smooth enough for a dot sliding between records half a second
+// apart, and a third of the work of an animation frame.
+const HISTORY_FRAME_MS = 66;
+// A first movement answer whose clock is further than this (ms) from the
+// one the request assumed is asked again with the start corrected, so the
+// range is not missing its first minutes.
+const HISTORY_SKEW_REFETCH_MS = 60000;
+// The sparkline over the replay's scrubber: this many bars across the range,
+// in a viewBox this many units tall.
+const HISTORY_SPARK_BUCKETS = 120;
+const HISTORY_SPARK_HEIGHT = 24;
+// Why a refused call failed, when Home Assistant gave no message.
+const REJECTED_REASON = 'Home Assistant rejected it.';
 
 const CONE_LOCKED_HINT = 'Locked with the map. Press Locked on the map to change it.';
 const CONE_LOCKED_TOAST = 'Cone rotation is locked. Press Locked on the map to change it.';
@@ -335,6 +381,22 @@ function findTouch(list, identifier) {
     if (list[i] && list[i].identifier === identifier) return list[i];
   }
   return null;
+}
+
+/**
+ * A clock time with seconds in `language`, on a 12-hour clock when `hour12`
+ * is true, a 24-hour one when false, the language's own when undefined, in
+ * `timeZone` or this browser's. A 24-hour clock writes 09:05:00, as Home
+ * Assistant's own times do; a 12-hour one 9:05:00 AM. Throws what Intl
+ * throws for a language or time zone it does not know.
+ */
+function clockFormat(language, hour12, timeZone) {
+  const options = { hour: 'numeric', minute: '2-digit', second: '2-digit' };
+  if (hour12 !== undefined) options.hour12 = hour12;
+  if (timeZone) options.timeZone = timeZone;
+  const format = new Intl.DateTimeFormat(language, options);
+  if (format.resolvedOptions().hour12) return format;
+  return new Intl.DateTimeFormat(language, { ...options, hour: '2-digit' });
 }
 
 // TODO(REVIEW_REPORT.md X04): no yd here (backend and tuning cards accept it, so yd becomes
@@ -429,8 +491,42 @@ export class ZoneMapCard extends HTMLElement {
     this._zoneMeta = new Map();
     // The radar's map is drawn mirrored left to right (mirror_x).
     this._mirrorX = false;
-    // An administrator keeps this radar's movement history (movement_history).
+    // An administrator keeps this radar's movement history (movement_history),
+    // and whether Configure is asking before turning it off.
     this._movementHistory = false;
+    this._movementConfirm = false;
+    // The History panel and its replay (see _openHistory). The range, speed
+    // and Heatmap are this viewer's picks and outlive a close; the rest
+    // belongs to one answer. `t` is the replay time, `since` the range's
+    // start and `serverNow` its end, all in the server's epoch ms, and
+    // `clientAt` this browser's clock when the answer came.
+    this._history = {
+      open: false,
+      rangeH: HISTORY_RANGES[0].hours,
+      heatmap: false,
+      playing: false,
+      speed: HISTORY_SPEEDS[0].speed,
+      t: null,
+      series: null,
+      heat: null,
+      loading: false,
+      error: null,
+      serverNow: null,
+      clientAt: null,
+      since: null,
+      timer: null,
+      // When the playing replay last moved on, on the _now() clock.
+      lastTick: 0,
+      confirmClear: false,
+    };
+    // The newest movement request's number: an answer to an older one, or
+    // one that comes after the panel closed, is dropped.
+    this._historyReq = 0;
+    // How far the server's clock is ahead of this browser's, as the last
+    // answer showed. A property of the two clocks, not of a radar.
+    this._historySkewMs = 0;
+    // The replay's time format and the locale it was made for.
+    this._replayFormat = null;
     // When _notifyThrottled last showed each message, by message.
     this._toastAt = new Map();
     // Whether the "Radar offline" note is showing (see _renderOfflineNote).
@@ -691,7 +787,7 @@ export class ZoneMapCard extends HTMLElement {
       // HA's default would show a second one for the same rejection.
       await this._hass.callService('apollo_mmwave', 'update_zone', request, undefined, false);
     } catch (error) {
-      const reason = error?.message ? String(error.message) : 'Home Assistant rejected it.';
+      const reason = error?.message ? String(error.message) : REJECTED_REASON;
       this._notify(`Could not save: ${reason}`);
       return false;
     }
@@ -735,6 +831,7 @@ export class ZoneMapCard extends HTMLElement {
     this._paintedZoneKey = null;
     this._mirrorX = false;
     this._movementHistory = false;
+    this._movementConfirm = false;
     this._toastAt = new Map();
     this._offlineShown = false;
     this._hatch = { light: null, dark: null };
@@ -747,6 +844,8 @@ export class ZoneMapCard extends HTMLElement {
     this._trailReadings = new Map();
     this._coverage.clear();
     this._coverageOn = false;
+    // The replay is the old radar's history, and an answer still on its way
+    // is too (closing drops it).
     this._closeHistory();
     // Corners walked on the old radar's map are no corners on the new one.
     this._exitWalk();
@@ -875,12 +974,13 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   /**
-   * Whether a movement replay is on the map. While one is, its own timer is
-   * the only painter, and live target moves and presence flips leave the
-   * canvas alone. The card shows no replay yet, so live data always paints.
+   * Whether a movement replay is on the map: the History panel is open and
+   * its answer has come. While one is, its own timer (or one paint on a
+   * pause, a scrub, a range change or the close) is the only painter, and
+   * live target moves and presence flips leave the canvas alone.
    */
   _replayShowing() {
-    return false;
+    return !!(this._history.open && this._history.series);
   }
 
   /**
@@ -1080,6 +1180,9 @@ export class ZoneMapCard extends HTMLElement {
   _setLoadError(message) {
     if (this._loadError === message) return;
     this._loadError = message;
+    // The replay goes with the map, and nothing plays on behind the error:
+    // the map comes back live once the store answers again.
+    this._closeHistory();
     // A full re-render, because the error state replaces the map: an empty
     // canvas looks exactly like a radar with no zones drawn yet.
     this.render();
@@ -1343,6 +1446,8 @@ export class ZoneMapCard extends HTMLElement {
         /* A note over the map's top left corner. It takes no pointer, so a
            press on it still lands on the canvas. */
         .map-note { position: absolute; top: 4px; left: 4px; z-index: 1; pointer-events: none; padding: 4px 8px; border-radius: 6px; font-size: 12px; line-height: 1.3; background: ${COLOR.ui.overlayButtonLightBg}; color: ${COLOR.ui.overlayButtonText}; }
+        /* The same kind of note in the top right corner while a replay shows. */
+        .map-note.replay-badge { left: auto; right: 4px; font-variant-numeric: tabular-nums; }
         .overlay-controls { position: absolute; bottom: 4px; display: flex; gap: 4px; z-index: 1; }
         .overlay-controls-left { left: 4px; flex-direction: column; align-items: flex-start; }
         .overlay-controls-right { right: 4px; }
@@ -1383,6 +1488,12 @@ export class ZoneMapCard extends HTMLElement {
         .map-option input:disabled { cursor: not-allowed; }
         .map-option input:disabled + span { opacity: 0.6; }
         .map-option-hint { font-size: 0.85em; opacity: 0.75; }
+        /* Movement history and the question before it is turned off (and
+           the one before Clear history). Flex columns like the options
+           around them, so [hidden] needs saying. */
+        .movement-option, .movement-confirm, .history-confirm { display: flex; flex-direction: column; gap: 4px; }
+        .movement-option[hidden], .movement-option [hidden] { display: none; }
+        .confirm-row { display: flex; flex-wrap: wrap; gap: var(--zm-gap); }
         button { padding: 8px 16px; background: var(--primary-color); color: ${COLOR.ui.primaryButtonText}; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; }
         .container.dark button { background: ${COLOR.ui.darkPrimaryButton}; }
         button:hover { opacity: 0.9; }
@@ -1422,6 +1533,23 @@ export class ZoneMapCard extends HTMLElement {
         .walk-row button { flex: 1; min-height: 48px; }
         .walk-row button:disabled { opacity: 0.5; cursor: not-allowed; }
         .walk-panel[hidden], .walk-panel [hidden] { display: none; }
+        /* The History chip, disabled while Walk is on. */
+        #viewTools button:disabled { opacity: 0.5; cursor: not-allowed; }
+        /* The History panel under the chips, whose rows wrap on a phone.
+           The panel and its rows are flex, so [hidden] needs saying again. */
+        .history-panel { display: flex; flex-direction: column; gap: var(--zm-gap); margin: 12px 0; }
+        .history-panel[hidden], .history-panel [hidden] { display: none; }
+        .history-head, .history-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--zm-gap); }
+        .history-head { justify-content: space-between; }
+        .history-title { font-weight: 600; }
+        .history-panel button:disabled { opacity: 0.5; cursor: not-allowed; }
+        /* The sparkline spans the scrubber under it, so a bar sits over the
+           part of the range it counts. */
+        .history-spark { height: 24px; }
+        .history-spark svg { display: block; width: 100%; height: 100%; fill: var(--primary-color); }
+        #historyScrub { width: 100%; margin: 0; }
+        .history-time { font-variant-numeric: tabular-nums; }
+        .history-status, .history-hint { font-size: 0.85em; opacity: 0.75; }
         .info { margin-top: 12px; font-size: 14px; color: var(--secondary-text-color); }
         .container.dark .info { color: ${COLOR.ui.infoDarkText}; }
         .container.dark .zone-item { background: ${COLOR.ui.zoneItemDarkBg}; color: ${COLOR.ui.zoneItemDarkText}; }
@@ -1460,6 +1588,8 @@ export class ZoneMapCard extends HTMLElement {
         <div class="canvas-container">
           <canvas id="zoneCanvas"></canvas>
           <div class="map-note" id="offlineNote" role="status" ${this._offlineShown ? '' : 'hidden'}>${OFFLINE_NOTE}</div>
+          <!-- _renderHistoryTime shows it while a replay is on the map. -->
+          <div class="map-note replay-badge" id="replayBadge" hidden></div>
           <div class="overlay-controls overlay-controls-left" id="overlayControlsLeft">
             <div id="modeGroup" style="display: ${this.showModeMenu ? 'flex' : 'none'}; flex-direction: column; gap: 4px;">
               <button id="btnPolyFinish" title="Finish polygon">✓</button>
@@ -1484,6 +1614,7 @@ export class ZoneMapCard extends HTMLElement {
         </div>
         ${this._walkPanelTemplate()}
         ${this._viewToolsTemplate()}
+        ${this._historyPanelTemplate()}
         <div class="controls" id="zone-buttons">
         </div>
         <div class="config">
@@ -1506,6 +1637,21 @@ export class ZoneMapCard extends HTMLElement {
               </label>
               <div class="map-option-hint">${MIRROR_HINT}</div>
               <div class="map-option-hint" id="mapOptionsNote" hidden>${ADMIN_ONLY_NOTE}</div>
+              <!-- Administrators only: _renderMovementOption shows it. -->
+              <div class="movement-option" id="movementOption" hidden>
+                <label class="map-option">
+                  <input type="checkbox" id="movementToggle" />
+                  <span>${MOVEMENT_LABEL}</span>
+                </label>
+                <div class="map-option-hint">${MOVEMENT_HINT}</div>
+                <div class="movement-confirm" id="movementConfirm" hidden>
+                  <div>${MOVEMENT_OFF_CONFIRM}</div>
+                  <div class="confirm-row">
+                    <button id="btnMovementOffYes">${MOVEMENT_OFF_CONFIRM_YES}</button>
+                    <button id="btnMovementOffNo" class="zone-btn">${MOVEMENT_OFF_CONFIRM_NO}</button>
+                  </div>
+                </div>
+              </div>
             </div>
             <!-- Read only. The radar's X/Y targets are resolved by the
                  integration, and the DIY override is the update_zone
@@ -1569,14 +1715,65 @@ export class ZoneMapCard extends HTMLElement {
 
   /**
    * The chips under the map that change only what this viewer sees: Coverage
-   * and, while it is on, Clear coverage. _renderCoverageControls sets their
-   * state from `this`.
+   * and, while it is on, Clear coverage; History for an administrator on a
+   * radar that keeps it. _renderCoverageControls and _renderHistoryChip set
+   * their state from `this`.
    */
   _viewToolsTemplate() {
     return `
         <div class="controls" id="viewTools">
           <button id="btnCoverage" class="zone-btn" aria-pressed="false">${COVERAGE_LABEL}</button>
           <button id="btnCoverageClear" class="zone-btn" hidden>${COVERAGE_CLEAR}</button>
+          <button id="btnHistory" class="zone-btn" aria-expanded="false" aria-controls="historyPanel" hidden>${HISTORY_LABEL}</button>
+        </div>
+    `;
+  }
+
+  /**
+   * The History panel, under the chips and hidden until History opens: the
+   * title and Back to live, the range and Heatmap chips, the sparkline over
+   * the scrubber, Play with the speed chips and the time, the status line,
+   * the hint, and Clear history, which asks in place first. Built from
+   * copy.ts constants and numbers only; _renderHistoryPanel sets its state.
+   */
+  _historyPanelTemplate() {
+    const ranges = HISTORY_RANGES.map(
+      ({ hours, label }) =>
+        `<button class="zone-btn" data-hours="${hours}" aria-pressed="false">${label}</button>`,
+    ).join('');
+    const speeds = HISTORY_SPEEDS.map(
+      ({ speed, label }) =>
+        `<button class="zone-btn" data-speed="${speed}" aria-pressed="false">${label}</button>`,
+    ).join('');
+    return `
+        <div class="history-panel" id="historyPanel" hidden>
+          <div class="history-head">
+            <span class="history-title">${HISTORY_TITLE}</span>
+            <button id="btnHistoryLive" class="zone-btn">${HISTORY_LIVE}</button>
+          </div>
+          <div class="history-row" id="historyRanges">
+            ${ranges}
+            <button id="btnHistoryHeatmap" class="zone-btn" aria-pressed="false">${HISTORY_HEATMAP}</button>
+          </div>
+          <div class="history-spark" id="historySpark" aria-hidden="true"></div>
+          <input type="range" id="historyScrub" min="0" max="3600" step="1" value="0" aria-label="${HISTORY_SCRUB_LABEL}" disabled />
+          <div class="history-row">
+            <button id="btnHistoryPlay" disabled>${HISTORY_PLAY}</button>
+            <span class="history-row" id="historySpeeds">${speeds}</span>
+            <span class="history-time" id="historyTime"></span>
+          </div>
+          <div class="history-status" id="historyStatus" role="status"></div>
+          <div class="history-hint">${HISTORY_HINT}</div>
+          <div class="history-row">
+            <button id="btnHistoryClear" class="zone-btn">${HISTORY_CLEAR}</button>
+          </div>
+          <div class="history-confirm" id="historyClearConfirm" hidden>
+            <div>${HISTORY_CLEAR_CONFIRM}</div>
+            <div class="confirm-row">
+              <button id="btnHistoryClearYes">${HISTORY_CLEAR_YES}</button>
+              <button id="btnHistoryClearNo" class="zone-btn">${HISTORY_CLEAR_NO}</button>
+            </div>
+          </div>
         </div>
     `;
   }
@@ -1742,6 +1939,7 @@ export class ZoneMapCard extends HTMLElement {
     this._attachMapOptions();
     this._attachWalkPanel();
     this._attachViewTools();
+    this._attachHistoryPanel();
   }
 
   _attachViewTools() {
@@ -1749,6 +1947,44 @@ export class ZoneMapCard extends HTMLElement {
     if (coverage) coverage.addEventListener('click', () => this._setCoverage(!this._coverageOn));
     const clear = this.shadowRoot.getElementById('btnCoverageClear');
     if (clear) clear.addEventListener('click', () => this._clearCoverage());
+    const history = this.shadowRoot.getElementById('btnHistory');
+    if (history) {
+      history.addEventListener('click', () => {
+        if (this._history.open) this._closeHistory();
+        else this._openHistory();
+      });
+    }
+  }
+
+  _attachHistoryPanel() {
+    const root = this.shadowRoot;
+    const on = (id, handler) => {
+      const element = root.getElementById(id);
+      if (element) element.addEventListener('click', handler);
+    };
+    on('btnHistoryLive', () => this._closeHistory());
+    root.querySelectorAll('#historyPanel [data-hours]').forEach((button) => {
+      button.addEventListener('click', () => this._setHistoryRange(Number(button.dataset.hours)));
+    });
+    on('btnHistoryHeatmap', () => this._setHistoryHeatmap(!this._history.heatmap));
+    root.querySelectorAll('#historyPanel [data-speed]').forEach((button) => {
+      button.addEventListener('click', () => this._setHistorySpeed(Number(button.dataset.speed)));
+    });
+    on('btnHistoryPlay', () => {
+      if (this._history.playing) this._pauseHistory();
+      else this._playHistory();
+    });
+    const scrub = root.getElementById('historyScrub');
+    if (scrub) scrub.addEventListener('input', () => this._scrubHistory(Number(scrub.value)));
+    on('btnHistoryClear', () => {
+      this._history.confirmClear = true;
+      this._renderHistoryPanel();
+    });
+    on('btnHistoryClearYes', () => this._clearHistory());
+    on('btnHistoryClearNo', () => {
+      this._history.confirmClear = false;
+      this._renderHistoryPanel();
+    });
   }
 
   /**
@@ -1844,7 +2080,72 @@ export class ZoneMapCard extends HTMLElement {
     if (walk) walk.style.display = admin ? '' : 'none';
     if (!admin || this.isLocked) this._exitWalk();
     // Movement history is an administrator's, on a radar that keeps it.
-    if (!admin || !this._movementHistory) this._closeHistory();
+    // Anyone else never sees its option or History, and the question before
+    // turning it off has nothing left to ask once it is off.
+    if (!admin || !this._movementHistory) {
+      this._closeHistory();
+      this._movementConfirm = false;
+    }
+    this._renderMovementOption();
+    this._renderHistoryChip();
+  }
+
+  /** Configure's Movement history option: shown to administrators only,
+   *  ticked as the store holds it, and asking while _movementConfirm. */
+  _renderMovementOption() {
+    const option = this.shadowRoot?.getElementById('movementOption');
+    if (option) option.hidden = !this._isAdmin();
+    const toggle = this.shadowRoot?.getElementById('movementToggle');
+    if (toggle) toggle.checked = this._movementHistory;
+    const confirm = this.shadowRoot?.getElementById('movementConfirm');
+    if (confirm) confirm.hidden = !this._movementConfirm;
+  }
+
+  /**
+   * The Movement history box was ticked or unticked by an administrator.
+   * Ticked saves it at once. Unticked deletes the radar's history, so it
+   * asks first, in place, with the box left ticked until the answer.
+   */
+  async _chooseMovementHistory(on) {
+    if (!this._isAdmin()) {
+      // A hidden checkbox gets no change event, but nothing that still
+      // reaches it (a screen reader, say) saves.
+      this._renderMovementOption();
+      return;
+    }
+    this._movementConfirm = !on;
+    this._renderMovementOption();
+    // Ticked, it is being saved; unticked, the store keeps it until the
+    // answer. Either way the box stays ticked for now.
+    const toggle = this.shadowRoot?.getElementById('movementToggle');
+    if (toggle) toggle.checked = true;
+    if (!on) return;
+    // A device-wide setting, so input_units, which rescales presence for
+    // sensors without a unit, stays out of it, as with the flip. The save's
+    // echo shows the History chip.
+    const saved = await this._saveZoneUpdate(
+      { device_id: this.deviceId, movement_history: true },
+      MOVEMENT_ON_TOAST,
+      { withInputUnits: false },
+    );
+    // Back to what the store holds, which the refused save did not change.
+    if (!saved) this._renderMovementOption();
+  }
+
+  /** The answer to the question: turn movement history off, which deletes
+   *  this radar's history. The save's echo closes History. */
+  async _turnMovementHistoryOff() {
+    this._movementConfirm = false;
+    this._renderMovementOption();
+    if (!this._isAdmin()) return;
+    const toggle = this.shadowRoot?.getElementById('movementToggle');
+    if (toggle) toggle.checked = false;
+    const saved = await this._saveZoneUpdate(
+      { device_id: this.deviceId, movement_history: false },
+      MOVEMENT_OFF_TOAST,
+      { withInputUnits: false },
+    );
+    if (!saved) this._renderMovementOption();
   }
 
   _attachWalkPanel() {
@@ -2084,17 +2385,444 @@ export class ZoneMapCard extends HTMLElement {
     this.finishPolygon();
   }
 
-  /** Lay the History panel back over a rebuilt DOM from the state on `this`.
-   *  The card has no History panel yet, so there is nothing to lay back. */
-  _renderHistoryPanel() {}
+  /** Whether this viewer may open History: an administrator, on a radar
+   *  that keeps movement history, on the full card. Anyone else's card
+   *  never calls the movement commands. */
+  _historyAllowed() {
+    return !this._viewOnly && this._isAdmin() && this._movementHistory;
+  }
 
-  /** Close the History panel and stop its replay. The card has no History
-   *  panel yet, so there is nothing to close. */
-  _closeHistory() {}
+  /** The History chip: shown only where History is allowed, disabled while
+   *  Walk is on (its replay would hide the walker's dot), pressed and
+   *  expanded while the panel is open. */
+  _renderHistoryChip() {
+    const chip = this.shadowRoot?.getElementById('btnHistory');
+    if (!chip) return;
+    chip.hidden = !this._historyAllowed();
+    const walking = !!this._walk;
+    chip.disabled = walking;
+    chip.title = walking ? HISTORY_WALK_TITLE : '';
+    const open = this._history.open;
+    chip.classList.toggle('active', open);
+    chip.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+
+  /**
+   * Open the History panel and read the range from the server. The live map
+   * stays until the answer comes; from then the replay takes the map, at
+   * the start of the range and paused.
+   */
+  _openHistory() {
+    const h = this._history;
+    if (h.open || this._walk || !this._historyAllowed()) return;
+    h.open = true;
+    this._fetchHistory();
+  }
+
+  /**
+   * Close the History panel, back to the live map: stop the replay, drop its
+   * answer and every answer still on its way. Back to live, the History
+   * chip, the flag going off, an administrator who is one no more, Walk, a
+   * card leaving the page, another radar and view_only all end here. The
+   * range, speed and Heatmap stay for the next open.
+   */
+  _closeHistory() {
+    const h = this._history;
+    this._historyReq += 1;
+    this._stopPlayback();
+    if (!h.open) return;
+    const showing = this._replayShowing();
+    h.open = false;
+    this._dropHistoryAnswer();
+    h.loading = false;
+    h.error = null;
+    h.confirmClear = false;
+    this._renderHistoryPanel();
+    if (showing) {
+      // The live map, which the replay kept from painting, and its trails.
+      this.drawGrid();
+      this._kickTrailTimer();
+    }
+  }
+
+  /** Forget the answer the replay shows, and where in it the replay was. */
+  _dropHistoryAnswer() {
+    const h = this._history;
+    h.series = null;
+    h.heat = null;
+    h.t = null;
+    h.serverNow = null;
+    h.clientAt = null;
+    h.since = null;
+  }
+
+  /** Stop a replay that plays; it stays where it got to. */
+  _stopPlayback() {
+    const h = this._history;
+    h.playing = false;
+    if (h.timer !== null) {
+      clearTimeout(h.timer);
+      h.timer = null;
+    }
+  }
+
+  /**
+   * Read the open panel's range from the server, by the server's clock. The
+   * request starts at this browser's clock corrected by the skew the last
+   * answer showed; the range ends at the answer's `now` and starts its
+   * length before that. A first answer more than a minute off the clock the
+   * request assumed is asked again with the start corrected, so the range
+   * is not missing its first minutes. Only the newest request of a panel
+   * still open for the same radar is applied: a slow 24 h answer must not
+   * replace a later 1 h one, or reopen a closed panel.
+   */
+  async _fetchHistory(retry = true) {
+    const h = this._history;
+    const token = ++this._historyReq;
+    const deviceId = this.deviceId;
+    const rangeMs = h.rangeH * 3600000;
+    const skewMs = this._historySkewMs;
+    const showing = this._replayShowing();
+    this._stopPlayback();
+    this._dropHistoryAnswer();
+    h.loading = true;
+    h.error = null;
+    this._renderHistoryPanel();
+    // The live map while the range loads.
+    if (showing) this.drawGrid();
+    const fail = (message) => {
+      // Nothing older may land on top of what this says.
+      this._historyReq += 1;
+      h.loading = false;
+      h.error = message;
+      this._renderHistoryPanel();
+    };
+    let payload;
+    try {
+      payload = await fetchMovement(this._hass, deviceId, Date.now() + skewMs - rangeMs);
+    } catch (error) {
+      if (this._historyAnswerCurrent(token, deviceId)) fail(this._historyErrorText(error));
+      return;
+    }
+    if (!this._historyAnswerCurrent(token, deviceId)) return;
+    const clientAt = Date.now();
+    if (!isMovementPayload(payload)) {
+      fail(historyError(HISTORY_UNREADABLE));
+      return;
+    }
+    this._historySkewMs = payload.now - clientAt;
+    if (retry && Math.abs(this._historySkewMs - skewMs) > HISTORY_SKEW_REFETCH_MS) {
+      this._fetchHistory(false);
+      return;
+    }
+    let series;
+    try {
+      series = decodeMovement(payload);
+    } catch (error) {
+      fail(historyError(error?.message ? String(error.message) : HISTORY_UNREADABLE));
+      return;
+    }
+    const since = payload.now - rangeMs;
+    h.loading = false;
+    h.series = series;
+    // Once per answer: dwell does not change while the replay moves.
+    h.heat = heatCells(series, since, payload.now);
+    h.serverNow = payload.now;
+    h.clientAt = clientAt;
+    h.since = since;
+    h.t = since;
+    this._renderHistoryPanel();
+    this.drawGrid();
+  }
+
+  /** Whether the answer to request `token` for `deviceId` may still be
+   *  applied: it is the newest one, and its panel is still open. */
+  _historyAnswerCurrent(token, deviceId) {
+    return token === this._historyReq && this._history.open && this.deviceId === deviceId;
+  }
+
+  /** What the status line says about a refused movement read. */
+  _historyErrorText(error) {
+    if (error?.code === 'unauthorized') return HISTORY_UNAUTHORIZED;
+    return historyError(error?.message ? String(error.message) : REJECTED_REASON);
+  }
+
+  /** Another range, read again from the server and replayed from its start. */
+  _setHistoryRange(hours) {
+    const h = this._history;
+    if (!h.open || hours === h.rangeH) return;
+    if (!HISTORY_RANGES.some((range) => range.hours === hours)) return;
+    h.rangeH = hours;
+    this._fetchHistory();
+  }
+
+  /** Paint where people spent their time over the range, or stop. */
+  _setHistoryHeatmap(on) {
+    this._history.heatmap = on;
+    this._renderHistoryPanel();
+    if (this._replayShowing()) this.drawGrid();
+  }
+
+  /** Play at another speed, from the moment it was pressed. */
+  _setHistorySpeed(speed) {
+    const h = this._history;
+    if (!HISTORY_SPEEDS.some((option) => option.speed === speed)) return;
+    if (h.playing) this._advanceHistory();
+    h.speed = speed;
+    this._renderHistoryPanel();
+  }
+
+  /** Play the replay from where it is, or from the start once it has
+   *  played to the end. The replay timer is then the map's only painter. */
+  _playHistory() {
+    const h = this._history;
+    if (h.playing || !this._replayShowing()) return;
+    const restart = h.t >= h.serverNow;
+    if (restart) h.t = h.since;
+    h.playing = true;
+    h.lastTick = this._now();
+    h.timer = setTimeout(() => this._onHistoryFrame(), HISTORY_FRAME_MS);
+    this._renderHistoryPanel();
+    if (restart) this.drawGrid();
+  }
+
+  /** Pause where the replay is now, painted there once. */
+  _pauseHistory() {
+    if (!this._history.playing) return;
+    this._advanceHistory();
+    this._stopPlayback();
+    this._renderHistoryPanel();
+    this.drawGrid();
+  }
+
+  /** Move a playing replay on by the time since it last moved, times its
+   *  speed, never past the end of the range. */
+  _advanceHistory() {
+    const h = this._history;
+    const now = this._now();
+    h.t = Math.min(h.serverNow, h.t + (now - h.lastTick) * h.speed);
+    h.lastTick = now;
+  }
+
+  /** One frame of a playing replay. At the end of the range it pauses. */
+  _onHistoryFrame() {
+    const h = this._history;
+    h.timer = null;
+    if (!h.playing || !this._replayShowing()) return;
+    this._advanceHistory();
+    if (h.t >= h.serverNow) {
+      h.playing = false;
+      this._renderHistoryPanel();
+    } else {
+      h.timer = setTimeout(() => this._onHistoryFrame(), HISTORY_FRAME_MS);
+      this._renderHistoryTime();
+    }
+    this.drawGrid();
+  }
+
+  /** The scrubber moved to `seconds` into the range. A playing replay plays
+   *  on from there. */
+  _scrubHistory(seconds) {
+    const h = this._history;
+    if (!this._replayShowing() || !Number.isFinite(seconds)) return;
+    h.t = Math.min(h.serverNow, Math.max(h.since, h.since + seconds * 1000));
+    if (h.playing) h.lastTick = this._now();
+    this._renderHistoryTime();
+    this.drawGrid();
+  }
+
+  /**
+   * The answer to Clear history's question: delete this radar's movement
+   * history. The radar keeps recording, so the panel, if it is still open
+   * for this radar, reads the range again.
+   */
+  async _clearHistory() {
+    const h = this._history;
+    h.confirmClear = false;
+    this._renderHistoryPanel();
+    if (!this._hass || !this._historyAllowed()) return;
+    const deviceId = this.deviceId;
+    try {
+      await clearMovement(this._hass, deviceId);
+    } catch (error) {
+      this._notify(historyClearError(error?.message ? String(error.message) : REJECTED_REASON));
+      return;
+    }
+    this._notify(HISTORY_CLEARED_TOAST);
+    if (h.open && this.deviceId === deviceId) this._fetchHistory();
+  }
+
+  /** Lay the History panel out from the state on `this`, after a change of
+   *  it and after render() rebuilt the DOM. A playing replay updates only
+   *  its time (_renderHistoryTime). */
+  _renderHistoryPanel() {
+    this._renderHistoryChip();
+    const root = this.shadowRoot;
+    const panel = root?.getElementById('historyPanel');
+    if (panel) {
+      const h = this._history;
+      const pressed = (button, on) => {
+        button.classList.toggle('active', on);
+        button.setAttribute('aria-pressed', on ? 'true' : 'false');
+      };
+      panel.hidden = !h.open;
+      panel.querySelectorAll('[data-hours]').forEach((button) => {
+        pressed(button, Number(button.dataset.hours) === h.rangeH);
+      });
+      panel.querySelectorAll('[data-speed]').forEach((button) => {
+        pressed(button, Number(button.dataset.speed) === h.speed);
+      });
+      const heatmap = root.getElementById('btnHistoryHeatmap');
+      if (heatmap) pressed(heatmap, h.heatmap);
+      const loaded = !!h.series;
+      const play = root.getElementById('btnHistoryPlay');
+      if (play) {
+        play.textContent = h.playing ? HISTORY_PAUSE : HISTORY_PLAY;
+        play.disabled = !loaded;
+      }
+      const scrub = root.getElementById('historyScrub');
+      if (scrub) {
+        // Before the value, which the old maximum would clamp.
+        scrub.max = String(h.rangeH * 3600);
+        scrub.disabled = !loaded;
+      }
+      const status = root.getElementById('historyStatus');
+      if (status) status.textContent = this._historyStatusText();
+      const spark = root.getElementById('historySpark');
+      if (spark) spark.innerHTML = this._sparklineMarkup();
+      const clear = root.getElementById('btnHistoryClear');
+      if (clear) clear.hidden = h.confirmClear;
+      const confirm = root.getElementById('historyClearConfirm');
+      if (confirm) confirm.hidden = !h.confirmClear;
+    }
+    this._renderHistoryTime();
+  }
+
+  /**
+   * What moves with the replay time: the scrubber, the time under it (which
+   * the scrubber reads out as its value) and the badge over the map. Runs
+   * every frame of a playing replay.
+   */
+  _renderHistoryTime() {
+    const root = this.shadowRoot;
+    const h = this._history;
+    const showing = this._replayShowing();
+    const time = showing ? this._replayTime(h.t) : '';
+    const readout = showing ? `${time}, ${formatAgo(this._historyNow() - h.t)}` : '';
+    const scrub = root?.getElementById('historyScrub');
+    if (scrub) {
+      scrub.value = String(showing ? Math.round((h.t - h.since) / 1000) : 0);
+      if (readout) scrub.setAttribute('aria-valuetext', readout);
+      else scrub.removeAttribute('aria-valuetext');
+    }
+    const host = root?.getElementById('historyTime');
+    if (host) host.textContent = readout;
+    const badge = root?.getElementById('replayBadge');
+    if (badge) {
+      badge.hidden = !showing;
+      badge.textContent = showing ? replayBadge(time) : '';
+    }
+  }
+
+  /** The server's clock now, from the answer's `now` and the time since it
+   *  came on this browser's clock. */
+  _historyNow() {
+    const h = this._history;
+    return h.serverNow + (Date.now() - h.clientAt);
+  }
+
+  /** The status line: loading, why the read failed, or that the range has
+   *  nothing to replay; empty while a replay shows. */
+  _historyStatusText() {
+    const h = this._history;
+    if (h.loading) return HISTORY_LOADING;
+    if (h.error) return h.error;
+    if (h.series && !this._historyHasPoints()) return HISTORY_EMPTY;
+    return '';
+  }
+
+  /** Whether the answer holds a position to replay, not only the marks of
+   *  targets leaving. */
+  _historyHasPoints() {
+    const slots = this._history.series?.slots;
+    if (!slots) return false;
+    for (const series of slots.values()) {
+      if (series.gone.includes(0)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * The sparkline over the scrubber: how many positions were recorded in
+   * each of HISTORY_SPARK_BUCKETS slices of the range, as bars whose height
+   * follows the log of the count, so one busy minute does not flatten the
+   * rest. Markup from numbers only. Empty with nothing recorded.
+   */
+  _sparklineMarkup() {
+    const h = this._history;
+    if (!h.series) return '';
+    const counts = sparkBuckets(h.series, h.since, h.serverNow, HISTORY_SPARK_BUCKETS);
+    const top = Math.max(0, ...counts);
+    if (top === 0) return '';
+    const scale = HISTORY_SPARK_HEIGHT / Math.log1p(top);
+    const bars = counts
+      .map((count, i) => {
+        if (count === 0) return '';
+        const height = Math.log1p(count) * scale;
+        const y = HISTORY_SPARK_HEIGHT - height;
+        return `<rect x="${i}" y="${y.toFixed(2)}" width="1" height="${height.toFixed(2)}"></rect>`;
+      })
+      .join('');
+    return (
+      `<svg viewBox="0 0 ${HISTORY_SPARK_BUCKETS} ${HISTORY_SPARK_HEIGHT}"` +
+      ` preserveAspectRatio="none" focusable="false">${bars}</svg>`
+    );
+  }
+
+  /**
+   * Server epoch ms `t` as a clock time the way this viewer's Home Assistant
+   * shows times: its language, its 12 or 24 hour choice, and the server's
+   * time zone when the profile says so (else this browser's). A language or
+   * zone Intl does not know falls back to this browser's own format. The
+   * format is made once per locale, not once per frame.
+   */
+  _replayTime(t) {
+    const locale = this._hass?.locale;
+    const language = locale?.language || undefined;
+    let hour12;
+    if (locale?.time_format === '12') hour12 = true;
+    else if (locale?.time_format === '24') hour12 = false;
+    const timeZone =
+      locale?.time_zone === 'server' ? this._hass?.config?.time_zone || undefined : undefined;
+    const key = JSON.stringify([language, hour12, timeZone]);
+    if (this._replayFormat?.key !== key) {
+      let format;
+      try {
+        format = clockFormat(language, hour12, timeZone);
+      } catch {
+        format = clockFormat(undefined, undefined, undefined);
+      }
+      this._replayFormat = { key, format };
+    }
+    return this._replayFormat.format.format(t);
+  }
 
   _attachMapOptions() {
     const mirror = this.shadowRoot.getElementById('mirrorToggle');
     if (mirror) mirror.addEventListener('change', () => this._chooseMirror(mirror.checked));
+    const movement = this.shadowRoot.getElementById('movementToggle');
+    if (movement) {
+      movement.addEventListener('change', () => this._chooseMovementHistory(movement.checked));
+    }
+    const yes = this.shadowRoot.getElementById('btnMovementOffYes');
+    if (yes) yes.addEventListener('click', () => this._turnMovementHistoryOff());
+    const no = this.shadowRoot.getElementById('btnMovementOffNo');
+    if (no) {
+      no.addEventListener('click', () => {
+        this._movementConfirm = false;
+        this._renderMovementOption();
+      });
+    }
   }
 
   /**
@@ -3373,9 +4101,11 @@ export class ZoneMapCard extends HTMLElement {
     this._resetDrawingState();
     this._highlightActiveModeButton();
     this._updatePolygonButtonsVisibility();
-    // Into or out of Walk, which has its panel and lets the canvas pan.
+    // Into or out of Walk, which has its panel, lets the canvas pan and
+    // keeps History shut.
     this._updateCanvasTouchMode();
     this._renderWalkPanel();
+    this._renderHistoryChip();
     this._invalidateGridCache();
     this._refitAndDraw();
   }
@@ -4243,12 +4973,17 @@ export class ZoneMapCard extends HTMLElement {
   /**
    * Paint the whole map, bottom layer first: painted cells, the grid, its
    * labels and the cone, the zones, a shape being drawn, then the targets.
+   * While a replay shows, its zones are lit by its dots, and its trails and
+   * dots take the place of the live ones.
    */
   drawGrid() {
     if (!this.ctx || !this.canvas) return;
     const ctx = this.ctx;
     // One layout read per frame; what is sized in CSS px reads it from here.
     this._frameScale = this._canvasScale();
+    // Worked out before anything is drawn: the zones its dots light are
+    // drawn before the dots.
+    const replay = this._replayShowing() ? this._replayFrame() : null;
     ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
     // First, so no grid, ring or range label is tinted by the cells, and
     // still under the zones.
@@ -4280,12 +5015,17 @@ export class ZoneMapCard extends HTMLElement {
     this.drawDeviceCone(gridMetrics, ringLabels);
     this._drawRangeLabel(ctx, rangeLabel);
 
-    this.drawZones();
+    this.drawZones(replay ? { lit: replay.lit } : {});
     this._drawInProgress();
     this._drawWalkPreview(ctx);
     // Trails under the dots, which they lead up to.
-    this._drawTrails(ctx);
-    this._drawTrackedTargets();
+    if (replay) {
+      this._drawReplayTrails(ctx, replay);
+      this._drawReplayDots(replay);
+    } else {
+      this._drawTrails(ctx);
+      this._drawTrackedTargets();
+    }
     // Corner markers over the dots, so the walker's own dot never hides the
     // newest corner.
     this._drawWalkMarkers(ctx);
@@ -4293,15 +5033,74 @@ export class ZoneMapCard extends HTMLElement {
     this._lastDrawAt = this._now();
   }
 
-  /** Cells painted under the whole map: where live targets have been, while
-   *  this viewer has Coverage on. A view-only card paints none. */
+  /**
+   * Cells painted under the whole map: while a replay shows with Heatmap on,
+   * where people spent their time over its range; else where live targets
+   * have been, while this viewer has Coverage on. Both in the Coverage
+   * colors, as both say where targets were, and never both at once. A
+   * view-only card paints neither.
+   */
   _drawCellLayer(ctx) {
+    const rgb = this.darkMode ? COLOR.canvas.coverageDark : COLOR.canvas.coverageLight;
+    const heat = this._history.heat;
+    if (this._history.heatmap && heat && this._replayShowing()) {
+      this._drawCells(ctx, heat, rgb);
+      return;
+    }
     if (this._viewOnly || !this._coverageOn) return;
-    this._drawCells(
-      ctx,
-      this._coverage,
-      this.darkMode ? COLOR.canvas.coverageDark : COLOR.canvas.coverageLight,
-    );
+    this._drawCells(ctx, this._coverage, rgb);
+  }
+
+  /**
+   * What the replay shows at its time T, worked out once per frame: each
+   * slot with a position then, in the map frame through today's rotation
+   * (the flip comes with valueToPixels), whether one of today's ignore zones
+   * holds it (history can be older than they are), its trail, and the detect
+   * zones its dot lights, by their current shapes. null without an answer.
+   */
+  _replayFrame() {
+    const { series, t } = this._history;
+    if (!series) return null;
+    const items = [];
+    const lit = new Set();
+    const detectZones = (this.zones || []).filter((zone) => !this._isIgnoreZone(zone.id));
+    series.slots.forEach((slotSeries, slot) => {
+      const p = positionAt(slotSeries, t);
+      if (!p) return;
+      const m = this._toMap(p.x, p.y);
+      const ignored = this._isIgnored(m.x, m.y);
+      items.push({ slot, m, ignored, trail: trailAt(slotSeries, t, TRAIL_MS) });
+      // Presence drops a target inside an ignore zone, so it lights nothing.
+      if (ignored) return;
+      detectZones.forEach((zone) => {
+        if (pointInZone(zone.shape, zone.data, m.x, m.y)) lit.add(Number(zone.id));
+      });
+    });
+    return { items, lit };
+  }
+
+  /** The replayed trails, aged against the replay time as the live ones are
+   *  against now, grey where today's ignore zones hold the target. */
+  _drawReplayTrails(ctx, replay) {
+    const colors = COLOR.canvas.targetPalette;
+    const grey = this.darkMode ? COLOR.canvas.ignoredTargetDark : COLOR.canvas.ignoredTargetLight;
+    replay.items.forEach(({ slot, ignored, trail }) => {
+      if (trail.length < 2) return;
+      this._drawTrail(ctx, trail, this._history.t, ignored ? grey : colors[slot % colors.length]);
+    });
+  }
+
+  /** The replayed dots, numbered by slot as the live ones are, hollow and
+   *  grey inside today's ignore zones. */
+  _drawReplayDots(replay) {
+    const colors = COLOR.canvas.targetPalette;
+    const numbers = COLOR.canvas.targetNumber;
+    replay.items.forEach(({ slot, m, ignored }) => {
+      this.drawCurrentPosition(m.x, m.y, colors[slot % colors.length], String(slot + 1), {
+        hollow: ignored,
+        numberColor: numbers[slot % numbers.length],
+      });
+    });
   }
 
   /**
@@ -5436,6 +6235,8 @@ export class ZoneMapCard extends HTMLElement {
     this._detachGlobalListeners();
     this._disconnectZones();
     this._stopTrailTimer();
+    // A replay nobody can see stops, and the card comes back live.
+    this._closeHistory();
   }
 
   _detachGlobalListeners() {

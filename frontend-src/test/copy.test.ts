@@ -385,6 +385,7 @@ describe("zone map card copy module", () => {
       zoneMapCopy.walkHintNext(2),
       zoneMapCopy.walkHintNext(5),
       zoneMapCopy.historyError("Home Assistant is restarting"),
+      zoneMapCopy.historyClearError("Home Assistant is restarting"),
       zoneMapCopy.replayBadge("10:24:05 AM"),
       zoneMapCopy.formatAgo(0),
       zoneMapCopy.formatAgo(120000),
@@ -408,6 +409,12 @@ describe("zone map card copy module", () => {
       "Corner 3 marked. Keep going around the zone in order. Two corners make a rectangle, three or more a polygon. Press Finish when done."
     );
     expect(zoneMapCopy.historyError("timeout")).toBe("Could not load movement history: timeout");
+    expect(zoneMapCopy.historyError(zoneMapCopy.HISTORY_UNREADABLE)).toBe(
+      "Could not load movement history: Home Assistant sent an answer this card cannot read."
+    );
+    expect(zoneMapCopy.historyClearError("timeout")).toBe(
+      "Could not clear movement history: timeout"
+    );
     expect(zoneMapCopy.replayBadge("22:05:09")).toBe("Replay 22:05:09");
     expect(zoneMapCopy.formatAgo(59999)).toBe("under a minute ago");
     expect(zoneMapCopy.formatAgo(-5000)).toBe("under a minute ago");
