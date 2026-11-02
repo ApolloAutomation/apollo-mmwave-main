@@ -90,7 +90,7 @@ HOLD_REPORT_AGE_MAX_S = 1.2
 # the 1.0 to 1.15 s from one report of an axis to the next.
 HOLD_ANCHOR_STEP_S = 0.9
 # Evidence older than this is not motion. Home Assistant only reports
-# changes, so a person who sat down produces none at all.
+# changes, so a person who sat down can produce none at all.
 HOLD_MOTION_FRESH_S = 1.6
 # Steps that do not fit in this long mean the reports were too sparse to
 # measure motion, which reads as still: the hold is the safe side. Two steps
@@ -216,8 +216,8 @@ class Occupant:
     def moving_at(self, t: float) -> bool:
         """Report whether this person was moving at time t."""
         # Home Assistant only reports changes, so a person who sat down
-        # produces no events and their last step would otherwise read as
-        # motion forever. Old evidence is not motion.
+        # can produce no events, and their last step would otherwise read
+        # as motion forever. Old evidence is not motion.
         if t - self.seen_t > HOLD_MOTION_FRESH_S:
             return False
         if self.last_t - self.first_seen < HOLD_FIRST_SEEN_S:
