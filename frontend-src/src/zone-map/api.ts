@@ -6,11 +6,17 @@
  * naming and on the entity being available, and an unavailable entity has its
  * attributes stripped, so the card would read an empty config and write it
  * back over the real one. Nothing here constructs an entity id.
+ *
+ * The movement history commands live here too. Unlike the zone commands, only
+ * an administrator may call them.
  */
 
 export const DOMAIN = "apollo_mmwave";
 export const ZONES_GET = `${DOMAIN}/zones/get`;
 export const ZONES_SUBSCRIBE = `${DOMAIN}/zones/subscribe`;
+/** Movement history. Administrators only: anyone else gets `unauthorized`. */
+export const MOVEMENT_GET = `${DOMAIN}/movement/get`;
+export const MOVEMENT_CLEAR = `${DOMAIN}/movement/clear`;
 /** Home Assistant's own config entry feed, used to notice a reload. */
 export const CONFIG_ENTRIES_SUBSCRIBE = "config_entries/subscribe";
 
@@ -22,11 +28,25 @@ export interface TargetPair {
   y: string;
 }
 
+/**
+ * What a zone does with the targets inside it: "detect" turns its presence
+ * sensor on, "ignore" hides them from the radar's other zones.
+ */
+export type ZoneType = "detect" | "ignore";
+
 export interface ZoneDef {
   /** Both absent on a legacy zone whose data was lost: `{}` means no geometry. */
   shape?: string;
   data?: Record<string, any> | null;
   name?: string;
+  /** Absent means detect. The backend never sends a default. */
+  zone_type?: ZoneType;
+  /** Seconds the zone stays on after the radar loses someone who sat still
+   *  in it, 1 to 3600. Absent means 0, no hold. */
+  hold_s?: number;
+  /** The zone's presence sensor. null: not registered (yet); absent: a
+   *  backend older than 2.4.0. */
+  presence_entity_id?: string | null;
 }
 
 export interface ZoneConfig {
@@ -56,6 +76,14 @@ export interface ZoneConfig {
   display_units?: DisplayUnits | null;
   /** What the radar detected, offered regardless of what the user picked. */
   suggested_entities: TargetPair[];
+  /**
+   * Draw this radar's map mirrored left to right, for everyone who opens it.
+   * Display only: zone geometry, presence and movement history never flip.
+   * Absent from a backend older than 2.4.0.
+   */
+  mirror_x?: boolean;
+  /** An administrator turned movement history on for this radar. */
+  movement_history?: boolean;
 }
 
 export type Unsubscribe = () => void | Promise<void>;
@@ -312,4 +340,100 @@ export async function connectZones(
       }
     }
   };
+}
+
+/**
+ * One radar's recorded target positions, as `apollo_mmwave/movement/get`
+ * answers them.
+ *
+ * A radar keeps up to 100,000 records, so they come packed: four base64
+ * columns of little-endian integers, about 13 bytes a record, instead of
+ * JSON lists. `history.ts` decodes them. Records are sorted by time across
+ * every slot.
+ */
+export interface MovementPayload {
+  /** False for a radar whose history is off; it then has no records. */
+  enabled: boolean;
+  /** Server epoch ms when the answer was built. The replay reads time from
+   *  here, never from this browser's clock. */
+  now: number;
+  /** Epoch ms the answer starts from, after the server clamped the request
+   *  to the last 24 hours. */
+  since: number;
+  /** How long the server keeps a record, in seconds. */
+  retention_s: number;
+  /** Number of records. */
+  n: number;
+  /** Epoch ms of the first record; null when `n` is 0. It can be before
+   *  `since`: each slot's last point within 30 s before `since` is carried
+   *  in, so someone standing still shows at the window start. */
+  t0: number | null;
+  /** uint32 per record: ms since the previous record, 0 for the first. */
+  dt: string;
+  /** int16 per record: the slot, the 0-based index in the radar's tracked
+   *  pairs. A gone marker (the slot lost its target) is `-1 - slot`. */
+  s: string;
+  /** int16 per record: mm in the raw sensor frame (unit converted, not
+   *  rotated, not mirrored); 0 on a gone marker. */
+  x: string;
+  /** int16 per record, like `x`. */
+  y: string;
+}
+
+/** The slice of Home Assistant the movement commands need. */
+export type MovementApiHass = Pick<ZoneApiHass, "callWS">;
+
+/**
+ * Read one radar's movement history from `sinceMs` (epoch ms) to the
+ * server's now. Without `sinceMs` the server sends the last 24 hours.
+ */
+export async function fetchMovement(
+  hass: MovementApiHass,
+  deviceId: string,
+  sinceMs?: number
+): Promise<MovementPayload> {
+  return hass.callWS<MovementPayload>({
+    type: MOVEMENT_GET,
+    device_id: deviceId,
+    // The command's schema takes a whole, non-negative number of ms.
+    ...(sinceMs === undefined ? {} : { since: Math.max(0, Math.round(sinceMs)) }),
+  });
+}
+
+/** Delete one radar's movement history. The radar keeps recording. */
+export async function clearMovement(
+  hass: MovementApiHass,
+  deviceId: string
+): Promise<{ cleared: number }> {
+  return hass.callWS<{ cleared: number }>({ type: MOVEMENT_CLEAR, device_id: deviceId });
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+/**
+ * Whether an answer has the shape of a `MovementPayload`.
+ *
+ * Types only: `decodeMovement` in `history.ts` checks each column's length
+ * against `n` and throws on a mismatch. A test's fake hass answers commands
+ * it does not know with [], which must not read as an empty history.
+ */
+export function isMovementPayload(value: unknown): value is MovementPayload {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const p = value as Record<string, unknown>;
+  return (
+    typeof p.enabled === "boolean" &&
+    isFiniteNumber(p.now) &&
+    isFiniteNumber(p.since) &&
+    isFiniteNumber(p.retention_s) &&
+    isFiniteNumber(p.n) &&
+    Number.isInteger(p.n) &&
+    p.n >= 0 &&
+    (p.t0 === null || isFiniteNumber(p.t0)) &&
+    typeof p.dt === "string" &&
+    typeof p.s === "string" &&
+    typeof p.x === "string" &&
+    typeof p.y === "string"
+  );
 }
