@@ -1137,7 +1137,12 @@ describe("zone map card axis labels", () => {
     const { ctx } = textRecordingContext(() => 30);
     card.ctx = ctx;
     card._invalidateGridCache();
-    const xTexts = () => card._getGridRenderState().labels.x.map((label: any) => label.text);
+    // A frame reads the layout once, at its start, and lays the labels out
+    // by it.
+    const xTexts = () => {
+      card.drawGrid();
+      return card._getGridRenderState().labels.x.map((label: any) => label.text);
+    };
     const halfMeters = ["-4.5", "-4", "-3.5", "-3", "-2.5", "-2", "-1.5", "-1", "-0.5"];
     const meters = ["-4", "-3", "-2", "-1"];
 
@@ -4525,6 +4530,95 @@ describe("zone map card trails", () => {
     document.body.appendChild(card);
     vi.advanceTimersByTime(100);
     expect(draw).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * A still target as the bench object near an R PRO-1 reads, for `steps`
+   * of 1070 ms: X wandering over about 15 cm and Y over about 10 cm, in
+   * inches, each axis written about once a second, the Y 450 ms after the
+   * X. Returns how many pushes it made.
+   */
+  function jitter(set: (changes: Record<string, any>) => void, steps: number) {
+    const xs = [-5.0, -2.4, -8.5, -4.1, -6.3, -3.0];
+    const ys = [13.5, 11.6, 15.7, 12.2, 14.8, 13.0];
+    for (let step = 0; step < steps; step += 1) {
+      set({ "sensor.a_x": inch(xs[step % xs.length]) });
+      expect(vi.getTimerCount()).toBe(0);
+      vi.advanceTimersByTime(450);
+      set({ "sensor.a_y": inch(ys[step % ys.length]) });
+      expect(vi.getTimerCount()).toBe(0);
+      vi.advanceTimersByTime(620);
+    }
+    return 2 * steps;
+  }
+
+  it("paints a still jittering target once per push", async () => {
+    const { card, set } = await trailCard();
+    document.body.appendChild(card);
+    set({ "sensor.a_x": inch("unknown"), "sensor.a_y": inch("unknown") });
+    const draw = vi.spyOn(card, "drawGrid");
+
+    // A minute of it. Its trail stays under its own dot's halo, so no fade
+    // frame runs or waits: each push paints once, and nothing else does.
+    const pushes = jitter(set, 56);
+
+    expect(draw).toHaveBeenCalledTimes(pushes);
+    expect(card._trails.hasTrail(performance.now())).toBe(true);
+  });
+
+  it("fades a lost still target's scribble away", async () => {
+    const { card, set } = await trailCard();
+    document.body.appendChild(card);
+    set({ "sensor.a_x": inch("unknown"), "sensor.a_y": inch("unknown") });
+    jitter(set, 10);
+    expect(segments(frame(card)).length).toBeGreaterThan(0);
+
+    // Lost, as unknown on both axes at once: no dot covers the trail now.
+    set({ "sensor.a_x": inch("unknown"), "sensor.a_y": inch("unknown") });
+    const draw = vi.spyOn(card, "drawGrid");
+    vi.advanceTimersByTime(100);
+    expect(draw).toHaveBeenCalledTimes(1);
+
+    // Frames run until the trail is gone, and the last one paints it away.
+    vi.advanceTimersByTime(3000);
+    expect(card._trails.samples(0).length).toBeLessThan(2);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(segments(frame(card))).toEqual([]);
+  });
+
+  it("keeps fading a walker's trail", async () => {
+    const { card, set } = await trailCard();
+    document.body.appendChild(card);
+    const draw = vi.spyOn(card, "drawGrid");
+    const start = performance.now();
+
+    // 1 m/s across the room, written at the radar's split cadence.
+    walkSplit(
+      set,
+      Array.from({ length: 8 }, (_, k) => [-4000 + 1000 * k, 2000 + 300 * k])
+    );
+
+    // A fade frame every 100 ms between the pushes, which paint too.
+    const perSecond = draw.mock.calls.length / ((performance.now() - start) / 1000);
+    expect(perSecond).toBeGreaterThan(9);
+    expect(perSecond).toBeLessThanOrEqual(11);
+  });
+
+  it("reads the canvas layout once a frame", async () => {
+    const card = await mountCard(fakeHass({ ...ZONE_PAYLOAD, rotation_deg: 0 }), {
+      ...TEN_METER_GRID,
+      unit_display: true,
+    });
+    layOut(card, 326);
+    const rect = card.canvas.getBoundingClientRect;
+    rect.mockClear();
+
+    // The grid labels and the range label keep their gap at the frame's
+    // scale, read at the top of the frame.
+    card.drawGrid();
+    card.drawGrid();
+    expect(rect).toHaveBeenCalledTimes(2);
+    expect(card._getGridRenderState().labelGap).toBeCloseTo(4 * (800 / 326), 9);
   });
 
   it("drops trails when the tracked pairs change", async () => {

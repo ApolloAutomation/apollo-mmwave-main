@@ -1050,24 +1050,54 @@ export class ZoneMapCard extends HTMLElement {
 
   /**
    * Keep the trails fading between hass pushes: one frame every
-   * TRAIL_FRAME_MS while some target still has a trail. One timer at a time,
-   * and only on a card that is on the page and has a canvas, so a card
-   * nobody can see schedules nothing. A replay paints on its own timer and
-   * shows no live trails.
+   * TRAIL_FRAME_MS while a frame would change a trail anyone can see (see
+   * _trailCanChange). One timer at a time, and only on a card that is on
+   * the page and has a canvas, so a card nobody can see schedules nothing.
+   * A replay paints on its own timer and shows no live trails.
    */
   _kickTrailTimer() {
     if (this._replayShowing()) return;
     if (!this.isConnected || !this.canvas || this._trailTimer !== null) return;
-    if (!this._trails.hasTrail(this._now())) return;
+    const now = this._now();
+    if (!this._trails.hasTrail(now) || !this._trailCanChange(now)) return;
     this._trailTimer = setTimeout(() => this._onTrailFrame(), TRAIL_FRAME_MS);
+  }
+
+  /**
+   * Whether a fade frame would change what the map shows: some slot has a
+   * trail, two samples from the last TRAIL_MS, and either its target is
+   * gone, so the trail has to fade out, or a sample lies farther from the
+   * newest than its dot's halo reaches. A still target's reading changes
+   * about once a second, and the trail its jitter leaves stays under its
+   * own dot, where a frame would fade nothing anyone can see; the next hass
+   * push paints it anyway. Positions are in canvas px, as drawn.
+   */
+  _trailCanChange(now) {
+    const cutoff = now - TRAIL_MS;
+    const halo = this._dotRadius() * 1.7;
+    const toCanvas = ({ x, y }) => {
+      const m = this._toMap(x, y);
+      return { x: this.valueToPixels(m.x, 'x'), y: this.valueToPixels(m.y, 'y') };
+    };
+    return this._trails.slots().some((slot) => {
+      const samples = this._trails.samples(slot);
+      if (samples.length < 2 || samples[samples.length - 2].t <= cutoff) return false;
+      if (!this._trailReadings.has(slot)) return true;
+      const newest = toCanvas(samples[samples.length - 1]);
+      return samples.some((sample) => {
+        if (sample.t <= cutoff) return false;
+        const at = toCanvas(sample);
+        return Math.hypot(at.x - newest.x, at.y - newest.y) > halo;
+      });
+    });
   }
 
   /**
    * One fade frame: count what became final, drop what aged out, and paint,
    * unless a hass push painted less than a frame ago. Then it waits out the
    * rest of that frame, so a radar that pushes often is not painted twice as
-   * often. The frame after the last trail aged out paints it away, and the
-   * timer stops there.
+   * often. The frame that paints the last of a trail away, or leaves only
+   * what a still target's dot covers, is the last: the timer stops there.
    */
   _onTrailFrame() {
     this._trailTimer = null;
@@ -1904,11 +1934,17 @@ export class ZoneMapCard extends HTMLElement {
     }
   }
 
+  /** A target dot's radius in backing px: it follows the card's width,
+   *  never below 10. Its halo reaches 1.7 times as far. */
+  _dotRadius() {
+    return Math.max(10, Math.round(9 * (this._frameScale || 1)));
+  }
+
   /**
    * One target dot at map-frame mm (x, y), with `label` (its number) on it.
    * A dot is a filled core with a soft halo, so it reads over a lit zone; a
    * target presence ignores (`hollow`) is a grey ring with a grey number
-   * instead. The radius follows the card's width, never below 10 backing px.
+   * instead. The radius is _dotRadius().
    */
   drawCurrentPosition(
     x,
@@ -1924,7 +1960,7 @@ export class ZoneMapCard extends HTMLElement {
     if (pixelX < 0 || pixelX > this.canvas.width || pixelY < 0 || pixelY > this.canvas.height) {
       return;
     }
-    const r = Math.max(10, Math.round(9 * (this._frameScale || 1)));
+    const r = this._dotRadius();
     let textColor = numberColor;
     ctx.save();
     if (hollow) {
@@ -3793,8 +3829,9 @@ export class ZoneMapCard extends HTMLElement {
   _getGridRenderState() {
     const canvasWidth = this.canvas?.width || 0;
     const canvasHeight = this.canvas?.height || 0;
-    // The labels' clear space is set in CSS px, so a resized card lays them out again.
-    const labelGap = LABEL_GAP_CSS_PX * this._canvasScale();
+    // The labels' clear space is set in CSS px, so a resized card lays them
+    // out again. The frame's scale, so a frame reads the layout once.
+    const labelGap = LABEL_GAP_CSS_PX * (this._frameScale || 1);
     const keyParts = [
       this._displayUnit(),
       this._roundKeyValue(this._fittedStep() ?? 0),
@@ -5374,7 +5411,7 @@ export class ZoneMapCard extends HTMLElement {
     // half a label height and the label gap, so an axis label centered on the
     // arc (the 6 m one, facing ahead on a 1 m grid) keeps its place. The extra
     // px absorbs float error in the gap test.
-    const gap = LABEL_GAP_CSS_PX * this._canvasScale();
+    const gap = LABEL_GAP_CSS_PX * (this._frameScale || 1);
     const offset =
       Math.abs(dirX) * halfWidth + Math.abs(dirY) * halfHeight + halfHeight + gap + 1;
     const fits = (x, y) =>
