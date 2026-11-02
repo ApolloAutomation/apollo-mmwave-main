@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 
 import pytest
-from homeassistant.helpers.dispatcher import DATA_DISPATCHER, async_dispatcher_send
+from homeassistant.core import callback
+from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.dispatcher import (
+    DATA_DISPATCHER,
+    async_dispatcher_connect,
+    async_dispatcher_send,
+)
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.apollo_mmwave import get_store
@@ -14,11 +21,14 @@ from custom_components.apollo_mmwave.const import (
     DATA_CALIBRATION_STORE,
     DATA_STORE,
     DOMAIN,
+    KEY_PRESENCE_ENTITY_ID,
     SIGNAL_CALIBRATION_UPDATED,
+    SIGNAL_ZONES_PAYLOAD,
     SIGNAL_ZONES_UPDATED,
     STORE_LABEL,
     STORE_ZONES,
 )
+from custom_components.apollo_mmwave.zone_entities import ZoneEntityMixin
 
 from .conftest import RADAR_TARGET_COUNT, RadarIds, finish_job, radar_ids
 
@@ -32,12 +42,12 @@ RECT_CALL = {
 }
 
 
-def _forwarder_count(hass) -> int:
-    """Count the dispatcher targets live zone subscriptions own."""
+def _forwarder_count(hass, signal: str = SIGNAL_ZONES_UPDATED) -> int:
+    """Count the dispatcher targets live zone subscriptions own on a signal."""
     # Both entity platforms listen on the same signal, so counting the whole
     # target list would not show a leaked subscription. Only this module's
     # closures are counted.
-    targets = hass.data.get(DATA_DISPATCHER, {}).get(SIGNAL_ZONES_UPDATED, {})
+    targets = hass.data.get(DATA_DISPATCHER, {}).get(signal, {})
     return sum(
         1
         for target in targets
@@ -455,6 +465,273 @@ async def test_zones_subscription_is_dropped_when_the_client_disconnects(
     )
     await hass.async_block_till_done()
     assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+# ---------------------------------------------------------------------------
+# What the card reads beside the geometry: each zone's presence entity id and
+# settings, and the radar's flags
+# ---------------------------------------------------------------------------
+
+PRESENCE_1 = "binary_sensor.apollo_r_pro_1_abc123_zone_1_presence"
+
+
+async def _get(client, device_id: str) -> dict:
+    await client.send_json_auto_id({"type": GET, "device_id": device_id})
+    return (await client.receive_json())["result"]
+
+
+async def _subscribe_zones(client, device_id: str) -> int:
+    await client.send_json_auto_id({"type": SUBSCRIBE, "device_id": device_id})
+    message = await client.receive_json()
+    assert message["success"] is True
+    return message["id"]
+
+
+async def test_zones_payload_carries_presence_entity_ids(
+    hass, hass_ws_client, init_integration, device_id
+) -> None:
+    """Each zone names its presence sensor, or null while none is registered."""
+    _ = init_integration
+    for zone_id in (1, 2):
+        await hass.services.async_call(
+            DOMAIN,
+            "update_zone",
+            {"device_id": device_id, **RECT_CALL, "zone_id": zone_id},
+            blocking=True,
+        )
+    # Stored with no zone signal, so no entity has been made for it yet.
+    get_store(hass).device(device_id)[STORE_ZONES][3] = {"shape": "none", "data": None}
+    client = await hass_ws_client(hass)
+
+    zones = (await _get(client, device_id))["zones"]
+
+    assert {
+        zone_id: zone[KEY_PRESENCE_ENTITY_ID] for zone_id, zone in zones.items()
+    } == {
+        "1": PRESENCE_1,
+        "2": "binary_sensor.apollo_r_pro_1_abc123_zone_2_presence",
+        "3": None,
+    }
+
+
+async def test_zone_creation_push_already_carries_the_presence_entity_id(
+    hass, hass_ws_client, init_integration, device_id
+) -> None:
+    """Both platforms register a new zone's entities before the push is built."""
+    _ = init_integration
+    client = await hass_ws_client(hass)
+    await _subscribe_zones(client, device_id)
+
+    await hass.services.async_call(
+        DOMAIN, "update_zone", {"device_id": device_id, **RECT_CALL}, blocking=True
+    )
+    await hass.async_block_till_done()
+
+    [pushed] = await _drain(client)
+    assert pushed["zones"]["1"][KEY_PRESENCE_ENTITY_ID] == PRESENCE_1
+
+
+@pytest.mark.usefixtures("init_integration")
+async def test_presence_entity_rename_pushes_the_new_id(
+    hass, hass_ws_client, entity_registry, device_id, monkeypatch
+) -> None:
+    """A new presence entity id is pushed once, with no zone signal or new entity."""
+    await hass.services.async_call(
+        DOMAIN, "update_zone", {"device_id": device_id, **RECT_CALL}, blocking=True
+    )
+    await hass.async_block_till_done()
+    renamed = "binary_sensor.couch_presence"
+
+    def _ours() -> list[str]:
+        return sorted(
+            entry.entity_id
+            for entry in er.async_entries_for_device(entity_registry, device_id)
+            if entry.platform == DOMAIN
+        )
+
+    expected = sorted([*(eid for eid in _ours() if eid != PRESENCE_1), renamed])
+    client = await hass_ws_client(hass)
+    await _subscribe_zones(client, device_id)
+    zone_signals: list[str] = []
+
+    @callback
+    def _zones_updated(changed_device_id: str) -> None:
+        zone_signals.append(changed_device_id)
+
+    unsub = async_dispatcher_connect(hass, SIGNAL_ZONES_UPDATED, _zones_updated)
+    aborted: list[str] = []
+    real_abort = ZoneEntityMixin.add_to_platform_abort
+
+    def _abort(self) -> None:
+        aborted.append(self.entity_id)
+        real_abort(self)
+
+    monkeypatch.setattr(ZoneEntityMixin, "add_to_platform_abort", _abort)
+
+    entity_registry.async_update_entity(PRESENCE_1, new_entity_id=renamed)
+    await hass.async_block_till_done()
+    unsub()
+
+    [pushed] = await _drain(client)
+    assert pushed["zones"]["1"][KEY_PRESENCE_ENTITY_ID] == renamed
+    # Home Assistant re-added the same entity under its new id: no zone signal
+    # ran a platform sync against it, so nothing was added beside it.
+    assert zone_signals == []
+    assert aborted == []
+    assert _ours() == expected
+    assert hass.states.get(PRESENCE_1) is None
+    assert hass.states.get(renamed).state == "off"
+
+    # And it still follows the radar's targets.
+    hass.states.async_set("sensor.r_pro_ld2450_target_1_x", "5")
+    hass.states.async_set("sensor.r_pro_ld2450_target_1_y", "5")
+    await hass.async_block_till_done()
+    assert hass.states.get(renamed).state == "on"
+
+
+async def test_zones_payload_normalizes_hand_edited_zone_settings(
+    hass, hass_ws_client, init_integration, device_id
+) -> None:
+    """A setting presence reads as the default reaches the card as the default."""
+    _ = init_integration
+    rect = {"shape": "rect", "data": RECT_CALL["data"]}
+    # Zone dicts load verbatim, so a hand edit can leave anything here.
+    get_store(hass).device(device_id)[STORE_ZONES].update(
+        {
+            1: {**rect, "zone_type": "IGNORE", "hold_s": "60"},
+            2: {**rect, "zone_type": "ignore", "hold_s": 30.7},
+            3: {**rect, "zone_type": "detect", "hold_s": 99999},
+            4: {**rect, "zone_type": None, "hold_s": True},
+            5: {**rect, "zone_type": ["ignore"], "hold_s": -5},
+        }
+    )
+    client = await hass_ws_client(hass)
+
+    zones = (await _get(client, device_id))["zones"]
+
+    settings = {
+        zone_id: {key: zone[key] for key in ("zone_type", "hold_s") if key in zone}
+        for zone_id, zone in zones.items()
+    }
+    assert settings == {
+        "1": {},
+        "2": {"zone_type": "ignore", "hold_s": 30},
+        "3": {"hold_s": 3600},
+        "4": {},
+        "5": {},
+    }
+    assert all(zone["data"] == RECT_CALL["data"] for zone in zones.values())
+
+
+async def test_zones_payload_does_not_mutate_the_store(
+    hass, hass_ws_client, init_integration, device_id
+) -> None:
+    """The payload is built from copies; the store's zone dicts stay as stored."""
+    _ = init_integration
+    await hass.services.async_call(
+        DOMAIN,
+        "update_zone",
+        {"device_id": device_id, **RECT_CALL, "hold_s": 30},
+        blocking=True,
+    )
+    store = get_store(hass)
+    store.device(device_id)[STORE_ZONES][2] = {
+        "shape": "none",
+        "data": None,
+        "zone_type": "IGNORE",
+        "hold_s": "60",
+    }
+    before = copy.deepcopy(store._data_to_save())  # noqa: SLF001
+    client = await hass_ws_client(hass)
+    await _subscribe_zones(client, device_id)
+
+    result = await _get(client, device_id)
+    async_dispatcher_send(hass, SIGNAL_ZONES_UPDATED, device_id)
+    await hass.async_block_till_done()
+    [pushed] = await _drain(client)
+
+    assert result["zones"]["1"]["hold_s"] == 30
+    assert pushed["zones"]["2"][KEY_PRESENCE_ENTITY_ID] is not None
+    assert store._data_to_save() == before  # noqa: SLF001
+    assert all(
+        KEY_PRESENCE_ENTITY_ID not in zone
+        for zone in store.devices[device_id][STORE_ZONES].values()
+    )
+
+
+async def test_zones_payload_carries_mirror_and_movement_flags(
+    hass, hass_ws_client, init_integration, device_id
+) -> None:
+    """Both flags are always there as booleans, false until turned on."""
+    _ = init_integration
+    client = await hass_ws_client(hass)
+
+    result = await _get(client, device_id)
+    assert result["mirror_x"] is False
+    assert result["movement_history"] is False
+
+    await hass.services.async_call(
+        DOMAIN,
+        "update_zone",
+        {"device_id": device_id, "mirror_x": True, "movement_history": True},
+        blocking=True,
+    )
+    result = await _get(client, device_id)
+    assert result["mirror_x"] is True
+    assert result["movement_history"] is True
+
+    await hass.services.async_call(
+        DOMAIN,
+        "update_zone",
+        {"device_id": device_id, "mirror_x": False},
+        blocking=True,
+    )
+    result = await _get(client, device_id)
+    assert result["mirror_x"] is False
+    assert result["movement_history"] is True
+
+
+async def test_zones_subscribe_pushes_a_flip(
+    hass, hass_ws_client, init_integration, device_id
+) -> None:
+    """Every open card hears about the flip, not only the one that saved it."""
+    _ = init_integration
+    client = await hass_ws_client(hass)
+    await _subscribe_zones(client, device_id)
+
+    await hass.services.async_call(
+        DOMAIN, "update_zone", {"device_id": device_id, "mirror_x": True}, blocking=True
+    )
+
+    pushed = await client.receive_json()
+    assert pushed["type"] == "event"
+    assert pushed["event"]["mirror_x"] is True
+
+
+@pytest.mark.parametrize("ending", ["unsubscribe", "close", "unload"])
+async def test_zones_subscription_end_drops_both_forwarders(
+    hass, hass_ws_client, init_integration, device_id, ending
+) -> None:
+    """However a subscription ends, neither of its two signal forwarders stays."""
+    client = await hass_ws_client(hass)
+    subscription = await _subscribe_zones(client, device_id)
+    assert _forwarder_count(hass) == 1
+    assert _forwarder_count(hass, SIGNAL_ZONES_PAYLOAD) == 1
+
+    if ending == "unsubscribe":
+        await client.send_json_auto_id(
+            {"type": "unsubscribe_events", "subscription": subscription}
+        )
+        assert (await client.receive_json())["success"] is True
+    elif ending == "close":
+        await client.close()
+        await hass.async_block_till_done()
+    else:
+        assert await hass.config_entries.async_unload(init_integration.entry_id)
+        await hass.async_block_till_done()
+
+    assert _forwarder_count(hass) == 0
+    assert _forwarder_count(hass, SIGNAL_ZONES_PAYLOAD) == 0
 
 
 # ---------------------------------------------------------------------------

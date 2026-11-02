@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 import voluptuous as vol
 from homeassistant.components import websocket_api
 from homeassistant.core import callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
 from .calibration import calibration_payload
@@ -30,15 +31,23 @@ from .const import (
     DATA_CALIBRATION_STORE,
     DATA_STORE,
     DOMAIN,
+    KEY_PRESENCE_ENTITY_ID,
     SIGNAL_CALIBRATION_UPDATED,
+    SIGNAL_ZONES_PAYLOAD,
     SIGNAL_ZONES_UPDATED,
     STORE_DISPLAY_UNITS,
     STORE_ENTITIES,
+    STORE_HOLD_S,
     STORE_INPUT_UNITS,
     STORE_LABEL,
+    STORE_MIRROR_X,
+    STORE_MOVEMENT_HISTORY,
+    STORE_ZONE_TYPE,
     STORE_ZONES,
+    ZONE_TYPE_IGNORE,
 )
 from .ld2450 import resolve_target_pairs
+from .store import device_flag, zone_hold_s, zone_type_of
 
 if TYPE_CHECKING:
     from homeassistant.components.websocket_api import ActiveConnection
@@ -84,6 +93,37 @@ def _subscriptions(hass: HomeAssistant) -> set[CALLBACK_TYPE]:
     return hass.data.setdefault(DOMAIN, {}).setdefault(DATA_SUBSCRIPTIONS, set())
 
 
+def _zones(
+    hass: HomeAssistant, device_id: str, entry: dict[str, Any]
+) -> dict[str, Any]:
+    """Return a radar's zones as the card reads them."""
+    from . import _zone_entity_unique_ids  # noqa: PLC0415 - avoid a module import cycle
+
+    registry = er.async_get(hass)
+    zones: dict[str, Any] = {}
+    for zone_id, zone in entry.get(STORE_ZONES, {}).items():
+        # A copy, so the keys added and dropped here never reach the store.
+        item = dict(zone)
+        # Normalized for the card: a hand-edited value that presence reads as
+        # the default is left out, as the default always is, so the map and
+        # the presence sensor agree on what the zone does.
+        item.pop(STORE_ZONE_TYPE, None)
+        item.pop(STORE_HOLD_S, None)
+        if zone_type_of(zone) == ZONE_TYPE_IGNORE:
+            item[STORE_ZONE_TYPE] = ZONE_TYPE_IGNORE
+        if hold_s := zone_hold_s(zone):
+            item[STORE_HOLD_S] = hold_s
+        # The card lights a zone from its presence sensor's state, under
+        # whatever entity id that sensor has now; null while it is not
+        # registered.
+        item[KEY_PRESENCE_ENTITY_ID] = registry.async_get_entity_id(
+            "binary_sensor", DOMAIN, _zone_entity_unique_ids(device_id, zone_id)[1]
+        )
+        # Zone ids are ints in the store; JSON object keys can only be strings.
+        zones[str(zone_id)] = item
+    return zones
+
+
 def _payload(hass: HomeAssistant, device_id: str) -> dict[str, Any]:
     """Build one device's configuration as the card sees it."""
     from . import get_store  # noqa: PLC0415 - avoid a module import cycle
@@ -96,10 +136,7 @@ def _payload(hass: HomeAssistant, device_id: str) -> dict[str, Any]:
     # a radar is not configuring it.
     entry = get_store(hass).devices.get(device_id) or {}
     return {
-        # Zone ids are ints in the store; JSON object keys can only be strings.
-        STORE_ZONES: {
-            str(zone_id): zone for zone_id, zone in entry.get(STORE_ZONES, {}).items()
-        },
+        STORE_ZONES: _zones(hass, device_id, entry),
         # null means never configured, so the card offers the suggestions below;
         # [] means the user cleared the list and wants nothing tracked. Sending
         # [] for both would re-offer auto-detection to the one user who switched
@@ -116,6 +153,10 @@ def _payload(hass: HomeAssistant, device_id: str) -> dict[str, Any]:
         # The unit an administrator picked for this radar's map, "m" or "ft";
         # null means the card follows Home Assistant's unit system.
         STORE_DISPLAY_UNITS: entry.get(STORE_DISPLAY_UNITS),
+        # The radar's flags, always booleans: whether every viewer sees the map
+        # flipped left to right, and whether movement history is kept.
+        STORE_MIRROR_X: device_flag(entry, STORE_MIRROR_X),
+        STORE_MOVEMENT_HISTORY: device_flag(entry, STORE_MOVEMENT_HISTORY),
         # TODO(REVIEW_REPORT.md X53): resolved per subscriber.  # noqa: FIX002, TD003
         # Every subscriber re-resolves on every signal (about 66 us each). Low
         # priority now that zone edits send one signal; reusing DATA_PAIR_CACHE
@@ -204,6 +245,9 @@ def ws_subscribe_zones(
         connection.send_event(msg["id"], _payload(hass, device_id))
 
     unsub_dispatcher = async_dispatcher_connect(hass, SIGNAL_ZONES_UPDATED, _forward)
+    # A renamed presence entity id changes this payload and nothing else, so it
+    # comes on a signal only these forwarders hear (see ld2450.py).
+    unsub_payload = async_dispatcher_connect(hass, SIGNAL_ZONES_PAYLOAD, _forward)
 
     @callback
     def _teardown() -> None:
@@ -218,6 +262,7 @@ def ws_subscribe_zones(
         closed = True
         active.discard(_teardown)
         unsub_dispatcher()
+        unsub_payload()
 
     active.add(_teardown)
     connection.subscriptions[msg["id"]] = _teardown
