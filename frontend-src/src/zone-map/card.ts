@@ -5704,7 +5704,10 @@ export class ZoneMapCard extends HTMLElement {
           ctx.moveTo(pts[0].x, pts[0].y);
           for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
           ctx.closePath();
-          ctx.fill();
+          // By the even-odd rule presence tests a point by (pointInPolygon),
+          // so a polygon that goes around an area twice, as a second lap of
+          // Walk can, is not filled where presence finds nobody.
+          ctx.fill('evenodd');
           ctx.stroke();
           // Compute bounding box
           let minX = pts[0].x,

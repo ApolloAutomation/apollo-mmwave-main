@@ -6831,6 +6831,34 @@ describe("zone map card zone looks", () => {
     expect(createPattern).toHaveBeenCalledTimes(1);
   });
 
+  it("fills polygon zones by the even-odd rule presence uses", async () => {
+    // A star drawn as one line goes around its center twice. Presence finds
+    // nobody there (zone-map-geometry.test.ts), and the nonzero rule filled
+    // it, or hatched it on an ignore zone. Walk can save such a shape.
+    const star = (cx: number) =>
+      [0, 2, 4, 1, 3].map((k) => ({
+        x: cx + Math.round(1500 * Math.sin((2 * Math.PI * k) / 5)),
+        y: Math.round(4000 - 1500 * Math.cos((2 * Math.PI * k) / 5)),
+      }));
+    const zones = payload(PRESENCE, {
+      "2": { shape: "polygon", data: { points: star(-2000) }, name: "Star" },
+      "3": { shape: "polygon", data: { points: star(2000) }, name: "Fan", zone_type: "ignore" },
+    });
+    const { card, draws } = await looksCard(zones);
+    const hatch = { pattern: "diagonal" };
+    card.ctx.createPattern = () => hatch;
+
+    card.drawZones();
+
+    // Doorway is a rect (fillRect); each star is filled by the even-odd
+    // rule, the ignore zone's with its hatch.
+    const fills = draws.filter((d) => d.name === "fill");
+    expect(fills.map((d) => [d.args, d.fill === hatch])).toEqual([
+      [["evenodd"], false],
+      [["evenodd"], true],
+    ]);
+  });
+
   it("keeps each zone's label on the canvas", async () => {
     // Centered on a zone at a wall, a label ran off the canvas edge and lost
     // its start or its suffix.
