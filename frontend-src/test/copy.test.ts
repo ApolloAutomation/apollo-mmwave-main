@@ -376,29 +376,51 @@ describe("controls and zone map copy", () => {
 describe("zone map card copy module", () => {
   /** Words the copy rules keep out of anything a user reads. */
   const FILLER = /\b(?:simply|just|easy|easily|powerful|seamlessly)\b/i;
+  /** British spellings a zone map string could pick up. */
+  const BRITISH =
+    /\b(?:colou?rs?|behaviours?|favourite|centres?|metres?|litres?|grey(?:ed)?|organised?|recognised?|realised?|customised?|minimised?|maximised?|optimised?|cancelled|cancelling|labelled|labelling|travelled|travelling|modelled|licence|catalogue|dialogue|programme|whilst|amongst)\b/i;
+
+  /** Each function copy.ts exports, with the arguments its output is
+   *  checked with: every case it words differently. */
+  const CALLS: Record<string, unknown[][]> = {
+    walkHintNext: [[1], [2], [5]],
+    historyError: [["Home Assistant is restarting"]],
+    historyClearError: [["Home Assistant is restarting"]],
+    replayBadge: [["10:24:05 AM"]],
+    formatAgo: [[0], [120000], [3900000]],
+  };
 
   /** Every string copy.ts exports, the functions' output included. */
   function zoneMapTexts(): string[] {
+    const exports = zoneMapCopy as Record<string, unknown>;
     return [
       ...strings(Object.values(zoneMapCopy)),
-      zoneMapCopy.walkHintNext(1),
-      zoneMapCopy.walkHintNext(2),
-      zoneMapCopy.walkHintNext(5),
-      zoneMapCopy.historyError("Home Assistant is restarting"),
-      zoneMapCopy.historyClearError("Home Assistant is restarting"),
-      zoneMapCopy.replayBadge("10:24:05 AM"),
-      zoneMapCopy.formatAgo(0),
-      zoneMapCopy.formatAgo(120000),
-      zoneMapCopy.formatAgo(3900000),
+      ...Object.entries(CALLS).flatMap(([name, calls]) =>
+        calls.map((args) => (exports[name] as (...a: unknown[]) => string)(...args))
+      ),
     ];
   }
+
+  it("checks every export, the functions through their output", () => {
+    const functions = Object.entries(zoneMapCopy)
+      .filter(([, value]) => typeof value === "function")
+      .map(([name]) => name);
+    expect(functions.sort()).toEqual(Object.keys(CALLS).sort());
+    // Everything else is a string or a list the string checks reach (the
+    // hold seconds are numbers, labeled through formatHold).
+    for (const [name, value] of Object.entries(zoneMapCopy)) {
+      if (typeof value === "function") continue;
+      expect(typeof value === "string" || Array.isArray(value), name).toBe(true);
+    }
+  });
 
   it("writes every zone map string in US English without em dashes or filler", () => {
     const texts = zoneMapTexts();
     expect(texts.length).toBeGreaterThan(70);
-    expect(texts.every((t) => t.length > 0)).toBe(true);
+    expect(texts.every((t) => typeof t === "string" && t.length > 0)).toBe(true);
     expect(copyProblems(texts)).toEqual([]);
     expect(texts.filter((t) => FILLER.test(t))).toEqual([]);
+    expect(texts.filter((t) => BRITISH.test(t))).toEqual([]);
   });
 
   it("builds the zone map's sentences from their parts", () => {

@@ -4914,7 +4914,9 @@ export class ZoneMapCard extends HTMLElement {
     const newZone = { id: next, name: `Zone ${next}` };
     this.zoneConfig = [...(this.zoneConfig || []), newZone];
     this.selectedZone = next;
-    // Persist empty zone with name so entities are created and named
+    // Persist the empty zone so its entities are created. It carries the
+    // default name, which the backend stores but keeps out of the registry,
+    // so the entities keep the names they were created with.
     this._saveZoneUpdate(
       {
         device_id: this.deviceId,

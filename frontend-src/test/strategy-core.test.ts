@@ -1669,6 +1669,14 @@ describe("plain help, labels and the Device card", () => {
     expect(cards.some((c) => c.content === LD2450_TIMEOUT_NOTE)).toBe(false);
     expect(LD2450_TIMEOUT_NOTE).toContain("does not hold the zones you draw");
   });
+
+  it("points the LD2450 timeout note at a zone's own hold time", () => {
+    expect(LD2450_TIMEOUT_NOTE).toBe(
+      "💡 **Radar Timeout** is how long LD2450 Presence stays on after the radar last" +
+        " sees someone. It does not hold the zones you draw: a zone turns off as soon as" +
+        " nobody is in it, unless you give it a hold time in the zone list under Configure."
+    );
+  });
 });
 
 describe("slider lock rows", () => {
