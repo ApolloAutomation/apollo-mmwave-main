@@ -136,6 +136,10 @@ describe("zone map card registration", () => {
     // every card added through the UI, so a phone scroll could redraw zones.
     expect(ZoneMapCard.getStubConfig(fakeHass())).not.toHaveProperty("start_locked");
   });
+
+  it("omits view_only from the stub so a picker-added card can draw", () => {
+    expect(ZoneMapCard.getStubConfig(fakeHass())).not.toHaveProperty("view_only");
+  });
 });
 
 describe("zone map card lock state", () => {
@@ -4037,9 +4041,9 @@ describe("zone map card repaints on hass pushes", () => {
 describe("zone map card offline radar", () => {
   const UNAVAILABLE = { state: "unavailable" };
 
-  async function offlineCard(payload: any = ZONE_PAYLOAD) {
+  async function offlineCard(payload: any = ZONE_PAYLOAD, config: Record<string, any> = {}) {
     const hass = fakeHass(payload);
-    const card = await mountCard(hass);
+    const card = await mountCard(hass, config);
     const push = (states: Record<string, any>) => {
       card.hass = { ...hass, states };
     };
@@ -4086,6 +4090,23 @@ describe("zone map card offline radar", () => {
     const missing = await offlineCard();
     missing.push({ "sensor.kitchen_light": UNAVAILABLE });
     expect(note(missing.card).hidden).toBe(true);
+  });
+
+  it("shows the note in view_only", async () => {
+    // A wall tablet showing the map alone needs the note most of all.
+    const { card, push } = await offlineCard(ZONE_PAYLOAD, { view_only: true });
+    expect(note(card).hidden).toBe(true);
+
+    push({ "sensor.a_x": UNAVAILABLE, "sensor.a_y": UNAVAILABLE });
+
+    expect(note(card).hidden).toBe(false);
+    expect(note(card).textContent).toBe("Radar offline");
+    expect(note(card).getAttribute("role")).toBe("status");
+    card.render();
+    expect(note(card).hidden).toBe(false);
+
+    push({ "sensor.a_x": { state: "500" }, "sensor.a_y": { state: "2000" } });
+    expect(note(card).hidden).toBe(true);
   });
 
   it("follows a payload that tracks other pairs", async () => {
@@ -5501,6 +5522,263 @@ describe("zone map card touches on a map nothing can be drawn on", () => {
     expect(touch(card, "touchend", 300, 300)).toBe(true);
     expect(card.isDrawing).toBe(false);
     expect(hass.callService).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The map alone (view_only: true).
+ *
+ * A card for a wall tablet or a phone dashboard that only shows where people
+ * are: the title and the map, with its lit zones, numbered dots, trails, the
+ * offline note and the flip. No drawing tools, lock, undo, unit switch, chips,
+ * Configure or zone list, and nothing listens on the canvas, so a swipe that
+ * starts on the map scrolls the page. A live card switched to it drops what
+ * it was drawing, since nothing would be left to finish it.
+ */
+describe("zone map card view only", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    document.body.replaceChildren();
+  });
+
+  const VIEW_ONLY = { ...TEN_METER_GRID, view_only: true };
+  const PRESENCE = "binary_sensor.office_zone_1_presence";
+
+  /** A cancelable touch on the canvas, and whether the card prevented it. */
+  function touch(card: any, type: string, x: number, y: number): boolean {
+    const point = { clientX: x, clientY: y };
+    const event = Object.assign(new Event(type, { cancelable: true }), {
+      touches: type === "touchend" ? [] : [point],
+      changedTouches: [point],
+    });
+    card.canvas.dispatchEvent(event);
+    return event.defaultPrevented;
+  }
+
+  function mouse(card: any, type: string, x: number, y: number) {
+    card.canvas.dispatchEvent(new MouseEvent(type, { clientX: x, clientY: y }));
+  }
+
+  function frame(card: any): Draw[] {
+    const { ctx, draws } = drawRecordingContext();
+    card.ctx = ctx;
+    card.drawGrid();
+    return draws;
+  }
+
+  it("renders only the map in view_only", async () => {
+    const card = await mountCard(fakeHass(), VIEW_ONLY);
+    const root = card.shadowRoot;
+
+    expect(Array.from(root.querySelectorAll("[id]"), (el: any) => el.id)).toEqual([
+      "deviceTitle",
+      "zoneCanvas",
+      "offlineNote",
+    ]);
+    expect(root.getElementById("deviceTitle").textContent).toBe("Office radar");
+    expect(card.canvas).toBe(root.getElementById("zoneCanvas"));
+    // Nothing to press or type into.
+    expect(root.querySelectorAll("button, input, select")).toHaveLength(0);
+    // No crosshair over a map nothing is drawn on, and a vertical swipe
+    // scrolls the page.
+    const canvasRule = /(?:^|\s)canvas \{([^}]*)\}/.exec(root.querySelector("style").textContent);
+    expect(canvasRule?.[1].trim()).toBe(
+      "width: 100%; height: 100%; cursor: default; touch-action: pan-y; touch-action: pan-y pinch-zoom;"
+    );
+
+    // The same card without the key is the full card again.
+    card.setConfig({ device_id: "dev123", ...TEN_METER_GRID });
+    for (const id of ["btnLock", "btnUndo", "btnModeMenu", "btnUnitM", "viewTools", "zoneManager"]) {
+      expect(root.getElementById(id)).not.toBeNull();
+    }
+    // And anything but true leaves it the full card.
+    card.setConfig({ device_id: "dev123", ...TEN_METER_GRID, view_only: "yes" });
+    expect(root.getElementById("btnLock")).not.toBeNull();
+  });
+
+  it("shows the load error in view_only", async () => {
+    const error = { code: "not_found", message: "No Home Assistant device with id dev123" };
+    const card = await mountCard(fakeHass(ZONE_PAYLOAD, error), VIEW_ONLY);
+
+    // Never a blank map: an empty canvas would look like an empty room.
+    expect(card.canvas).toBeNull();
+    expect(card.shadowRoot.querySelector("canvas")).toBeNull();
+    expect(card.shadowRoot.getElementById("loadError").textContent).toContain("dev123");
+  });
+
+  it("attaches no canvas listeners in view_only and lets a touch scroll", async () => {
+    // On the element classes the card's nodes are made of. The global
+    // EventTarget here is not the one happy-dom's elements inherit from.
+    const added = vi.spyOn(HTMLElement.prototype, "addEventListener");
+    const hass = fakeHass();
+    // Unlocked with zone 1 selected, where the full card takes every touch
+    // for drawing, then switched to the map alone.
+    const card = await mountCard(hass, { ...TEN_METER_GRID, start_locked: false });
+    expect(card.selectedZone).toBe(1);
+    card.setConfig({ device_id: "dev123", ...VIEW_ONLY, start_locked: false });
+    document.body.appendChild(card);
+    layOut(card, 800);
+    hass.callService.mockClear();
+    const toasts = notifications(card);
+
+    const on = (target: unknown) => added.mock.contexts.filter((context) => context === target);
+    expect(on(card.canvas)).toEqual([]);
+    expect(on(card.canvas.parentElement)).toEqual([]);
+    // No key or press elsewhere on the page has a drawing to end either.
+    expect(card._onKeyDown ?? null).toBeNull();
+    expect(card._outsideClickHandler ?? null).toBeNull();
+
+    expect([
+      touch(card, "touchstart", 400, 600),
+      touch(card, "touchmove", 400, 300),
+      touch(card, "touchend", 400, 300),
+    ]).toEqual([false, false, false]);
+    mouse(card, "mousedown", 100, 100);
+    mouse(card, "mousemove", 300, 300);
+    mouse(card, "mouseup", 300, 300);
+    card.canvas.dispatchEvent(new MouseEvent("dblclick"));
+    expect(card.isDrawing).toBe(false);
+    expect(hass.callService).not.toHaveBeenCalled();
+    expect(toasts).toEqual([]);
+
+    // The guards behind it hold even when something calls them anyway.
+    card.startDrawing(new MouseEvent("mousedown", { clientX: 100, clientY: 100 }));
+    expect(card.isDrawing).toBe(false);
+    card._attachGlobalListeners();
+    expect(card._onKeyDown ?? null).toBeNull();
+    card.remove();
+    document.body.appendChild(card);
+    expect(card._onKeyDown ?? null).toBeNull();
+
+    // The full card takes the same touch for drawing.
+    card.setConfig({ device_id: "dev123", ...TEN_METER_GRID, start_locked: false });
+    layOut(card, 800);
+    expect(touch(card, "touchstart", 100, 100)).toBe(true);
+    expect(card.isDrawing).toBe(true);
+  });
+
+  it("keeps lit zones, numbered dots and trails in view_only", async () => {
+    vi.useFakeTimers();
+    const hass = fakeHass({
+      ...ZONE_PAYLOAD,
+      rotation_deg: 0,
+      zones: { "1": { ...ZONE_PAYLOAD.zones["1"], presence_entity_id: PRESENCE } },
+    });
+    const card = await mountCard(hass, VIEW_ONLY);
+    let states: Record<string, any> = { [PRESENCE]: { state: "on", attributes: {} } };
+    const move = (x: number, y: number) => {
+      states = {
+        ...states,
+        "sensor.a_x": { state: String(x) },
+        "sensor.a_y": { state: String(y) },
+      };
+      card.hass = { ...hass, states };
+    };
+    move(-2000, 2000);
+    vi.advanceTimersByTime(200);
+    move(-1000, 2000);
+
+    const draws = frame(card);
+
+    // The Doorway, lit by its presence sensor and outlined solid.
+    expect(draws.filter((d) => d.name === "fillRect").map((d) => d.fill)).toEqual([
+      "rgba(244, 67, 54, 0.45)",
+    ]);
+    // Target 1's dot with its number, at (-1000, 2000) mm.
+    expect(draws.filter((d) => d.name === "fillText").map((d) => d.args)).toEqual([
+      ["Doorway", 440, 40],
+      ["1", 320, 160],
+    ]);
+    // Its trail, from (-2000, 2000) mm.
+    const segment = draws.findIndex(
+      (d, i) => d.name === "stroke" && d.stroke === "#f44336" && draws[i - 1]?.name === "lineTo"
+    );
+    expect(draws.slice(segment - 2, segment).map((d) => d.args)).toEqual([
+      [240, 160],
+      [320, 160],
+    ]);
+
+    // On the page, the trail fades between pushes as on the full card.
+    document.body.appendChild(card);
+    const draw = vi.spyOn(card, "drawGrid");
+    vi.advanceTimersByTime(100);
+    expect(draw).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops the lock visual when a live card switches to view_only", async () => {
+    // A full card sets up its Locked button, whose closure also sets the
+    // canvas cursor. Switched before the first payload, the auto lock runs
+    // later, on the view-only map, which has no Locked button.
+    const hass = fakeHass();
+    const card: any = new ZoneMapCard();
+    card.setConfig({ device_id: "dev123", ...TEN_METER_GRID });
+    expect(typeof card._updateLockVisual).toBe("function");
+
+    card.setConfig({ device_id: "dev123", ...VIEW_ONLY });
+    expect(card._updateLockVisual).toBeNull();
+    card.hass = hass;
+    await vi.waitFor(() => expect(card._zoneConfigPayload).toBeTruthy());
+
+    // Locked by the auto rule (the radar has a zone), with no not-allowed
+    // cursor left on a map that draws nothing.
+    expect(card.isLocked).toBe(true);
+    expect(card.canvas.style.cursor).toBe("");
+  });
+
+  it("drops a rect in progress when the card switches to view_only", async () => {
+    const hass = fakeHass();
+    const card = await mountCard(hass, { ...TEN_METER_GRID, start_locked: false });
+    expect(card.selectedZone).toBe(1);
+    layOut(card, 800);
+    hass.callService.mockClear();
+    mouse(card, "mousedown", 100, 100);
+    mouse(card, "mousemove", 300, 250);
+    expect(card.isDrawing).toBe(true);
+
+    card.setConfig({ device_id: "dev123", ...VIEW_ONLY, start_locked: false });
+
+    expect(card.isDrawing).toBe(false);
+    expect([card.startPoint, card._cursorPoint, card._activeInput]).toEqual([null, null, null]);
+    // No rubber band and no size readout on the map.
+    const draws = frame(card);
+    expect(draws.filter((d) => d.name === "setLineDash" && d.args[0].join() === "5,5")).toEqual([]);
+    expect(draws.filter((d) => d.name === "fillText" && String(d.args[0]).includes(" × "))).toEqual(
+      []
+    );
+
+    // Back on the full card, the release that never came saves nothing.
+    card.setConfig({ device_id: "dev123", ...TEN_METER_GRID, start_locked: false });
+    layOut(card, 800);
+    mouse(card, "mouseup", 300, 250);
+    expect(hass.callService).not.toHaveBeenCalled();
+  });
+
+  it("applies the flip in view_only", async () => {
+    const hass = fakeHass({ ...ZONE_PAYLOAD, rotation_deg: 0, mirror_x: true });
+    const card = await mountCard(hass, VIEW_ONLY);
+    hass.states = { "sensor.a_x": { state: "-2000" }, "sensor.a_y": { state: "2000" } };
+    expect(card._mirrorX).toBe(true);
+
+    // Flipped, x runs from 5000 mm on the left: the Doorway's 0 to 1000 mm
+    // is 400 to 320 px, and target 1 at -2000 mm is at 560 px.
+    const draws = frame(card);
+    const [rect] = draws.filter((d) => d.name === "fillRect").map((d) => d.args);
+    expect(rect.map((v: number) => Math.round(v * 1e6) / 1e6)).toEqual([320, 0, 80, 80]);
+    const dot = draws.find((d) => d.name === "fillText" && d.args[0] === "1");
+    expect(dot?.args.slice(1).map((v: number) => Math.round(v * 1e6) / 1e6)).toEqual([560, 160]);
+
+    // A pushed unflip follows.
+    hass.handlers[ZONES_SUBSCRIBE][0]({ ...ZONE_PAYLOAD, rotation_deg: 0 });
+    expect(card._mirrorX).toBe(false);
+  });
+
+  it("reports a card size of 6 in view_only", async () => {
+    const card = await mountCard(fakeHass(), VIEW_ONLY);
+    expect(card.getCardSize()).toBe(6);
+
+    card.setConfig({ device_id: "dev123", ...TEN_METER_GRID });
+    expect(card.getCardSize()).toBe(8);
   });
 });
 

@@ -706,6 +706,22 @@ describe("LD2450 zone mapping", () => {
     expect(zone.title).toBe("Office R-PRO-1");
   });
 
+  it("the dashboard's zone map has no view_only key", () => {
+    // The dashboard keeps the map zones are drawn on. Showing the map alone
+    // is a choice for a card of one's own.
+    const { hass } = ld2450Hass();
+    const dev = detectRadarDevices(hass)[0];
+    const zone = buildDeviceCards(hass, dev).find(
+      (c: any) => c.type === "custom:apollo-radar-zone-map-card"
+    );
+    expect(zone).toEqual({
+      type: "custom:apollo-radar-zone-map-card",
+      device_id: dev.deviceId,
+      title: "Office R-PRO-1",
+      unit_display: true,
+    });
+  });
+
   it("adds the zone map alongside tuning on a device with both radars", () => {
     const b = "apollo_r_pro_1_abcd";
     const eng = `switch.${b}_ld2412_engineering_mode`;

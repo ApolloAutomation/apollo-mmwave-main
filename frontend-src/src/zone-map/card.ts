@@ -563,7 +563,15 @@ export class ZoneMapCard extends HTMLElement {
       this._coverageOn = readStoredCoverage(this.deviceId);
     }
     // Absent, or anything but true, is the full card.
+    const wasViewOnly = this._viewOnly;
     this._viewOnly = config.view_only === true;
+    if (this._viewOnly && !wasViewOnly) {
+      // The map alone has no handler left to end a rect or polygon in
+      // progress, no Walk panel and no History, so all three end here.
+      this._resetDrawingState();
+      this._exitWalk();
+      this._closeHistory();
+    }
     // Display only, so a user can call the card "Kitchen" and still share zone
     // data with the auto-generated dashboard. Deliberately NOT `this.title`:
     // that is a native HTMLElement accessor and would put a browser tooltip
@@ -1006,9 +1014,10 @@ export class ZoneMapCard extends HTMLElement {
     // Home Assistant detaches and re-attaches cards as views change, and
     // `disconnectedCallback` closed the subscription and dropped the window
     // and document listeners on the way out. The canvas keeps its own
-    // listeners across a detach, so only the global ones come back here.
+    // listeners across a detach, so only the global ones come back here. A
+    // view-only map never had any.
     this._connectZones();
-    if (this.canvas && !this._onKeyDown) this._attachGlobalListeners();
+    if (this.canvas && !this._onKeyDown && !this._viewOnly) this._attachGlobalListeners();
     // A trail that was fading when the card left the page fades on.
     this._kickTrailTimer();
   }
@@ -1275,9 +1284,11 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   _template() {
+    // First: a load error is never a blank map, view-only or not.
     if (this._loadError) {
       return this._errorTemplate();
     }
+    if (this._viewOnly) return this._viewOnlyTemplate();
     return `
       <style>
         :host { display: block; padding: 16px; }
@@ -1431,7 +1442,7 @@ export class ZoneMapCard extends HTMLElement {
             <button id="btnLock" class="lock-toggle" title="Lock drawing and cone rotation">🔓</button>
           </div>
         </div>
-        ${this._viewOnly ? '' : this._viewToolsTemplate()}
+        ${this._viewToolsTemplate()}
         <div class="controls" id="zone-buttons">
         </div>
         <div class="config">
@@ -1484,6 +1495,38 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   /**
+   * The map alone (view_only): the title, the canvas and the offline note,
+   * with no drawing tools, chips, Configure or zone list. render() attaches
+   * no listeners to it, and the canvas leaves a vertical swipe to the
+   * browser, so a phone scrolls past the card. The rules are _template's for
+   * the same elements, but for the canvas's cursor and touch-action.
+   */
+  _viewOnlyTemplate() {
+    return `
+      <style>
+        :host { display: block; padding: 16px; --zm-radius: 10px; }
+        .container { background: var(--card-background-color); border-radius: var(--ha-card-border-radius, 12px); box-shadow: var(--ha-card-box-shadow); padding: 16px; }
+        .container.dark { background: ${COLOR.ui.darkContainerBackground}; color: ${COLOR.ui.darkContainerText}; color-scheme: dark; }
+        .container.dark .canvas-container { border-color: ${COLOR.ui.darkCanvasBorder}; background: ${COLOR.ui.darkCanvasBackground}; }
+        .canvas-container { position: relative; width: 100%; aspect-ratio: 1; border: 1px solid var(--divider-color); border-radius: var(--zm-radius); overflow: hidden; background: ${COLOR.ui.lightCanvasBackground}; isolation: isolate; container-type: size; }
+        /* Nothing to draw, so no crosshair, and a vertical swipe scrolls the
+           page. Two declarations: iOS 14 does not know pinch-zoom and keeps
+           the first. */
+        canvas { width: 100%; height: 100%; cursor: default; touch-action: pan-y; touch-action: pan-y pinch-zoom; }
+        .map-note { position: absolute; top: 4px; left: 4px; z-index: 1; pointer-events: none; padding: 4px 8px; border-radius: 6px; font-size: 12px; line-height: 1.3; background: ${COLOR.ui.overlayButtonLightBg}; color: ${COLOR.ui.overlayButtonText}; }
+        .device-title { font-size: 1.2em; font-weight: bold; margin-bottom: 8px; }
+      </style>
+      <div class="container ${this.darkMode ? 'dark' : ''}">
+        <div class="device-title" id="deviceTitle"></div>
+        <div class="canvas-container">
+          <canvas id="zoneCanvas"></canvas>
+          <div class="map-note" id="offlineNote" role="status" ${this._offlineShown ? '' : 'hidden'}>${OFFLINE_NOTE}</div>
+        </div>
+      </div>
+    `;
+  }
+
+  /**
    * The chips under the map that change only what this viewer sees: Coverage
    * and, while it is on, Clear coverage. _renderCoverageControls sets their
    * state from `this`.
@@ -1522,7 +1565,9 @@ export class ZoneMapCard extends HTMLElement {
 
     this.renderZoneButtons();
     this.setupCanvas();
-    this.attachEventListeners();
+    // The map alone takes no input, so a phone scrolls past it. The renderers
+    // below find no host for what its template leaves out and return.
+    if (!this._viewOnly) this.attachEventListeners();
     this._renderEntityStatus();
     this._renderZoneManager();
     this._renderUnitSwitch();
@@ -1765,6 +1810,10 @@ export class ZoneMapCard extends HTMLElement {
    *  panel yet, so there is nothing to close. */
   _closeHistory() {}
 
+  /** Leave Walk and drop its corners. The card has no Walk mode yet, so
+   *  there is nothing to leave. */
+  _exitWalk() {}
+
   _attachMapOptions() {
     const mirror = this.shadowRoot.getElementById('mirrorToggle');
     if (mirror) mirror.addEventListener('change', () => this._chooseMirror(mirror.checked));
@@ -1984,7 +2033,8 @@ export class ZoneMapCard extends HTMLElement {
   _attachGlobalListeners() {
     // TODO(REVIEW_REPORT.md X40): render() reaches this on a detached card, so these listeners
     // retain it. If tightened, attach (and subscribe) only while isConnected; update the tests.
-    if (!this.canvas) return;
+    // A view-only map draws nothing for a key or a press elsewhere to end.
+    if (!this.canvas || this._viewOnly) return;
     this._detachGlobalListeners();
 
     this._onKeyDown = (event) => {
@@ -4893,6 +4943,9 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   startDrawing(e) {
+    // Nothing listens on a view-only map, and nothing there could end a
+    // drawing that started anyway.
+    if (this._viewOnly) return;
     // A right or middle press opens the browser menu or autoscroll; it must
     // not start a drag or place a vertex. Touch events carry no button.
     if (typeof e.button === 'number' && e.button !== 0) return;
@@ -4964,7 +5017,8 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   getCardSize() {
-    return 8;
+    // The map alone has no chips, Configure or zone list under it.
+    return this._viewOnly ? 6 : 8;
   }
 
   _updatePolygonButtonsVisibility() {
