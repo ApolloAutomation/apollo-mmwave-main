@@ -465,10 +465,10 @@ describe("zone map card copy module", () => {
 
   it("builds the zone map's sentences from their parts", () => {
     expect(zoneMapCopy.walkHintNext(1)).toBe(
-      "Corner 1 marked. Walk along the edge to the next corner, stand still, and press Corner here."
+      "Corner 1 marked. Walk along the edge to the next corner, stand still for about 3 seconds, and press Corner here."
     );
     expect(zoneMapCopy.walkHintNext(3)).toBe(
-      "Corner 3 marked. Keep going around the zone in order. Two corners make a rectangle, three or more a polygon. Press Finish when done."
+      "Corner 3 marked. Keep going around the zone in order, and stand still for about 3 seconds at each corner. Two corners make a rectangle, three or more a polygon. Press Finish when done."
     );
     expect(zoneMapCopy.historyError("timeout")).toBe("Could not load movement history: timeout");
     expect(zoneMapCopy.historyError(zoneMapCopy.HISTORY_UNREADABLE)).toBe(

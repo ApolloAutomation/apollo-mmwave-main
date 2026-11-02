@@ -77,6 +77,18 @@ describe("zone map geometry", () => {
       expect([x, y, pointInPolygon(x, y, TRIANGLE)]).toEqual([x, y, inside]);
     }
 
+    // A polygon that goes around an area twice, as a star drawn as one line
+    // does, counts by the even-odd rule: the star's points are inside and
+    // its center is not. The map fills it by the same rule.
+    const star = {
+      points: [0, 2, 4, 1, 3].map((k) => ({
+        x: Math.round(1500 * Math.sin((2 * Math.PI * k) / 5)),
+        y: Math.round(4000 - 1500 * Math.cos((2 * Math.PI * k) / 5)),
+      })),
+    };
+    expect(pointInPolygon(0, 4000, star)).toBe(false);
+    expect(pointInPolygon(0, 2800, star)).toBe(true);
+
     // The shape picks the tester.
     expect(pointInZone("rect", RECT, 0, 1000)).toBe(true);
     expect(pointInZone("ellipse", ELLIPSE, 0, 1000)).toBe(true);
