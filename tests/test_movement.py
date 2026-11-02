@@ -33,6 +33,7 @@ from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
     async_fire_time_changed_exact,
+    get_scheduled_timer_handles,
 )
 from pytest_homeassistant_custom_component.components.diagnostics import (
     get_diagnostics_for_config_entry,
@@ -87,6 +88,10 @@ SPOT_C = (2417, 3529)
 SPOT_VALUES = {str(abs(value)) for spot in (SPOT_A, SPOT_B, SPOT_C) for value in spot}
 
 CORRUPT_COPY = f"{STORAGE_KEY}.corrupt.2026-01-01T00:00:00.000000+00:00"
+
+# How the R PRO-1 reports on an imperial install: inches, one decimal.
+INCHES = {ATTR_UNIT_OF_MEASUREMENT: "in"}
+MM_PER_INCH = 25.4
 
 # The real Store.async_remove, taken at import, before the hass_storage fixture
 # swaps in a mock that only drops the key and leaves a pending write scheduled.
@@ -194,7 +199,12 @@ def _seed_flags(hass_storage, *device_ids: str) -> None:
 def _set_target(
     hass, pair: dict[str, str], x: object, y: object, unit: str | None = None
 ) -> None:
-    """Report a target's X and Y in one loop turn, as ESPHome does."""
+    """
+    Report a target's X and Y in one loop turn.
+
+    The radar does so only at times: the R PRO-1 often writes Y about 0.45 s
+    after X, which _walk writes.
+    """
     attributes = None if unit is None else {ATTR_UNIT_OF_MEASUREMENT: unit}
     hass.states.async_set(pair["x"], str(x), attributes)
     hass.states.async_set(pair["y"], str(y), attributes)
@@ -212,6 +222,52 @@ async def _advance(hass, freezer, seconds: float) -> None:
     # past the clock.
     async_fire_time_changed_exact(hass, dt_util.utcnow() + timedelta(microseconds=1))
     await hass.async_block_till_done()
+
+
+async def _run_until(hass, freezer, seconds: float) -> None:
+    """Move the frozen clock on to START + seconds, firing each timer on time."""
+    end = START.timestamp() + seconds
+    while (left := end - time.time()) > 1e-6:
+        now = time.time()
+        # The loop's clock is the frozen one, so a timer's due time compares
+        # with time.time().
+        due = min(
+            (
+                handle.when()
+                for handle in get_scheduled_timer_handles(hass.loop)
+                if not handle.cancelled() and handle.when() > now + 1e-6
+            ),
+            default=end,
+        )
+        freezer.tick(timedelta(seconds=min(due - now, left)))
+        async_fire_time_changed_exact(
+            hass, dt_util.utcnow() + timedelta(microseconds=1)
+        )
+        await hass.async_block_till_done()
+
+
+def _write_inches(hass, entity_id: str, inches: float) -> None:
+    hass.states.async_set(entity_id, f"{inches:.1f}", INCHES)
+
+
+async def _walk(
+    hass, freezer, writes: list[tuple[float, dict[str, str], str, float]]
+) -> None:
+    """
+    Write each (seconds, pair, axis, inches) at its time, in a loop turn of its own.
+
+    As the R PRO-1 reports: one entity a write, in inches. A value that
+    repeats is a write Home Assistant drops, so a walk leaves it out.
+    """
+    for at, pair, axis, inches in writes:
+        await _run_until(hass, freezer, at)
+        _write_inches(hass, pair[axis], inches)
+        await hass.async_block_till_done()
+
+
+def _mm(inches: tuple[float, float]) -> tuple[int, int]:
+    """Return a reading in inches as the whole millimeters it is recorded as."""
+    return round(inches[0] * MM_PER_INCH), round(inches[1] * MM_PER_INCH)
 
 
 async def _update_zone(hass, data: dict[str, Any]) -> None:
@@ -420,20 +476,20 @@ async def test_moves_of_50_mm_record_at_most_twice_a_second(
 ) -> None:
     """A walk reported ten times a second is kept as two points a second."""
     device_id = history_on
-    await _report(hass, TARGET_1, 0, 1000)
+    await _report(hass, TARGET_1, 100, 1000)
     for step in range(1, 21):
         await _advance(hass, clock, 0.1)
-        await _report(hass, TARGET_1, 60 * step, 1000)
+        await _report(hass, TARGET_1, 100 + 60 * step, 1000)
     # The last move's floor.
     await _advance(hass, clock, 0.5)
 
     assert _records(hass, device_id) == [
-        (START_MS, 0, 0, 1000),
-        (START_MS + 500, 0, 240, 1000),
-        (START_MS + 1000, 0, 540, 1000),
-        (START_MS + 1500, 0, 840, 1000),
-        (START_MS + 2000, 0, 1140, 1000),
-        (START_MS + 2500, 0, 1200, 1000),
+        (START_MS, 0, 100, 1000),
+        (START_MS + 500, 0, 340, 1000),
+        (START_MS + 1000, 0, 640, 1000),
+        (START_MS + 1500, 0, 940, 1000),
+        (START_MS + 2000, 0, 1240, 1000),
+        (START_MS + 2500, 0, 1300, 1000),
     ]
 
 
@@ -444,22 +500,22 @@ async def test_a_pending_move_is_recorded_after_the_floor(
     device_id = history_on
     await _report(hass, TARGET_1, 1000, 2000)
     await _advance(hass, clock, 0.2)
-    await _report(hass, TARGET_1, 1100, 2000)
+    await _report(hass, TARGET_1, 1100, 2100)
     assert _records(hass, device_id) == [(START_MS, 0, 1000, 2000)]
 
     await _advance(hass, clock, 0.3)
 
     assert _records(hass, device_id) == [
         (START_MS, 0, 1000, 2000),
-        (START_MS + 500, 0, 1100, 2000),
+        (START_MS + 500, 0, 1100, 2100),
     ]
 
     # Within the next floor the target moves away and back within 50 mm of
     # the last point, so nothing waits to be recorded.
     await _advance(hass, clock, 0.1)
-    await _report(hass, TARGET_1, 1200, 2000)
+    await _report(hass, TARGET_1, 1200, 2200)
     await _advance(hass, clock, 0.1)
-    await _report(hass, TARGET_1, 1120, 2000)
+    await _report(hass, TARGET_1, 1120, 2120)
     await _advance(hass, clock, 1)
     assert len(_records(hass, device_id)) == 2
 
@@ -496,6 +552,142 @@ async def test_x_and_y_written_in_one_loop_turn_record_one_point(
     assert _points(hass, device_id) == [(0, 1000, 2000), (0, 1500, 2500)]
 
 
+async def test_x_then_y_half_a_second_apart_record_no_half_updated_point(
+    hass, clock, history_on
+) -> None:
+    """A walk as the R PRO-1 writes it: each point is recorded once its Y lands."""
+    device_id = history_on
+    # A diagonal walk, 16 in (406 mm) a step on each axis: X every 1.07 s,
+    # and its Y 0.45 s after it.
+    track = [(10.0 + 16 * step, 40.0 + 16 * step) for step in range(9)]
+    _write_inches(hass, TARGET_1["x"], track[0][0])
+    _write_inches(hass, TARGET_1["y"], track[0][1])
+    await hass.async_block_till_done()
+    writes = []
+    for step, (x_in, y_in) in enumerate(track[1:], start=1):
+        writes.append((step * 1.07, TARGET_1, "x", x_in))
+        writes.append((step * 1.07 + 0.45, TARGET_1, "y", y_in))
+    await _walk(hass, clock, writes)
+    await _run_until(hass, clock, 12)
+
+    # Never a new X with the Y of the step before.
+    assert _records(hass, device_id) == [
+        (START_MS + (0 if step == 0 else step * 1070 + 450), 0, *_mm(spot))
+        for step, spot in enumerate(track)
+    ]
+
+
+async def test_the_measured_cadence_records_only_reported_pairs(
+    hass, clock, history_on
+) -> None:
+    """X and Y at the times the R PRO-1 wrote them: every point is a reading it sent."""
+    device_id = history_on
+    # (X's write, Y's write, x, y): the seconds measured on the radar, and
+    # two steps whose X repeated, which Home Assistant does not write.
+    steps = [
+        (0.178, 0.622, -20.0, 60.0),
+        (1.366, 1.868, -12.0, 68.0),
+        (2.491, 2.936, -4.0, 76.0),
+        (None, 4.0, -4.0, 84.0),
+        (4.7, 5.1, 6.0, 92.0),
+        (None, 6.25, 6.0, 100.0),
+    ]
+    writes = []
+    for x_at, y_at, x_in, y_in in steps:
+        if x_at is not None:
+            writes.append((x_at, TARGET_1, "x", x_in))
+        writes.append((y_at, TARGET_1, "y", y_in))
+    await _walk(hass, clock, writes)
+    await _run_until(hass, clock, 8)
+
+    # A Y written alone stands for the pair after MOVEMENT_PAIR_MS.
+    recorded_at = [622, 1868, 2936, 4550, 5100, 6800]
+    assert _records(hass, device_id) == [
+        (START_MS + at, 0, *_mm((x_in, y_in)))
+        for at, (_x_at, _y_at, x_in, y_in) in zip(recorded_at, steps, strict=True)
+    ]
+
+
+async def test_a_walk_along_one_axis_is_recorded_after_the_pair_window(
+    hass, clock, history_on
+) -> None:
+    """A move of X alone waits MOVEMENT_PAIR_MS for a Y write, then counts alone."""
+    device_id = history_on
+    await _report(hass, TARGET_1, 1000, 2000)
+    await _run_until(hass, clock, 1)
+    hass.states.async_set(TARGET_1["x"], "1300")
+    await hass.async_block_till_done()
+
+    await _run_until(hass, clock, 1.549)
+    assert _records(hass, device_id) == [(START_MS, 0, 1000, 2000)]
+
+    await _run_until(hass, clock, 1.55)
+    assert _records(hass, device_id) == [
+        (START_MS, 0, 1000, 2000),
+        (START_MS + 1550, 0, 1300, 2000),
+    ]
+
+
+async def test_a_new_x_inside_the_floor_waits_for_its_own_y(
+    hass, clock, history_on
+) -> None:
+    """A whole move waiting for the floor is not recorded with the next X."""
+    device_id = history_on
+    # A radar that writes each axis three times a second, Y 0.15 s after X.
+    _write_inches(hass, TARGET_1["x"], 10.0)
+    _write_inches(hass, TARGET_1["y"], 40.0)
+    await hass.async_block_till_done()
+    await _walk(
+        hass,
+        clock,
+        [
+            (0.1, TARGET_1, "x", 14.0),
+            (0.25, TARGET_1, "y", 44.0),
+            (0.4, TARGET_1, "x", 18.0),
+            (0.55, TARGET_1, "y", 48.0),
+        ],
+    )
+    await _run_until(hass, clock, 2)
+
+    # The floor came at 0.5 s, between the second X and its Y.
+    assert _records(hass, device_id) == [
+        (START_MS, 0, *_mm((10.0, 40.0))),
+        (START_MS + 550, 0, *_mm((18.0, 48.0))),
+    ]
+
+
+async def test_interleaved_targets_record_no_half_point(
+    hass, clock, history_on
+) -> None:
+    """Another target's write between a target's X and Y records no half move."""
+    device_id = history_on
+    # Two people walking apart, each X then its Y 0.45 s later, the second
+    # one 0.2 s behind the first.
+    first = [(10.0 + 12 * step, 50.0 + 12 * step) for step in range(5)]
+    second = [(-10.0 - 12 * step, 90.0 - 12 * step) for step in range(5)]
+    for pair, track in ((TARGET_1, first), (TARGET_2, second)):
+        _write_inches(hass, pair["x"], track[0][0])
+        _write_inches(hass, pair["y"], track[0][1])
+    await hass.async_block_till_done()
+    writes = []
+    for step in range(1, 5):
+        at = step * 1.07
+        writes += [
+            (at, TARGET_1, "x", first[step][0]),
+            (at + 0.2, TARGET_2, "x", second[step][0]),
+            (at + 0.45, TARGET_1, "y", first[step][1]),
+            (at + 0.65, TARGET_2, "y", second[step][1]),
+        ]
+    await _walk(hass, clock, writes)
+    await _run_until(hass, clock, 7)
+
+    records = _records(hass, device_id)
+    for slot, track in ((0, first), (1, second)):
+        assert [(x, y) for _t, s, x, y in records if s == slot] == [
+            _mm(spot) for spot in track
+        ]
+
+
 async def test_heartbeat_records_a_still_target_every_15_seconds(
     hass, clock, history_on
 ) -> None:
@@ -512,6 +704,26 @@ async def test_heartbeat_records_a_still_target_every_15_seconds(
         (START_MS, 0, *SPOT_A),
         (START_MS + 15000, 0, *SPOT_A),
         (START_MS + 30000, 0, *SPOT_A),
+    ]
+
+
+async def test_a_heartbeat_waits_for_a_whole_reading(hass, clock, history_on) -> None:
+    """A heartbeat due between a target's X and its Y records the pair."""
+    device_id = history_on
+    _write_inches(hass, TARGET_1["x"], 10.0)
+    _write_inches(hass, TARGET_1["y"], 40.0)
+    await hass.async_block_till_done()
+    # The jitter of someone sitting still, under 50 mm on each axis.
+    await _walk(
+        hass,
+        clock,
+        [(14.8, TARGET_1, "x", 11.0), (15.25, TARGET_1, "y", 41.0)],
+    )
+    await _run_until(hass, clock, 20)
+
+    assert _records(hass, device_id) == [
+        (START_MS, 0, *_mm((10.0, 40.0))),
+        (START_MS + 15250, 0, *_mm((11.0, 41.0))),
     ]
 
 
@@ -586,6 +798,102 @@ async def test_half_vanished_reading_is_not_recorded(hass, clock, history_on) ->
         (START_MS, 0, *SPOT_A),
         (START_MS + 1000, -1, 0, 0),
     ]
+
+
+@pytest.mark.parametrize("between", ["other_target", "floor_tick", "heartbeat"])
+async def test_a_flush_between_the_two_vanish_writes_records_no_phantom(
+    hass, clock, history_on, between
+) -> None:
+    """However often the slot is read between X = 0 and Y = 0, (0, y) is no point."""
+    device_id = history_on
+    # Someone else in view, whose moves flush the radar too.
+    await _report(hass, TARGET_2, *SPOT_B)
+    await _report(hass, TARGET_1, 1000, 2000)
+    vanish_at = {"other_target": 1.0, "floor_tick": 0.4, "heartbeat": 14.8}[between]
+    if between == "floor_tick":
+        # Still walking: this move waits for the floor at 0.5 s.
+        await _run_until(hass, clock, 0.3)
+        await _report(hass, TARGET_1, 1200, 2100)
+    await _run_until(hass, clock, vanish_at)
+    hass.states.async_set(TARGET_1["x"], "0")
+    await hass.async_block_till_done()
+    if between == "other_target":
+        await _run_until(hass, clock, vanish_at + 0.2)
+        await _report(hass, TARGET_2, SPOT_B[0] + 100, SPOT_B[1] + 100)
+    await _run_until(hass, clock, vanish_at + 0.45)
+    hass.states.async_set(TARGET_1["y"], "0")
+    await hass.async_block_till_done()
+    await _run_until(hass, clock, vanish_at + 5)
+
+    # The floor and the heartbeat record where the person was.
+    expected = {
+        "other_target": [
+            (START_MS, 0, 1000, 2000),
+            (START_MS + 1450, -1, 0, 0),
+        ],
+        "floor_tick": [
+            (START_MS, 0, 1000, 2000),
+            (START_MS + 500, 0, 1200, 2100),
+            (START_MS + 850, -1, 0, 0),
+        ],
+        "heartbeat": [
+            (START_MS, 0, 1000, 2000),
+            (START_MS + 15000, 0, 1000, 2000),
+            (START_MS + 15250, -1, 0, 0),
+        ],
+    }
+    records = _records(hass, device_id)
+    assert [record for record in records if record[1] in (0, -1)] == expected[between]
+
+
+async def test_a_target_appearing_x_first_from_0_0_records_no_point_on_an_axis(
+    hass, clock, history_on
+) -> None:
+    """In a slot that reads 0/0, a new target's X lands first: (x, 0) is no point."""
+    device_id = history_on
+    await _report(hass, TARGET_1, *SPOT_A)
+    await _run_until(hass, clock, 2)
+    await _report(hass, TARGET_1, 0, 0)
+    await _run_until(hass, clock, 10)
+
+    hass.states.async_set(TARGET_1["x"], str(SPOT_B[0]))
+    await hass.async_block_till_done()
+    await _run_until(hass, clock, 10.45)
+    hass.states.async_set(TARGET_1["y"], str(SPOT_B[1]))
+    await hass.async_block_till_done()
+    await _run_until(hass, clock, 12)
+
+    assert _records(hass, device_id) == [
+        (START_MS, 0, *SPOT_A),
+        (START_MS + 2000, -1, 0, 0),
+        (START_MS + 10450, 0, *SPOT_B),
+    ]
+
+
+@pytest.mark.parametrize("arrives", ["steps_onto_it", "appears_on_it"])
+async def test_a_reading_on_an_axis_line_counts_after_a_second(
+    hass, clock, history_on, arrives
+) -> None:
+    """A reading held back as half a vanish is a real one once it stands for 1 s."""
+    device_id = history_on
+    before: list[tuple[int, int, int, int]] = []
+    if arrives == "steps_onto_it":
+        await _report(hass, TARGET_1, 60, 2000)
+        before.append((START_MS, 0, 60, 2000))
+        await _run_until(hass, clock, 1)
+        # Someone 60 mm off the line steps onto it, and their Y stays.
+        hass.states.async_set(TARGET_1["x"], "0")
+        await hass.async_block_till_done()
+    else:
+        await _run_until(hass, clock, 1)
+        await _report(hass, TARGET_1, 0, 2000)
+
+    await _run_until(hass, clock, 1.999)
+    assert _records(hass, device_id) == before
+
+    # Nothing else is written: the recorder looks again by itself.
+    await _run_until(hass, clock, 2)
+    assert _records(hass, device_id) == [*before, (START_MS + 2000, 0, 0, 2000)]
 
 
 async def test_points_are_unit_converted_and_not_rotated(hass, history_on) -> None:
@@ -729,13 +1037,15 @@ async def test_history_is_capped_per_radar_dropping_the_oldest(
     monkeypatch.setattr(movement, "MOVEMENT_MAX_POINTS", 10)
     monkeypatch.setattr(movement, "MOVEMENT_PRUNE_SLACK", 5)
     for step in range(15):
-        await _report(hass, TARGET_1, 100 * step, 2000)
+        await _report(hass, TARGET_1, 100 + 100 * step, 2000 + 100 * step)
         await _advance(hass, clock, 1)
     assert len(_records(hass, device_id)) == 15
 
-    await _report(hass, TARGET_1, 1500, 2000)
+    await _report(hass, TARGET_1, 1600, 3500)
 
-    assert _points(hass, device_id) == [(0, 100 * step, 2000) for step in range(6, 16)]
+    assert _points(hass, device_id) == [
+        (0, 100 + 100 * step, 2000 + 100 * step) for step in range(6, 16)
+    ]
 
 
 async def test_a_clock_step_back_keeps_columns_sorted(
@@ -755,6 +1065,36 @@ async def test_a_clock_step_back_keeps_columns_sorted(
         (START_MS, -1, 0, 0),
     ]
     assert apollo_warnings(caplog) == []
+
+
+async def test_a_small_clock_step_back_does_not_pause_recording(
+    hass, clock, history_on, monkeypatch
+) -> None:
+    """After a correction back, a move is recorded at once, at the last time."""
+    device_id = history_on
+    await _report(hass, TARGET_1, *SPOT_A)
+    # The wall clock goes back 30 s. The loop's clock and the monotonic one,
+    # which the recorder's floors run on, go on.
+    wall_ms = movement._now_ms  # noqa: SLF001 - the clock records are stamped by
+    monkeypatch.setattr(movement, "_now_ms", lambda: wall_ms() - 30000)
+
+    await _run_until(hass, clock, 1)
+    await _report(hass, TARGET_1, *SPOT_B)
+    assert _records(hass, device_id) == [
+        (START_MS, 0, *SPOT_A),
+        (START_MS, 0, *SPOT_B),
+    ]
+
+    # A move 0.2 s later still waits for the 0.5 s floor.
+    await _run_until(hass, clock, 1.2)
+    await _report(hass, TARGET_1, *SPOT_C)
+    assert len(_records(hass, device_id)) == 2
+    await _run_until(hass, clock, 1.5)
+    assert _records(hass, device_id) == [
+        (START_MS, 0, *SPOT_A),
+        (START_MS, 0, *SPOT_B),
+        (START_MS, 0, *SPOT_C),
+    ]
 
 
 async def test_a_large_clock_step_back_drops_future_records(
@@ -791,7 +1131,7 @@ async def test_delayed_save_is_scheduled_once_per_dirty_period(
         store, "async_delay_save", wraps=store.async_delay_save
     ) as delay_save:
         for step in range(20):
-            await _report(hass, TARGET_1, 100 * step, 2000)
+            await _report(hass, TARGET_1, 100 + 100 * step, 2000)
             await _advance(hass, clock, 1)
         await _report(hass, TARGET_1, 0, 0)
         assert delay_save.call_count == 1
