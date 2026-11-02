@@ -857,9 +857,10 @@ How a hold works:
   for, by either of two rules:
   - **Walked out.** The radar lost them while they were walking near the
     zone's edge or the edge of the radar's view (taken as 6 m and 120
-    degrees): within 0.3 m, plus as far as their speed carries them from
-    the radar's last report of them until it lost them and 0.75 seconds
-    more, up to 1.5 m.
+    degrees): within 0.3 m, plus as far ahead as their speed carries them
+    from the radar's last report of them until it lost them and 0.75
+    seconds more, up to 1.5 m. An edge behind or beside them counts only
+    within 0.3 m.
   - **Seen outside.** In the first 3 seconds, the radar tracks a target
     outside the zone within 0.6 m of where they were, plus 1.6 m for each
     second since its last report of them, counting at most 1.2 seconds

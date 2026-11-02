@@ -549,6 +549,53 @@ def test_rule_two_is_decided_when_the_zone_empties() -> None:
     assert tracker.step(2.45, [], [], "rect", RECT)
 
 
+# A room seen from the radar on its near wall, 3 m wide and 3.5 m deep, with
+# a doorway in its far wall at y = 4000.
+ROOM = {"x_min": -1500, "x_max": 1500, "y_min": 500, "y_max": 4000}
+
+
+def test_their_speed_carries_them_on_only_the_way_they_walked() -> None:
+    """An edge behind or beside a walker counts within 300 mm, not 1.5 m."""
+    # In through the doorway at 1 m/s toward the radar, a report a second,
+    # and lost 0.5 s after the last: 1.1 m from the wall behind them and
+    # 1.2 m from the one beside them. Their speed carries them 1.2 m on,
+    # which is still 1.2 m from the near wall.
+    tracker = HoldTracker()
+    for t, y in enumerate((3900, 2900)):
+        assert tracker.step(float(t), [_reading(0, 300, y)], [], "rect", ROOM)
+    assert tracker.step(1.5, [], [], "rect", ROOM)
+
+    # The same walk the other way, out through that doorway, walked out.
+    tracker = HoldTracker()
+    for t, y in enumerate((1600, 2600)):
+        assert tracker.step(float(t), [_reading(0, 300, y)], [], "rect", ROOM)
+    assert not tracker.step(1.5, [], [], "rect", ROOM)
+
+
+def test_the_way_on_to_the_view_edge_is_in_the_raw_frame() -> None:
+    """The view's edge is measured unrotated, and so is the way they walked."""
+    # Radar rotation 90 draws raw (x, y) at (y, -x): a walk straight ahead
+    # toward the 6 m range runs along +x on the map, 0.6 m from the range
+    # at the last report and 2.1 m from the zone's edge ahead.
+    zone = {"x_min": 1000, "x_max": 7500, "y_min": -2500, "y_max": 2500}
+    tracker = HoldTracker()
+    for t, y in enumerate((4400.0, 5400.0)):
+        assert tracker.step(
+            float(t), [Reading(0, (0.0, y), (y, 0.0))], [], "rect", zone
+        )
+    assert not tracker.step(1.5, [], [], "rect", zone)
+
+
+def test_a_jitter_size_step_carries_nobody_on() -> None:
+    """Seen for under 1.2 s a target counts as moving, but 200 mm is no way on."""
+    # Lost 1 s after a 200 mm step: 500 mm from the far edge, which the
+    # 368 mm that step's speed covers would bring to within 300 mm.
+    tracker = HoldTracker()
+    assert tracker.step(0.0, [_reading(0, 0, 1300)], [], "rect", RECT)
+    assert tracker.step(0.95, [_reading(0, 0, 1500)], [], "rect", RECT)
+    assert tracker.step(1.95, [], [], "rect", RECT)
+
+
 def test_someone_inside_again_ends_the_hold() -> None:
     """The people inside now are the only ones a later emptying accounts for."""
     tracker = _occupied([(0, 1000)])

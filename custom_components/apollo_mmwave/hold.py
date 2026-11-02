@@ -20,12 +20,16 @@ left unaccounted for:
    tracking elsewhere then, someone else or a still object, counts only
    within 600 mm.
 2. Walked out: the person was walking when the zone emptied and was last
-   seen near the zone's edge or the edge of the radar's view: within
-   300 mm, plus what their speed covers from their last report to the loss
-   and 0.75 s more, up to 1.5 m. Walking means two steps in a row of at
-   least 250 mm between their own reports 0.9 s or more apart, or one step
-   at 850 mm/s or more. The LD2450's jump of about 0.5 m in its last report
-   before it loses someone sitting still is one slower step, so it holds.
+   seen near the zone's edge or the edge of the radar's view, or heading
+   for one: within 300 mm of it, or of a point on their way on from their
+   last report along their last step, up to what their speed covers from
+   that report to the loss and 0.75 s more, and at most 1.2 m on. An edge
+   behind or beside them counts only within 300 mm, and so does every edge
+   when their last step is under 250 mm. Walking means two steps in a row
+   of at least 250 mm between their own reports 0.9 s or more apart, or
+   one step at 850 mm/s or more. The LD2450's jump of about 0.5 m in its
+   last report before it loses someone sitting still is one slower step,
+   so it holds.
 
 The numbers are tuned for the LD2450 of an R PRO-1 on firmware 26.10.21.1,
 which writes each axis about once a second, Y usually about 0.45 s after X,
@@ -108,13 +112,17 @@ HOLD_MOVE_MIN_MM = 250.0
 # one report only.
 HOLD_BRISK_MM_PER_S = 850.0
 # How near an edge a moving person has to be lost to count as walking out:
-# this, plus how far they walk at their speed between their last report and
-# the loss, and for HOLD_AXIS_LAG_S more, the most by which the axis that
-# report did not write can be older (from a Y write to the next X), up to
-# HOLD_EXIT_MARGIN_MAX_MM.
+# this, plus, for an edge ahead of them along their last step, how far they
+# walk at their speed between their last report and the loss, and for
+# HOLD_AXIS_LAG_S more, the most by which the axis that report did not write
+# can be older (from a Y write to the next X), up to HOLD_EXIT_MARGIN_MAX_MM.
+# An edge behind or beside them gets no more than this.
 HOLD_EXIT_MARGIN_MM = 300.0
 HOLD_EXIT_MARGIN_MAX_MM = 1500.0
 HOLD_AXIS_LAG_S = 0.75
+# Rule 2 follows that way on in points this far apart, which come within
+# half of it of any edge the way crosses.
+HOLD_EXIT_SAMPLE_MM = 100.0
 # The edge of the radar's view: the LD2450's defaults, 6 m and 60 degrees
 # either side of straight ahead. The backend knows nothing better, so where
 # walls or the radar's own zone filter end the view sooner, a moving exit away
@@ -171,9 +179,12 @@ class Occupant:
     last_map: tuple[float, float]
     last_raw: tuple[float, float]
     # Each report of this person, oldest first: when their reading changed,
-    # and where to, for as long as rule 2 can use it. Any write starts an
-    # evaluation, so an evaluation is no report of this person.
-    reports: list[tuple[float, tuple[float, float]]] = field(default_factory=list)
+    # and where to in the map and raw frames, for as long as rule 2 can use
+    # it. Any write starts an evaluation, so an evaluation is no report of
+    # this person.
+    reports: list[tuple[float, tuple[float, float], tuple[float, float]]] = field(
+        default_factory=list
+    )
     # When a carried reading first stood for this person: the first half of
     # a vanish, which is when the zone emptied if the second half follows.
     carried_since: float | None = None
@@ -187,7 +198,7 @@ class Occupant:
             last_t=now,
             last_map=reading.map,
             last_raw=reading.raw,
-            reports=[(now, reading.map)],
+            reports=[(now, reading.map, reading.raw)],
         )
 
     @property
@@ -203,11 +214,13 @@ class Occupant:
                 for report in self.reports
                 if now - report[0] <= HOLD_MOTION_WINDOW_S
             ]
-            self.reports.append((now, reading.map))
+            self.reports.append((now, reading.map, reading.raw))
         self.last_t, self.last_map, self.last_raw = now, reading.map, reading.raw
         self.carried_since = None
 
-    def _report_by(self, t: float) -> tuple[float, tuple[float, float]] | None:
+    def _report_by(
+        self, t: float
+    ) -> tuple[float, tuple[float, float], tuple[float, float]] | None:
         # The latest report at or before t.
         return next(
             (report for report in reversed(self.reports) if report[0] <= t), None
@@ -226,7 +239,7 @@ class Occupant:
 
     def _walking(self) -> bool:
         # Whether this person's last reports show steps of walking.
-        seen_t, here = self.reports[-1]
+        seen_t, here, _raw = self.reports[-1]
         before = self._report_by(seen_t - HOLD_ANCHOR_STEP_S)
         if before is None or seen_t - before[0] > HOLD_MOTION_WINDOW_S:
             # Too sparse to measure a step: hold, the safe side.
@@ -245,8 +258,8 @@ class Occupant:
         return math.dist(before[1], earlier[1]) >= HOLD_MOVE_MIN_MM
 
     def exit_margin_mm(self, t: float) -> float:
-        """Return how near an edge this person had to be, lost at t, to walk out."""
-        seen_t, here = self.reports[-1]
+        """Return how near an edge ahead they had to be to walk out, lost at t."""
+        seen_t, here, _raw = self.reports[-1]
         before = self._report_by(seen_t - HOLD_ANCHOR_STEP_S)
         if before is None:
             return HOLD_EXIT_MARGIN_MM
@@ -257,6 +270,44 @@ class Occupant:
             HOLD_EXIT_MARGIN_MAX_MM,
             HOLD_EXIT_MARGIN_MM + speed * (t - seen_t + HOLD_AXIS_LAG_S),
         )
+
+    def exit_path(
+        self, t: float
+    ) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+        """Return where this person may have walked to, lost at t: map and raw."""
+        seen_t, here, here_raw = self.reports[-1]
+        path = [(here, here_raw)]
+        before = self._report_by(seen_t - HOLD_ANCHOR_STEP_S)
+        if before is None:
+            return path
+        _before_t, before_map, before_raw = before
+        step = math.dist(here, before_map)
+        if step < HOLD_MOVE_MIN_MM:
+            # Jitter, from someone seen inside for under HOLD_FIRST_SEEN_S,
+            # is no way to have walked on.
+            return path
+        # On from their last report the way their last step went, not toward
+        # an edge behind or beside them. Each frame moves along its own step,
+        # so the view's edge is still measured in the raw frame whatever the
+        # rotation. Points HOLD_EXIT_SAMPLE_MM apart come within half of it of
+        # any edge the way crosses, also a polygon's, whose distance is
+        # unsigned.
+        reach = self.exit_margin_mm(t) - HOLD_EXIT_MARGIN_MM
+        count = math.ceil(reach / HOLD_EXIT_SAMPLE_MM)
+        map_step = (here[0] - before_map[0], here[1] - before_map[1])
+        raw_step = (here_raw[0] - before_raw[0], here_raw[1] - before_raw[1])
+        for index in range(1, count + 1):
+            part = reach * index / count / step
+            path.append(
+                (
+                    (here[0] + map_step[0] * part, here[1] + map_step[1] * part),
+                    (
+                        here_raw[0] + raw_step[0] * part,
+                        here_raw[1] + raw_step[1] * part,
+                    ),
+                )
+            )
+        return path
 
 
 def _number(value: Any) -> float | None:
@@ -582,8 +633,8 @@ class HoldTracker:
         # Rule 2, read at the moment the zone emptied.
         if self.empty_since is None or not person.moving_at(self.empty_since):
             return False
-        margin = person.exit_margin_mm(self.empty_since)
-        return (
-            edge_distance_mm(shape, data, *person.last_map) <= margin
-            or coverage_edge_distance_mm(*person.last_raw) <= margin
+        return any(
+            edge_distance_mm(shape, data, *point) <= HOLD_EXIT_MARGIN_MM
+            or coverage_edge_distance_mm(*raw) <= HOLD_EXIT_MARGIN_MM
+            for point, raw in person.exit_path(self.empty_since)
         )

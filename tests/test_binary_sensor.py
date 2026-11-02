@@ -2543,6 +2543,15 @@ OUT_OF_VIEW_WALKS = {
     ),
     "doorway": (ROOM_ZONE, (400.0, 1000.0), (400.0, 4000.0), 1.2),
 }
+# Walks into the room at 1 m/s through a doorway in its far wall, toward the
+# radar, each (start, where they stop, how long after that they are lost):
+# lost mid-stride 1.8 m in, 1.2 m from a side wall, or sat down 1.75 m in,
+# 1.5 m from both side walls, and lost 0.5 s or 1 s later.
+WALK_INS = {
+    "lost-mid-stride-1.8-m-in": ((300.0, 4600.0), (300.0, 2200.0), 0.0),
+    "sat-down-lost-0.5-s-later": ((0.0, 4600.0), (0.0, 2250.0), 0.5),
+    "sat-down-lost-1-s-later": ((0.0, 4600.0), (0.0, 2250.0), 1.0),
+}
 Y_LAGS = {"y-after-x": RADAR_Y_LAG_S, "together": 0.0}
 
 
@@ -2625,6 +2634,37 @@ async def test_walking_out_of_view_at_the_radars_cadence_turns_off_at_once(
                 held.append((round(phase_s, 2), y_lag))
 
     assert held == []
+
+
+@pytest.mark.parametrize("walk", list(WALK_INS))
+async def test_walking_into_the_room_and_lost_there_holds(
+    hass, freezer, entity_registry, setup_entry_with_zone, walk
+) -> None:
+    """Lost walking away from the doorway, or soon after sitting, they are held."""
+    # Their speed carries them on toward the radar, not to the wall behind
+    # or beside them.
+    start, stop, lost_after_s = WALK_INS[walk]
+    device_id, _ = setup_entry_with_zone
+    presence_id = _presence_id(entity_registry, device_id)
+    path, arrive_s = _sit_then_walk(start, stop, 1.0, 10)
+    released = []
+    for index, phase_s in enumerate(RADAR_PHASES_S):
+        for y_lag, y_lag_s in Y_LAGS.items():
+            await _restart_hold(hass, device_id, _hold_zone(ROOM_ZONE))
+            await _report_at_radar_cadence(
+                hass,
+                freezer,
+                TARGET_1,
+                (_jittered(path, start=7 * index), arrive_s + lost_after_s),
+                Cadence(y_lag_s, phase_s),
+            )
+            assert _hold_state(hass, presence_id) == ("on", False)
+            await _lose(hass, TARGET_1)
+            await _advance(hass, freezer, 5)
+            if _hold_state(hass, presence_id) != ("on", True):
+                released.append((round(phase_s, 2), y_lag))
+
+    assert released == []
 
 
 async def test_a_brisk_walk_out_into_view_turns_off_as_it_leaves(
