@@ -33,6 +33,14 @@ export const KEEP_ON_LD2412 =
   "Leave Radar Engineering Mode on and do not press Start Dynamic Background Correction until this finishes.";
 export const WALK_AROUND_LINE =
   "Now walk around, then sit still for a minute: the Radar Target row in Target / Occupancy should stay on the whole time you are in the room and turn off a few seconds after you leave (Radar Timeout).";
+/** For people who sit still. The LD2410 drops a very still person once their
+ *  still energy stays under the threshold for longer than Radar Timeout (5 s
+ *  from the factory), and a calibration sets each threshold 15 points or 35%,
+ *  whichever is larger, above the empty room's peak (calibration.py
+ *  DEFAULT_MARGIN), so a longer Radar Timeout is the first fix and Undo the
+ *  second. */
+export const SIT_STILL_LINE =
+  "If Radar Target turns off while someone sits still, raise Radar Timeout to 60 s or more on the Detection Range card. Undo restores the thresholds from before a calibration.";
 export const NOTHING_TO_RESTORE = "Nothing to restore yet";
 /** Offered when the radar has not reported its thresholds yet: it presses the
  *  radar's query params button, which only asks the radar to send them. The
@@ -557,8 +565,9 @@ export function liveGateLimits(
   };
 }
 
-/** The backend's `_gate_unused`, inverted. An unknown limit counts as in use. */
-function gateInUse(profile: ProfileKey | undefined, limits: GateLimits, gate: number, channel: Channel): boolean {
+/** The backend's `_gate_unused`, inverted. An unknown limit counts as in use.
+ *  The Gate Energy chart fades the gates this says the radar ignores. */
+export function gateInUse(profile: ProfileKey | undefined, limits: GateLimits, gate: number, channel: Channel): boolean {
   if (profile === "ld2412") {
     if (limits.min_gate !== null && gate < limits.min_gate) return false;
     return limits.max_gate === null || gate <= limits.max_gate;

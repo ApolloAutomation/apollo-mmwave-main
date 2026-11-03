@@ -24,15 +24,12 @@ export function historyEntities(m: EntityMap, chip?: string): HistoryRow[] {
   ];
 }
 
-/** The LD2450's presence and this integration's drawn zone sensors. `chip`
- *  names the LD2450 on a tab with two radars. */
-export function ld2450HistoryEntities(
-  l: Ld2450Entities,
-  zoneSensors: string[],
-  chip?: string
-): HistoryRow[] {
+/** The LD2450's presence and this integration's drawn zone sensors. The
+ *  presence line names the chip on every tab, as LD2450 Live does: it covers
+ *  the radar's whole view, which a plain "Presence" beside the zones hides. */
+export function ld2450HistoryEntities(l: Ld2450Entities, zoneSensors: string[]): HistoryRow[] {
   return [
-    ...row(l.presence, chip ? `${chip} Presence` : "Presence"),
+    ...row(l.presence, "LD2450 Presence"),
     ...zoneSensors.map((entity) => ({ entity })),
   ];
 }

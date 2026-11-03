@@ -37,8 +37,9 @@ draw presence zones.
   distance. **Undo** puts your old values back.
 - **Zone maps** on the R PRO-1 and MTR-1. Draw zones over the people the
   radar sees, and each zone gets a presence sensor for your automations. The
-  map is in feet or meters to match Home Assistant, and a **Radar setup**
-  card above it checks the radar's settings and fixes them with one tap.
+  map is in feet or meters to match Home Assistant, zooms in up to 8x and
+  snaps corners to round values. A **Radar setup** card above it checks the
+  radar's settings and fixes them with one tap.
 - **Zones you can watch.** Zones light up while someone is in them, a zone
   can stay on for someone sitting still or ignore a fan, and administrators
   can turn on movement history to replay up to 24 hours on the map.
@@ -68,7 +69,7 @@ default. Each gate has a threshold: how strong a signal must be to count as
 presence. Radar tuning covers auto-calibration, the distance and gate energy
 charts, thresholds, detection range and occupancy.
 
-![The Gate Energy chart turning on: dimmed until Radar Engineering Mode is on, then a move bar and a still bar for each gate, with a triangle marking each threshold](https://raw.githubusercontent.com/ApolloAutomation/apollo-mmwave-main/main/docs/images/apollo-mmwave-gate-energy.gif)
+![The Gate Energy chart turning on: dimmed until Radar Engineering Mode is on, then a move bar and a still bar for each gate with a triangle marking each threshold, bars above their threshold outlined, the gates past Max Move Gate and Max Still Gate faded, and the radar's answer under the chart as someone walks in and sits down](https://raw.githubusercontent.com/ApolloAutomation/apollo-mmwave-main/main/docs/images/apollo-mmwave-gate-energy-2.4.0.gif)
 
 ## Install with HACS or the Marketplace
 
@@ -224,23 +225,43 @@ including what each HACS box says.
 7. Below it is the zone map: the grid that shows where the radar sees
    people, sized to what the radar can see (120 degrees, about 6 m or 20 ft).
    It is in feet or meters to match Home Assistant; the **m / ft** switch on
-   the map changes it. A new radar has no zones yet, so open
+   the map changes it. On a wide screen the map's column is twice as wide as
+   the others. A new radar has no zones yet, so open
    **Configure → Zones** on that card and press **Add Zone**. Then press the
    new zone's button, choose a shape from the ✎ menu and draw on the grid.
-   Each zone gets a presence sensor, listed on the **Zone presence** card
-   next to the map. Once a radar has zones the map starts locked, so a
-   scroll cannot draw on it or turn the cone; press **Locked** in its corner
-   to unlock it. See
+   Corners snap to round values, such as every 10 cm at 1 m grid lines;
+   hold Alt (Option on a Mac) to place one freely. Each zone gets a presence
+   sensor, listed on the **Zone presence** card next to the map. Once a
+   radar has zones the map starts locked, so a scroll cannot draw on it or
+   turn the cone; press **Locked** in its corner to unlock it. See
    [Drawing zones](docs/configuration.md#drawing-zones).
 
-   ![The zone map on an R PRO-1 in feet, fitted to the radar's view with the caption Radar range 20 ft (6 m), 120°: a rectangle, a circle and a polygon drawn as zones, pale and dashed while nobody is in them, the m / ft switch and the Locked button in the corner, and under the grid a Coverage button and the zone buttons, with Clear All Zones dimmed while the map is locked](https://raw.githubusercontent.com/ApolloAutomation/apollo-mmwave-main/main/docs/images/apollo-mmwave-zone-map.png)
+   To draw more precisely, zoom in with **+** over the map's lower right
+   corner, with Ctrl or Cmd and the scroll wheel, or with two fingers on a
+   phone. Grid lines and the snap get finer as you zoom in. Drag with Shift
+   held, or with two fingers, to move the map, and press **Fit** to show your
+   zones, then again for the whole map. On a phone you can also mark a
+   zone's corners by walking them: press **🚶 Mark corners by walking**
+   under the map, stand still for about 3 seconds in each corner and press
+   **Corner here**. See
+   [Zoom and pan](docs/configuration.md#zoom-and-pan) and
+   [Mark corners by walking](docs/configuration.md#mark-corners-by-walking).
+
+   ![The zone map on an R PRO-1 in feet, fitted to the radar's view with the caption Radar range 20 ft (6 m), 120°: a rectangle, a circle and a polygon drawn as zones, pale and dashed while nobody is in them, the m / ft switch and the Locked button in the corner, with the minus, + and Fit zoom buttons above them, and under the grid a Coverage button and the zone buttons, with Clear All Zones dimmed while the map is locked](https://raw.githubusercontent.com/ApolloAutomation/apollo-mmwave-main/main/docs/images/apollo-mmwave-zone-map-2.4.0.png)
 
    ![The live zone map in feet: target 1 walks from the Doorway zone to the Couch zone and back with a short fading trail behind its numbered dot, moving in steps as the radar reports about once a second, and each zone turns solid while the dot is inside it and pale and dashed once it leaves; target 2 sits still in the Desk zone, which stays lit, and the Fan zone is hatched and labeled Fan (ignored)](https://raw.githubusercontent.com/ApolloAutomation/apollo-mmwave-main/main/docs/images/apollo-mmwave-zone-map-live.gif)
 
 ## If something is wrong
 
 - **A card or the dashboard does not load:** do a hard refresh
-  (Ctrl/Cmd+Shift+R).
+  (Ctrl/Cmd+Shift+R), or close the Home Assistant app fully and open it
+  again. If the app still shows old cards, reset its cache as described
+  under
+  [Install with HACS or the Marketplace](#install-with-hacs-or-the-marketplace).
+- **A card says the page still runs an older Apollo mmWave:** press
+  **Reload**. If it says to restart Home Assistant to finish updating,
+  restart it. See
+  [After an update](docs/configuration.md#after-an-update).
 - **The Gate Energy chart says "Radar unavailable":** the radar is offline. The
   chart fills in once it reconnects.
 - **The radar turns on with nobody there:** update to 2.2.4 or later and press

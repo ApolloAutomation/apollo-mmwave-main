@@ -310,6 +310,8 @@ interface HelpContext {
   /** Whether the gate radar's presence sensor exists. An R PRO-1 built
    *  without the optional LD2412 has none to recommend. */
   gatePresence: boolean;
+  /** Whether the LD2410's any-zone sensor exists (MSR-1, MSR-2). */
+  anyZone: boolean;
   /** Whether the device has any of the gate radar's entities. An R PRO-1
    *  built without the optional LD2412 keeps the LD2412 profile from its
    *  registry model, but has only the LD2450. */
@@ -351,6 +353,22 @@ function numbered(steps: string[]): string {
 const LD2450_AUTOMATIONS =
   "**In automations**, use a zone's presence sensor, or **LD2450 Presence** for" +
   " anywhere the radar sees.";
+
+/**
+ * For automations on a tab with a gate radar alone (MSR-1, MSR-2): Radar
+ * Target, which the wiki recommends too. It needs no distance, while the zone
+ * sensors do, and the MSR firmware can hold a distance at unknown while the
+ * radar reports someone. The LD2410 drops a person who sits very still once
+ * still energy dips for longer than Radar Timeout, so a longer one keeps them.
+ * `anyZone` adds what the any-zone sensor is still for.
+ */
+export function gateAutomations(anyZone: boolean): string {
+  return (
+    "**In automations**, use **Radar Target** for the whole room. If it turns off" +
+    " while someone sits still, raise **Radar Timeout** to 60 s or more." +
+    (anyZone ? " To ignore people past End Zone 3, use **Any zone** instead." : "")
+  );
+}
 
 /** The gate radar's first steps. On a tab with two radars they name the chip. */
 function gateSteps(p: RadarProfile, ctx: HelpContext, twoRadars: boolean): string[] {
@@ -409,6 +427,7 @@ function helpCardBody(dev: RadarDevice, ctx: HelpContext): Record<string, any> {
       content:
         `**${name}**, Apollo ${p.label} radar.\n\n` +
         `**Start here**\n${numbered(gateSteps(p, ctx, false))}\n\n` +
+        (ctx.gatePresence ? `${gateAutomations(ctx.anyZone)}\n\n` : "") +
         links,
     };
   }
@@ -459,8 +478,10 @@ export const LD2450_TIMEOUT_NOTE =
 /**
  * Under the LD2410 Zone Config card. The boxes are template numbers in cm, and
  * Home Assistant converts no number entity's unit but temperature, so they
- * stay cm on a US customary system too. `anyZone` adds the automation advice
- * only when the any-zone sensor exists.
+ * stay cm on a US customary system too. `anyZone` says what the any-zone
+ * sensor is for only when it exists. Automations for the room go to Radar
+ * Target, as in the help card (`gateAutomations`): the zone sensors need the
+ * radar's distance, which the MSR firmware can hold at unknown.
  */
 export function zoneConfigNote(unit: LengthUnit, anyZone: boolean): string {
   return (
@@ -468,9 +489,11 @@ export function zoneConfigNote(unit: LengthUnit, anyZone: boolean): string {
     " The zones sit back to back: Zone 1 runs from Start Zone 1 to End Zone 1," +
     " Zone 2 from there to End Zone 2, and Zone 3 from there to End Zone 3." +
     (anyZone
-      ? " In automations, use **Any zone**: it is on while someone is in any of the" +
-        " three zones, so it ignores people past End Zone 3."
-      : "")
+      ? " **Any zone** is on while someone is in any of the three zones, so it ignores" +
+        " people past End Zone 3."
+      : "") +
+    " For the whole room, use **Radar Target** in automations: the zone sensors also" +
+    " need the radar's distance, which can read unknown while someone is there."
   );
 }
 
@@ -689,9 +712,11 @@ function cardMap(
   const unit = lengthUnit(hass);
   let gateSizeM = DEFAULT_GATE_SIZE_M;
   let gatePresence = false;
+  let anyZone = false;
   let gateRadar = false;
   const cards: Partial<DeviceCards> = {};
-  // On a tab with two radars (R PRO-1) each history line names its chip.
+  // On a tab with two radars (R PRO-1) the gate radar's history lines name
+  // its chip. The LD2450's presence line names its chip on every tab.
   const twoRadars = !!dev.profile && dev.ld2450;
   const historyRows: HistoryRow[] = [];
 
@@ -720,6 +745,7 @@ function cardMap(
       : undefined;
     gateSizeM = gateSizeMeters(hass, m);
     gatePresence = exists(hass, m.radar_target);
+    anyZone = exists(hass, m.zone_occupancy);
     // The help card and the Device card's restart describe the radars the
     // device has, not the ones its registry model can carry.
     gateRadar = !!cards.gateSetup || gatePresence;
@@ -762,7 +788,7 @@ function cardMap(
       presentRows(hass, zoneConfigRows(m))
     );
     cards.zoneNote = cards.zone
-      ? noteCard(zoneConfigNote(unit, exists(hass, m.zone_occupancy)))
+      ? noteCard(zoneConfigNote(unit, anyZone))
       : undefined;
     // TODO(REVIEW_REPORT.md X35): emitted even for offline or unresolvable devices (deliberate,
     // per OFFLINE_NOTE); at most drop device_base_name when dev.base === dev.deviceId.
@@ -821,13 +847,7 @@ function cardMap(
     );
     cards.ld2450ControlsNote = exists(hass, l.timeout) ? noteCard(LD2450_TIMEOUT_NOTE) : undefined;
     cards.builtInZones = builtInZonesCard(hass, l);
-    historyRows.push(
-      ...ld2450HistoryEntities(
-        l,
-        zonePresenceSensors(hass, dev.deviceId),
-        twoRadars ? "LD2450" : undefined
-      )
-    );
+    historyRows.push(...ld2450HistoryEntities(l, zonePresenceSensors(hass, dev.deviceId)));
   }
 
   // One graph for every radar on the tab. Named for the chip on a gate radar
@@ -841,6 +861,7 @@ function cardMap(
     gateSetup: !!cards.gateSetup,
     ld2450Setup: !!cards.ld2450Setup,
     gatePresence,
+    anyZone,
     gateRadar,
   });
   cards.device = deviceCard(hass, dev, gateRadar);
@@ -883,6 +904,19 @@ export function buildDeviceCards(
   ].filter(Boolean) as Record<string, any>[];
 }
 
+/** How many of the view's columns the zone map's section spans. Home
+ *  Assistant caps a column at 500 px, which left the map about 36 px per
+ *  meter on any screen; two columns about double that. Home Assistant
+ *  narrows a section to the columns the screen has, so a phone is unchanged. */
+export const ZONE_MAP_COLUMN_SPAN = 2;
+
+/** A card that fills its section's width. A card's default width is 12 of
+ *  the 12 grid columns per view column, so in a section spanning two view
+ *  columns it would take half. */
+function fullWidth(card: Record<string, any> | undefined): Record<string, any> | undefined {
+  return card ? { ...card, grid_options: { columns: "full" } } : undefined;
+}
+
 /** Sections for one device, grouped into the reference column layout. The
  *  Detection Range card sits under the distance chart, a help/wiki card on top. */
 export function buildDeviceSections(
@@ -893,23 +927,32 @@ export function buildDeviceSections(
 ): Record<string, any>[] {
   const c = cardMap(hass, dev, distanceUnit, calibration);
   type Column = (Record<string, any> | undefined)[];
+  // The zone map's column, which spans ZONE_MAP_COLUMN_SPAN view columns.
+  let wide: Column | undefined;
 
-  // LD2450 zone map gets its own column, the setup card right above it. On a
-  // shared tab (R-PRO-1) a thin heading precedes them and the LD2450's status
-  // and settings fill one more column next to the map; on a zone-only device
-  // (MTR-1) the tab title already names the device, the help card leads as on
-  // every tab, and the LD2450's cards split into two columns so each reads at
-  // a glance.
+  // LD2450 zone map gets its own wide column, the setup card right above it.
+  // On a shared tab (R-PRO-1) a thin heading precedes them, both fill the
+  // width, and the LD2450's status and settings fill one more column next to
+  // the map; on a zone-only device (MTR-1) the tab title already names the
+  // device, the help card leads as on every tab with the setup card beside
+  // it (each half the width, so neither runs a line across two columns), and
+  // the LD2450's cards split into two columns so each reads at a glance.
   const zoneColumns: Column[] = [];
   if (c.zoneMap) {
     if (dev.profile) {
-      zoneColumns.push(
-        [c.zoneHeader, c.ld2450Setup, c.zoneMap],
-        [c.zonePresence, c.ld2450Live, c.ld2450Controls, c.ld2450ControlsNote, c.builtInZones]
-      );
+      wide = [c.zoneHeader, fullWidth(c.ld2450Setup), fullWidth(c.zoneMap)];
+      zoneColumns.push(wide, [
+        c.zonePresence,
+        c.ld2450Live,
+        c.ld2450Controls,
+        c.ld2450ControlsNote,
+        c.builtInZones,
+      ]);
     } else {
+      // The help card alone would leave the other half of its row empty.
+      wide = [c.ld2450Setup ? c.help : fullWidth(c.help), c.ld2450Setup, fullWidth(c.zoneMap)];
       zoneColumns.push(
-        [c.help, c.ld2450Setup, c.zoneMap],
+        wide,
         [c.zonePresence, c.ld2450Live, c.history],
         [c.ld2450Controls, c.ld2450ControlsNote, c.builtInZones]
       );
@@ -925,7 +968,10 @@ export function buildDeviceSections(
   // Section order is also the phone's reading order. The help card leads, so
   // its steps come before the cards they point at. On a tab with both radars
   // (R-PRO-1) the zone map and the LD2450's cards follow column 1, so a phone
-  // reaches them before the 28 LD2412 threshold rows.
+  // reaches them before the 28 LD2412 threshold rows. At Home Assistant's
+  // default of four columns that is the first row exactly (column 1, the
+  // two-column zone map, the LD2450's cards), and the LD2412's tuning fills
+  // the second.
   if (dev.profile) {
     const col1: Column = [c.help, c.gateSetup, c.calibrate, c.controls, c.zone, c.zoneNote];
     const col2: Column = [c.distance, c.range, c.rangeNote];
@@ -945,11 +991,15 @@ export function buildDeviceSections(
   }
 
   const sections = columns
-    .map((col) => col.filter(Boolean) as Record<string, any>[])
-    .filter((col) => col.length > 0);
+    .map((col) => ({ cards: col.filter(Boolean) as Record<string, any>[], wide: col === wide }))
+    .filter((col) => col.cards.length > 0);
   // The Device card goes last on the tab: at the bottom of the last column.
-  sections[sections.length - 1].push(c.device);
-  return sections.map((cards) => ({ type: "grid", cards }));
+  sections[sections.length - 1].cards.push(c.device);
+  return sections.map(({ cards, wide }) => ({
+    type: "grid",
+    ...(wide ? { column_span: ZONE_MAP_COLUMN_SPAN } : {}),
+    cards,
+  }));
 }
 
 /** One full view (a tab) for a single device. */
@@ -960,13 +1010,21 @@ export function deviceView(
   path: string = dev.base,
   calibration?: CalibrationOptions
 ): Record<string, any> {
-  // TODO(REVIEW_REPORT.md X36): no max_columns, so an R-PRO-1's six sections wrap its gate
-  // tuning to a second row (HA default is 4); choose max_columns 6, a column_span, or accept it.
+  // REVIEW_REPORT.md X36, settled by the zone map's column_span: at Home
+  // Assistant's default of four columns an R PRO-1's first row is column 1,
+  // the zone map and the LD2450's cards, and its gate tuning wraps to a
+  // second row on purpose, so the view sets no max_columns. On two columns
+  // the zone map cannot sit beside column 1; dense placement moves the
+  // LD2450's cards up into that gap instead of leaving it empty (phones, on
+  // one column, keep the section order). Tabs with no wide section never
+  // leave a gap, so they keep Home Assistant's default placement.
+  const sections = buildDeviceSections(hass, dev, distanceUnit, calibration);
   return {
     title: dev.name,
     path,
     type: "sections",
-    sections: buildDeviceSections(hass, dev, distanceUnit, calibration),
+    ...(sections.some((s) => s.column_span) ? { dense_section_placement: true } : {}),
+    sections,
   };
 }
 

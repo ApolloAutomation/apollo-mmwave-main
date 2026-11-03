@@ -7,6 +7,7 @@ install the integration and run your first calibration.
 
 - [The Apollo mmWave dashboard](#the-apollo-mmwave-dashboard)
 - [Lovelace resources](#lovelace-resources)
+  - [After an update](#after-an-update)
 - [Choosing which devices appear](#choosing-which-devices-appear)
 - [What each tab shows](#what-each-tab-shows)
   - [Start here](#start-here)
@@ -19,6 +20,7 @@ install the integration and run your first calibration.
 - [The zone map and its cards](#the-zone-map-and-its-cards)
   - [Radar setup](#radar-setup)
   - [What the map shows](#what-the-map-shows)
+  - [Zoom and pan](#zoom-and-pan)
 - [Drawing zones](#drawing-zones)
   - [Mark corners by walking](#mark-corners-by-walking)
   - [Map units and size](#map-units-and-size)
@@ -106,17 +108,58 @@ Copy the URLs from the warning exactly and add each one once, as a module:
 lovelace:
   resource_mode: yaml
   resources:
-    - url: /apollo_mmwave/apollo-radar-tuning.js?v=2.4.0b2
+    - url: /apollo_mmwave/apollo-radar-tuning.js?v=2.4.0b3
       type: module
-    - url: /apollo_mmwave/apollo-radar-zone-map-card.js?v=2.4.0b2
+    - url: /apollo_mmwave/apollo-radar-zone-map-card.js?v=2.4.0b3
       type: module
 ```
 
-The `?v=` is the integration version. After every upgrade, replace each row's
-URL with the new one from the warning instead of adding a second row. An
-out-of-date row makes the browser run the bundle twice, once from that row and
-once from the URL the integration adds itself; a duplicate "Apollo Zone Map"
-entry in the card picker is the sign.
+The `?v=` is the integration version, such as `?v=2.4.0b3`, and nothing else,
+so a bundle's URL changes only when the version does. After every upgrade,
+replace each row's URL with the new one from the warning instead of adding a
+second row. An out-of-date row makes the browser run the bundle twice, once
+from that row and once from the URL the integration adds itself; a duplicate
+"Apollo Zone Map" entry in the card picker is the sign.
+
+### After an update
+
+After an update, a browser tab or the Home Assistant app can keep running the
+cards it loaded before, and the new files can be on disk before Home
+Assistant restarts into them. The cards ask Home Assistant which Apollo
+mmWave it runs, when the page opens and again each time the page reconnects
+to Home Assistant, and compare that with their own version. Any signed-in
+user can ask, so the check works for everyone. When the two differ, the card
+says so (the versions here are examples):
+
+- **The page runs older cards:** "Apollo mmWave was updated to 2.4.1, but
+  this page still runs 2.4.0." with a **Reload** button, and under it "In
+  the Home Assistant app, if Reload does not help, close the app fully and
+  open it again." If the app still shows the old cards after that, reset its
+  cache:
+  - Android: **Settings → Companion app → Troubleshooting → Reset frontend
+    cache**.
+  - iPhone and iPad: **Settings → Companion app → Debugging → Clear web view
+    cache**.
+- **The page runs newer cards:** "Apollo mmWave 2.4.1 is installed, but
+  Home Assistant still runs 2.4.0. Restart Home Assistant to finish
+  updating." There is no button: restart Home Assistant (Settings → System,
+  the power icon in the top right).
+
+If Home Assistant restarted into another version while the page was open,
+also after going back to an older release, the card asks for a reload.
+Matching versions, or an answer the card cannot read, show nothing.
+
+The check runs in the cards the page has loaded, and cards from 2.4.0b2 and
+earlier have none. On an update from them, a page that still runs the old
+cards shows no notice, so no notice does not mean the page is current:
+reload it anyway (Ctrl/Cmd+Shift+R in a browser, or close the Home
+Assistant app fully and open it again).
+
+One card per page shows the notice: on the Apollo mmWave dashboard that is
+the **Radar setup** card near the top of the tab, above its checks. The zone
+map card shows it under its title, also as a view-only map and on its error
+screen, when it is the first card on the page that checks, as on a
+dashboard of your own.
 
 ## Choosing which devices appear
 
@@ -174,22 +217,24 @@ devices** option. See
 
 Each sensor's tab is built from the radars it has: the LD2410 on an MSR-1 or
 MSR-2, the LD2450 on an MTR-1, and on an R PRO-1 the LD2450 plus the
-optional LD2412. On a wide screen the cards sit in columns; on a phone they
-read top to bottom in the order below.
+optional LD2412. On a wide screen the cards sit in columns, and on R PRO-1
+and MTR-1 tabs the zone map's column is twice as wide as the others; on a
+phone they read top to bottom in the order below.
 
 - **MSR-1 and MSR-2:** Start here, Radar setup, Auto-calibrate, LD2410
   Controls and LD2410 Zone Config; then LD2410 Distances, Detection Range
   and Target / Occupancy; then Gate Energy and Move Thresholds; then the
   occupancy history, Still Thresholds and the Device card.
 - **R PRO-1:** Start here, the LD2412's Radar setup, Auto-calibrate, LD2412
-  Controls and Target / Occupancy; then the Zone Map heading with the
-  LD2450's Radar setup and the zone map; then the LD2450's cards (see
-  [The zone map and its cards](#the-zone-map-and-its-cards)); then the
-  LD2412's Distances, Detection Range, Gate Energy, Move Thresholds,
-  Occupancy History, Still Thresholds and the Device card.
-- **MTR-1:** Start here, Radar setup and the zone map; then Zone presence,
-  LD2450 Live and Occupancy History; then LD2450 Controls, the radar's
-  built-in zones and the Device card.
+  Controls and Target / Occupancy; then, in the wide column, the Zone Map
+  heading with the LD2450's Radar setup and the zone map; then the LD2450's
+  cards (see [The zone map and its cards](#the-zone-map-and-its-cards));
+  then the LD2412's Distances, Detection Range, Gate Energy, Move
+  Thresholds, Occupancy History, Still Thresholds and the Device card.
+- **MTR-1:** in the wide column, Start here and Radar setup side by side,
+  with the zone map under them; then Zone presence, LD2450 Live and
+  Occupancy History; then LD2450 Controls, the radar's built-in zones and
+  the Device card.
 
 A card only shows rows for entities Home Assistant has, so a setting the
 firmware hides by default has no row.
@@ -204,8 +249,11 @@ in Home Assistant, where every setting this dashboard leaves out lives.
   with an empty room, set how far the radar looks and how long presence
   stays on, then walk the room and watch the Gate Energy chart. Each gate's
   depth is given in your units ("each gate is about 0.75 m", or "about
-  2.5 ft" on a US customary system). A **Full tuning guide →** link opens
-  the Apollo wiki.
+  2.5 ft" on a US customary system). Under the steps: "**In automations**,
+  use **Radar Target** for the whole room. If it turns off while someone
+  sits still, raise **Radar Timeout** to 60 s or more." It adds "To ignore
+  people past End Zone 3, use **Any zone** instead." when the sensor has
+  Any zone. A **Full tuning guide →** link opens the Apollo wiki.
 - **R PRO-1:** first what each radar is for: the LD2412 senses people
   anywhere in range, even sitting still, and the LD2450 tracks where people
   are and drives the zone map. Then the LD2412 steps above, and for the
@@ -244,11 +292,36 @@ chip: LD2410 on an MSR, LD2412 on an R PRO-1.
   is how long **Radar Target** (on the R PRO-1, **LD2412 Presence**) stays
   on after the radar last detects someone. Its gate sliders start locked;
   see [Locked sliders](#locked-sliders).
+- **Distances:** a bar for each of Detection, Moving and Still, at the
+  distance the radar gives for that target, over the gates and the range
+  limits. A row whose target is off is faded and reads "no target". A row
+  whose target is on while its distance reads unknown reads "distance
+  unknown" instead of drawing 0, and its tooltip adds "The radar reports a
+  target, but its distance reads unknown." The LD2410 zones need that
+  distance, so they can read Clear meanwhile; Radar Target does not.
+- **Gate Energy:** while Radar Engineering Mode is on, a move and a still
+  bar for each gate, with a triangle at each threshold (▶ move, ◀ still).
+  The legend says "outlined bar = above threshold". Gates the radar
+  ignores, past Max Move Gate or Max Still Gate on the LD2410 or outside Min
+  Gate to Max Gate on the LD2412, are faded and never outlined, and the
+  legend then adds "faded = outside the radar's range (ignored)". Under the
+  chart, the radar's own answer: "The radar reports a moving and a still
+  target.", "The radar reports a moving target.", "The radar reports a still
+  target." or "The radar reports no target." An outlined bar is not a
+  detection by itself: when an LD2410 reports no target while a gate it uses
+  is outlined, the chart adds "Energy above a threshold does not always mean
+  a target. Once the LD2410 loses someone who sits still, it often needs
+  them to move before it detects them again." With the mode off the chart
+  is dimmed and offers **Turn on Radar Engineering Mode**.
 - **LD2410 Zone Config** (MSR only): Start Zone 1 and End Zone 1 to 3. The
   note under it says the boxes are in cm, also on a US customary system
   ("100 cm is about 3.3 ft"), and that the zones sit back to back: Zone 1
   runs from Start Zone 1 to End Zone 1, Zone 2 from there to End Zone 2, and
-  Zone 3 from there to End Zone 3. In automations, use **Any zone**.
+  Zone 3 from there to End Zone 3. It adds that **Any zone** is on while
+  someone is in any of the three zones, so it ignores people past End Zone
+  3, and ends "For the whole room, use **Radar Target** in automations: the
+  zone sensors also need the radar's distance, which can read unknown while
+  someone is there."
 - **Move Thresholds** and **Still Thresholds:** one row per gate, named for
   how far out the gate reaches: "G0 (at the sensor)", "G1 (about 0.75 m)" up
   to "G8 (about 6 m)" on the LD2410, in feet ("G4 (about 10 ft)") on a US
@@ -308,6 +381,8 @@ greyed out while it is sent, and if Home Assistant refuses it the card says
 why.
 The card's second line names the chip and the sensor ("LD2412 · Office"),
 so on an R PRO-1 you can tell it from the LD2450's card above the zone map.
+Under that line it can show a notice that the page runs other cards than
+Home Assistant does (see [After an update](#after-an-update)).
 
 - **Radar Engineering Mode left on.** The card says "Radar Engineering Mode
   is on, so every gate's energy is saved to the database about once a
@@ -385,6 +460,15 @@ card always offers **Undo (restore your previous values)**, and that saved copy
 survives a Home Assistant restart. Undo saves the calibrated values before it
 writes, so the button then becomes **Redo (put the calibrated values back)**.
 Under the button, the card shows when those values were saved.
+
+Before a run, after an Undo and after a calibration that updated the
+thresholds, the card also says "If Radar Target turns off while someone sits
+still, raise Radar Timeout to 60 s or more on the Detection Range card. Undo
+restores the thresholds from before a calibration." The radar can drop a
+person who sits very still once their still energy stays under the threshold
+for longer than Radar Timeout (5 s from the factory), and a calibration sets
+each threshold with headroom above the empty room, so a longer Radar Timeout
+is the first thing to try and Undo the second.
 
 On the R PRO-1, radar tuning needs the optional LD2412. Every R PRO-1 has the
 LD2450 for the zone map, and the LD2412 is an add-on. Without it the tab still
@@ -528,9 +612,12 @@ recorder:
 
 On R PRO-1 and MTR-1 tabs, everything for the LD2450, the radar that tracks
 people for the zone map, sits together. An MTR-1 tab shows these cards in
-three columns, after its **Start here** card. On an R PRO-1 they come after
-the LD2412's first column, under the **Zone Map** heading (see
-[What each tab shows](#what-each-tab-shows)). On a phone they read top to
+three columns, the first of them, with **Start here** at its top, twice as
+wide as the others. On an R PRO-1 they come after the LD2412's first
+column, under the **Zone Map** heading, also with the zone map in a column
+twice as wide (see [What each tab shows](#what-each-tab-shows)). Where the
+screen has room for only two columns, the wide column takes the whole row
+and the cards after it move up into any gap. On a phone they read top to
 bottom in this order:
 
 - **Radar setup** checks the radar's settings and fixes them with one tap;
@@ -542,10 +629,11 @@ bottom in this order:
   is in the zone. A zone you just drew shows up here after you reload the
   page; a zone you delete leaves the list at once. While the radar is
   offline the rows hide, because zone presence then reads `unavailable`.
-- **LD2450 Live** shows what the radar reports right now: Presence, Moving
-  Target, Still Target, Target Count, and each target's distance and
-  direction. If the map shows no dot, check Presence here: off with you in
-  the room means the radar reports nobody (see
+- **LD2450 Live** shows what the radar reports right now: LD2450 Presence,
+  Moving Target, Still Target, Target Count, and each target's distance and
+  direction. LD2450 Presence covers the radar's whole view, not a room or a
+  zone you drew. If the map shows no dot, check LD2450 Presence here: off
+  with you in the room means the radar reports nobody (see
   [Troubleshooting](#troubleshooting)).
 - **Occupancy History** (MTR-1, beside LD2450 Live) shows the last 24 hours
   of LD2450 Presence and each zone you drew. On an R PRO-1 the same lines
@@ -576,7 +664,9 @@ LD2450 settings that decide whether the zone map can show people, and fixes
 them when you press its button. It changes nothing on its own. Apollo
 firmware never sets these two, so they are whatever the radar chip holds. On
 an R PRO-1 a second Radar setup card, near the top of the tab, checks the
-LD2412; see [Gate radar setup checks](#gate-radar-setup-checks).
+LD2412; see [Gate radar setup checks](#gate-radar-setup-checks). On an MTR-1
+this card also shows the notice for a page that runs other cards than Home
+Assistant does (see [After an update](#after-an-update)).
 
 - **Zone Type** should be **Disabled**. The radar chip has its own built-in
   zones, separate from the zones you draw, and the zone map replaces them.
@@ -644,10 +734,16 @@ The zone map draws what the radar sees right now over the zones you drew:
   ghosts inside ignore zones included, which helps you place zones.
   **Clear coverage** empties it. The paint lives in the open page only, and
   the browser remembers for each radar whether Coverage is on.
-- **Flip.** If a dot moves the opposite way from you, an administrator can
-  tick **Flip the map left to right (display only)** under Configure. It is
-  saved for the radar, so everyone who opens its map sees it flipped. Only
-  the drawing changes: the zones as stored, their presence sensors, movement
+- **Flip.** An administrator can tick **Flip the map left to right (display
+  only)** under Configure. The hint under it reads "Turn this on if, with the
+  map turned the way the room is, a dot moves the opposite way from you." To
+  check, hold the phone so the map's view cone points the way the sensor faces
+  in the room (at Cone rotation 0°, that is with the map's radar edge toward
+  the sensor while you face it), stand about 2 m (6 ft) in front of the sensor
+  and step to one side: the dot should move the same way on the screen. A
+  radar that passes this at one rotation needs no flip at another. The flip is
+  saved for the radar, so everyone who opens its map sees it flipped. Only the
+  drawing changes: the zones as stored, their presence sensors, movement
   history and walked corners stay the same. The distance labels along the top
   keep their values, so they read from high to low, and the **Cone rotation**
   slider turns the cone the way you drag it. Other users see the box but
@@ -656,6 +752,58 @@ The zone map draws what the radar sees right now over the zones you drew:
 **History** under the map replays movement instead, when an administrator has
 turned movement history on for the radar; see
 [Movement history](#movement-history).
+
+### Zoom and pan
+
+The map zooms in up to 8x, so you can place a zone's corners to the
+centimeter on any screen. At 8x a fitted 12 m map shows 1.5 m across. Zoom
+and pan change only your own view: nothing is saved, and the zones, their
+presence sensors and other viewers' maps stay as they are.
+
+- **Buttons.** Over the map's lower right corner, above the **m / ft**
+  switch, **Undo last zone change** and **Locked**, sit **−** (**Zoom out**),
+  **+** and **Fit**. Each press of **−** or **+** zooms by a factor of about
+  1.4 around the middle of the view, so two presses double it, and a readout
+  such as "2x" shows while the map is zoomed in. The tooltip on **+** reads
+  "Zoom in. You can also hold Ctrl or Cmd and scroll, or pinch."
+- **Fit** shows every zone with some room around it (a tenth of the zones'
+  longer side, at least 30 cm or about 1 ft), as large as the map can show
+  them. Pressed again, or with no zones drawn, it shows the whole map. Its
+  tooltip says which it does next, "Fit the zones in view" or "Show the whole
+  map", and it is grayed out while the whole map shows with nothing to fit.
+- **Mouse and trackpad.** Hold Ctrl (Cmd on a Mac) and scroll over the map
+  to zoom around the pointer, one step per notch of a mouse wheel. A
+  trackpad pinch does the same in Chrome, Edge and Firefox. A plain scroll
+  still scrolls the page. Safari on a Mac does not pass a trackpad pinch to
+  the card: use Cmd and scroll there, or the buttons.
+- **Panning with a mouse.** Drag with Shift held, or with the middle mouse
+  button, to move a zoomed map. The tooltip on the zoom readout says so:
+  "Move the map by dragging with Shift held, with the middle mouse button,
+  or with two fingers." A Shift-click places no corner, and a Shift
+  double-click does not finish a polygon.
+- **Phones and tablets.** Pinch with two fingers to zoom and drag with two
+  fingers to pan. This works on every full map, also while it is locked,
+  while you mark corners by walking and with no zone selected: put both
+  fingers down before you move them, since a second finger cannot take over
+  once one finger is scrolling the page. Over the map a pinch zooms the map,
+  not the page. One finger draws or scrolls the page as before. A second
+  finger that lands before the first has moved about 10 px starts a pinch
+  and drops the rectangle or ellipse the first finger began, while a polygon
+  keeps its corners. Once the first finger has moved farther, a second
+  finger is ignored.
+- **Grid lines** get finer as you zoom in: in meters 1 m, then 0.5 m, 0.2 m
+  and 0.1 m apart, and in feet 2 ft, then 1 ft, 6 in and 3 in. When the
+  radar's own axes are out of view, their distance labels run along the
+  nearest edge of the map instead. Corners snap to about a tenth of the line
+  spacing (see [Drawing zones](#drawing-zones)).
+- **Walk** keeps you in view: on a zoomed map it pans after your dot as it
+  nears an edge, and zooms out only if it must. **History** replays at the
+  zoom you set.
+- **When it resets.** The zoom stays through live updates, the **m / ft**
+  switch and the map refitting to new zones. It goes back to the whole map
+  when the page loads, when the card shows another radar, and when **Cone
+  rotation** changes. A view-only map (see [Card options](#card-options))
+  has no zoom.
 
 ## Drawing zones
 
@@ -687,16 +835,34 @@ and draw on the grid, or walk the zone's corners with 🚶 (see
   the rotation slider, cancels a shape in progress (the buttons on the grid
   itself do not). Moving the mouse off the grid cancels a rectangle or ellipse
   drag but keeps a polygon's corners.
-- Only the left mouse button draws. On a touch screen the finger that started a
-  shape owns it: a second finger is ignored, and a touch the browser cancels
-  saves nothing. A shape in progress is also dropped, unsaved, if the card is
+- Only the left mouse button draws, and not with Shift held, which moves a
+  zoomed map instead (see [Zoom and pan](#zoom-and-pan)). On a touch screen
+  the finger that started a shape owns it: a second finger that lands before
+  it has moved starts a pinch and drops a rectangle or ellipse, a second
+  finger after that is ignored, and a touch the browser cancels saves
+  nothing. A shape in progress is also dropped, unsaved, if the card is
   hidden or collapsed before you finish it.
 
+**Corners snap** to round values in the map's unit, about a tenth of the
+spacing of the grid lines shown, counted from the radar as the lines are:
+every 10 cm at 1 m lines, 5 cm at 0.5 m, 2 cm at 0.2 m and 1 cm at 0.1 m; in
+feet every 2 in at 2 ft lines and every inch at 1 ft or finer. So corners
+snap finer as you zoom in. That covers a rectangle's corners, the corners of
+an ellipse's box and a polygon's corners. Hold Alt (Option on a Mac) to place
+a corner exactly where the pointer is; pressing or letting go of it in the
+middle of a drag moves the corner at once. The corner you pressed first stays
+where it was placed. Corners marked by walking never snap, and zones are
+saved in whole millimeters.
+
 While you draw, the shape's width and depth show right above the pointer, in
-the map's unit, such as "2.4 m × 1.8 m" or "7 ft 11 in × 9 ft 10 in". On a
-touch screen they sit higher, so your finger does not cover them, and near
-the top edge of the map they show below it instead. A polygon shows the size
-of the box around its corners. The size is the one the save stores.
+the map's unit, such as "2.4 m × 1.8 m" or "7 ft 11 in × 9 ft 10 in", and to
+the centimeter, such as "2.45 m × 1.80 m", while corners snap finer than
+10 cm. On a touch screen they sit higher, so your finger does not cover
+them. Near the top edge of the map, where the radar is on most maps, a
+mouse pointer's readout shows below it instead, and a finger's beside it, on
+the side with more room. A polygon shows the size of the box around its
+corners. The size is the one the save stores, as snapped. The zone list
+under **Configure → Zones** reads sizes to 0.1 m.
 
 The map starts locked once the radar has zones, so a scroll on a phone
 cannot draw over a zone. The button in the corner of the map reads
@@ -705,8 +871,9 @@ The card answers "Drawing and cone rotation locked. Unlock the map to change
 them." or "Drawing and cone rotation unlocked. You can edit zones now." The
 browser remembers your choice for each radar. While the map is locked:
 
-- A swipe that starts on the map scrolls the page. A tap on it outlines the
-  **Locked** button and says "Unlock the map to draw zones."
+- A swipe that starts on the map scrolls the page, and two fingers still
+  zoom and pan it. A tap on it outlines the **Locked** button and says
+  "Unlock the map to draw zones."
 - Double-clicking a zone's button or pressing **Clear All Zones** clears
   nothing: the **Locked** button is outlined and the card says "Unlock the
   map to clear zones." **Clear All Zones** looks dimmed meanwhile. **Undo
@@ -732,7 +899,8 @@ does not bring a deleted zone back.
 
 Other users see the zones, the zone settings grayed out under "Only an
 administrator can change these." and the flip box grayed out. They get no
-🚶, no **History** and no Movement history setting.
+🚶 (in the menu or as a chip), no **History** and no Movement history
+setting.
 
 ### Mark corners by walking
 
@@ -742,7 +910,10 @@ unlocked (on a locked map 🚶 says "Unlock the map to draw zones."), and you
 must be the only person the radar sees.
 
 1. Select the zone with its button. Open the drawing-mode menu (✎) and press
-   🚶 (**Mark corners by walking**). A panel opens under the map.
+   🚶 (**Mark corners by walking**). On a phone or tablet you can press the
+   **🚶 Mark corners by walking** chip beside **Coverage** under the map
+   instead. A panel opens under the map, and the chip hides until you leave
+   Walk.
 2. Stand still in one corner of the area for about 3 seconds and press
    **Corner here**.
 3. Walk along the edge to the next corner, stand still for about 3 seconds,
@@ -777,8 +948,9 @@ zone can have. Press Finish."
 more corners it first asks "Drop the corners you marked?" with **Drop them**
 and **Keep marking**. Locking the map or choosing another drawing mode leaves
 Walk and drops the corners without asking. While you walk, a swipe on the map
-scrolls the page, and **History** stays unavailable ("Finish or cancel the
-walk first.").
+scrolls the page, two fingers zoom and pan it, and **History** stays
+unavailable ("Finish or cancel the walk first."). On a zoomed map, Walk pans
+after your dot when it nears an edge, so you stay in view.
 
 ### Map units and size
 
@@ -799,6 +971,21 @@ The map fits the area the radar can see: 120 degrees wide and about 6 m
 drew outside it. It fits again when you let go of the slider. A caption at
 the edge of that area reads "Radar range 6 m (20 ft), 120°". The map can be
 wider than it is tall, and the radar stays at the edge it is mounted on.
+
+Set **Cone rotation** under **Configure** to match how the sensor is
+mounted. The hint under the slider reads "Mount the sensor first, then set
+this. Zones match the room only while the sensor stays mounted that way."
+Nothing on the radar tells the map how it is mounted, so a sensor that is
+turned or picked up after you drew zones moves the room under them.
+
+The map fills the card's width, and on the Apollo mmWave dashboard its
+column is twice as wide on a wide screen. It is never taller than the
+browser window less about 200 px: where the window is too short for the map
+at the card's width, the map gets narrower and sits in the middle of the
+card, so a meter stays as long across as down. That limit never makes it
+shorter than 240 px, so a phone on its side still gets a map. On a narrow
+phone held upright, the card's width sets the map's height, which can be
+less. To see more detail, zoom in (see [Zoom and pan](#zoom-and-pan)).
 
 A card with its own `grid` in YAML keeps that grid, on a square map. A card
 with `grid_units` in YAML uses that unit until an administrator saves one
@@ -860,7 +1047,10 @@ How a hold works:
     degrees): within 0.3 m, plus as far ahead as their speed carries them
     from the radar's last report of them until it lost them and 0.75
     seconds more, up to 1.5 m. An edge behind or beside them counts only
-    within 0.3 m.
+    within 0.3 m. Someone seen in the zone for under about 1.2 seconds
+    counts only within 0.3 m of an edge, unless the radar saw them walk at
+    0.85 m/s or more. So someone who walks into a couch or bed zone and is
+    lost as they sit down is held.
   - **Seen outside.** In the first 3 seconds, the radar tracks a target
     outside the zone within 0.6 m of where they were, plus 1.6 m for each
     second since its last report of them, counting at most 1.2 seconds
@@ -887,6 +1077,12 @@ The hold works from positions only, so it has limits:
   as they walk out of its view, or through a doorway at the zone's edge,
   after a shorter walk, for example from a seat beside the door, can keep
   the zone held for the full hold time.
+- Someone who walks slowly through a zone and out of the radar's view soon
+  after they enter it, at 0.6 m/s for example, often keeps the zone held for
+  the full hold time: in a simulation at the R PRO-1's reporting rate, a
+  walk like that through 1 to 1.5 m of a zone released the hold at once in
+  only about 43 to 48% of runs. That is the price of holding someone who
+  sits down right after walking in.
 - Before it loses someone sitting still, the radar can move their position
   about half a meter in its last report. That alone is not walking out, but
   if it lands outside the zone it counts as stepping out, so a seat within
@@ -931,6 +1127,17 @@ is inside the zone, or while the zone is held (see
   also skips someone who left while the radar was offline. An ignore zone
   always reads `off`. Up to 2.3.0, presence read `off` while the radar was
   offline.
+- Presence tests where the radar puts each target, and the R PRO-1 writes a
+  target's X and Y about once a second, Y usually about 0.45 seconds after
+  X. Zone presence waits for both before it tests a zone, so a zone beside a
+  walking path never reads the point between them, a new X with the old Y,
+  where nobody stood. A zone can therefore turn on or off up to about half a
+  second after the first of the two writes, never sooner. A move along one
+  axis only, which brings no second write, counts 0.55 seconds after it is
+  written. The exception is a zone with a hold time when the radar loses
+  someone between the two writes: it reads their last X write with the old
+  Y once, as where they were lost, so it can turn on there and stay on for
+  its hold time.
 - A zone with a hold time adds the attribute `held` to its presence sensor:
   `true` while the zone is on only because of its hold. An ignore zone's
   presence sensor has the attribute `zone_type: ignore`. The shape sensor
@@ -946,6 +1153,15 @@ is inside the zone, or while the zone is held (see
   cleared name as the default "Zone 1", which does the same for entities
   that were named and leaves entities that never were as they are. The
   card's own zone labels are not affected.
+- **Add Zone** takes the lowest free zone number, so after you delete a
+  zone its number can come back. A zone number used before starts with
+  fresh entity names: names Apollo mmWave gave the old zone, such as "Zone 1
+  presence - Couch", are cleared, and names you typed in the entity settings
+  stay. An `update_zone` call that creates a zone with no name, or with its
+  default name, does the same. Home Assistant brings the entity id back with
+  the number, for example `binary_sensor.couch_presence` if you had renamed
+  it, and no public Home Assistant API prevents that, so automations written
+  for the deleted zone follow the new one. Check them after you add a zone.
 - `apollo_mmwave.update_zone` changes zones from automations and scripts;
   Settings → Tools → Actions lists its fields (also in the table below). It
   takes the radar's `device_id` and a `zone_id` of 1 or more, with geometry in
@@ -1216,15 +1432,19 @@ stretched; give both the same span for a true-to-scale map.
 to: the cone, the live targets and the presence sensors all use the radar's
 stored rotation, which is 0 until you set it with the slider (or with
 `update_zone`'s `rotation_deg`).
+In a sections view of your own, a section is one column wide by default, so
+the map is at most about 500 px wide there. For the dashboard's wider map,
+give the zone map card's section `column_span: 2` in the view's YAML and the
+card `grid_options: {columns: full}`, or put the card on a Panel view.
 
 **View-only zone map.** Set `view_only: true` on a zone map card, or tick
 **View only (the map without drawing tools)** in its card editor, for a map
 with nothing to press: the title and the map with its lit zones, numbered
 dots, trails, the "Radar offline" note and the flip. It has no drawing tools,
-lock, undo, unit switch, zone buttons, Coverage, History, Walk or Configure,
-and a finger on it scrolls the page, which suits a phone dashboard. The card
-editor hides the lock setting while View only is ticked, since a view-only
-map has no lock. The Apollo mmWave dashboard keeps the full map.
+lock, undo, unit switch, zoom, zone buttons, Coverage, History, Walk or
+Configure, and a finger on it scrolls the page, which suits a phone dashboard.
+The card editor hides the lock setting while View only is ticked, since a
+view-only map has no lock. The Apollo mmWave dashboard keeps the full map.
 
 ```yaml
 type: custom:apollo-radar-zone-map-card
@@ -1333,10 +1553,21 @@ the two rows yourself under Settings → Dashboards → ⋮ → **Resources**.
 ## Troubleshooting
 
 - **A card or the dashboard does not load.** Do a hard refresh
-  (Ctrl/Cmd+Shift+R). With Lovelace resources managed in YAML, add the two
+  (Ctrl/Cmd+Shift+R) in a browser, or close the Home Assistant app fully and
+  open it again. If the app still shows the old cards, reset its cache:
+  **Settings → Companion app → Troubleshooting → Reset frontend cache** on
+  Android, **Settings → Companion app → Debugging → Clear web view cache** on
+  an iPhone or iPad. With Lovelace resources managed in YAML, add the two
   module resources from the log warning (see
   [Lovelace resources](#lovelace-resources)). A resource row you deleted comes
   back at the next Home Assistant restart, not on an integration reload.
+- **A card says this page still runs an older Apollo mmWave.** The page
+  loaded its cards before the update. Press **Reload**. In the Home
+  Assistant app, if that does not help, close the app fully and open it
+  again, then reset its cache as in the item above. **A card says to restart
+  Home Assistant to finish updating.** The new files are installed, but Home
+  Assistant still runs the old version: restart it. See
+  [After an update](#after-an-update).
 - **There is no Apollo mmWave dashboard in the sidebar.** It is only for
   administrators unless you unticked that box, so sign in as one. If you
   unticked **Add the Apollo mmWave dashboard to the sidebar**, or setup could
@@ -1373,9 +1604,9 @@ the two rows yourself under Settings → Dashboards → ⋮ → **Resources**.
   instead). **Filter** works the other way round and hides only people
   inside those zones, so with none set it acts like Disabled. Disabled is
   still the one to use, because the zone map replaces the radar's built-in
-  zones. If Zone Type is already Disabled and the **LD2450 Live** card's
-  Presence stays off with you in front of the radar, the radar itself sees
-  nobody: check that it is online and facing the room.
+  zones. If Zone Type is already Disabled and **LD2450 Presence** on the
+  **LD2450 Live** card stays off with you in front of the radar, the radar
+  itself sees nobody: check that it is online and facing the room.
 - **The zone map shows only one dot with several people in the room.**
   Usually Multi Target Tracking is off. Press **Turn on Multi Target
   Tracking** (or **Use recommended settings** if the card shows that
@@ -1409,11 +1640,20 @@ the two rows yourself under Settings → Dashboards → ⋮ → **Resources**.
   skips someone who left while the radar was offline (see
   [Zones in automations](#zones-in-automations)).
 - **A dot moves the opposite way from you.** Hold the phone with the radar's
-  edge of the map ahead of you, face the radar and step to your right: the
-  dot should move right. If it moves left, an administrator can tick **Flip
-  the map left to right (display only)** under **Configure** (see
+  edge of the map ahead of you, so the map is turned the way the room is,
+  face the radar and step to your right: the dot should move right. If it
+  moves left, an administrator can tick **Flip the map left to right
+  (display only)** under **Configure** (see
   [What the map shows](#what-the-map-shows)). It changes only the drawing,
   not the zones or their presence sensors.
+- **Zones are hard to place precisely.** Zoom in with **+**, with Ctrl or
+  Cmd and the scroll wheel, or with two fingers on a phone, and press
+  **Fit** to show your zones or the whole map again (see
+  [Zoom and pan](#zoom-and-pan)). Corners snap to round values; hold Alt
+  (Option on a Mac) to place one freely. On a phone you can also mark a
+  zone's corners by walking them, which uses where the radar sees you
+  instead of where your finger lands (see
+  [Mark corners by walking](#mark-corners-by-walking)).
 - **A zone stays on after everyone left.** If its label on the map ends in
   "(held)", and its presence sensor's `held` attribute is `true`, the zone's
   hold time keeps it on: it turns off once that time has passed since the

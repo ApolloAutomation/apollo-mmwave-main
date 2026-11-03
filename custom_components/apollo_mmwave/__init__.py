@@ -345,6 +345,29 @@ def _update_registry_names(
         )
 
 
+def _clear_generated_names(hass: HomeAssistant, device_id: str, zone_id: int) -> None:
+    # Add Zone reuses the lowest free zone id, and Home Assistant restores a
+    # deleted entity's registry name, and its entity id, when the same unique
+    # id is registered again. So a new zone 1 would come back as "Zone 1
+    # presence - Couch", and automations written for the old zone would
+    # follow it. A name this integration wrote is cleared; one the user typed
+    # stays. The entity id comes back all the same: no public API stops that.
+    registry = er.async_get(hass)
+    sensor_uid, presence_uid = _zone_entity_unique_ids(device_id, zone_id)
+    for domain, unique_id, base in (
+        ("sensor", sensor_uid, f"Zone {zone_id}"),
+        ("binary_sensor", presence_uid, f"Zone {zone_id} presence"),
+    ):
+        entity_id = registry.async_get_entity_id(domain, DOMAIN, unique_id)
+        entry = registry.async_get(entity_id) if entity_id else None
+        if (
+            entry is not None
+            and entry.name is not None
+            and _is_generated_name(entry.name, base)
+        ):
+            registry.async_update_entity(entry.entity_id, name=None)
+
+
 def _remove_zone_entities(hass: HomeAssistant, device_id: str, zone_id: int) -> None:
     registry = er.async_get(hass)
     sensor_uid, presence_uid = _zone_entity_unique_ids(device_id, zone_id)
@@ -763,6 +786,7 @@ def _build_update_zone_handler(
         )
         device = store.device(device_id)
         registry_name: str | None = None
+        creating = False
 
         _apply_device_settings(device, call, rotation)
         _apply_entity_pairs(device, call)
@@ -784,6 +808,7 @@ def _build_update_zone_handler(
                     _update_registry_names(hass, device_id, zone_id, zone_name)
                 _apply_zone_settings(zone_entry, call)
         else:
+            creating = store.zone(device_id, zone_id) is None
             registry_name = _write_zone_geometry(store, device_id, zone_id, call)
 
         if history_off:
@@ -802,6 +827,10 @@ def _build_update_zone_handler(
             # zone's entities inside it, so a name sent with the call that
             # creates the zone reaches the registry too.
             _update_registry_names(hass, device_id, zone_id, registry_name)
+        elif creating:
+            # A new zone with no name of its own, as Add Zone creates one, on
+            # a zone id that may have been used before.
+            _clear_generated_names(hass, device_id, zone_id)
 
     # One call at a time. Turning movement history off saves the zone store
     # before the zone signal that deletes the history, and that save is the

@@ -4,7 +4,10 @@
  * The size readout while drawing, the Walk preview and the zone list all go
  * through `formatSize`, so the three always agree. Sizes follow the map's
  * m / ft switch (the card's `_unitFamily`), and a size is width (x) by depth
- * (y) in millimeters, the units zone geometry is stored in.
+ * (y) in millimeters, the units zone geometry is stored in. In meters the
+ * readout while drawing takes a second decimal while corners snap finer
+ * than 10 cm (see ./snap), so it shows the snapped size exactly; the zone
+ * list reads to 0.1 m.
  */
 
 export type UnitFamily = "m" | "ft";
@@ -12,8 +15,9 @@ export type UnitFamily = "m" | "ft";
 const MM_PER_INCH = 25.4;
 const INCHES_PER_FOOT = 12;
 
-/** "2.4 m", or "7 ft 11 in", "8 ft" and "11 in". */
-export function formatLength(mm: number, family: UnitFamily): string {
+/** "2.4 m" (or "2.45 m" at 2 `decimals`), or "7 ft 11 in", "8 ft" and
+ *  "11 in". Feet always read in whole inches. */
+export function formatLength(mm: number, family: UnitFamily, decimals = 1): string {
   if (family === "ft") {
     // Rounded to whole inches before the split, so 143.6 in carries to
     // "12 ft" instead of reading "11 ft 12 in".
@@ -26,13 +30,20 @@ export function formatLength(mm: number, family: UnitFamily): string {
     if (feet === 0) return `${sign}${inches} in`;
     return `${sign}${feet} ft ${inches} in`;
   }
-  const meters = (mm / 1000).toFixed(1);
-  return `${meters === "-0.0" ? "0.0" : meters} m`;
+  const meters = (mm / 1000).toFixed(decimals);
+  // A length that rounds to nothing has no side here either.
+  return `${Number(meters) === 0 ? (0).toFixed(decimals) : meters} m`;
 }
 
-/** "2.4 m × 1.8 m": width by depth, joined by a multiplication sign. */
-export function formatSize(widthMm: number, depthMm: number, family: UnitFamily): string {
-  return `${formatLength(widthMm, family)} × ${formatLength(depthMm, family)}`;
+/** "2.4 m × 1.8 m": width by depth, joined by a multiplication sign, with
+ *  `decimals` as formatLength takes them. */
+export function formatSize(
+  widthMm: number,
+  depthMm: number,
+  family: UnitFamily,
+  decimals = 1
+): string {
+  return `${formatLength(widthMm, family, decimals)} × ${formatLength(depthMm, family, decimals)}`;
 }
 
 /**

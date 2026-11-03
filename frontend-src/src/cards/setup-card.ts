@@ -14,6 +14,12 @@
  * change made anywhere (this card, a Controls card, the device page) shows
  * at once. The card never writes on its own: each button names what it
  * changes and makes that one service call.
+ *
+ * Being on every tab of the dashboard, it also shows the page's version
+ * notice (`version-check.ts`) above the checks: a Reload button when this
+ * page runs older cards than the Apollo mmWave Home Assistant runs, a line
+ * to restart Home Assistant when it runs newer ones. On a tab with two of
+ * these cards only the first shows it.
  */
 
 import { LitElement, html, css, nothing, type PropertyValues, type TemplateResult } from "lit";
@@ -29,6 +35,13 @@ import {
   type CalibrationApiHass,
 } from "../calibration/api";
 import { CalibrationJobWatch } from "../calibration/job-watch";
+import {
+  VERSION_RELOAD_LABEL,
+  reloadPage,
+  watchVersion,
+  type VersionNotice,
+  type VersionWatch,
+} from "../version-check";
 import { resolveRadar, type ResolvedRadar } from "./resolution";
 import {
   ALL_GOOD_LINE,
@@ -81,6 +94,8 @@ export class ApolloRadarSetupCard extends LitElement {
   @state() private _error?: string;
   /** A fix that went through but whose problem stayed (`SettingFix.noAnswer`). */
   @state() private _note?: { setting: SettingKey; text: string };
+  /** The page's version notice, while this card is the one showing it. */
+  @state() private _versionNotice?: VersionNotice;
 
   /** Bumped on a device change so a call that settles afterward is dropped. */
   private _serial = 0;
@@ -92,6 +107,8 @@ export class ApolloRadarSetupCard extends LitElement {
   private _radarConfig?: Ld2410CardConfig;
   /** Gate mode: whether a calibration job owns Radar Engineering Mode. */
   private readonly _jobWatch = new CalibrationJobWatch(() => this.requestUpdate());
+  /** The page's version check, while the card is on the page. */
+  private _version?: VersionWatch;
 
   public setConfig(config: SetupCardConfig): void {
     this._config = config;
@@ -122,12 +139,21 @@ export class ApolloRadarSetupCard extends LitElement {
   connectedCallback(): void {
     super.connectedCallback();
     this._watchJobs();
+    const version = watchVersion(() => {
+      if (this._version === version) this._versionNotice = version.notice;
+    });
+    this._version = version;
+    version.update(this.hass);
+    this._versionNotice = version.notice;
   }
 
   disconnectedCallback(): void {
     super.disconnectedCallback();
     this._jobWatch.close();
     this._endSettling(false);
+    this._version?.close();
+    this._version = undefined;
+    this._versionNotice = undefined;
   }
 
   private _isGate(): boolean {
@@ -196,6 +222,7 @@ export class ApolloRadarSetupCard extends LitElement {
       }
       this._watchJobs();
     }
+    if (changed.has("hass")) this._version?.update(this.hass);
     if (!this.hass) return;
     const problems = this._problems();
     const present = (setting: SettingKey) => problems.some((p) => p.setting === setting);
@@ -282,8 +309,29 @@ export class ApolloRadarSetupCard extends LitElement {
     if (!this.hass || !this._config) return nothing;
     return html`
       <ha-card .header=${this._config.title ?? DEFAULT_TITLE}>
-        <div class="wrap">${this._renderSubtitle()} ${this._renderBody()}</div>
+        <div class="wrap">
+          ${this._renderSubtitle()} ${this._renderVersionNotice()} ${this._renderBody()}
+        </div>
       </ha-card>
+    `;
+  }
+
+  private _renderVersionNotice(): TemplateResult | typeof nothing {
+    const notice = this._versionNotice;
+    if (!notice) return nothing;
+    const [first, ...rest] = notice.lines;
+    return html`
+      <div class="version-notice" role="status">
+        <p>${first}</p>
+        ${notice.kind === "reload"
+          ? html`<div class="buttons">
+              <button type="button" class="primary" @click=${() => reloadPage()}>
+                ${VERSION_RELOAD_LABEL}
+              </button>
+            </div>`
+          : nothing}
+        ${rest.map((line) => html`<p class="hint">${line}</p>`)}
+      </div>
     `;
   }
 
@@ -387,6 +435,14 @@ export class ApolloRadarSetupCard extends LitElement {
     }
     p {
       margin: 0 0 8px;
+    }
+    .version-notice {
+      border-left: 4px solid var(--warning-color, #ff9800);
+      padding: 4px 0 4px 12px;
+      margin: 0 0 12px;
+    }
+    .version-notice p:last-child {
+      margin-bottom: 0;
     }
     .problem + .problem {
       border-top: 1px solid var(--divider-color, #e0e0e0);

@@ -46,6 +46,16 @@ describe("formatLength", () => {
     expect(formatLength(-279, "ft")).toBe("-11 in");
     expect(formatLength(-3647, "ft")).toBe("-12 ft");
   });
+
+  it("takes a second decimal in meters, for corners that snap finer than 10 cm", () => {
+    expect(formatLength(2450, "m", 2)).toBe("2.45 m");
+    expect(formatLength(2400, "m", 2)).toBe("2.40 m");
+    expect(formatLength(20, "m", 2)).toBe("0.02 m");
+    expect(formatLength(-4, "m", 2)).toBe("0.00 m");
+    expect(formatLength(-2450, "m", 2)).toBe("-2.45 m");
+    // Feet read in whole inches whatever the decimals.
+    expect(formatLength(2413, "ft", 2)).toBe("7 ft 11 in");
+  });
 });
 
 describe("formatSize", () => {
@@ -56,6 +66,11 @@ describe("formatSize", () => {
     // A multiplication sign, not the letter x.
     const joiner = formatSize(1000, 1000, "m").slice("1.0 m".length, -"1.0 m".length);
     expect(joiner).toBe(" × ");
+  });
+
+  it("gives both sides the decimals asked for", () => {
+    expect(formatSize(2450, 1800, "m", 2)).toBe("2.45 m × 1.80 m");
+    expect(formatSize(2438.4, 279, "ft", 2)).toBe("8 ft × 11 in");
   });
 });
 

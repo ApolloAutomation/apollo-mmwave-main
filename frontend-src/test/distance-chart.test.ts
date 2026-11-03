@@ -482,3 +482,48 @@ describe("distance rows with no current target", () => {
     );
   });
 });
+
+// The MSR firmware's distance filter can hold a distance at unknown while its
+// target sensor is on (Reduce DB Reporting drops readings within 5 cm). The
+// row used to draw that as "0.0", a target right at the sensor.
+describe("distance rows with a target but no distance", () => {
+  function unknownHass(stillTarget: string, stillDistance: string): HomeAssistant {
+    return hass({
+      [m.gate_size!]: ent("0.75m"),
+      [m.radar_target!]: ent("on"),
+      [m.moving_target!]: ent("off"),
+      [m.still_target!]: ent(stillTarget),
+      [m.detection_distance!]: ent("135", "cm"),
+      [m.moving_distance!]: ent("unknown", "cm"),
+      [m.still_distance!]: ent(stillDistance, "cm"),
+    });
+  }
+
+  it("marks the row unreported instead of drawing 0.0", () => {
+    const model = distanceModel(unknownHass("on", "unknown"), m, "cm");
+    const still = model.bars.find((b) => b.label === "Still")!;
+    expect(still).toMatchObject({ noTarget: false, unreported: true, value: 0 });
+    const markup = flat(renderDistanceChart(unknownHass("on", "unknown"), m, "cm"));
+    expect(markup).toContain(">distance unknown</text>");
+    expect(markup).not.toContain(">0.0 cm</text>");
+    expect(markup).toContain(
+      "<title>Current distance to a still (stationary) target. The radar reports a target," +
+        " but its distance reads unknown.</title>"
+    );
+    // The moving row has no target, so it still reads no target.
+    expect(markup.match(/>no target</g)).toHaveLength(1);
+  });
+
+  it("leaves a row with a distance, or with no target, as it was", () => {
+    const withDistance = distanceModel(unknownHass("on", "180"), m, "cm");
+    expect(withDistance.bars.find((b) => b.label === "Still")).toMatchObject({
+      unreported: false,
+      value: 180,
+    });
+    const noTarget = distanceModel(unknownHass("off", "unknown"), m, "cm");
+    expect(noTarget.bars.find((b) => b.label === "Still")).toMatchObject({
+      noTarget: true,
+      unreported: false,
+    });
+  });
+});

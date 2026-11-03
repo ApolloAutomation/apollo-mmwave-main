@@ -9,6 +9,9 @@ from custom_components.apollo_mmwave.hold import Reading
 from custom_components.apollo_mmwave.store import ZoneStore
 from custom_components.apollo_mmwave.targets import (
     SHAPE_TESTERS,
+    TARGET_PAIR_MS,
+    AxisPairing,
+    ReadingPairer,
     fallback_factor,
     iter_slot_points,
     masked_readings,
@@ -253,6 +256,145 @@ async def test_masked_readings_without_ignore_zones_keep_every_target(hass) -> N
         Reading(0, (0.0, 100.0), (0.0, 100.0))
     ]
     assert "ghost" not in store.devices
+
+
+def test_an_axis_written_alone_waits_for_the_other_up_to_the_pair_window() -> None:
+    """The last whole reading stands until the other axis lands or 550 ms pass."""
+    pairer = ReadingPairer()
+    assert pairer.pair(0, (100.0, 1000.0), 0) == (100.0, 1000.0)
+    assert pairer.due() is None
+
+    # X alone, as the R PRO-1 writes it about 0.45 s before its Y.
+    assert pairer.pair(0, (300.0, 1000.0), 1000) == (100.0, 1000.0)
+    assert pairer.due() == 1000 + TARGET_PAIR_MS
+    assert pairer.written_at(0) == 1000
+    # Its Y: the reading is whole, at once.
+    assert pairer.pair(0, (300.0, 1400.0), 1450) == (300.0, 1400.0)
+    assert pairer.due() is None
+
+    # X alone again, and no Y: Home Assistant writes nothing for a Y that
+    # repeats, so after the window the X moved alone.
+    assert pairer.pair(0, (500.0, 1400.0), 2500) == (300.0, 1400.0)
+    assert pairer.pair(0, (500.0, 1400.0), 2500 + TARGET_PAIR_MS - 1) == (
+        300.0,
+        1400.0,
+    )
+    assert pairer.pair(0, (500.0, 1400.0), 2500 + TARGET_PAIR_MS) == (500.0, 1400.0)
+    assert pairer.due() is None
+    # The Y of the next report lands after that window: it moved alone too.
+    assert pairer.pair(0, (500.0, 1800.0), 3100) == (500.0, 1400.0)
+    assert pairer.written_at(0) == 3100
+
+
+def test_both_axes_in_one_write_and_a_new_slot_wait_for_nothing() -> None:
+    """Only one axis changed since the last reading waits for the other."""
+    pairer = ReadingPairer()
+    assert pairer.pair(0, (100.0, 1000.0), 0) == (100.0, 1000.0)
+    assert pairer.pair(0, (200.0, 1100.0), 1000) == (200.0, 1100.0)
+    assert pairer.pair(1, (-500.0, 2000.0), 1000) == (-500.0, 2000.0)
+    assert pairer.due() is None
+
+
+def test_an_axis_written_twice_before_the_other_moves_alone() -> None:
+    """A radar reporting several times a second keeps every report along X."""
+    pairer = ReadingPairer()
+    pairer.pair(0, (100.0, 1000.0), 0)
+    assert pairer.pair(0, (150.0, 1000.0), 200) == (100.0, 1000.0)
+    assert pairer.pair(0, (200.0, 1000.0), 400) == (200.0, 1000.0)
+    assert pairer.pair(0, (250.0, 1000.0), 600) == (250.0, 1000.0)
+    # Y changes after all: the next X written alone waits for its pair again.
+    assert pairer.pair(0, (250.0, 1050.0), 800) == (250.0, 1050.0)
+    assert pairer.pair(0, (300.0, 1050.0), 1000) == (250.0, 1050.0)
+
+
+def test_half_a_vanish_or_an_appearance_waits_for_nothing() -> None:
+    """The first of the two 0 writes is left to the hold's half-vanish filter."""
+    pairer = ReadingPairer()
+    pairer.pair(0, (100.0, 1000.0), 0)
+    # X alone waits, then the vanish's first half lands: it is passed on as
+    # it is, and nothing waits any longer.
+    assert pairer.pair(0, (300.0, 1000.0), 1000) == (100.0, 1000.0)
+    assert pairer.pair(0, (0.0, 1000.0), 2070) == (0.0, 1000.0)
+    assert pairer.due() is None
+    assert pairer.written_at(0) is None
+
+    # An appearance in a slot that read 0/0: (x, 0) first, then its Y.
+    assert pairer.pair(1, (700.0, 0.0), 0) == (700.0, 0.0)
+    assert pairer.pair(1, (700.0, 2000.0), 450) == (700.0, 2000.0)
+    assert pairer.due() is None
+
+
+def test_a_slot_gone_while_its_write_waits_hands_that_write_back() -> None:
+    """A target lost before its other axis lands: its last report is that write."""
+    pairer = ReadingPairer()
+    pairer.pair(0, (100.0, 1000.0), 0)
+    pairer.pair(1, (900.0, 3000.0), 0)
+    assert pairer.pair(0, (300.0, 1000.0), 1000) == (100.0, 1000.0)
+
+    # Both slots gone: only slot 0 had a write that had not counted.
+    assert pairer.keep(set()) == [(0, (300.0, 1000.0), 1000)]
+    assert pairer.due() is None
+    # Back, it is a new reading.
+    assert pairer.pair(0, (400.0, 1000.0), 2000) == (400.0, 1000.0)
+
+
+def test_axis_pairing_counts_a_lone_axis_whole_after_the_window() -> None:
+    """The pairing presence and the recorder share, in its own milliseconds."""
+    split = AxisPairing()
+    split.follow((0.0, 1000.0), (100.0, 1000.0), 5000)
+    assert not split.whole(5000 + TARGET_PAIR_MS - 1)
+    assert split.whole(5000 + TARGET_PAIR_MS)
+    assert split.whole_at() == 5000 + TARGET_PAIR_MS
+    split.follow(None, (100.0, 1000.0), 5100)
+    assert split.whole(5100)
+    assert split.whole_at() is None
+
+
+async def test_masked_readings_pair_before_masking(hass) -> None:
+    """The point between X and Y counts for no zone, an ignore zone included."""
+    store = ZoneStore(hass)
+    store.devices["dev"] = {"zones": {2: dict(IGNORE_ZONE)}}
+    pairer = ReadingPairer()
+    _set(hass, PAIR_1, -800, 1000)
+    assert masked_readings(hass, store, "dev", [PAIR_1], (pairer, 0)) == [
+        Reading(0, (-800.0, 1000.0), (-800.0, 1000.0), written_at=0.0)
+    ]
+
+    # X alone, to inside the ignore zone: the whole reading stands, and the
+    # write is kept for the hold's reports.
+    hass.states.async_set(PAIR_1["x"], "-100")
+    assert masked_readings(hass, store, "dev", [PAIR_1], (pairer, 1000)) == [
+        Reading(
+            0,
+            (-800.0, 1000.0),
+            (-800.0, 1000.0),
+            written=((-100.0, 1000.0), (-100.0, 1000.0)),
+            written_at=1.0,
+        )
+    ]
+    # Its Y lands inside the ignore zone too: masked.
+    hass.states.async_set(PAIR_1["y"], "1100")
+    assert masked_readings(hass, store, "dev", [PAIR_1], (pairer, 1450)) == []
+
+    # Gone while an X written alone waits: the pass hands it back as lost,
+    # masked the same way.
+    _set(hass, PAIR_1, -800, 1100)
+    masked_readings(hass, store, "dev", [PAIR_1], (pairer, 2000))
+    hass.states.async_set(PAIR_1["x"], "-1200")
+    masked_readings(hass, store, "dev", [PAIR_1], (pairer, 3000))
+    _set(hass, PAIR_1, "unknown", "unknown")
+    assert masked_readings(hass, store, "dev", [PAIR_1], (pairer, 3200)) == []
+    assert pairer.lost == [
+        Reading(0, (-1200.0, 1100.0), (-1200.0, 1100.0), written_at=3.0)
+    ]
+    hass.states.async_set(PAIR_1["x"], "-1200")
+    hass.states.async_set(PAIR_1["y"], "1100")
+    masked_readings(hass, store, "dev", [PAIR_1], (pairer, 4000))
+    hass.states.async_set(PAIR_1["x"], "100")
+    masked_readings(hass, store, "dev", [PAIR_1], (pairer, 5000))
+    _set(hass, PAIR_1, "unknown", "unknown")
+    masked_readings(hass, store, "dev", [PAIR_1], (pairer, 5200))
+    assert pairer.lost == []
 
 
 @pytest.mark.parametrize(

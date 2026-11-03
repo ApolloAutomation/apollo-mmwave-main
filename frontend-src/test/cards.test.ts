@@ -349,10 +349,16 @@ describe.each(GATED)("%s render gate", (name, make, slots) => {
         map.zone_1_start,
         map.end_zone_3,
         map.zone_2_occupancy,
-        map.max_move_distance,
-        map.max_still_distance,
       ]));
       expect(drawn).toContain(map.move_energy[3]);
+      // The range fades the gates the radar ignores, and the target flags
+      // give the radar's own answer under the bars.
+      expect(drawn).toEqual(expect.arrayContaining([
+        map.max_move_distance,
+        map.max_still_distance,
+        map.moving_target,
+        map.still_target,
+      ]));
     }
   });
 

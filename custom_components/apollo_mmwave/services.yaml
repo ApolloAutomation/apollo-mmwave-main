@@ -46,7 +46,7 @@ update_zone:
         object: {}
     name:
       name: Zone Name
-      description: "Optional friendly name for the zone. Naming a zone that already exists also renames its entities: naming zone 1 'Couch' makes them 'Zone 1 - Couch' and 'Zone 1 presence - Couch'. Once a zone is named, the radar name is no longer part of those entity friendly names. An entity you renamed yourself in its settings keeps your name. An empty name sets them back to 'Zone 1' and 'Zone 1 presence', still without the radar name, and so does the zone's default name, such as 'Zone 1' for zone 1, except that it leaves entities that were never named alone."
+      description: "Optional friendly name for the zone. Naming a zone that already exists also renames its entities: naming zone 1 'Couch' makes them 'Zone 1 - Couch' and 'Zone 1 presence - Couch'. Once a zone is named, the radar name is no longer part of those entity friendly names. An entity you renamed yourself in its settings keeps your name. An empty name sets them back to 'Zone 1' and 'Zone 1 presence', still without the radar name, and so does the zone's default name, such as 'Zone 1' for zone 1, except that it leaves entities that were never named alone. A call that creates a zone with no name, or with its default name, clears the names Apollo mmWave gave an earlier zone with that number, and keeps names set in the entity settings."
       required: false
       selector:
         text: {}
@@ -90,7 +90,7 @@ update_zone:
             - ignore
     hold_s:
       name: Hold Time (seconds)
-      description: "How long the zone stays on after someone inside it goes still and the radar loses them, 0 to 3600 seconds; 0, the default, turns the zone off as soon as nobody is in it. The zone still turns off at once if everyone who was inside is accounted for. Either the radar lost them while they were walking near the zone's edge or the edge of the radar's view (taken as 6 m and 120 degrees): within 0.3 m, plus as far ahead as their speed carries them from the radar's last report of them until the loss and 0.75 seconds more, up to 1.5 m, while an edge behind or beside them counts only within 0.3 m. The radar reports each position about once a second, so it sees walking after about two seconds of it in the zone, and someone it loses after a shorter walk can keep the zone held. Or, during the first 3 seconds, the radar tracks a target outside the zone within 0.6 m of where they were, plus 1.6 m for each second since its last report of them, counting at most 1.2 seconds before the zone emptied. A target the radar was already tracking elsewhere when the zone emptied, such as another person or a still object, counts only within 0.6 m. A hold also ends when someone is in the zone again, when the radar goes offline or reconnects, and at a restart. Detect zones only. Needs zone_id."
+      description: "How long the zone stays on after someone inside it goes still and the radar loses them, 0 to 3600 seconds; 0, the default, turns the zone off as soon as nobody is in it. The zone still turns off at once if everyone who was inside is accounted for. Either the radar lost them while they were walking near the zone's edge or the edge of the radar's view (taken as 6 m and 120 degrees): within 0.3 m, plus as far ahead as their speed carries them from the radar's last report of them until the loss and 0.75 seconds more, up to 1.5 m, while an edge behind or beside them counts only within 0.3 m. Someone in the zone for under about 1.2 seconds counts only within 0.3 m, unless the radar saw them walk at 0.85 m/s or faster, so someone who walks in and is lost as they sit down is held. The radar reports each position about once a second, so it sees walking after about two seconds of it in the zone, and someone it loses after a shorter walk can keep the zone held. Or, during the first 3 seconds, the radar tracks a target outside the zone within 0.6 m of where they were, plus 1.6 m for each second since its last report of them, counting at most 1.2 seconds before the zone emptied. A target the radar was already tracking elsewhere when the zone emptied, such as another person or a still object, counts only within 0.6 m. A hold also ends when someone is in the zone again, when the radar goes offline or reconnects, and at a restart. Detect zones only. Needs zone_id."
       required: false
       selector:
         number:
@@ -101,7 +101,7 @@ update_zone:
           mode: box
     mirror_x:
       name: Flip Map Left to Right
-      description: "Draw this radar's zone map mirrored left to right for everyone who opens it. Turn this on if a dot moves the opposite way from you. Display only: zone geometry and presence are not affected. Device-wide."
+      description: "Draw this radar's zone map mirrored left to right for everyone who opens it. Turn this on if, with the map turned the way the room is, a dot moves the opposite way from you. Display only: zone geometry and presence are not affected. Device-wide."
       required: false
       selector:
         boolean: {}

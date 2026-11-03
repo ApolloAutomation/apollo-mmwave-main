@@ -20,9 +20,9 @@ LD2450 writes each axis about once a second; a move under 50 mm is its
 jitter, and Home Assistant writes nothing for a value that repeats, so the
 heartbeat is what keeps a person sitting still on the map through a replay.
 X and Y are separate entities, and the R PRO-1 often writes Y about 0.45 s
-after X: a move is recorded only once the reading is whole (see
-MOVEMENT_PAIR_MS), so no point pairs a new X with an old Y. A gone marker is
-recorded at once.
+after X: a move is recorded only once the reading is whole, by the pairing
+zone presence uses (targets.AxisPairing, TARGET_PAIR_MS), so no point pairs
+a new X with an old Y. A gone marker is recorded at once.
 
 ``.storage/apollo_mmwave.movement`` keeps each radar's records as packed
 little-endian columns, base64 encoded, about 13 bytes a record where JSON
@@ -48,7 +48,7 @@ import time
 from array import array
 from bisect import bisect_left, bisect_right
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import accumulate, pairwise
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -68,7 +68,7 @@ from .const import DATA_MOVEMENT, DOMAIN, SIGNAL_ZONES_UPDATED, STORE_MOVEMENT_H
 from .hold import HALF_VANISH_MAX_S, half_vanished
 from .ld2450 import effective_target_pairs
 from .store import device_flag
-from .targets import masked_readings, pair_ids
+from .targets import AxisPairing, masked_readings, pair_ids
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -96,11 +96,6 @@ MOVEMENT_MIN_MOVE_MM = 50
 MOVEMENT_MIN_INTERVAL_MS = 500
 # A slot that stays is recorded again this often.
 MOVEMENT_HEARTBEAT_MS = 15000
-# An axis written alone waits this long for the other axis's write, and
-# counts as moving alone after it: above the 0.40 to 0.50 s the R PRO-1
-# takes from X to Y, and below the 0.62 s from a Y to the next X, so a lone Y
-# never pairs with the next reading's X.
-MOVEMENT_PAIR_MS = 550
 # A reading held back as the first of a target's two vanishing writes counts
 # once it has stood unchanged this long. The same bound as zone presence's,
 # so the two count someone who really stands on an axis line together.
@@ -424,52 +419,10 @@ class _SlotState:
     good_raw: tuple[float, float] | None = None
     half_raw: tuple[float, float] | None = None
     half_since: int = 0
-    # The axis (0 for X, 1 for Y) last written alone, while the other axis's
-    # write may still follow, and when; and an axis written twice before the
-    # other, which moves alone until the other is written.
-    lone_axis: int | None = None
-    lone_at: int = 0
-    solo_axis: int | None = None
-
-    def pair(
-        self,
-        previous: tuple[float, float] | None,
-        raw: tuple[float, float],
-        at: int,
-    ) -> None:
-        """Follow which axes changed from previous to raw, written at time at."""
-        if previous is None:
-            # A new reading: neither axis waits for the other.
-            self.lone_axis = self.solo_axis = None
-            return
-        if self.lone_axis is not None and at - self.lone_at >= MOVEMENT_PAIR_MS:
-            # The other axis never followed, so it did not change.
-            self.lone_axis = None
-        x_changed = raw[0] != previous[0]
-        if x_changed == (raw[1] != previous[1]):
-            if x_changed:
-                # Both in one loop turn.
-                self.lone_axis = self.solo_axis = None
-            return
-        axis = 0 if x_changed else 1
-        if self.lone_axis == axis:
-            # Written again before the other axis, which is then not changing.
-            # This keeps a radar that reports several times a second at two
-            # points a second along one axis.
-            self.lone_axis, self.solo_axis = None, axis
-        elif self.lone_axis is not None:
-            # The other axis's write: the pair is whole.
-            self.lone_axis = None
-        elif self.solo_axis is None:
-            self.lone_axis, self.lone_at = axis, at
-        elif self.solo_axis != axis:
-            # The other axis changes after all: the reading is whole, and the
-            # next axis written alone waits for its pair again.
-            self.solo_axis = None
-
-    def whole(self, at: int) -> bool:
-        """Report whether the reading at time at waits for no axis's write."""
-        return self.lone_axis is None or at - self.lone_at >= MOVEMENT_PAIR_MS
+    # Which of the good readings' X and Y writes waits for the other's, as
+    # zone presence pairs them, so a radar that reports several times a
+    # second along one axis keeps two points a second.
+    split: AxisPairing = field(default_factory=AxisPairing)
 
     def due(self) -> int | None:
         """Return when the tick has something to record, or None for nothing."""
@@ -478,9 +431,9 @@ class _SlotState:
             due = self.last_mono + MOVEMENT_MIN_INTERVAL_MS
         elif self.recorded_present:
             due = self.last_mono + MOVEMENT_HEARTBEAT_MS
-        if due is not None and self.lone_axis is not None:
+        if due is not None and (whole_at := self.split.whole_at()) is not None:
             # No sooner than the reading can be whole.
-            due = max(due, self.lone_at + MOVEMENT_PAIR_MS)
+            due = max(due, whole_at)
         if self.half_raw is not None:
             # When a reading held back counts, if nothing is written before.
             counts_at = self.half_since + MOVEMENT_HALF_VANISH_MAX_MS
@@ -555,8 +508,8 @@ class _Recorder:
         # A target's X and Y are two entities written one after the other, so
         # a flush inside the first write would see half a move. One flush per
         # loop turn, as presence evaluates. The R PRO-1 often writes Y about
-        # 0.45 s after X, in a turn of its own: _SlotState.pair holds such a
-        # move back until its Y is written.
+        # 0.45 s after X, in a turn of its own: the slot's AxisPairing holds
+        # such a move back until its Y is written.
         if self._pending is None:
             self._pending = self._hass.loop.call_soon(self._flush_soon)
 
@@ -606,7 +559,7 @@ class _Recorder:
             state.half_raw = None
             # A reading that was held back changed when it was first read.
             changed_at = mono if held_since is None else held_since
-            state.pair(state.good_raw, reading.raw, changed_at)
+            state.split.follow(state.good_raw, reading.raw, changed_at)
             state.good_raw = reading.raw
             self._point(reading.slot, x, y, now, mono)
         for slot, state in self._slots.items():
@@ -621,7 +574,7 @@ class _Recorder:
         due = state.last_t == 0 or mono - state.last_mono >= MOVEMENT_MIN_INTERVAL_MS
         # A new X with the old Y is a point nobody occupied, so nothing is
         # recorded until the reading is whole.
-        whole = state.whole(mono)
+        whole = state.split.whole(mono)
         if (
             not state.recorded_present
             or math.dist((x, y), (state.last_x, state.last_y)) >= MOVEMENT_MIN_MOVE_MM

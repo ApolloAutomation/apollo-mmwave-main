@@ -25,6 +25,7 @@ import {
   type GateResult,
   type JobState,
 } from "../src/calibration/api";
+import { SIT_STILL_LINE } from "../src/calibration/model";
 import { LD2410_FACTORY_THRESHOLDS, LD2410_PROFILE, LD2412_PROFILE } from "../src/profiles";
 import type { HassEntity } from "../src/types";
 
@@ -414,6 +415,25 @@ describe("calibrate card idle state", () => {
     expect(primary.classList.contains("primary")).toBe(true);
     expect(primary.disabled).toBe(false);
     expect(t).not.toContain("LD2412:");
+  });
+
+  // The LD2410 drops someone who sits very still once their still energy
+  // stays under the threshold for longer than Radar Timeout, and the card is
+  // where people go after a calibration made that happen.
+  it("says what to do when Radar Target turns off while someone sits still", async () => {
+    const hass = ld2410Hass();
+    const card = await mount(hass);
+    await push(card, hass, payload());
+    expect(SIT_STILL_LINE).toBe(
+      "If Radar Target turns off while someone sits still, raise Radar Timeout to 60 s or more on the Detection Range card. Undo restores the thresholds from before a calibration."
+    );
+    const note = Array.from(card.shadowRoot!.querySelectorAll("p.hint")).find(
+      (p) => p.textContent === SIT_STILL_LINE
+    );
+    expect(note).toBeTruthy();
+    // Under the checklist, above the buttons.
+    expect(text(card).indexOf(SIT_STILL_LINE)).toBeGreaterThan(text(card).indexOf("Nobody in the radar's view"));
+    expect(text(card).indexOf(SIT_STILL_LINE)).toBeLessThan(text(card).indexOf("Calibrate with empty room"));
   });
 
   it("uses the config's durations in the first sentence", async () => {
@@ -974,6 +994,8 @@ describe("calibrate card finished states", () => {
     expect(t).toContain(
       "Now walk around, then sit still for a minute: the Radar Target row in Target / Occupancy should stay on the whole time you are in the room and turn off a few seconds after you leave (Radar Timeout)."
     );
+    // Right after the walk-around line, which asks the user to sit still.
+    expect(t).toContain(`(Radar Timeout). ${SIT_STILL_LINE}`);
     const undo = button(card, "Undo (restore your previous values)")!;
     expect(undo).toBeTruthy();
     expect(button(card, "Calibrate again")).toBeTruthy();

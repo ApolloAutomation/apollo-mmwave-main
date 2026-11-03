@@ -2721,6 +2721,61 @@ async def test_name_on_the_creating_call_reaches_the_registry(
     )
 
 
+@pytest.mark.parametrize(
+    "name", [{"name": "Zone 1"}, {}], ids=["add-zone-default", "no-name"]
+)
+async def test_a_new_zone_on_a_reused_zone_id_starts_with_fresh_names(
+    hass, init_integration, device_id, name
+) -> None:
+    """Names the old zone 1 had come back with its unique ids; ours are cleared."""
+    _ = init_integration
+    await _update_zone(
+        hass,
+        {
+            "device_id": device_id,
+            "zone_id": 1,
+            "shape": "rect",
+            "data": RECT,
+            "name": "Couch",
+        },
+    )
+    registry = er.async_get(hass)
+    sensor_id, presence_id = _zone_entity_ids(hass, device_id)
+    # A name the user typed in the sensor's entity settings.
+    registry.async_update_entity(sensor_id, name="Kitchen door")
+    await _update_zone(hass, {"device_id": device_id, "zone_id": 1, "delete": True})
+    assert _zone_entity_ids(hass, device_id) == (None, None)
+
+    # Add Zone reuses the lowest free id, with the card's default name.
+    await _update_zone(
+        hass,
+        {"device_id": device_id, "zone_id": 1, "shape": "none", "data": None, **name},
+    )
+
+    new_sensor_id, new_presence_id = _zone_entity_ids(hass, device_id)
+    assert registry.async_get(new_presence_id).name is None
+    assert "Couch" not in hass.states.get(new_presence_id).attributes["friendly_name"]
+    assert registry.async_get(new_sensor_id).name == "Kitchen door"
+    # The entity ids come back too, which no public API prevents.
+    assert (new_sensor_id, new_presence_id) == (sensor_id, presence_id)
+
+
+async def test_a_name_on_the_call_that_reuses_a_zone_id_names_it(
+    hass, init_integration, device_id
+) -> None:
+    """A new zone given its own name takes that one, as any creating call does."""
+    _ = init_integration
+    zone = {"device_id": device_id, "zone_id": 1, "shape": "rect", "data": RECT}
+    await _update_zone(hass, {**zone, "name": "Couch"})
+    await _update_zone(hass, {"device_id": device_id, "zone_id": 1, "delete": True})
+    await _update_zone(hass, {**zone, "name": "Desk"})
+
+    registry = er.async_get(hass)
+    sensor_id, presence_id = _zone_entity_ids(hass, device_id)
+    assert registry.async_get(sensor_id).name == "Zone 1 - Desk"
+    assert registry.async_get(presence_id).name == "Zone 1 presence - Desk"
+
+
 async def test_default_name_on_the_creating_call_leaves_registry_names_alone(
     hass, init_integration, device_id
 ) -> None:
