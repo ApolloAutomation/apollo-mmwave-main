@@ -2800,6 +2800,8 @@ async def test_a_zone_beside_a_walk_never_reads_the_point_between_x_and_y(
     hass, freezer, entity_registry, setup_entry_with_zone, hold_s
 ) -> None:
     """The new X with the old Y is no reading: the zone beside the walk stays off."""
+    # The walker is lost only after standing still at the end of the walk. A
+    # held zone reads a walker lost while an X write waits (the next test).
     device_id, _ = setup_entry_with_zone
     presence_id = _presence_id(entity_registry, device_id)
     path, arrive_s = _sit_then_walk((-1000.0, 1000.0), (1000.0, 3000.0), 1.0, 10)
@@ -2816,6 +2818,48 @@ async def test_a_zone_beside_a_walk_never_reads_the_point_between_x_and_y(
         await _lose(hass, TARGET_1)
 
     assert [state for state, _held in written if state == "on"] == []
+
+
+# A zone a meter wide, 50 mm to the lower right of the same walk. At 1.4 m/s
+# the X write lands with the Y of 0.62 s before about 434 mm off the walk,
+# more than hold rule 2's 300 mm from every edge of the band; no whole
+# reading lies in the band.
+BESIDE_WALK_BAND = {
+    "shape": "polygon",
+    "data": {
+        "points": [
+            {"x": -965, "y": 965},
+            {"x": 1035, "y": 2965},
+            {"x": 1742, "y": 2258},
+            {"x": -258, "y": 258},
+        ]
+    },
+}
+
+
+@pytest.mark.parametrize("hold_s", [0, HOLD_S], ids=["no-hold", "held"])
+async def test_a_zone_beside_a_walk_reads_a_walker_lost_while_x_waits_only_if_held(
+    hass, freezer, entity_registry, setup_entry_with_zone, hold_s
+) -> None:
+    """A walker lost before its Y lands counts at its X write in a held zone only."""
+    device_id, _ = setup_entry_with_zone
+    presence_id = _presence_id(entity_registry, device_id)
+    await _restart_hold(hass, device_id, _hold_zone(BESIDE_WALK_BAND, hold_s))
+    written = _record_held(hass, presence_id)
+    path, _arrive_s = _sit_then_walk((-1000.0, 1000.0), (1000.0, 3000.0), 1.4, 10)
+    # The X write at 10.70 s, with the Y of 10.08 s, puts the walker at
+    # (-307, 1079) mm, in the band. The radar loses them 0.3 s later, before
+    # the Y of 11.15 s.
+    await _report_at_radar_cadence(hass, freezer, TARGET_1, (path, 11.0))
+    assert written == []
+    await _lose(hass, TARGET_1)
+
+    # Held there for the hold time; a zone with no hold never reads it.
+    assert written == ([("on", True)] if hold_s else [])
+    await _advance(hass, freezer, HOLD_S - 1)
+    assert hass.states.get(presence_id).state == ("on" if hold_s else "off")
+    await _advance(hass, freezer, 2)
+    assert hass.states.get(presence_id).state == "off"
 
 
 async def test_a_move_along_one_axis_counts_once_the_pair_window_ends(

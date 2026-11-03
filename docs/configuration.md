@@ -1134,7 +1134,10 @@ is inside the zone, or while the zone is held (see
   where nobody stood. A zone can therefore turn on or off up to about half a
   second after the first of the two writes, never sooner. A move along one
   axis only, which brings no second write, counts 0.55 seconds after it is
-  written. This holds for every detect zone, with a hold time or without.
+  written. The exception is a zone with a hold time when the radar loses
+  someone between the two writes: it reads their last X write with the old
+  Y once, as where they were lost, so it can turn on there and stay on for
+  its hold time.
 - A zone with a hold time adds the attribute `held` to its presence sensor:
   `true` while the zone is on only because of its hold. An ignore zone's
   presence sensor has the attribute `zone_type: ignore`. The shape sensor

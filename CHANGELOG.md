@@ -113,8 +113,10 @@ a second later than in 2.3.0 (see the presence item below).
   longer turns on for a moment at a point between them, a new X with the
   old Y, where nobody stood. A zone can turn on or off up to about half a
   second later than in 2.3.0, never sooner, and a move along one axis only
-  counts 0.55 seconds after it is written. This holds for every detect
-  zone, with a hold time or without. See
+  counts 0.55 seconds after it is written. The exception is a zone with a
+  hold time when the radar loses someone between the two writes: it reads
+  their last X write with the old Y once, as where they were lost, so it
+  can turn on there and stay on for its hold time. See
   [Zones in automations](docs/configuration.md#zones-in-automations).
 - **Offline presence reads unavailable.** While the radar is offline, its
   zone presence sensors read `unavailable` instead of `off` (ignore zones
@@ -241,11 +243,13 @@ it did not.
 - **Zone presence pairs X and Y.** Zone presence waits for both of a
   target's coordinates before it tests a zone, as movement history, trails
   and Coverage already did, so a zone beside a walking path no longer reads
-  a point nobody stood at. In a simulation, a zone turned on at the same
-  moment as in 2.4.0b2 in about two thirds of walk-ins and about 0.45
-  seconds later in the rest, never more than 0.55 seconds later and never
-  sooner. A move along one axis only counts 0.55 seconds after it is
-  written, also for zones with no hold time.
+  a point nobody stood at. A zone with a hold time still reads a target lost
+  between the two writes at its last X write, as in 2.4.0b2. In a
+  simulation, a zone turned on at the same moment as in 2.4.0b2 in about
+  two thirds of walk-ins and about 0.45 seconds later in the rest, never
+  more than 0.55 seconds later and never sooner. A move along one axis only
+  counts 0.55 seconds after it is written, also for zones with no hold
+  time.
 - **Reused zone numbers.** A zone that **Add Zone** creates on the number
   of a deleted zone starts without the entity names Apollo mmWave gave the
   old zone, such as "Zone 1 presence - Couch", and keeps names you set
