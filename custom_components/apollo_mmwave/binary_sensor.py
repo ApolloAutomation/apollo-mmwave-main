@@ -8,7 +8,11 @@ ignore zone of the radar is dropped before that test, so no zone sees it, and
 an ignore zone's own sensor always reads off. While the radar is offline a
 detect zone reads unavailable. Reading and testing the targets lives in
 targets.py, which the movement recorder shares, so the two can never read a
-target differently.
+target differently. That includes pairing a target's X and Y writes, which
+Home Assistant delivers as two state changes, often about 0.45 s apart on an
+R PRO-1: until both have landed, or TARGET_PAIR_MS has passed with one of
+them unchanged, the target's last whole reading stands in, and a timer reads
+the zone again when the wait ends.
 A detect zone with a hold time stays on after someone inside it is lost
 without being seen to leave, until that time has passed since it emptied.
 hold.py has the rules, and a timer reads a held zone again when a
@@ -52,7 +56,13 @@ from .const import (
 from .hold import HoldTracker
 from .ld2450 import effective_target_pairs
 from .store import zone_hold_s, zone_type_of
-from .targets import masked_readings, pair_ids, radar_offline, shape_tester
+from .targets import (
+    ReadingPairer,
+    masked_readings,
+    pair_ids,
+    radar_offline,
+    shape_tester,
+)
 from .zone_entities import ZoneEntityMixin, async_setup_zone_platform
 
 if TYPE_CHECKING:
@@ -71,6 +81,7 @@ if TYPE_CHECKING:
 
     from .hold import Reading
     from .store import ZoneStore
+    from .targets import ShapeTester
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -119,6 +130,12 @@ class ZonePresenceBinarySensor(ZoneEntityMixin, BinarySensorEntity):
         self._hold_deadline: float | None = None
         self._unsub_flag: CALLBACK_TYPE | None = None
         self._flag_expiry: float | None = None
+        # Each slot's last whole reading, and the timer that reads the zone
+        # again when an axis written alone stops waiting for the other.
+        self._pairer = ReadingPairer()
+        self._paired_ids: list[str] = []
+        self._unsub_pair: CALLBACK_TYPE | None = None
+        self._pair_due: int | None = None
         # What presence read this zone by at the last zone signal (see
         # _hold_fingerprint), or None before the entity is added.
         self._fingerprint: str | None = None
@@ -176,6 +193,7 @@ class ZonePresenceBinarySensor(ZoneEntityMixin, BinarySensorEntity):
         """Stop tracking coordinate entities and drop the hold timers."""
         self._cancel_hold_timer()
         self._cancel_flag_timer()
+        self._cancel_pair_timer()
         if self._pending_eval is not None:
             self._pending_eval.cancel()
             self._pending_eval = None
@@ -226,6 +244,11 @@ class ZonePresenceBinarySensor(ZoneEntityMixin, BinarySensorEntity):
 
         # Each id once: pairs can share an entity (see `pair_ids`).
         entity_ids = pair_ids(self._tracked_pairs())
+        if entity_ids != self._paired_ids:
+            # A slot is a position in the pair list, so under a new list the
+            # same number can name another target.
+            self._paired_ids = entity_ids
+            self._pairer.reset()
         if entity_ids:
             self._unsub_state_listener = async_track_state_change_event(
                 self.hass, entity_ids, self._handle_coordinate_update
@@ -234,13 +257,12 @@ class ZonePresenceBinarySensor(ZoneEntityMixin, BinarySensorEntity):
     @callback
     def _handle_coordinate_update(self, _event: Event[EventStateChangedData]) -> None:
         # A target's X and Y are two entities written one after the other, so
-        # evaluating inside each write tests a point no target occupied (the new
-        # X with the old Y) and can pulse presence on and off. Scheduling one
-        # evaluation with call_soon lets both writes land first. This is
-        # best-effort coalescing: it removes the pulse when X and Y arrive in one
-        # event-loop turn, but an R PRO-1 often writes Y about 0.45 s after X,
-        # and presence, unchanged since 2.3.0, then tests the new X with the old
-        # Y for that long. It adds no timed window.
+        # evaluating inside each write would test a point no target occupied
+        # (the new X with the old Y) and could pulse presence on and off.
+        # Scheduling one evaluation with call_soon lets both writes of one
+        # event-loop turn land first. An R PRO-1 often writes Y about 0.45 s
+        # after X, in a turn of its own: the pairer then keeps the target's
+        # last whole reading until that Y lands (see targets.ReadingPairer).
         if self._pending_eval is None:
             self._pending_eval = self.hass.loop.call_soon(self._flush_evaluation)
 
@@ -249,9 +271,15 @@ class ZonePresenceBinarySensor(ZoneEntityMixin, BinarySensorEntity):
         self._pending_eval = None
         self._evaluate_and_write()
 
-    def _readings(self) -> list[Reading]:
+    def _readings(self, now_ms: int | None = None) -> list[Reading]:
+        # Paired at now_ms, which moves the pairing on; without a time, the
+        # states as they read.
         return masked_readings(
-            self.hass, self._store, self._device_id, self._tracked_pairs()
+            self.hass,
+            self._store,
+            self._device_id,
+            self._tracked_pairs(),
+            None if now_ms is None else (self._pairer, now_ms),
         )
 
     def _evaluate_and_write(self, *, write: bool = True) -> None:
@@ -261,8 +289,10 @@ class ZonePresenceBinarySensor(ZoneEntityMixin, BinarySensorEntity):
         # an unavailable entity, always says what the zone is.
         if zone_type_of(zone_def) == ZONE_TYPE_IGNORE:
             self._write_ignore()
+            self._drop_pairing()
         elif radar_offline(self.hass, self._tracked_pairs()):
             self._write_offline()
+            self._drop_pairing()
         else:
             self._write_detect(zone_def)
         if write:
@@ -292,20 +322,28 @@ class ZonePresenceBinarySensor(ZoneEntityMixin, BinarySensorEntity):
         hold_s = zone_hold_s(zone_def)
         tester = shape_tester(zone_def)
         data = zone_def.get(ATTR_DATA) if tester else None
-        readings = self._readings() if tester else []
+        now = time.monotonic()
+        if tester is None:
+            readings = []
+            self._drop_pairing()
+        else:
+            # Whole milliseconds, as the pairing counts them.
+            now_ms = round(now * 1000)
+            readings = self._readings(now_ms)
+            self._schedule_pair_expiry(now_ms, self._pairer.due())
         if hold_s <= 0:
-            # Presence exactly as before holds existed: on while a reading is
+            # Presence as before holds existed: on while a whole reading is
             # inside, with no half-vanish filter.
             self._drop_hold()
             self._attr_is_on = any(tester(*reading.map, data) for reading in readings)
             self._attr_extra_state_attributes = {}
             return
-        now = time.monotonic()
-        inside: list[Reading] = []
-        outside: list[Reading] = []
-        for reading in self._hold.usable(readings, now):
-            (inside if tester(*reading.map, data) else outside).append(reading)
-        is_on = self._hold.step(now, inside, outside, zone_def.get(ATTR_SHAPE), data)
+        if self._pairer.lost:
+            # Lost while their latest write waited for the other axis's: the
+            # radar will never pair that write, and it is its last report of
+            # them, so the hold reads it once, as whole, before they are gone.
+            self._step_hold(now, [*readings, *self._pairer.lost], tester, zone_def)
+        is_on, inside = self._step_hold(now, readings, tester, zone_def)
         deadline = self._hold.deadline(hold_s)
         if deadline is not None and now >= deadline:
             # A timer that ran late, or a hold time lowered below how long the
@@ -316,6 +354,24 @@ class ZonePresenceBinarySensor(ZoneEntityMixin, BinarySensorEntity):
         self._schedule_hold_expiry(now, self._hold.deadline(hold_s))
         self._schedule_flag_expiry(now, self._hold.flag_expiry())
         self._attr_extra_state_attributes = {ATTR_HELD: self._hold.holding}
+
+    def _step_hold(
+        self,
+        now: float,
+        readings: list[Reading],
+        tester: ShapeTester,
+        zone_def: dict[str, Any],
+    ) -> tuple[bool, list[Reading]]:
+        """Run one hold evaluation; return whether it reads on, and who is inside."""
+        data = zone_def.get(ATTR_DATA)
+        inside: list[Reading] = []
+        outside: list[Reading] = []
+        for reading in self._hold.usable(readings, now):
+            (inside if tester(*reading.map, data) else outside).append(reading)
+        return (
+            self._hold.step(now, inside, outside, zone_def.get(ATTR_SHAPE), data),
+            inside,
+        )
 
     def _schedule_hold_expiry(self, now: float, deadline: float | None) -> None:
         if deadline is None:
@@ -365,6 +421,30 @@ class ZonePresenceBinarySensor(ZoneEntityMixin, BinarySensorEntity):
         self._flag_expiry = None
         self._evaluate_and_write()
 
+    def _schedule_pair_expiry(self, now_ms: int, due: int | None) -> None:
+        # Home Assistant writes nothing for a value that repeats, so a target
+        # that moved along one axis only has no second write to complete its
+        # reading: a timer reads the zone again once the first has waited
+        # TARGET_PAIR_MS.
+        if due is None:
+            self._cancel_pair_timer()
+            return
+        if self._unsub_pair is not None and self._pair_due == due:
+            return
+        self._cancel_pair_timer()
+        self._pair_due = due
+        self._unsub_pair = async_call_later(
+            self.hass,
+            max(0.0, (due - now_ms) / 1000),
+            HassJob(self._pair_expired, cancel_on_shutdown=True),
+        )
+
+    @callback
+    def _pair_expired(self, _now: datetime) -> None:
+        self._unsub_pair = None
+        self._pair_due = None
+        self._evaluate_and_write()
+
     def _drop_hold(self) -> None:
         self._hold.reset()
         self._cancel_hold_timer()
@@ -381,6 +461,17 @@ class ZonePresenceBinarySensor(ZoneEntityMixin, BinarySensorEntity):
             self._unsub_flag()
             self._unsub_flag = None
         self._flag_expiry = None
+
+    def _drop_pairing(self) -> None:
+        # Nothing reads the targets now, so whatever is paired is stale.
+        self._pairer.reset()
+        self._cancel_pair_timer()
+
+    def _cancel_pair_timer(self) -> None:
+        if self._unsub_pair is not None:
+            self._unsub_pair()
+            self._unsub_pair = None
+        self._pair_due = None
 
     def _evaluate_presence(self) -> bool:
         """Report whether a live target no ignore zone masks is inside now."""

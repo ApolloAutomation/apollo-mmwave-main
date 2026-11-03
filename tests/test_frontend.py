@@ -11,6 +11,7 @@ element with no way to recover short of a hard refresh.
 from __future__ import annotations
 
 import asyncio
+import json
 from http import HTTPStatus
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -394,6 +395,33 @@ async def test_yaml_resource_mode_logs_manual_instructions(
     assert message.endswith(f"Resources: {', '.join(urls)}")
     # The extra module urls still cover pages loaded from now on.
     assert _our_extra_module_urls(hass) == set(urls)
+
+
+async def test_any_logged_in_user_reads_the_running_version(
+    hass, hass_ws_client, hass_read_only_access_token, config_entry
+) -> None:
+    """
+    manifest/get answers a non-admin user with the version Home Assistant runs.
+
+    The cards compare the version they were built as with this answer, to
+    tell a page with older bundles to reload and one with newer bundles to
+    restart Home Assistant. Home Assistant reads the manifest once and keeps
+    it, so the answer stays the running version until a restart, whatever an
+    update has written to disk since.
+    """
+    await setup_integration(hass, config_entry)
+    client = await hass_ws_client(hass, hass_read_only_access_token)
+
+    await client.send_json_auto_id({"type": "manifest/get", "integration": DOMAIN})
+    msg = await client.receive_json()
+
+    assert msg["success"], msg
+    manifest = Path(apollo_frontend.__file__).with_name("manifest.json")
+    on_disk = json.loads(manifest.read_text(encoding="utf-8"))
+    assert msg["result"]["version"] == on_disk["version"]
+    assert (
+        msg["result"]["version"] == (await async_get_integration(hass, DOMAIN)).version
+    )
 
 
 @pytest.mark.parametrize("has_lovelace_data", [False, True])

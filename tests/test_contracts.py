@@ -25,7 +25,13 @@ from typing import Any
 
 import pytest
 
-from custom_components.apollo_mmwave import ld2450, websocket
+from custom_components.apollo_mmwave import (
+    binary_sensor,
+    ld2450,
+    movement,
+    targets,
+    websocket,
+)
 from custom_components.apollo_mmwave.const import (
     CARD_TYPE,
     DASHBOARD_STRATEGY_TYPE,
@@ -48,6 +54,7 @@ REPO_ROOT = Path(__file__).parents[1]
 FRONTEND_SRC = REPO_ROOT / "frontend-src" / "src"
 WWW = REPO_ROOT / "custom_components" / DOMAIN / FRONTEND_DIR
 API_TS = FRONTEND_SRC / "zone-map" / "api.ts"
+TRAILS_TS = FRONTEND_SRC / "zone-map" / "trails.ts"
 COPY_TS = FRONTEND_SRC / "zone-map" / "copy.ts"
 MOVEMENT_FIXTURE = (
     REPO_ROOT / "frontend-src" / "test" / "fixtures" / "movement-example.json"
@@ -249,3 +256,28 @@ def test_zone_types_match_the_frontend() -> None:
     )
     assert options is not None
     assert tuple(re.findall(r'value: "(\w+)"', options[1])) == ZONE_TYPES
+
+
+def test_presence_the_recorder_and_the_trails_pair_x_and_y_alike() -> None:
+    """One wait for a target's other axis: presence, the recorder and the card."""
+    # The card's trails and Coverage pair by TRAIL_PAIR_MS.
+    window = re.search(
+        r"^export const TRAIL_PAIR_MS = (\d+);$", _read(TRAILS_TS), re.MULTILINE
+    )
+    assert window is not None
+    assert int(window[1]) == targets.TARGET_PAIR_MS
+
+    # Presence and the recorder both pair by targets.AxisPairing, which waits
+    # TARGET_PAIR_MS, and neither keeps a window of its own.
+    split = targets.AxisPairing()
+    split.follow((0.0, 1000.0), (100.0, 1000.0), 0)
+    assert not split.whole(targets.TARGET_PAIR_MS - 1)
+    assert split.whole(targets.TARGET_PAIR_MS)
+    assert isinstance(movement._SlotState().split, targets.AxisPairing)  # noqa: SLF001
+    assert binary_sensor.ReadingPairer is targets.ReadingPairer
+    for module in (binary_sensor, movement):
+        assert not [
+            name
+            for name, value in vars(module).items()
+            if name.endswith("_PAIR_MS") and value is not targets.TARGET_PAIR_MS
+        ]
