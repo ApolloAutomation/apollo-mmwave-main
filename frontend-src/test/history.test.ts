@@ -59,17 +59,13 @@ describe("ld2450HistoryEntities", () => {
   };
   const zones = ["binary_sensor.hall_zone_1_presence", "binary_sensor.hall_zone_2_presence"];
 
-  it("graphs the LD2450's presence, then each drawn zone under its own name", () => {
+  // Named for the chip on an MTR-1 too: a plain "Presence" beside the zones
+  // read as if Radar Timeout held the zones, which it never does.
+  it("graphs LD2450 Presence, then each drawn zone under its own name", () => {
     expect(ld2450HistoryEntities(l, zones)).toEqual([
-      { entity: "binary_sensor.hall_ld2450_presence", name: "Presence" },
+      { entity: "binary_sensor.hall_ld2450_presence", name: "LD2450 Presence" },
       { entity: zones[0] },
       { entity: zones[1] },
-    ]);
-  });
-
-  it("names the LD2450 when the tab has two radars", () => {
-    expect(ld2450HistoryEntities(l, [], "LD2450")).toEqual([
-      { entity: "binary_sensor.hall_ld2450_presence", name: "LD2450 Presence" },
     ]);
   });
 

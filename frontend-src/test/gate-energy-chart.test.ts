@@ -1,6 +1,11 @@
 import { describe, it, expect, vi } from "vitest";
 import { render } from "lit";
-import { gateEnergyModel, renderGateEnergyChart } from "../src/charts/gate-energy-chart";
+import {
+  NEEDS_MOVEMENT_LINE,
+  NO_TARGET_VERDICT,
+  gateEnergyModel,
+  renderGateEnergyChart,
+} from "../src/charts/gate-energy-chart";
 import { entityMapFromBaseName, entityMapFromDevice } from "../src/entities";
 import { LD2412_PROFILE } from "../src/profiles";
 import type { EntityMap, HomeAssistant, HassEntity } from "../src/types";
@@ -237,7 +242,12 @@ describe("renderGateEnergyChart threshold outline", () => {
     expect(still).not.toContain('stroke-width="2"');
     // Exactly one bar on the whole chart is outlined.
     expect(barMarkup(h).filter((r) => r.includes('stroke-width="2"'))).toHaveLength(1);
-    expect(mountChart(h).textContent).toContain("outlined bar = above threshold (detecting)");
+    // An outline says the energy is above the threshold, not that the radar
+    // detects anyone: the radar's own answer is a separate line.
+    const text = mountChart(h).textContent ?? "";
+    expect(text).toContain("outlined bar = above threshold");
+    expect(text).not.toContain("detecting");
+    expect(flat(renderGateEnergyChart(h, m))).not.toMatch(/detects a target/);
   });
 
   it("never outlines while engineering mode is off", () => {
@@ -303,5 +313,157 @@ describe("renderGateEnergyChart gates, triangles and clamping", () => {
     // 150 draws as a full bar and -20 as an empty one, never past the axes.
     expect(at("150", "-20")).toBe(at("100", "0"));
     expect(at("150", "-20")).not.toMatch(/height=-/);
+  });
+});
+
+describe("gates outside the radar's range", () => {
+  /** Engineering mode on, every energy 60 over every threshold 30. */
+  function live(extra: Record<string, HassEntity> = {}): HomeAssistant {
+    const s: Record<string, HassEntity> = { [m.engineering_mode!]: ent("on") };
+    for (let g = 0; g < 9; g++) {
+      s[m.move_energy[g]] = ent("60");
+      s[m.still_energy[g]] = ent("60");
+      s[m.move_threshold[g]] = ent("30");
+      s[m.still_threshold[g]] = ent("30");
+    }
+    return hass({ ...s, ...extra });
+  }
+  const limited = {
+    [m.max_move_distance!]: ent("6"),
+    [m.max_still_distance!]: ent("4"),
+  };
+  const STILL_OUTLINE = 'stroke="#8cb640"';
+
+  it("marks the gates beyond Max Move Gate and Max Still Gate unused", () => {
+    const model = gateEnergyModel(live(limited), m, "ld2410");
+    expect(model.gates.map((g) => g.moveInUse)).toEqual([
+      true, true, true, true, true, true, true, false, false,
+    ]);
+    expect(model.gates.map((g) => g.stillInUse)).toEqual([
+      true, true, true, true, true, false, false, false, false,
+    ]);
+  });
+
+  it("counts every gate while the range is unread", () => {
+    const model = gateEnergyModel(live(), m, "ld2410");
+    expect(model.gates.every((g) => g.moveInUse && g.stillInUse)).toBe(true);
+  });
+
+  it("uses Min Gate to Max Gate on an LD2412", () => {
+    const rm = LD2412_PROFILE.entityMap("apollo_r_pro_1_abc123");
+    const h = hass({
+      [rm.engineering_mode!]: ent("on"),
+      [rm.max_move_distance!]: ent("11"), // Max Gate
+      [rm.max_still_distance!]: ent("2"), // Min Gate
+      [rm.still_energy[0]]: ent("60"),
+    });
+    const used = gateEnergyModel(h, rm, "ld2412").gates.map((g) => g.stillInUse);
+    expect(used.slice(0, 3)).toEqual([false, false, true]);
+    expect(used.slice(11)).toEqual([true, false, false]);
+  });
+
+  it("fades an ignored gate and never outlines it, however high its energy", () => {
+    const h = live(limited);
+    const bars = barMarkup(h);
+    expect(bars).toHaveLength(18);
+    // Bars go move then still per gate: G4 still is index 9, G5 still 11.
+    expect(bars[9]).toContain(STILL_OUTLINE);
+    expect(bars[9]).toContain('opacity=""');
+    expect(bars[11]).not.toContain(STILL_OUTLINE);
+    expect(bars[11]).toContain('opacity="0.3"');
+    // G7 move is beyond Max Move Gate 6.
+    expect(bars[14]).toContain('opacity="0.3"');
+    expect(bars[14]).not.toContain('stroke="#9467bd"');
+    expect(flat(renderGateEnergyChart(h, m))).toContain(
+      "faded = outside the radar's range (ignored)"
+    );
+    expect(flat(renderGateEnergyChart(live(), m))).not.toContain("faded =");
+  });
+
+  it("says what the radar itself reports under the bars", () => {
+    const say = (moving: string, still: string) =>
+      flat(
+        renderGateEnergyChart(
+          live({ [m.moving_target!]: ent(moving), [m.still_target!]: ent(still) }),
+          m
+        )
+      );
+    expect(say("off", "off")).toContain("The radar reports no target.");
+    expect(say("on", "off")).toContain("The radar reports a moving target.");
+    expect(say("off", "on")).toContain("The radar reports a still target.");
+    expect(say("on", "on")).toContain("The radar reports a moving and a still target.");
+    expect(say("unknown", "off")).not.toContain("The radar reports");
+  });
+
+  it("leaves the radar's answer out while engineering mode is off", () => {
+    const h = live({
+      [m.engineering_mode!]: ent("off"),
+      [m.moving_target!]: ent("off"),
+      [m.still_target!]: ent("off"),
+    });
+    expect(flat(renderGateEnergyChart(h, m))).not.toContain("The radar reports");
+  });
+});
+
+// An outlined bar next to "no target" is the LD2410 holding off until the
+// person moves (esphome#17620), not a broken chart; one line says so.
+describe("an outline next to the radar's no target", () => {
+  /** Engineering mode on, both target sensors off, G4 still 70 over 40 and
+   *  every other bar under its threshold. */
+  function motionGated(extra: Record<string, HassEntity> = {}): HomeAssistant {
+    const s: Record<string, HassEntity> = {
+      [m.engineering_mode!]: ent("on"),
+      [m.moving_target!]: ent("off"),
+      [m.still_target!]: ent("off"),
+    };
+    for (let g = 0; g < 9; g++) {
+      s[m.move_energy[g]] = ent("10");
+      s[m.still_energy[g]] = ent("10");
+      s[m.move_threshold[g]] = ent("40");
+      s[m.still_threshold[g]] = ent("40");
+    }
+    s[m.still_energy[4]] = ent("70");
+    return hass({ ...s, ...extra });
+  }
+
+  it("says the LD2410 often needs movement to detect again", () => {
+    const text = mountChart(motionGated()).textContent ?? "";
+    expect(text).toContain(NO_TARGET_VERDICT);
+    expect(text).toContain(NEEDS_MOVEMENT_LINE);
+    expect(NEEDS_MOVEMENT_LINE).toContain("LD2410");
+    expect(NEEDS_MOVEMENT_LINE).toContain("needs them to move before it detects them again");
+    expect(gateEnergyModel(motionGated(), m).noTarget).toBe(true);
+  });
+
+  it("stays out while the radar reports a target", () => {
+    const h = motionGated({ [m.still_target!]: ent("on") });
+    expect(gateEnergyModel(h, m).noTarget).toBe(false);
+    expect(flat(renderGateEnergyChart(h, m))).not.toContain(NEEDS_MOVEMENT_LINE);
+  });
+
+  it("stays out while no in-range bar is above its threshold", () => {
+    // No bar above its threshold at all.
+    const quiet = motionGated({ [m.still_energy[4]]: ent("10") });
+    expect(flat(renderGateEnergyChart(quiet, m))).toContain(NO_TARGET_VERDICT);
+    expect(flat(renderGateEnergyChart(quiet, m))).not.toContain(NEEDS_MOVEMENT_LINE);
+    // G4 is above its threshold but past Max Still Gate 3, so it does not count.
+    const past = motionGated({ [m.max_still_distance!]: ent("3") });
+    expect(flat(renderGateEnergyChart(past, m, "LD2410", "ld2410"))).not.toContain(
+      NEEDS_MOVEMENT_LINE
+    );
+    // Inside Max Still Gate 6 it does.
+    const inside = motionGated({ [m.max_still_distance!]: ent("6") });
+    expect(flat(renderGateEnergyChart(inside, m, "LD2410", "ld2410"))).toContain(
+      NEEDS_MOVEMENT_LINE
+    );
+  });
+
+  it("stays out while engineering mode is off, and on an LD2412", () => {
+    const off = motionGated({ [m.engineering_mode!]: ent("off") });
+    expect(flat(renderGateEnergyChart(off, m))).not.toContain(NEEDS_MOVEMENT_LINE);
+    // Measured on the LD2410 only.
+    expect(flat(renderGateEnergyChart(motionGated(), m, "LD2412", "ld2412"))).not.toContain(
+      NEEDS_MOVEMENT_LINE
+    );
   });
 });
