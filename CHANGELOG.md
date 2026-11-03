@@ -6,7 +6,7 @@ everyday use are in [README.md](README.md) and
 
 ## What changed in 2.4.0
 
-2.4.0b2 is a test build of these changes; what it changed since 2.4.0b1 is
+2.4.0b3 is a test build of these changes; what it changed since 2.4.0b1 is
 under [Changed since 2.4.0b1](#changed-since-240b1). The zone map on
 R PRO-1 and MTR-1 tabs now shows what each zone is doing: a zone lights up
 while someone is in it, each target is a numbered dot with a short trail,
