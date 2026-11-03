@@ -174,6 +174,17 @@ moves. A fix after `2.4.0b1` is published ships as `2.4.0b2`, with every copy
 bumped and the bundles rebuilt: a republished `2.4.0b1` would leave every
 browser that loaded it on the old bundles, and HACS would offer no update.
 
+### README images
+
+HACS and the Marketplace show a release's README, and that README loads its
+images from `main` (`raw.githubusercontent.com/.../main/docs/images/...`),
+so every published release shows what `docs/images` holds on `main` today.
+Never re-render an image a published README links: save the new render
+under a new name, such as `apollo-mmwave-gate-energy-2.4.0.gif`, and link
+that. When a release is published, add the images its README links to
+`PUBLISHED_IMAGES` in `tests/test_readme_images.py`, which fails if one of
+them changes.
+
 ### Stored data
 
 Zone data is persisted in `.storage/apollo_mmwave.zones`; installs upgrading
