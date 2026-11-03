@@ -5,6 +5,7 @@ from __future__ import annotations
 import itertools
 import logging
 import math
+import time
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, NamedTuple
 
@@ -37,7 +38,10 @@ from custom_components.apollo_mmwave.const import (
     STORE_INPUT_UNITS,
     STORE_ZONES,
 )
-from custom_components.apollo_mmwave.targets import build_point_rotator
+from custom_components.apollo_mmwave.targets import (
+    TARGET_PAIR_MS,
+    build_point_rotator,
+)
 
 from .conftest import RECT_ZONE
 
@@ -601,16 +605,17 @@ async def test_presence_converts_x_and_y_each_by_its_own_unit(
     await hass.async_block_till_done()
     assert hass.states.get(presence_id).state == "on"
 
-    # (500, 2500) mm, outside. Y read in X's millimeters would be 2.5 mm.
-    _set_target(hass, TARGET_1, 500, 2.5, ("mm", "m"))
+    # (510, 2500) mm, outside. Y read in X's millimeters would be 2.5 mm.
+    _set_target(hass, TARGET_1, 510, 2.5, ("mm", "m"))
     await hass.async_block_till_done()
     assert hass.states.get(presence_id).state == "off"
 
-    # (914.4, 1524) mm, inside; 4 ft is 1219.2 mm, outside.
+    # (914.4, 1524) mm, inside; 4 ft is 1219.2 mm, outside. Both axes move,
+    # so the reading is whole at once.
     _set_target(hass, TARGET_1, 3, 60, ("ft", "in"))
     await hass.async_block_till_done()
     assert hass.states.get(presence_id).state == "on"
-    _set_target(hass, TARGET_1, 4, 60, ("ft", "in"))
+    _set_target(hass, TARGET_1, 4, 61, ("ft", "in"))
     await hass.async_block_till_done()
     assert hass.states.get(presence_id).state == "off"
 
@@ -632,9 +637,9 @@ async def test_presence_converts_each_axis_before_rotating(
     await hass.async_block_till_done()
     assert hass.states.get(presence_id).state == "on"
 
-    # (-10 in, 1.5 m) is (-254, 1500) mm and rotates to (1500, 254): outside.
-    # With the units ignored, (-10, 1.5) rotates to (1.5, 10), inside.
-    _set_target(hass, TARGET_1, -10, 1.5, ("in", "m"))
+    # (-11 in, 1.5 m) is (-279.4, 1500) mm and rotates to (1500, 279.4):
+    # outside. With the units ignored, (-11, 1.5) rotates to (1.5, 11), inside.
+    _set_target(hass, TARGET_1, -11, 1.5, ("in", "m"))
     await hass.async_block_till_done()
     assert hass.states.get(presence_id).state == "off"
 
@@ -895,7 +900,7 @@ async def test_polygon_presence_concave_notch(
 
 
 async def test_ellipse_presence_includes_the_rim(
-    hass, entity_registry, setup_entry_with_zone
+    hass, freezer, entity_registry, setup_entry_with_zone
 ) -> None:
     """The center and a point on the rim read on, one just past the rim off."""
     device_id, _ = setup_entry_with_zone
@@ -911,12 +916,15 @@ async def test_ellipse_presence_includes_the_rim(
     await hass.async_block_till_done()
     assert hass.states.get(presence_id).state == "on"
 
+    # X alone moves, which counts once it has waited TARGET_PAIR_MS for a Y.
     _set_target(hass, TARGET_1, 600, 1000)  # past the rim
     await hass.async_block_till_done()
+    await _advance(hass, freezer, TARGET_PAIR_MS / 1000)
     assert hass.states.get(presence_id).state == "off"
 
     _set_target(hass, TARGET_1, 500, 1000)  # on the rim, inclusive
     await hass.async_block_till_done()
+    await _advance(hass, freezer, TARGET_PAIR_MS / 1000)
     assert hass.states.get(presence_id).state == "on"
 
 
@@ -1646,7 +1654,7 @@ async def test_person_seen_just_outside_releases_at_once(
     # Still for 10 s, so the walking-out rule alone would hold.
     await _sit(hass, freezer, TARGET_1, 900, 1000)
 
-    _set_target(hass, TARGET_1, 1300, 1000)  # 400 mm on, outside
+    _set_target(hass, TARGET_1, 1300, 1050)  # 403 mm on, outside
     await hass.async_block_till_done()
 
     assert _hold_state(hass, presence_id) == ("off", False)
@@ -1945,7 +1953,7 @@ async def test_someone_inside_again_ends_the_hold(
 
     # They walk out and are accounted for, and nothing is left to hold.
     await _advance(hass, freezer, 1)
-    _set_target(hass, TARGET_2, 1200, 1000)
+    _set_target(hass, TARGET_2, 1200, 1050)
     await hass.async_block_till_done()
     assert _hold_state(hass, presence_id) == ("off", False)
 
@@ -1966,7 +1974,7 @@ async def test_still_person_lost_while_another_is_inside_is_forgotten(
     assert _hold_state(hass, presence_id) == ("on", False)
 
     await _advance(hass, freezer, 2)
-    _set_target(hass, TARGET_2, 1200, 1000)  # the other walks out
+    _set_target(hass, TARGET_2, 1200, 1050)  # the other walks out
     await hass.async_block_till_done()
     assert _hold_state(hass, presence_id) == ("off", False)
 
@@ -2162,9 +2170,9 @@ async def test_ignored_target_does_not_release_a_hold(
     await hass.async_block_till_done()
     assert _hold_state(hass, presence_id) == ("on", True)
 
-    # Out of the ignore zone, 350 mm away, the same target does.
+    # Out of the ignore zone, 354 mm away, the same target does.
     await _advance(hass, freezer, 0.5)
-    _set_target(hass, TARGET_2, 1050, 1000)
+    _set_target(hass, TARGET_2, 1050, 1050)
     await hass.async_block_till_done()
     assert _hold_state(hass, presence_id) == ("off", False)
 
@@ -2768,3 +2776,193 @@ async def test_a_still_persons_last_report_jumping_at_the_edge_holds(
         assert _hold_state(hass, presence_id) == ("on", True), phase_s
         await _advance(hass, freezer, 3.5)
         assert _hold_state(hass, presence_id) == ("on", True), phase_s
+
+
+# Pairing a target's X and Y writes (targets.ReadingPairer). A zone beside
+# a diagonal walk from (-1 m, 1 m) to (1 m, 3 m): a band 150 to 450 mm to
+# its lower right. At 1 m/s the R PRO-1's X write lands with the Y of 0.62 s
+# before, about 310 mm off the walk, in the band; no whole reading does.
+BESIDE_WALK_ZONE = {
+    "shape": "polygon",
+    "data": {
+        "points": [
+            {"x": -894, "y": 894},
+            {"x": 1106, "y": 2894},
+            {"x": 1318, "y": 2682},
+            {"x": -682, "y": 682},
+        ]
+    },
+}
+
+
+@pytest.mark.parametrize("hold_s", [0, HOLD_S], ids=["no-hold", "held"])
+async def test_a_zone_beside_a_walk_never_reads_the_point_between_x_and_y(
+    hass, freezer, entity_registry, setup_entry_with_zone, hold_s
+) -> None:
+    """The new X with the old Y is no reading: the zone beside the walk stays off."""
+    device_id, _ = setup_entry_with_zone
+    presence_id = _presence_id(entity_registry, device_id)
+    path, arrive_s = _sit_then_walk((-1000.0, 1000.0), (1000.0, 3000.0), 1.0, 10)
+    written = _record_held(hass, presence_id)
+    for index, phase_s in enumerate(RADAR_PHASES_S):
+        await _restart_hold(hass, device_id, _hold_zone(BESIDE_WALK_ZONE, hold_s))
+        await _report_at_radar_cadence(
+            hass,
+            freezer,
+            TARGET_1,
+            (_jittered(path, start=7 * index), arrive_s + 3),
+            Cadence(RADAR_Y_LAG_S, phase_s),
+        )
+        await _lose(hass, TARGET_1)
+
+    assert [state for state, _held in written if state == "on"] == []
+
+
+async def test_a_move_along_one_axis_counts_once_the_pair_window_ends(
+    hass, freezer, entity_registry, setup_entry_with_zone
+) -> None:
+    """X written alone waits TARGET_PAIR_MS for a Y write, then counts alone."""
+    device_id, _ = setup_entry_with_zone
+    presence_id = _presence_id(entity_registry, device_id)
+    _set_target(hass, TARGET_1, 500, 1000)
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "on"
+
+    # Out past the right edge along X only. Home Assistant writes nothing
+    # for the Y that repeats, so a timer reads the zone again.
+    hass.states.async_set(TARGET_1["x"], "1500")
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "on"
+    await _advance(hass, freezer, (TARGET_PAIR_MS - 50) / 1000)
+    assert hass.states.get(presence_id).state == "on"
+    await _advance(hass, freezer, 0.05)
+    assert hass.states.get(presence_id).state == "off"
+
+    # The other axis's write within the window makes the reading whole at once.
+    hass.states.async_set(TARGET_1["x"], "500")
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "off"
+    await _advance(hass, freezer, RADAR_Y_LAG_S)
+    hass.states.async_set(TARGET_1["y"], "1100")
+    await hass.async_block_till_done()
+    assert hass.states.get(presence_id).state == "on"
+
+
+@pytest.mark.parametrize("y_lag", list(Y_LAGS))
+async def test_walking_in_turns_a_zone_on_within_the_pair_window(
+    hass, freezer, entity_registry, setup_entry_with_zone, y_lag
+) -> None:
+    """On no sooner than the first whole report inside, and at most 550 ms after."""
+    device_id, _ = setup_entry_with_zone
+    presence_id = _presence_id(entity_registry, device_id)
+    # Diagonally into the room through its far right corner, at 1 m/s.
+    path, arrive_s = _sit_then_walk((2500.0, 5000.0), (0.0, 2000.0), 1.0, 10)
+    y_lag_s = Y_LAGS[y_lag]
+    on_at: list[float] = []
+
+    @callback
+    def _on(event) -> None:
+        if event.data["new_state"].state == "on":
+            on_at.append(time.monotonic())
+
+    async_track_state_change_event(hass, [presence_id], _on)
+    late = []
+    for phase_s in RADAR_PHASES_S:
+        await _restart_hold(hass, device_id, _hold_zone(ROOM_ZONE, 0))
+        on_at.clear()
+        start = time.monotonic()
+        await _report_at_radar_cadence(
+            hass, freezer, TARGET_1, (path, arrive_s + 2), Cadence(y_lag_s, phase_s)
+        )
+        # The radar's first report, X and the Y written after it, that lies
+        # inside, in the inches it writes.
+        report_s = phase_s
+        while True:
+            x = round(path(report_s)[0] / 25.4, 1) * 25.4
+            y = round(path(report_s + y_lag_s)[1] / 25.4, 1) * 25.4
+            if (
+                ROOM_ZONE["data"]["x_min"] <= x <= ROOM_ZONE["data"]["x_max"]
+                and ROOM_ZONE["data"]["y_min"] <= y <= ROOM_ZONE["data"]["y_max"]
+            ):
+                break
+            report_s += RADAR_PERIOD_S
+        delay_s = on_at[0] - start - report_s
+        # The frozen clock adds up in floats, off by a hair.
+        if not -1e-6 <= delay_s <= TARGET_PAIR_MS / 1000 + 1e-6:
+            late.append((round(phase_s, 2), round(delay_s, 3)))
+        await _lose(hass, TARGET_1)
+
+    assert late == []
+
+
+async def test_a_target_lost_while_its_write_waits_is_held_there(
+    hass, freezer, entity_registry, setup_entry_with_zone
+) -> None:
+    """The radar never pairs that write, so the hold reads it as their last report."""
+    device_id, _ = setup_entry_with_zone
+    await _store_zone(hass, device_id)
+    presence_id = _presence_id(entity_registry, device_id)
+    written = _record_held(hass, presence_id)
+    await _sit(hass, freezer, TARGET_1, 1500, 1000)  # outside, to the right
+    assert _hold_state(hass, presence_id) == ("off", False)
+
+    # X alone, 500 mm inside the right edge, then lost before its Y lands.
+    hass.states.async_set(TARGET_1["x"], "500")
+    await hass.async_block_till_done()
+    assert _hold_state(hass, presence_id) == ("off", False)
+    await _advance(hass, freezer, 0.3)
+    await _lose(hass, TARGET_1)
+
+    assert _hold_state(hass, presence_id) == ("on", True)
+    assert written[-1] == ("on", True)
+    await _advance(hass, freezer, HOLD_S + 1)
+    assert _hold_state(hass, presence_id) == ("off", False)
+
+
+async def test_a_zone_with_no_hold_never_reads_a_write_lost_while_it_waits(
+    hass, freezer, entity_registry, setup_entry_with_zone
+) -> None:
+    """Without a hold, a target lost before its reading is whole reads nothing."""
+    device_id, _ = setup_entry_with_zone
+    presence_id = _presence_id(entity_registry, device_id)
+    _set_target(hass, TARGET_1, 1500, 1000)
+    await hass.async_block_till_done()
+    changes = _record_state_changes(hass, presence_id)
+
+    hass.states.async_set(TARGET_1["x"], "500")
+    await hass.async_block_till_done()
+    await _advance(hass, freezer, 0.3)
+    await _lose(hass, TARGET_1)
+    await _advance(hass, freezer, 1)
+
+    assert changes == []
+    assert hass.states.get(presence_id).state == "off"
+
+
+async def test_the_pair_timer_is_cancelled_on_removal(
+    hass, freezer, setup_entry_with_zone, monkeypatch, caplog
+) -> None:
+    """A zone deleted while a write waits for its other axis stays gone."""
+    device_id, _ = setup_entry_with_zone
+    _set_target(hass, TARGET_1, 500, 1000)
+    await hass.async_block_till_done()
+    hass.states.async_set(TARGET_1["x"], "600")
+    await hass.async_block_till_done()
+    evaluated: list[str] = []
+    real = ZonePresenceBinarySensor._evaluate_and_write  # noqa: SLF001 - the subject
+
+    def _spy(self, *, write: bool = True) -> None:
+        evaluated.append(self.entity_id)
+        real(self, write=write)
+
+    monkeypatch.setattr(ZonePresenceBinarySensor, "_evaluate_and_write", _spy)
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_UPDATE_ZONE,
+        {"device_id": device_id, "zone_id": 1, "delete": True},
+        blocking=True,
+    )
+    await _advance(hass, freezer, 1)
+
+    assert evaluated == []
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]

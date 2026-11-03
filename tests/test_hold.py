@@ -614,6 +614,29 @@ def test_a_first_seen_step_that_is_no_walk_carries_nobody_on() -> None:
     assert not tracker.step(1.5, [], [], "rect", RECT)
 
 
+def test_a_write_that_waits_for_its_other_axis_is_a_report_from_when_it_landed() -> (
+    None
+):
+    """Their whole reading places them; their latest write is what they reported."""
+    tracker = HoldTracker()
+    assert tracker.step(0.0, [_reading(0, 0, 1000)], [], "rect", RECT)
+    # X alone, 900 mm on at 1.0 s, still waiting for its Y at 1.2 s: the zone
+    # tests the whole (0, 1000), and the report is the write, from 1.0 s.
+    waiting = Reading(
+        0,
+        (0, 1000),
+        (0, 1000),
+        written=((900, 1000), (900, 1000)),
+        written_at=1.0,
+    )
+    assert tracker.step(1.2, [waiting], [], "rect", RECT)
+    assert tracker.occupants[0].reports[-1] == (1.0, (900, 1000), (900, 1000))
+    assert tracker.occupants[0].last_map == (900, 1000)
+
+    # Lost then: 900 mm/s is walking, 100 mm from the edge. They walked out.
+    assert not tracker.step(1.4, [], [], "rect", RECT)
+
+
 def test_someone_inside_again_ends_the_hold() -> None:
     """The people inside now are the only ones a later emptying accounts for."""
     tracker = _occupied([(0, 1000)])

@@ -47,6 +47,13 @@ one axis written before the other. The point in between is nobody's
 position, so the slot's last good reading stands in for it, or for an
 appearance nothing does (see half_vanished and HoldTracker.usable).
 
+Whether someone is inside or outside is decided by their whole reading:
+while one axis's write waits for the other's, their reading before it
+stands (``targets.ReadingPairer``). Their reports, the motion rule 2 reads,
+come from their latest write all the same (``Reading.written``): an axis
+written alone is a real report of that axis, often the last one the radar
+sends before it loses someone walking out.
+
 The rules work on ``Reading`` objects: one tracked target as presence and the
 movement recorder see it, with its slot in the radar's pair list, its position
 in millimeters in the raw sensor frame, and the same point rotated into the
@@ -155,6 +162,23 @@ class Reading:
     # The slot's last good reading, standing in for a half-vanished one (see
     # HoldTracker.usable): where the target was, not a new position.
     carried: bool = False
+    # Where the target's latest write puts it, raw and map frames, while that
+    # write waits for the other axis's and raw and map keep the whole reading
+    # before it (see targets.ReadingPairer): no zone tests it, but it is a
+    # report of the person. written_at: when the latest write that changed
+    # the reading landed, in seconds of time.monotonic(), when the pairer
+    # knows it; a write that waited for the other axis counts later.
+    written: tuple[tuple[float, float], tuple[float, float]] | None = None
+    written_at: float | None = None
+
+    @property
+    def latest(self) -> tuple[tuple[float, float], tuple[float, float]]:
+        """Return where the target's latest write puts it: raw, then map."""
+        return self.written or (self.raw, self.map)
+
+    def report_t(self, now: float) -> float:
+        """Return when the target's latest write landed, read at now."""
+        return now if self.written_at is None else min(self.written_at, now)
 
 
 def half_vanished(prev: tuple[float, float] | None, raw: tuple[float, float]) -> bool:
@@ -200,13 +224,14 @@ class Occupant:
     @classmethod
     def first(cls, reading: Reading, now: float) -> Occupant:
         """Return a person first found inside now."""
+        raw, map_ = reading.latest
         return cls(
             slot=reading.slot,
             first_seen=now,
             last_t=now,
-            last_map=reading.map,
-            last_raw=reading.raw,
-            reports=[(now, reading.map, reading.raw)],
+            last_map=map_,
+            last_raw=raw,
+            reports=[(reading.report_t(now), map_, raw)],
         )
 
     @property
@@ -216,14 +241,15 @@ class Occupant:
 
     def update(self, reading: Reading, now: float) -> None:
         """Record that this person is still inside, at reading."""
-        if reading.raw != self.last_raw:
+        raw, map_ = reading.latest
+        if raw != self.last_raw:
             self.reports = [
                 report
                 for report in self.reports
                 if now - report[0] <= HOLD_MOTION_WINDOW_S
             ]
-            self.reports.append((now, reading.map, reading.raw))
-        self.last_t, self.last_map, self.last_raw = now, reading.map, reading.raw
+            self.reports.append((reading.report_t(now), map_, raw))
+        self.last_t, self.last_map, self.last_raw = now, map_, raw
         self.carried_since = None
 
     def _report_by(
