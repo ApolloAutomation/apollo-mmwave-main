@@ -156,13 +156,16 @@ threshold.
 
 The version is kept in five places:
 `custom_components/apollo_mmwave/manifest.json`, `pyproject.toml`,
-`frontend-src/package.json`, `CARD_VERSION` in `frontend-src/src/index.ts`, and
-`frontend-src/package-lock.json` (refresh it with
+`frontend-src/package.json`, `CARD_VERSION` in
+`frontend-src/src/version.ts`, and `frontend-src/package-lock.json` (refresh
+it with
 `cd frontend-src && npm install --package-lock-only`).
 `tests/test_versions.py` and `frontend-src/test/build.test.ts` fail if a copy
 is missed. The manifest version is the `?v=` on the served bundles, so a
 release that changes the bundles needs a bump, or browsers keep their cached
-copy. Rebuild after bumping, since `CARD_VERSION` is part of the tuning bundle.
+copy. Rebuild after bumping, since `CARD_VERSION` is part of both bundles: the
+cards compare it with the version Home Assistant runs to tell a page to
+reload (see "Version check" in ARCHITECTURE.md).
 
 A pre-release version such as `2.4.0b1` is fine in all five places: npm keeps
 it as written, both version tests accept it, and AwesomeVersion, which Home

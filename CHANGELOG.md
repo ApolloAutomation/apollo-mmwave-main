@@ -6,22 +6,30 @@ everyday use are in [README.md](README.md) and
 
 ## What changed in 2.4.0
 
-2.4.0b3 is a test build of these changes; what it changed since 2.4.0b1 is
-under [Changed since 2.4.0b1](#changed-since-240b1). The zone map on
-R PRO-1 and MTR-1 tabs now shows what each zone is doing: a zone lights up
-while someone is in it, each target is a numbered dot with a short trail,
-and Coverage paints where people have been. A zone can stay on for someone
-who sits still, or ignore a fan or a curtain. You can mark a zone's corners
-by walking them, read a zone's size while you draw it, put a view-only map
-on a phone dashboard, and, as an administrator, replay up to 24 hours of
-movement. On a phone, a locked map now scrolls the page.
+2.4.0b3 is a test build of these changes. What it changed since 2.4.0b2 is
+under [Changed since 2.4.0b2](#changed-since-240b2), and what 2.4.0b2
+changed since 2.4.0b1 under [Changed since 2.4.0b1](#changed-since-240b1).
+The zone map on R PRO-1 and MTR-1 tabs now shows what each zone is doing: a
+zone lights up while someone is in it, each target is a numbered dot with a
+short trail, and Coverage paints where people have been. A zone can stay on
+for someone who sits still, or ignore a fan or a curtain. The map is twice
+as wide on a wide screen and zooms in up to 8x, and corners snap to round
+values, so you can place them to the centimeter. You can mark a zone's
+corners by walking them, read a zone's size while you draw it, put a
+view-only map on a phone dashboard, and, as an administrator, replay up to
+24 hours of movement. On a phone, a locked map now scrolls the page. Gate
+radar tabs show the radar's own answer under the Gate Energy chart, and
+every tab says when the page runs other cards than Home Assistant after an
+update.
 Nothing needs changing by hand unless your Lovelace resources are managed in
 YAML (replace both `?v=` URLs; see
 [Lovelace resources](docs/configuration.md#lovelace-resources)), or an
 automation expects zone presence to read `off` while the radar is offline. It
 now reads `unavailable`, also after every Home Assistant restart until the
 radar connects, so a `to: "off"` trigger without `from:` fires when the radar
-comes back (see the offline item below).
+comes back (see the offline item below). Zone presence also waits for both
+of a target's coordinates now, so a zone can turn on or off up to about half
+a second later than in 2.3.0 (see the presence item below).
 
 - **Lit zones, numbered dots and trails.** A zone is filled and outlined
   solid while its presence sensor is on, pale and dashed while it is off,
@@ -30,10 +38,30 @@ comes back (see the offline item below).
   and a fading trail of its last 3 seconds. A zone that stays on because of
   its hold time adds "(held)" to its label. See
   [What the map shows](docs/configuration.md#what-the-map-shows).
+- **Zoom and pan.** The zone map zooms in up to 8x with **+**, **−** and
+  **Fit** over its lower right corner, with Ctrl or Cmd and the scroll
+  wheel, or a trackpad pinch in Chrome, Edge and Firefox, and with two
+  fingers on a phone, also on a locked map. Shift and drag, the middle mouse
+  button or two fingers move a zoomed map. **Fit** shows your zones, and
+  pressed again the whole map. Grid lines get finer as you zoom in, down to
+  10 cm or 3 in. A plain scroll still scrolls the page, and a view-only map
+  has no zoom. See
+  [Zoom and pan](docs/configuration.md#zoom-and-pan).
+- **Corners snap.** Corners you draw land on round values, about a tenth of
+  the grid line spacing: every 10 cm at 1 m lines, every 2 in at 2 ft
+  lines, and finer as you zoom in. Hold Alt (Option on a Mac) to place one
+  freely. Corners marked by walking never snap. See
+  [Drawing zones](docs/configuration.md#drawing-zones).
+- **A wider map.** On R PRO-1 and MTR-1 tabs the zone map's column is twice
+  as wide as the others on a wide screen, and the map is never taller than
+  the window less about 200 px. On an MTR-1 tab, Start here and Radar setup
+  sit side by side above the map. Phones are unchanged.
 - **Zone size.** While you draw a rectangle, ellipse or polygon, its width
   and depth show above the pointer in the map's unit, such as
-  "2.4 m × 1.8 m" or "7 ft 11 in × 9 ft 10 in", and higher up on a touch
-  screen so your finger does not cover them. The zone list under
+  "2.4 m × 1.8 m" or "7 ft 11 in × 9 ft 10 in", to the centimeter while
+  corners snap finer than 10 cm, and higher up on a touch screen so your
+  finger does not cover them. Near the radar, where there is no room above,
+  a finger's readout sits beside it. The zone list under
   **Configure → Zones** shows each zone's size too.
 - **View-only map.** Add a zone map card with `view_only: true`, or tick
   **View only (the map without drawing tools)** in its card editor, to show
@@ -42,10 +70,12 @@ comes back (see the offline item below).
   dashboard keeps the full map. See
   [Card options](docs/configuration.md#card-options).
 - **Mark corners by walking.** An administrator can press 🚶 (**Mark corners
-  by walking**) in the drawing menu of an unlocked map, stand still for
-  about 3 seconds in each corner of an area and press **Corner here**, then
-  **Finish**. Two corners make a rectangle, three or more a polygon. Only
-  the person walking may be on the map. See
+  by walking**) in the drawing menu of an unlocked map, or the **🚶 Mark
+  corners by walking** chip under the map on a phone or tablet, stand still
+  for about 3 seconds in each corner of an area and press **Corner here**,
+  then **Finish**. Two corners make a rectangle, three or more a polygon.
+  Only the person walking may be on the map, and a zoomed map pans after
+  them. See
   [Mark corners by walking](docs/configuration.md#mark-corners-by-walking).
 - **Coverage paint.** **Coverage** under the map paints every spot a target
   has been since the page opened, so you can see where the radar picks people
@@ -57,8 +87,12 @@ comes back (see the offline item below).
   someone inside goes still and the radar loses them, and still turns the
   zone off when the radar sees them walk out: within about 3 seconds when
   they walk out into the room, or at once when they walk out of its view
-  after about two seconds of walking in the zone. A shorter walk out of
-  view, from a seat beside a door for example, can keep the zone held.
+  after about two seconds of walking in the zone. Someone seen in the zone
+  for under about 1.2 seconds walks out only within 0.3 m of an edge,
+  unless the radar saw them walk at 0.85 m/s or more, so someone who walks
+  into a couch or bed zone and is lost as they sit down is held. A shorter
+  or slower walk out of view, from a seat beside a door for example, can
+  keep the zone held.
   Someone new the radar picks up within a few meters in the first 3 seconds
   can end a hold early; someone or something it was already tracking counts
   only within 0.6 m. A radar reconnect or a Home Assistant restart ends a
@@ -73,6 +107,15 @@ comes back (see the offline item below).
   not the LD2450 Zone Type setting of the R PRO-1 and MTR-1, which should
   stay Disabled. Automations can set it with `update_zone`'s new
   `zone_type`.
+- **Zone presence pairs X and Y.** A target's X and Y are two writes, and
+  the R PRO-1 writes Y about 0.45 seconds after X. Zone presence now waits
+  for both before it tests a zone, so a zone beside a walking path no
+  longer turns on for a moment at a point between them, a new X with the
+  old Y, where nobody stood. A zone can turn on or off up to about half a
+  second later than in 2.3.0, never sooner, and a move along one axis only
+  counts 0.55 seconds after it is written. This holds for every detect
+  zone, with a hold time or without. See
+  [Zones in automations](docs/configuration.md#zones-in-automations).
 - **Offline presence reads unavailable.** While the radar is offline, its
   zone presence sensors read `unavailable` instead of `off` (ignore zones
   stay `off`), the zones turn gray and the map says "Radar offline". The same
@@ -94,10 +137,12 @@ comes back (see the offline item below).
   how many points it holds. Turning it off deletes that radar's history from
   Home Assistant, while backups made before keep their copy. See
   [Movement history](docs/configuration.md#movement-history).
-- **Flip left to right.** If a dot moves the opposite way from you, an
-  administrator can tick **Flip the map left to right (display only)** under
-  **Configure**, and everyone sees that radar's map flipped. Zones, presence
-  and history are not changed. `update_zone` takes it as `mirror_x`.
+- **Flip left to right.** If, with the map turned the way the room is, a
+  dot moves the opposite way from you, an administrator can tick **Flip the
+  map left to right (display only)** under **Configure**, and everyone sees
+  that radar's map flipped. Zones, presence and history are not changed.
+  `update_zone` takes it as `mirror_x`. A hint under **Cone rotation** says
+  to mount the sensor before you set it.
 - **Phone and lock fixes.** A swipe that starts on a locked map, on a map in
   Walk, or on a map with no zone selected scrolls the page instead of being
   taken for drawing. While the map is locked, double-clicking a zone's button
@@ -108,7 +153,28 @@ comes back (see the offline item below).
   rebuilds the dashboard, which dropped a zone being drawn on any tab; a
   tab's "Offline right now" note now stays until you reload the page. A name
   sent with `update_zone` in the call that creates a zone now renames its
-  entities too.
+  entities too, and a zone that reuses the number of a deleted one starts
+  with fresh entity names (its entity id still comes back; see
+  [Zones in automations](docs/configuration.md#zones-in-automations)).
+- **LD2450 Presence.** The first row of LD2450 Live and the LD2450's line in
+  the occupancy history read "LD2450 Presence" on every tab, so it is clear
+  that it covers the radar's whole view, not a zone.
+- **Gate radar tabs.** The Gate Energy chart's legend says "outlined bar =
+  above threshold" instead of "(detecting)", gates outside the radar's range
+  are faded, and while Radar Engineering Mode is on a line under the chart
+  gives the radar's own answer, such as "The radar reports no target." The
+  Distances card reads "distance unknown" instead of drawing 0 while the
+  radar reports a target with no distance. On MSR-1 and MSR-2 tabs, Start
+  here and the LD2410 Zone Config note recommend **Radar Target** for
+  automations instead of **Any zone**, since the zone sensors need that
+  distance. The Auto-calibrate card says to raise Radar Timeout to 60 s or
+  more if Radar Target turns off while someone sits still. See
+  [Gate radar cards](docs/configuration.md#gate-radar-cards).
+- **Out-of-date pages.** After an update, the Radar setup card, or the zone
+  map card when it comes first on the page, says when the page still runs
+  the old cards, with a **Reload** button, or when Home Assistant needs a
+  restart to finish updating. See
+  [After an update](docs/configuration.md#after-an-update).
 - **Going back to 2.3.0.** Before going back to 2.3.0, turn Movement history
   off on every radar. 2.3.0 neither reads nor deletes the movement history
   file, so it would stay on disk and in every later backup. 2.3.0 also
@@ -123,6 +189,83 @@ comes back (see the offline item below).
   [bb12ett/esphome-radar-suite](https://github.com/bb12ett/esphome-radar-suite)
   and [baes-cloud/ha-rmm-replay](https://github.com/baes-cloud/ha-rmm-replay),
   both MIT licensed. They were reimplemented here, and no code was copied.
+
+### Changed since 2.4.0b2
+
+2.4.0b3 follows reports from MSR-1 and MTR-1 owners and the review of
+2.4.0b2: a zone map too small to place corners on, even on a large monitor,
+a couch or bed zone that could let go of someone who sat down right after
+walking in, and gate radar charts that read as if the radar saw someone when
+it did not.
+
+- **Zoom and pan.** New: **+**, **−** and **Fit** over the zone map's lower
+  right corner, Ctrl or Cmd and the scroll wheel (a trackpad pinch in
+  Chrome, Edge and Firefox), and a two-finger pinch on a phone, also on a
+  locked map and in Walk. Shift and drag, the middle mouse button or two
+  fingers pan. Grid lines get finer as you zoom in. On a touch map, a
+  second finger that lands before the first has moved now starts a pinch
+  instead of being ignored, and Shift and drag pans instead of drawing.
+- **Corners snap.** Corners you draw snap to round values, about a tenth of
+  the grid line spacing, and Alt or Option places them freely. While they
+  snap finer than 10 cm, the size readout reads to the centimeter.
+- **A wider map.** The zone map's column on R PRO-1 and MTR-1 tabs is twice
+  as wide on a wide screen, with the map never taller than the window less
+  about 200 px. On an MTR-1, Start here and Radar setup share the row above
+  the map.
+- **Size readout on a phone.** Near the radar, where there is no room above
+  your finger, the readout now sits beside it instead of under the
+  fingertip.
+- **Walk on a phone.** A **🚶 Mark corners by walking** chip beside
+  **Coverage** starts Walk, where the 🚶 among the drawing modes was often
+  missed. A zoomed map follows the walker.
+- **Hints.** The flip hint reads "Turn this on if, with the map turned the
+  way the room is, a dot moves the opposite way from you.", since at a Cone
+  rotation of 180° a correct map fails the old test. A new hint under
+  **Cone rotation** reads "Mount the sensor first, then set this. Zones
+  match the room only while the sensor stays mounted that way."
+- **Hold time.** Someone seen in a zone for under about 1.2 seconds walks
+  out only within 0.3 m of an edge again, as in 2.4.0b1, unless the radar
+  saw them walk at 0.85 m/s or more. In a simulation at the R PRO-1's
+  reporting rate, someone who walks into a couch zone and is lost half a
+  second after sitting down, with Y written after X, is held in 96.7% of
+  runs instead of 76.7%, and in a bed zone in 94.2% instead of 81.7%. The
+  cost: a slow walk through a zone and out of the radar's view soon after
+  entering it, at 0.6 m/s for example, ends the hold at once only about 43
+  to 48% of the time.
+- **Zone presence pairs X and Y.** Zone presence waits for both of a
+  target's coordinates before it tests a zone, as movement history, trails
+  and Coverage already did, so a zone beside a walking path no longer reads
+  a point nobody stood at. In a simulation, a zone turned on at the same
+  moment as in 2.4.0b2 in about two thirds of walk-ins and about 0.45
+  seconds later in the rest, never more than 0.55 seconds later and never
+  sooner. A move along one axis only counts 0.55 seconds after it is
+  written, also for zones with no hold time.
+- **Reused zone numbers.** A zone that **Add Zone** creates on the number
+  of a deleted zone starts without the entity names Apollo mmWave gave the
+  old zone, such as "Zone 1 presence - Couch", and keeps names you set
+  yourself. The old entity id still comes back with the number.
+- **Gate Energy chart.** The legend says "outlined bar = above threshold"
+  instead of "outlined bar = above threshold (detecting)", gates past Max
+  Move Gate or Max Still Gate (outside Min Gate to Max Gate on the LD2412)
+  are faded and never outlined, and while Radar Engineering Mode is on a
+  line under the chart says what the radar itself reports. On an LD2410
+  that reports no target while a bar is outlined, a second line explains
+  that it often needs someone who sits still to move before it detects
+  them again.
+- **Distances.** A row whose target is on while its distance reads unknown
+  reads "distance unknown" instead of a distance of 0.
+- **Automations on an MSR.** Start here and the LD2410 Zone Config note
+  recommend **Radar Target** for the whole room, and a Radar Timeout of
+  60 s or more for someone who sits still, instead of **Any zone**.
+- **Auto-calibrate.** The card says what to do when Radar Target turns off
+  while someone sits still: raise Radar Timeout, or Undo the calibration.
+- **LD2450 Presence.** LD2450 Live's first row reads "LD2450 Presence"
+  instead of "Presence" on every tab, and so does the LD2450's history line
+  on an MTR-1.
+- **Out-of-date pages.** The Radar setup card, and the zone map card when
+  it comes first on the page, say when the page runs older cards than Home
+  Assistant ("Reload") or newer ones ("Restart Home Assistant to finish
+  updating").
 
 ### Changed since 2.4.0b1
 
