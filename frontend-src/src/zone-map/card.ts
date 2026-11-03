@@ -339,6 +339,13 @@ const WHEEL_PX_PER_STEP = 100;
 // Walk keeps the walker this fraction of a zoomed view's width and height
 // inside each edge, panning (and zooming out only if it must) to do so.
 const WALK_FOLLOW_INSET = 0.15;
+// The map is never taller than the screen less this much (CSS px): Home
+// Assistant's toolbar, the card's padding and title, and the row of chips
+// under the map. A double-width section on a short screen would otherwise
+// push the chips off the bottom. Never below MAP_MIN_HEIGHT_PX, so a phone
+// on its side still gets a map to work on.
+const MAP_HEIGHT_ROOM_PX = 200;
+const MAP_MIN_HEIGHT_PX = 240;
 // The notes over the map's top corners ("Radar offline" and the Replay
 // badge) sit this far (CSS px) below its top edge, and are about this tall:
 // .map-note's 12 px text at line height 1.3, with 4 px padding above and
@@ -1558,6 +1565,24 @@ export class ZoneMapCard extends HTMLElement {
     `;
   }
 
+  /**
+   * The canvas container's width, the same on the full card and the map
+   * alone: as wide as the card, but never so wide that the map, at its
+   * shape (--zm-aspect, which _sizeCanvas sets), is taller than the screen
+   * less MAP_HEIGHT_ROOM_PX (or MAP_MIN_HEIGHT_PX, if that is more), and
+   * centered when that holds it in. The width gives way, not the height, so
+   * a meter stays as long across as it is down. A section of the usual
+   * width only meets the cap on a short screen (a phone on its side); a
+   * double-width section can meet it on a 1080p monitor. Two
+   * declarations: a browser without dvh (the height the screen shows now,
+   * past its toolbars) keeps the vh one.
+   */
+  _mapSizeRule() {
+    const cap = (unit) =>
+      `width: min(100%, calc(max(${MAP_MIN_HEIGHT_PX}px, 100${unit} - ${MAP_HEIGHT_ROOM_PX}px) * var(--zm-aspect, 1)));`;
+    return `.canvas-container { ${cap('vh')} ${cap('dvh')} margin-inline: auto; }`;
+  }
+
   _template() {
     // First: a load error is never a blank map, view-only or not.
     if (this._loadError) {
@@ -1581,7 +1606,8 @@ export class ZoneMapCard extends HTMLElement {
         .container.dark { background: ${COLOR.ui.darkContainerBackground}; color: ${COLOR.ui.darkContainerText}; color-scheme: dark; }
         .container input { accent-color: var(--primary-color); }
         .container.dark .canvas-container { border-color: ${COLOR.ui.darkCanvasBorder}; background: ${COLOR.ui.darkCanvasBackground}; }
-        .canvas-container { position: relative; width: 100%; aspect-ratio: 1; border: 1px solid var(--divider-color); border-radius: var(--zm-radius); overflow: hidden; background: ${COLOR.ui.lightCanvasBackground}; isolation: isolate; container-type: size; }
+        .canvas-container { position: relative; aspect-ratio: 1; border: 1px solid var(--divider-color); border-radius: var(--zm-radius); overflow: hidden; background: ${COLOR.ui.lightCanvasBackground}; isolation: isolate; container-type: size; }
+        ${this._mapSizeRule()}
         canvas { width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
         /* A map that cannot be drawn on (locked, in Walk, or with no zone
            selected) lets a vertical swipe scroll the page. Not a pinch: two
@@ -1854,7 +1880,8 @@ export class ZoneMapCard extends HTMLElement {
         .container { background: var(--card-background-color); border-radius: var(--ha-card-border-radius, 12px); box-shadow: var(--ha-card-box-shadow); padding: 16px; }
         .container.dark { background: ${COLOR.ui.darkContainerBackground}; color: ${COLOR.ui.darkContainerText}; color-scheme: dark; }
         .container.dark .canvas-container { border-color: ${COLOR.ui.darkCanvasBorder}; background: ${COLOR.ui.darkCanvasBackground}; }
-        .canvas-container { position: relative; width: 100%; aspect-ratio: 1; border: 1px solid var(--divider-color); border-radius: var(--zm-radius); overflow: hidden; background: ${COLOR.ui.lightCanvasBackground}; isolation: isolate; container-type: size; }
+        .canvas-container { position: relative; aspect-ratio: 1; border: 1px solid var(--divider-color); border-radius: var(--zm-radius); overflow: hidden; background: ${COLOR.ui.lightCanvasBackground}; isolation: isolate; container-type: size; }
+        ${this._mapSizeRule()}
         /* Nothing to draw, so no crosshair, and a vertical swipe scrolls the
            page. Two declarations: iOS 14 does not know pinch-zoom and keeps
            the first. */
@@ -6499,7 +6526,12 @@ export class ZoneMapCard extends HTMLElement {
     this._basePxPerY = height / safeHeight;
     this._applyView();
     const container = this.canvas.parentElement;
-    if (container) container.style.aspectRatio = `${width} / ${height}`;
+    if (container) {
+      container.style.aspectRatio = `${width} / ${height}`;
+      // The height cap's width (see the .canvas-container rule) keeps this
+      // shape too.
+      container.style.setProperty('--zm-aspect', String(width / height));
+    }
   }
 
   startDrawing(e) {

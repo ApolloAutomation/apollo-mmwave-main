@@ -11376,4 +11376,22 @@ describe("zone map card zoom and pan", () => {
     // A page load is a new card, at 1x.
     expect(new ZoneMapCard() as any).toHaveProperty("_view", null);
   });
+
+  it("caps the map's height to the screen and keeps its shape, on the map alone too", async () => {
+    const hass = fakeHass({ ...ZONE_PAYLOAD, zones: {}, rotation_deg: 0 });
+    hass.config = { unit_system: { length: "km" } };
+    const rule =
+      ".canvas-container { width: min(100%, calc(max(240px, 100vh - 200px) * var(--zm-aspect, 1)));" +
+      " width: min(100%, calc(max(240px, 100dvh - 200px) * var(--zm-aspect, 1))); margin-inline: auto; }";
+    for (const config of [{}, { view_only: true }]) {
+      const card = await mountCard(hass, config);
+      const container = card.shadowRoot.querySelector(".canvas-container");
+      expect(card.shadowRoot.querySelector("style").textContent).toContain(rule);
+      // The fitted map is 800 by 600: the capped width keeps 4:3.
+      expect(container.style.aspectRatio).toBe("800 / 600");
+      expect(container.style.getPropertyValue("--zm-aspect")).toBe(String(800 / 600));
+      // The container queries the overlay buttons size by still apply.
+      expect(card.shadowRoot.querySelector("style").textContent).toContain("container-type: size");
+    }
+  });
 });
