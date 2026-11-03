@@ -70,31 +70,46 @@ charts, thresholds, detection range and occupancy.
 
 ![The Gate Energy chart turning on: dimmed until Radar Engineering Mode is on, then a move bar and a still bar for each gate, with a triangle marking each threshold](https://raw.githubusercontent.com/ApolloAutomation/apollo-mmwave-main/main/docs/images/apollo-mmwave-gate-energy.gif)
 
-## Install with HACS
+## Install with HACS or the Marketplace
 
 You need:
 
 - Home Assistant 2026.8.1 or later.
-- [HACS](https://hacs.xyz/docs/use/download/download/) 2.0.5 or later. To
+- On Home Assistant 2026.10 or earlier,
+  [HACS](https://hacs.xyz/docs/use/download/download/) 2.0.5 or later. To
   check, open the menu (⋮) in HACS, choose **About HACS** and read
-  **Integration version**.
+  **Integration version**. Home Assistant 2026.11 and later have HACS built
+  in as the **Marketplace**, under **Settings → Marketplace**, so there is
+  nothing to install.
 - Your sensor added to Home Assistant. Apollo sensors use ESPHome, so it
   shows up under **Settings → Devices & services → ESPHome**.
 
-This button adds the repository to HACS and opens Apollo mmWave there, so it
-does steps 1 and 2 for you. If it shows an **Add custom repository** box,
-press **Add**. Then skip to step 3.
+This button opens Apollo mmWave in HACS or the Marketplace and adds the
+repository if it is not there yet, so it does steps 1 and 2 for you. If it
+shows an **Add custom repository** box, press **Add**. Then skip to step 3.
+Apollo mmWave was also accepted into the default HACS list (the
+Marketplace's **Community catalog**). Once a search in HACS or the
+Marketplace finds it, you can open it from there and skip to step 3.
 
 [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=ApolloAutomation&repository=apollo-mmwave-main&category=integration)
 
+On Home Assistant 2026.11 or later, the Marketplace may first show a warning:
+tick **I understand the risks and agree** and press **Continue**. Adding a
+custom repository there needs a GitHub account. If a **Connect GitHub**
+window opens, follow its steps, then press the button again.
+
 1. Open **HACS** in the sidebar. Open the menu (⋮) in the top right and
-   choose **Custom repositories**.
+   choose **Custom repositories**. On 2026.11 or later, open
+   **Settings → Marketplace** and press **Add from link** (a link icon on a
+   narrow screen) instead.
 2. In **Repository**, paste
    `https://github.com/ApolloAutomation/apollo-mmwave-main`. Set **Type** to
-   **Integration**, press **Add**, then close the window. Search HACS for
+   **Integration**, press **Add**, then close the window. In the
+   Marketplace, paste it in **GitHub link** and press **Add**. Search for
    **Apollo mmWave** and open it.
 3. Press **Download** in the bottom right, then **Download** again in the
-   window. Wait for it to finish.
+   window. In the Marketplace, press **Install**, then **Install** again in
+   the window. Wait for it to finish.
 4. Restart Home Assistant: go to **Settings → System** and press the power
    icon in the top right.
 
@@ -111,11 +126,27 @@ press **Add**. Then skip to step 3.
    you can edit or delete it like any other dashboard; see
    [The Apollo mmWave dashboard](docs/configuration.md#the-apollo-mmwave-dashboard).
 
-To update later, make a full Home Assistant backup first. After HACS
-updates Apollo mmWave, restart Home Assistant, then refresh your browser
-(Ctrl/Cmd+Shift+R). Upgrading from 1.x or 2.0? Read
-[CHANGELOG.md](CHANGELOG.md) first. Some cards and automations need a change
-by hand.
+To update later, make a full Home Assistant backup first. HACS and the
+Marketplace both list the update at the top of **Settings**; install it
+there. With HACS 2.0.5, update one thing at a time, and if a download fails,
+retry it until it finishes before you restart: a failed HACS 2.0.5 download
+can remove the installed files. Then restart Home Assistant and reload the
+page: press Ctrl/Cmd+Shift+R in a browser, or close the Home Assistant phone
+app fully and open it again. If a card still looks old, reload once more. If
+the app still shows the old card, reset its cache:
+
+- Android: **Settings → Companion app → Troubleshooting → Reset frontend
+  cache**.
+- iPhone and iPad: **Settings → Companion app → Debugging → Clear web view
+  cache**.
+
+To install another version, such as a pre-release, open Apollo mmWave in
+HACS, choose **Redownload** from the menu (⋮) and open **Need a different
+version?**. In the Marketplace, choose **Install another version** from the
+menu (⋮).
+
+Upgrading from 1.x or 2.0? Read [CHANGELOG.md](CHANGELOG.md) first. Some
+cards and automations need a change by hand.
 
 Most people can skip this. If your `configuration.yaml` sets
 `resource_mode: yaml` under `lovelace:`, Home Assistant cannot add the cards
@@ -130,19 +161,28 @@ It is the same integration in the same folder, so your entry, dashboard,
 zones, calibration history and entity ids carry over. Coming from 1.x or 2.0?
 Read [Upgrading to 2.0](CHANGELOG.md#upgrading-to-20) first.
 
+Switch with HACS 2.0.5, before you update Home Assistant to 2026.11. The
+Marketplace does not install this repository while the original one is
+installed, keeps an installed repository on its list (**Uninstall it
+first**), and uninstalls an integration only after its entry is deleted.
+Already on 2026.11 or later? Ask Apollo support before you uninstall or
+delete anything.
+
 1. Make a full Home Assistant backup. Check that HACS is 2.0.5 or later.
 2. In HACS, open the menu (⋮) in the top right and choose
    **Custom repositories**. Press the trash can icon on the
    **bharvey88/apollo-mmwave (integration)** row. This only takes it off the
    HACS list; the files stay and Apollo mmWave keeps running.
 3. Add this repository and download it with steps 2 and 3 of
-   [Install with HACS](#install-with-hacs), then restart Home Assistant.
+   [Install with HACS or the Marketplace](#install-with-hacs-or-the-marketplace),
+   then restart Home Assistant.
 
 Keep your Apollo mmWave entry in **Settings → Devices & services**: deleting
 it also deletes the dashboard, your zones and the values **Undo** uses. In
 HACS, leave **Remove** and **Redownload** alone on both Apollo mmWave
-entries, because they can delete the `custom_components/apollo_mmwave` folder
-the two entries share. The
+entries (**Uninstall** and **Reinstall** in the Marketplace), because they
+can delete the `custom_components/apollo_mmwave` folder the two entries
+share. The
 [wiki has every step](https://wiki.apolloautomation.com/products/general/setup/apollo-mmwave-dashboard-setup/#from-the-original-apollo-mmwave-repository),
 including what each HACS box says.
 
