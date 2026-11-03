@@ -69,7 +69,7 @@ default. Each gate has a threshold: how strong a signal must be to count as
 presence. Radar tuning covers auto-calibration, the distance and gate energy
 charts, thresholds, detection range and occupancy.
 
-![The Gate Energy chart turning on: dimmed until Radar Engineering Mode is on, then a move bar and a still bar for each gate, with a triangle marking each threshold](https://raw.githubusercontent.com/ApolloAutomation/apollo-mmwave-main/main/docs/images/apollo-mmwave-gate-energy.gif)
+![The Gate Energy chart turning on: dimmed until Radar Engineering Mode is on, then a move bar and a still bar for each gate with a triangle marking each threshold, bars above their threshold outlined, the gates past Max Move Gate and Max Still Gate faded, and the radar's answer under the chart as someone walks in and sits down](https://raw.githubusercontent.com/ApolloAutomation/apollo-mmwave-main/main/docs/images/apollo-mmwave-gate-energy.gif)
 
 ## Install with HACS or the Marketplace
 
@@ -247,7 +247,7 @@ including what each HACS box says.
    [Zoom and pan](docs/configuration.md#zoom-and-pan) and
    [Mark corners by walking](docs/configuration.md#mark-corners-by-walking).
 
-   ![The zone map on an R PRO-1 in feet, fitted to the radar's view with the caption Radar range 20 ft (6 m), 120°: a rectangle, a circle and a polygon drawn as zones, pale and dashed while nobody is in them, the m / ft switch and the Locked button in the corner, and under the grid a Coverage button and the zone buttons, with Clear All Zones dimmed while the map is locked](https://raw.githubusercontent.com/ApolloAutomation/apollo-mmwave-main/main/docs/images/apollo-mmwave-zone-map.png)
+   ![The zone map on an R PRO-1 in feet, fitted to the radar's view with the caption Radar range 20 ft (6 m), 120°: a rectangle, a circle and a polygon drawn as zones, pale and dashed while nobody is in them, the m / ft switch and the Locked button in the corner, with the minus, + and Fit zoom buttons above them, and under the grid a Coverage button and the zone buttons, with Clear All Zones dimmed while the map is locked](https://raw.githubusercontent.com/ApolloAutomation/apollo-mmwave-main/main/docs/images/apollo-mmwave-zone-map.png)
 
    ![The live zone map in feet: target 1 walks from the Doorway zone to the Couch zone and back with a short fading trail behind its numbered dot, moving in steps as the radar reports about once a second, and each zone turns solid while the dot is inside it and pale and dashed once it leaves; target 2 sits still in the Desk zone, which stays lit, and the Fan zone is hatched and labeled Fan (ignored)](https://raw.githubusercontent.com/ApolloAutomation/apollo-mmwave-main/main/docs/images/apollo-mmwave-zone-map-live.gif)
 
