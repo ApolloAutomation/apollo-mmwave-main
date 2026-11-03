@@ -1,5 +1,6 @@
-// Keep in sync with custom_components/apollo_mmwave/manifest.json.
-export const CARD_VERSION = "2.4.0b2";
+// The version itself is in version.ts, which the zone map bundle shares.
+import { CARD_VERSION } from "./version";
+export { CARD_VERSION };
 
 import "./cards/distance-card";
 import "./cards/gate-energy-card";
