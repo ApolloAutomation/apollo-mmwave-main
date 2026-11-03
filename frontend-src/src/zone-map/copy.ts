@@ -92,6 +92,11 @@ export function zoomReadout(zoom: number): string {
 }
 
 export const MIRROR_LABEL = "Flip the map left to right (display only)";
+// Under Cone rotation. Nothing on the radar tells the map how it is
+// mounted, so a unit turned on its side or picked up moves the room under
+// the zones.
+export const CONE_MOUNT_HINT =
+  "Mount the sensor first, then set this. Zones match the room only while the sensor stays mounted that way.";
 // The walk test behind the flip holds only with the map turned to match the
 // room: at Cone rotation 180, a step to the right moves the dot left on an
 // unturned screen, and the radar is right.

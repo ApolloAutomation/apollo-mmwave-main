@@ -227,6 +227,26 @@ describe("zone map card cone rotation lock", () => {
     expect(hint(card).hidden).toBe(true);
   });
 
+  it("says under the slider to mount the sensor first, locked or not", async () => {
+    // Nothing on the sensor tells the map how it is mounted, so the zones fit
+    // the room only while it stays mounted the way the slider is set.
+    const card = await mountCard(fakeHass());
+    const mount = card.shadowRoot.getElementById("coneMountHint");
+    const text =
+      "Mount the sensor first, then set this. Zones match the room only while the sensor stays mounted that way.";
+    expect(mount.textContent).toBe(text);
+    expect(mount.hidden).toBe(false);
+    // In the slider's row, after the slider and its label, and before the
+    // lock's hint.
+    const ids = Array.from(row(card).children, (el: any) => el.id);
+    expect(ids.slice(-3)).toEqual(["coneAngleLabel", "coneMountHint", "coneLockHint"]);
+
+    card.shadowRoot.getElementById("btnLock").click();
+    expect(card.isLocked).toBe(false);
+    expect(mount.hidden).toBe(false);
+    expect(mount.textContent).toBe(text);
+  });
+
   it("leaves the slider free on a radar with no zones yet", async () => {
     const card = await mountCard(fakeHass({ ...ZONE_PAYLOAD, zones: {} }));
     expect(slider(card).disabled).toBe(false);

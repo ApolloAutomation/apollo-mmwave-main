@@ -21,6 +21,7 @@ import {
   ADMIN_ONLY_NOTE,
   ADMIN_ONLY_TITLE,
   CLEAR_LOCKED_TOAST,
+  CONE_MOUNT_HINT,
   COVERAGE_CLEAR,
   COVERAGE_LABEL,
   COVERAGE_TITLE,
@@ -1668,7 +1669,7 @@ export class ZoneMapCard extends HTMLElement {
         /* A locked slider takes no pointer, so a scroll that starts on it
            scrolls the page and a tap lands on the row (_watchLockedConeTries). */
         #cone-controls.locked input[type="range"] { pointer-events: none; }
-        #cone-controls .cone-lock-hint { flex-basis: 100%; font-size: 0.85em; opacity: 0.75; }
+        #cone-controls .cone-hint, #cone-controls .cone-lock-hint { flex-basis: 100%; font-size: 0.85em; opacity: 0.75; }
         #coneAngleSlider { flex: 1; min-width: 160px; }
         .map-options { display: flex; flex-direction: column; gap: 4px; padding: 4px 0 8px; }
         .map-option { display: flex; align-items: center; gap: 8px; cursor: pointer; }
@@ -1822,6 +1823,7 @@ export class ZoneMapCard extends HTMLElement {
               <label for="coneAngleSlider">Cone rotation: </label>
               <input type="range" id="coneAngleSlider" min="-180" max="180" step="1" value="${this.coneAngleDeg}" />
               <span id="coneAngleLabel">${this.coneAngleDeg}°</span>
+              <span id="coneMountHint" class="cone-hint">${CONE_MOUNT_HINT}</span>
               <span id="coneLockHint" class="cone-lock-hint" hidden>${CONE_LOCKED_HINT}</span>
             </div>
             <!-- _renderAdminControls sets what depends on the viewer. -->
