@@ -10889,6 +10889,64 @@ describe("zone map card units and fitted grid", () => {
       expect(label.x - apexX).toBeCloseTo(label.y - apexY, 6);
     });
 
+    it("captions the arc clear of the zoom row on a phone", async () => {
+      // A 390 px phone shows the map 310 px wide, with the zoom row 4 px in
+      // from its right edge and 40 px up, 104 by 32 px, over whatever is
+      // drawn under it. Just past the arc, the caption lay under the row
+      // turned 45 degrees, as in a corner, and under its left end facing
+      // ahead in meters. It goes just inside the arc instead, still on the
+      // line the radar faces.
+      const rect = (left: number, top: number, right: number, bottom: number) =>
+        ({
+          left,
+          top,
+          right,
+          bottom,
+          x: left,
+          y: top,
+          width: right - left,
+          height: bottom - top,
+          toJSON: () => ({}),
+        }) as DOMRect;
+      for (const [length, rotation] of [
+        ["mi", 45],
+        ["km", 0],
+      ] as const) {
+        const hass = unitHass(length, true, { ...EMPTY, rotation_deg: rotation });
+        const card = await mountCard(hass, { unit_display: true });
+        const cssWidth = 310;
+        const cssHeight = (cssWidth * card.canvas.height) / card.canvas.width;
+        const scale = card.canvas.width / cssWidth;
+        vi.spyOn(card.canvas, "getBoundingClientRect").mockReturnValue(
+          rect(0, 0, cssWidth, cssHeight)
+        );
+        const row = rect(cssWidth - 108, cssHeight - 72, cssWidth - 4, cssHeight - 40);
+        const zoomControls = card.shadowRoot.getElementById("zoomControls");
+        vi.spyOn(zoomControls, "getBoundingClientRect").mockReturnValue(row);
+        const { ctx, texts } = textRecordingContext(browserTextWidth);
+        card.ctx = ctx;
+        card._invalidateGridCache();
+        card.drawGrid();
+
+        const range = texts.filter((label) => label.text.startsWith("Radar range"));
+        expect(range).toHaveLength(1);
+        const box = boxOf(range[0]);
+        const rowBox = {
+          left: row.left * scale,
+          right: row.right * scale,
+          top: row.top * scale,
+          bottom: row.bottom * scale,
+        };
+        expect(card._boxGap(box, rowBox)).toBeGreaterThanOrEqual(4 * scale);
+        const apexX = card.valueToPixels(0, "x");
+        const apexY = card.valueToPixels(0, "y");
+        const { x, y } = range[0];
+        expect(Math.hypot(x - apexX, y - apexY)).toBeLessThan(card.coneYMax * card.pxPerX);
+        const facing = (rotation * Math.PI) / 180;
+        expect((x - apexX) * Math.cos(facing)).toBeCloseTo((y - apexY) * Math.sin(facing), 6);
+      }
+    });
+
     it("draws the range label only with distance labels on", async () => {
       const card = await mountCard(unitHass("km"), { unit_display: false });
 

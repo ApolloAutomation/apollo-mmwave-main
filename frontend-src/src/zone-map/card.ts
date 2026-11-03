@@ -5430,7 +5430,8 @@ export class ZoneMapCard extends HTMLElement {
     if (this.unitDisplay) {
       const { thetaStart, thetaEnd, radius } = this._coneSector();
       const rings = this._getConeRingsRenderState(thetaStart, thetaEnd, radius, gridMetrics);
-      rangeLabel = this._rangeLabel();
+      const buttons = this._overlayBoxes({ notes: false, canvasRect });
+      rangeLabel = this._rangeLabel(buttons);
       const gap = gridState?.labelGap ?? LABEL_GAP_CSS_PX;
       // The zones' names keep their places too: a zone across the radar's
       // line (x = 0) put its name over the y labels running down it. So do
@@ -5438,10 +5439,7 @@ export class ZoneMapCard extends HTMLElement {
       // edge, where they showed through the zoom row and the unit switch.
       const labels = this._clearOfBoxes(
         this._clearAround(this._layOutLabels(rings?.labels, gridState), rangeLabel, gap),
-        [
-          ...this._zoneLabelBoxes(replay?.lit ?? null),
-          ...this._overlayBoxes({ notes: false, canvasRect }),
-        ],
+        [...this._zoneLabelBoxes(replay?.lit ?? null), ...buttons],
         gap,
       );
       if (gridState) {
@@ -5805,12 +5803,15 @@ export class ZoneMapCard extends HTMLElement {
    * null when the card shows no distance labels or no cone.
    *
    * Centered on the line the radar faces along, just past the arc, where it
-   * reads as the arc's caption. When the canvas has no room there it goes
-   * just inside the arc. When it fits in neither place, as on a YAML grid
-   * that cuts the arc off, it is left out: there is no arc on the map for it
-   * to caption, and the help line under the map still gives the range.
+   * reads as the arc's caption. It goes just inside the arc when the canvas
+   * has no room past it, or when one of `buttons` comes within the label gap
+   * there: the boxes (backing px) of the buttons over the map, through which
+   * nothing can be read. On a phone the arc can end under the zoom row. When
+   * it fits in neither place, as on a YAML grid that cuts the arc off, it is
+   * left out: there is no arc on the map for it to caption, and the help
+   * line under the map still gives the range.
    */
-  _rangeLabel() {
+  _rangeLabel(buttons = this._overlayBoxes({ notes: false })) {
     if (!this.unitDisplay || !this.canvas || !(this.coneYMax > 0)) return null;
     const label = {
       text: `Radar range ${this._rangeText()}`,
@@ -5842,7 +5843,11 @@ export class ZoneMapCard extends HTMLElement {
     const offset =
       Math.abs(dirX) * halfWidth + Math.abs(dirY) * halfHeight + halfHeight + gap + 1;
     const fits = (x, y) =>
-      x - halfWidth >= 0 && x + halfWidth <= width && y - halfHeight >= 0 && y + halfHeight <= height;
+      x - halfWidth >= 0 &&
+      x + halfWidth <= width &&
+      y - halfHeight >= 0 &&
+      y + halfHeight <= height &&
+      buttons.every((box) => this._boxGap(box, this._labelBox({ ...label, x, y })) >= gap);
     for (const side of [1, -1]) {
       const x = arcX + side * dirX * offset;
       const y = arcY + side * dirY * offset;
