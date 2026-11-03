@@ -92,7 +92,11 @@ export function zoomReadout(zoom: number): string {
 }
 
 export const MIRROR_LABEL = "Flip the map left to right (display only)";
-export const MIRROR_HINT = "Turn this on if a dot moves the opposite way from you.";
+// The walk test behind the flip holds only with the map turned to match the
+// room: at Cone rotation 180, a step to the right moves the dot left on an
+// unturned screen, and the radar is right.
+export const MIRROR_HINT =
+  "Turn this on if, with the map turned the way the room is, a dot moves the opposite way from you.";
 export const MOVEMENT_LABEL = "Movement history";
 export const MOVEMENT_HINT =
   "Keeps up to 24 hours of target positions so administrators can replay them here. Backups include them. Turning it off deletes them from Home Assistant.";

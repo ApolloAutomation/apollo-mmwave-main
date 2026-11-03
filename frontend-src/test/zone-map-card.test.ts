@@ -9860,6 +9860,17 @@ describe("zone map card flipped map", () => {
   const named = (calls: Array<[string, any[]]>, ...names: string[]) =>
     calls.filter(([name]) => names.includes(name)).map(([, args]) => args);
 
+  it("says to turn the map the way the room is before judging the flip", async () => {
+    // At Cone rotation 180 a correct radar moves the dot against a step to
+    // the reader's right on an unturned screen, so the hint asks for the map
+    // turned to match the room first.
+    const { card } = await mapCard(PLAIN);
+    const hint = card.shadowRoot.querySelector("#mirrorOption + .map-option-hint");
+    expect(hint?.textContent).toBe(
+      "Turn this on if, with the map turned the way the room is, a dot moves the opposite way from you."
+    );
+  });
+
   it("mirrors zones, targets, cone and grid when mirror_x is on", async () => {
     const plain = await mapCard(PLAIN, { unit_display: true });
     const flipped = await mapCard(FLIPPED, { unit_display: true });
