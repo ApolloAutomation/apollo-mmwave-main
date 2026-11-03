@@ -7916,6 +7916,52 @@ describe("zone map card walk", () => {
     expect($(card, "btnModeRect").classList.contains("active")).toBe(false);
   });
 
+  it("offers Walk as a labeled chip beside Coverage on a phone", async () => {
+    // On a phone 🚶 alone among the drawing modes is easy to miss, so the
+    // row under the map names it. A mouse never sees the chip.
+    const { card, hass } = await walkCard();
+    const chip = $(card, "btnWalkChip");
+    expect(chip.textContent).toBe("🚶 Mark corners by walking");
+    expect(chip.hidden).toBe(false);
+    expect(Array.from($(card, "viewTools").children, (el: any) => el.id).slice(0, 2)).toEqual([
+      "btnWalkChip",
+      "btnCoverage",
+    ]);
+    const css = card.shadowRoot.querySelector("style").textContent;
+    expect(css).toContain(".walk-chip { display: none; }");
+    expect(css).toContain(
+      "@media (pointer: coarse) { .walk-chip:not([hidden]) { display: inline-block; } }"
+    );
+
+    // It starts Walk, and makes way for Walk's panel until the walk ends.
+    chip.click();
+    expect(card.drawMode).toBe("walk");
+    expect($(card, "walkPanel").hidden).toBe(false);
+    expect(chip.hidden).toBe(true);
+    $(card, "btnWalkCancel").click();
+    expect(card.drawMode).toBe("rect");
+    expect(chip.hidden).toBe(false);
+
+    // A rebuilt card keeps it, and a viewer who is not an administrator
+    // never has it.
+    card.render();
+    expect($(card, "btnWalkChip").hidden).toBe(false);
+    card.hass = { ...hass, user: { is_admin: false } };
+    expect($(card, "btnWalkChip").hidden).toBe(true);
+    const viewer = await walkCard({ admin: false });
+    expect($(viewer.card, "btnWalkChip").hidden).toBe(true);
+  });
+
+  it("says how to unlock when the Walk chip is pressed on a locked map", async () => {
+    const { card, toasts } = await walkCard({ config: { start_locked: true } });
+    expect($(card, "btnWalkChip").hidden).toBe(false);
+
+    $(card, "btnWalkChip").click();
+
+    expect(toasts).toEqual(["Unlock the map to draw zones."]);
+    expect(card._walk).toBeNull();
+  });
+
   it("refuses Walk on a locked map with the lock toast", async () => {
     const { card, toasts } = await walkCard({ config: { start_locked: true } });
     expect(card.isLocked).toBe(true);
@@ -8842,8 +8888,10 @@ describe("zone map card movement history", () => {
     expect(chip.classList.contains("zone-btn")).toBe(true);
     expect(chip.getAttribute("aria-expanded")).toBe("false");
     expect(chip.getAttribute("aria-controls")).toBe("historyPanel");
-    // With the viewer's other chips under the map, and its panel under them.
+    // With the viewer's other chips under the map (Walk's for a phone, then
+    // Coverage's), and its panel under them.
     expect(Array.from($(card, "viewTools").children, (el: any) => el.id)).toEqual([
+      "btnWalkChip",
       "btnCoverage",
       "btnCoverageClear",
       "btnHistory",

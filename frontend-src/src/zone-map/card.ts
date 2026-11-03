@@ -1724,6 +1724,11 @@ export class ZoneMapCard extends HTMLElement {
         .walk-panel[hidden], .walk-panel [hidden] { display: none; }
         /* The History chip, disabled while Walk is on. */
         #viewTools button:disabled { opacity: 0.5; cursor: not-allowed; }
+        /* Walk's labeled chip, for a phone or a tablet, where 🚶 alone among
+           the drawing modes is easy to miss. A mouse keeps the drawing modes'
+           🚶 and this row stays as it was. */
+        .walk-chip { display: none; }
+        @media (pointer: coarse) { .walk-chip:not([hidden]) { display: inline-block; } }
         /* The History panel under the chips, whose rows wrap on a phone.
            The panel and its rows are flex, so [hidden] needs saying again. */
         .history-panel { display: flex; flex-direction: column; gap: var(--zm-gap); margin: 12px 0; }
@@ -1920,6 +1925,8 @@ export class ZoneMapCard extends HTMLElement {
   _viewToolsTemplate() {
     return `
         <div class="controls" id="viewTools">
+          <!-- Administrators only, out of Walk: _renderWalkChip shows it. -->
+          <button id="btnWalkChip" class="zone-btn walk-chip" hidden><span aria-hidden="true">🚶</span> ${WALK_BUTTON_TITLE}</button>
           <button id="btnCoverage" class="zone-btn" aria-pressed="false">${COVERAGE_LABEL}</button>
           <button id="btnCoverageClear" class="zone-btn" hidden>${COVERAGE_CLEAR}</button>
           <button id="btnHistory" class="zone-btn" aria-expanded="false" aria-controls="historyPanel" hidden>${HISTORY_LABEL}</button>
@@ -2160,6 +2167,8 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   _attachViewTools() {
+    const walk = this.shadowRoot.getElementById('btnWalkChip');
+    if (walk) walk.addEventListener('click', () => this._enterWalk());
     const coverage = this.shadowRoot.getElementById('btnCoverage');
     if (coverage) coverage.addEventListener('click', () => this._setCoverage(!this._coverageOn));
     const clear = this.shadowRoot.getElementById('btnCoverageClear');
@@ -2296,6 +2305,7 @@ export class ZoneMapCard extends HTMLElement {
     const walk = this.shadowRoot?.getElementById('btnModeWalk');
     if (walk) walk.style.display = admin ? '' : 'none';
     if (!admin || this.isLocked) this._exitWalk();
+    this._renderWalkChip();
     // Movement history is an administrator's, on a radar that keeps it.
     // Anyone else never sees its option or History, and the question before
     // turning it off has nothing left to ask once it is off.
@@ -2614,6 +2624,18 @@ export class ZoneMapCard extends HTMLElement {
   /** The History chip: shown only where History is allowed, disabled while
    *  Walk is on (its replay would hide the walker's dot), pressed and
    *  expanded while the panel is open. */
+  /**
+   * Walk's labeled chip beside Coverage: an administrator's, as the 🚶 in
+   * the drawing modes is, and gone while Walk is on, whose panel is right
+   * above it. Only a phone or a tablet shows it (the .walk-chip rule). On a
+   * locked map a press says how to unlock, as 🚶's does.
+   */
+  _renderWalkChip() {
+    const chip = this.shadowRoot?.getElementById('btnWalkChip');
+    if (!chip) return;
+    chip.hidden = !this._isAdmin() || this.drawMode === DRAW_MODES.WALK;
+  }
+
   _renderHistoryChip() {
     const chip = this.shadowRoot?.getElementById('btnHistory');
     if (!chip) return;
@@ -4393,6 +4415,7 @@ export class ZoneMapCard extends HTMLElement {
     // keeps History shut.
     this._updateCanvasTouchMode();
     this._renderWalkPanel();
+    this._renderWalkChip();
     this._renderHistoryChip();
     this._invalidateGridCache();
     this._refitAndDraw();
