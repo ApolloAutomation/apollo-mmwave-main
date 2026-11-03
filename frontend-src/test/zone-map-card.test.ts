@@ -3861,7 +3861,9 @@ describe("zone map card rect and ellipse preview across repaints", () => {
     return calls.filter(([name]) => name === "ellipse").map(([, args]) => args);
   }
 
-  /** Start a drag at canvas (100,100) and hold the pointer at (300,250). */
+  /** Start a drag at canvas (100,100) and hold the pointer at (300,250).
+   *  On this 0.5 m grid corners snap to 5 cm, so the pointer's corner,
+   *  3125 mm down, is drawn at 3150 mm (252 px). */
   function dragTo300x250(card: any) {
     card.canvas.dispatchEvent(new MouseEvent("mousedown", { clientX: 100, clientY: 100 }));
     card.canvas.dispatchEvent(new MouseEvent("mousemove", { clientX: 300, clientY: 250 }));
@@ -3877,7 +3879,7 @@ describe("zone map card rect and ellipse preview across repaints", () => {
     expect(card.isDrawing).toBe(true);
     expect(calls.some(([name]) => name === "clearRect")).toBe(true);
     expect(dashes(calls)).toBe(1);
-    expect(rectPreviews(calls)).toEqual([[100, 100, 200, 150]]);
+    expect(rectPreviews(calls)).toEqual([[100, 100, 200, 152]]);
   });
 
   it("keeps the ellipse preview when a hass push repaints mid-drag", async () => {
@@ -3890,7 +3892,7 @@ describe("zone map card rect and ellipse preview across repaints", () => {
     expect(card.isDrawing).toBe(true);
     expect(calls.some(([name]) => name === "clearRect")).toBe(true);
     expect(dashes(calls)).toBe(1);
-    expect(ellipsePreviews(calls)).toEqual([[200, 175, 100, 75, 0, 0, Math.PI * 2]]);
+    expect(ellipsePreviews(calls)).toEqual([[200, 176, 100, 76, 0, 0, Math.PI * 2]]);
   });
 
   it("keeps the rect preview of a touch drag when a hass push repaints", async () => {
@@ -3908,7 +3910,7 @@ describe("zone map card rect and ellipse preview across repaints", () => {
 
     expect(card.isDrawing).toBe(true);
     expect(calls.some(([name]) => name === "clearRect")).toBe(true);
-    expect(rectPreviews(calls)).toEqual([[100, 100, 200, 150]]);
+    expect(rectPreviews(calls)).toEqual([[100, 100, 200, 152]]);
   });
 
   it.each([
@@ -7166,9 +7168,11 @@ describe("zone map card drawing", () => {
     return { card, hass, toasts };
   }
 
-  function drag(card: any, from: number[], to: number[]) {
+  /** A mouse drag from `from` to `to`, with `init` (Alt held, say) on each
+   *  event. */
+  function drag(card: any, from: number[], to: number[], init: MouseEventInit = {}) {
     const mouse = (type: string, [x, y]: number[]) =>
-      card.canvas.dispatchEvent(new MouseEvent(type, { clientX: x, clientY: y }));
+      card.canvas.dispatchEvent(new MouseEvent(type, { clientX: x, clientY: y, ...init }));
     mouse("mousedown", from);
     mouse("mousemove", to);
     mouse("mouseup", to);
@@ -7219,9 +7223,10 @@ describe("zone map card drawing", () => {
   it("saves an up-left rect drag with sorted, rounded corners, and Undo restores it", async () => {
     // 640 CSS px over the 800 px bitmap: one CSS px is 1.25 bitmap px, so the
     // release at CSS (81, 81) is bitmap (101.25, 101.25), (-3734.375, 1265.625) mm.
+    // Alt is held, so the corners go where they are, in whole mm.
     const { card, hass, toasts } = await drawingCard("rect", box(0, 0, 640, 640));
 
-    drag(card, [240, 240], [81, 81]);
+    drag(card, [240, 240], [81, 81], { altKey: true });
     await settle();
 
     const rect = { x_min: -3734, x_max: -1250, y_min: 1266, y_max: 3750 };
@@ -7380,11 +7385,13 @@ describe("zone map card size readout", () => {
 
     mouse(card, "mousemove", 300, 250);
 
-    // 2500 by 1875 mm, centered 28 px above the pointer on a plate in the
-    // canvas color, inside its own save and restore.
+    // 2500 by 1875 mm, whose far corner snaps to 3150 mm (5 cm on this 0.5 m
+    // grid), so 2500 by 1900 mm, read to the centimeter the snap needs.
+    // Centered 28 px above the pointer on a plate in the canvas color,
+    // inside its own save and restore.
     expect(readouts(card)).toEqual([
       {
-        text: "2.5 m × 1.9 m",
+        text: "2.50 m × 1.90 m",
         x: 300,
         y: 222,
         font: "bold 14px sans-serif",
@@ -7405,13 +7412,16 @@ describe("zone map card size readout", () => {
     mouse(card, "mousedown", 100, 100);
     mouse(card, "mousemove", 300, 250);
 
-    // 98.4 and 73.8 inches, rounded to whole inches before the split.
+    // On this map's 2 ft grid the corners snap to 2 in: x -148 to -50 in and
+    // y 50 to 124 in, 98 by 74 inches, read in whole inches.
     expect(readouts(card).map((r) => r.text)).toEqual(["8 ft 2 in × 6 ft 2 in"]);
 
-    // The switch over the map changes the readout mid-drag.
+    // The switch over the map changes the readout mid-drag. The first corner
+    // stays where it was placed (-3759, 1270 mm), and the pointer's corner
+    // snaps to 5 cm now: (-1250, 3150) mm.
     card.shadowRoot.getElementById("btnUnitM").click();
     expect(card.isDrawing).toBe(true);
-    expect(readouts(card).map((r) => r.text)).toEqual(["2.5 m × 1.9 m"]);
+    expect(readouts(card).map((r) => r.text)).toEqual(["2.51 m × 1.88 m"]);
   });
 
   it("shows the size the save will carry", async () => {
@@ -7432,7 +7442,7 @@ describe("zone map card size readout", () => {
           ? [data.x_max - data.x_min, data.y_max - data.y_min]
           : [2 * data.rx, 2 * data.ry];
       expect(size).toEqual([1250, 1250]);
-      expect(shown.map((r) => r.text)).toEqual(["1.3 m × 1.3 m"]);
+      expect(shown.map((r) => r.text)).toEqual(["1.25 m × 1.25 m"]);
       // Kept on the canvas, by the corner the shape stops at.
       const [{ x, y }] = shown;
       expect(x).toBeLessThan(800);
@@ -7515,14 +7525,214 @@ describe("zone map card size readout", () => {
 
     mouse(card, "mousemove", 300, 100);
     expect(readouts(card).map((r) => [r.text, r.x, r.y])).toEqual([
-      ["2.5 m × 0.0 m", 300, 72],
+      ["2.50 m × 0.00 m", 300, 72],
     ]);
 
     click(300, 100);
     mouse(card, "mousemove", 200, 400);
     // The box around (-3750, 1250), (-1250, 1250) and the pointer at
-    // (-2500, 5000) mm.
-    expect(readouts(card).map((r) => r.text)).toEqual(["2.5 m × 3.8 m"]);
+    // (-2500, 5000) mm, to the centimeter the 5 cm snap needs.
+    expect(readouts(card).map((r) => r.text)).toEqual(["2.50 m × 3.75 m"]);
+  });
+});
+
+/**
+ * Corners snap while a zone is drawn by hand.
+ *
+ * A corner lands on the nearest round value in the map's unit, about a
+ * tenth of the grid step shown: on the 20 m grid here (40 px a meter, 1 m
+ * lines) that is 10 cm, and 25 mm a px, so canvas (x, y) is
+ * (-10000 + 25 x, 25 y) mm. Alt or Option held places a corner freely. The
+ * save carries the snapped point in whole mm, and the size readout shows the
+ * snapped size.
+ */
+describe("zone map card corner snapping", () => {
+  const TWENTY_METER_GRID = { grid: { x_min: -10000, x_max: 10000, y_min: 0, y_max: 20000 } };
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  async function drawingCard(
+    mode: string,
+    { feet = false, grid = TWENTY_METER_GRID }: { feet?: boolean; grid?: any } = {}
+  ) {
+    const hass = fakeHass();
+    if (feet) hass.config = { unit_system: { length: "mi" } };
+    const card = await mountCard(hass, { ...grid, start_locked: false });
+    expect(card.selectedZone).toBe(1);
+    card._setDrawMode(mode);
+    layOut(card, 800);
+    hass.callService.mockClear();
+    return { card, hass };
+  }
+
+  function mouse(card: any, type: string, x: number, y: number, init: MouseEventInit = {}) {
+    card.canvas.dispatchEvent(new MouseEvent(type, { clientX: x, clientY: y, ...init }));
+  }
+
+  function key(type: "keydown" | "keyup", name: string) {
+    window.dispatchEvent(new KeyboardEvent(type, { key: name, altKey: type === "keydown" }));
+  }
+
+  function zoneSaves(hass: any): any[] {
+    return hass.callService.mock.calls
+      .filter((call: any[]) => call[1] === "update_zone")
+      .map((call: any[]) => call[2].data);
+  }
+
+  function frame(card: any): Draw[] {
+    const { ctx, draws } = drawRecordingContext();
+    card.ctx = ctx;
+    card.drawGrid();
+    return draws;
+  }
+
+  const readouts = (draws: Draw[]) =>
+    draws
+      .filter((d) => d.name === "fillText" && String(d.args[0]).includes(" × "))
+      .map((d) => d.args[0]);
+
+  it("snaps a rect's corners to 10 cm at a 1 m grid, and shows the snapped size", async () => {
+    const { card, hass } = await drawingCard("rect");
+    expect(card._computeGridMetrics().stepX).toBe(1000);
+    expect(card._snapStep()).toBe(100);
+
+    // (-7425, 2525) mm to (-2475, 6175) mm.
+    mouse(card, "mousedown", 103, 101);
+    mouse(card, "mousemove", 301, 247);
+    const draws = frame(card);
+    expect(readouts(draws)).toEqual(["4.9 m × 3.7 m"]);
+    // The preview, drawn after the zones, outlines the snapped corners:
+    // (-7400, 2500) to (-2500, 6200) mm, canvas (104, 100) to (300, 248).
+    const rects = draws.filter((d) => d.name === "strokeRect");
+    const preview = rects[rects.length - 1];
+    expect(preview?.args.map((v: number) => Math.round(v * 1e6) / 1e6)).toEqual([
+      104, 100, 196, 148,
+    ]);
+    mouse(card, "mouseup", 301, 247);
+
+    expect(zoneSaves(hass)).toEqual([{ x_min: -7400, x_max: -2500, y_min: 2500, y_max: 6200 }]);
+  });
+
+  it("places a corner freely while Alt or Option is held", async () => {
+    const { card, hass } = await drawingCard("rect");
+    mouse(card, "mousedown", 103, 101, { altKey: true });
+    mouse(card, "mousemove", 301, 247, { altKey: true });
+    expect(readouts(frame(card))).toEqual(["5.0 m × 3.6 m"]);
+    mouse(card, "mouseup", 301, 247, { altKey: true });
+
+    expect(zoneSaves(hass)).toEqual([{ x_min: -7425, x_max: -2475, y_min: 2525, y_max: 6175 }]);
+  });
+
+  it("keeps each corner as it was placed: the press snapped, the release free", async () => {
+    const { card, hass } = await drawingCard("rect");
+    mouse(card, "mousedown", 103, 101);
+    mouse(card, "mousemove", 301, 247);
+    mouse(card, "mouseup", 301, 247, { altKey: true });
+
+    expect(zoneSaves(hass)).toEqual([{ x_min: -7400, x_max: -2475, y_min: 2500, y_max: 6175 }]);
+  });
+
+  it("follows Alt pressed and let go mid-drag, with no move needed", async () => {
+    // TEN_METER_GRID: 0.5 m lines, 5 cm snaps, read to the centimeter, and
+    // 12.5 mm a px. The press at (-3712.5, 1262.5) mm snaps to (-3700, 1250)
+    // and the pointer at (-1237.5, 3087.5) to (-1250, 3100).
+    const { card, hass } = await drawingCard("rect", { grid: TEN_METER_GRID });
+    mouse(card, "mousedown", 103, 101);
+    mouse(card, "mousemove", 301, 247);
+    expect(readouts(frame(card))).toEqual(["2.45 m × 1.85 m"]);
+
+    key("keydown", "Alt");
+    // The first corner stays where the press put it; the pointer's is free.
+    expect(readouts(frame(card))).toEqual(["2.46 m × 1.84 m"]);
+    key("keyup", "Alt");
+    expect(readouts(frame(card))).toEqual(["2.45 m × 1.85 m"]);
+
+    mouse(card, "mouseup", 301, 247);
+    expect(zoneSaves(hass)).toEqual([{ x_min: -3700, x_max: -1250, y_min: 1250, y_max: 3100 }]);
+  });
+
+  it("snaps an ellipse's corners before its center and radii", async () => {
+    const { card, hass } = await drawingCard("ellipse");
+    mouse(card, "mousedown", 103, 101);
+    // A press, and a move under half a snap, measure nothing yet: the
+    // pointer's corner is still on the first.
+    expect(readouts(frame(card))).toEqual([]);
+    mouse(card, "mousemove", 104, 101);
+    expect(readouts(frame(card))).toEqual([]);
+    mouse(card, "mousemove", 301, 247);
+    mouse(card, "mouseup", 301, 247);
+
+    // The box (-7400, 2500) to (-2500, 6200) mm.
+    expect(zoneSaves(hass)).toEqual([{ cx: -4950, cy: 4350, rx: 2450, ry: 1850 }]);
+  });
+
+  it("snaps each polygon corner as it is placed, and Alt places one freely", async () => {
+    const { card, hass } = await drawingCard("polygon");
+    const click = (x: number, y: number, init: MouseEventInit = {}) => {
+      card._lastPolyTap = 0;
+      mouse(card, "mousedown", x, y, init);
+      mouse(card, "mouseup", x, y, init);
+    };
+    click(103, 101);
+    click(301, 103);
+    // The pointer's corner snaps before the readout measures it: the box
+    // around (-7400, 2500), (-2500, 2600) and (-5000, 6200) mm.
+    mouse(card, "mousemove", 201, 247);
+    expect(readouts(frame(card))).toEqual(["4.9 m × 3.7 m"]);
+    click(201, 247, { altKey: true });
+    card.finishPolygon();
+
+    expect(zoneSaves(hass)).toEqual([
+      {
+        points: [
+          { x: -7400, y: 2500 },
+          { x: -2500, y: 2600 },
+          { x: -4975, y: 6175 },
+        ],
+      },
+    ]);
+  });
+
+  it("snaps to whole inches in feet, saved in whole mm", async () => {
+    // TEN_METER_GRID in feet: 2 ft lines, so 2 in snaps (50.8 mm), and
+    // 12.5 mm a px.
+    const { card, hass } = await drawingCard("rect", { feet: true, grid: TEN_METER_GRID });
+    expect(card._computeGridMetrics().stepX).toBeCloseTo(609.6, 9);
+    expect(card._snapStep()).toBeCloseTo(50.8, 9);
+
+    // (-3712.5, 1262.5) mm to (-1237.5, 3087.5) mm: -146 to -48 in across,
+    // 50 to 122 in down once snapped.
+    mouse(card, "mousedown", 103, 101);
+    mouse(card, "mousemove", 301, 247);
+    expect(readouts(frame(card))).toEqual(["8 ft 2 in × 6 ft"]);
+    mouse(card, "mouseup", 301, 247);
+
+    const [rect] = zoneSaves(hass);
+    expect(rect).toEqual({ x_min: -3708, x_max: -1219, y_min: 1270, y_max: 3099 });
+    // Each within half a mm of a whole number of inches.
+    for (const mm of Object.values(rect) as number[]) {
+      const inches = mm / 25.4;
+      expect(Math.abs(inches - Math.round(inches)) * 25.4).toBeLessThanOrEqual(0.5);
+    }
+  });
+
+  it("snaps finer as the map zooms in, and reads the size to the centimeter", async () => {
+    const { card, hass } = await drawingCard("rect");
+    // 4x on the map's middle: 160 px a meter, 0.5 m lines, 5 cm snaps. The
+    // window is -2500 to 2500 by 7500 to 12500 mm, 6.25 mm a px.
+    card._setView({ zoom: 4, cx: 0, cy: 10000 });
+    expect(card._computeGridMetrics().stepX).toBe(500);
+    expect(card._snapStep()).toBe(50);
+
+    // (-1856.25, 8131.25) mm to (-618.75, 9043.75) mm.
+    mouse(card, "mousedown", 103, 101);
+    mouse(card, "mousemove", 301, 247);
+    expect(readouts(frame(card))).toEqual(["1.25 m × 0.90 m"]);
+    mouse(card, "mouseup", 301, 247);
+
+    expect(zoneSaves(hass)).toEqual([{ x_min: -1850, x_max: -600, y_min: 8150, y_max: 9050 }]);
   });
 });
 
@@ -7855,6 +8065,28 @@ describe("zone map card walk", () => {
     await settle();
     expect(hass.callService.mock.calls.map((call: any[]) => call[2])).toEqual(walked);
     expect(toasts).toEqual(["Doorway saved", "Doorway saved"]);
+  });
+
+  it("keeps walked corners where the radar placed them, never snapped", async () => {
+    // A drawn corner snaps to 5 cm on this 0.5 m grid; a walked one is the
+    // radar's own average and saves as it is, in whole mm.
+    const { card, hass, at } = await walkCard();
+    $(card, "btnModeWalk").click();
+    markCorner(card, at, -1234, 1017);
+    markCorner(card, at, -2987, 3044);
+    markCorner(card, at, -1611, 3982);
+    $(card, "btnWalkFinish").click();
+    await settle();
+
+    expect(hass.callService.mock.calls.map((call: any[]) => call[2].data)).toEqual([
+      {
+        points: [
+          { x: -1234, y: 1017 },
+          { x: -2987, y: 3044 },
+          { x: -1611, y: 3982 },
+        ],
+      },
+    ]);
   });
 
   it("Finish with three corners saves through finishPolygon", async () => {
@@ -9727,8 +9959,9 @@ describe("zone map card flipped map", () => {
     await settle();
 
     // Canvas x 100 to 300 is 3750 to 1250 mm on the flipped map, where the
-    // same drag on an unflipped one saves -3750 to -1250.
-    const data = { x_min: 1250, x_max: 3750, y_min: 1250, y_max: 3125 };
+    // same drag on an unflipped one saves -3750 to -1250. Corners snap to
+    // 5 cm on this 0.5 m grid, so 3125 mm down is saved as 3150.
+    const data = { x_min: 1250, x_max: 3750, y_min: 1250, y_max: 3150 };
     expect(hass.callService.mock.calls.map((call: any[]) => call[2])).toEqual([
       { device_id: "dev123", zone_id: 1, shape: "rect", data, input_units: "mm" },
     ]);
@@ -11138,12 +11371,14 @@ describe("zone map card zoom and pan", () => {
   it("saves a rect and a polygon where they were drawn on a zoomed map", async () => {
     const { card, hass } = await zoomCard();
     card._setView({ zoom: 2, cx: 0, cy: 5000 });
+    // Alt held: the corners go exactly where they were drawn.
+    const free = { altKey: true };
 
-    mouse(card, "mousedown", 100, 100);
-    mouse(card, "mousemove", 300, 500);
+    mouse(card, "mousedown", 100, 100, free);
+    mouse(card, "mousemove", 300, 500, free);
     // The readout shows what letting go saves: 1.25 m by 2.5 m.
-    expect(readouts(frame(card))).toEqual(["1.3 m × 2.5 m"]);
-    mouse(card, "mouseup", 300, 500);
+    expect(readouts(frame(card))).toEqual(["1.25 m × 2.50 m"]);
+    mouse(card, "mouseup", 300, 500, free);
     expect(zoneSaves(hass).map((call) => call.data)).toEqual([
       { x_min: -1875, x_max: -625, y_min: 3125, y_max: 5625 },
     ]);
@@ -11158,8 +11393,8 @@ describe("zone map card zoom and pan", () => {
       [300, 300],
     ]) {
       card._lastPolyTap = 0;
-      mouse(card, "mousedown", x, y);
-      mouse(card, "mouseup", x, y);
+      mouse(card, "mousedown", x, y, free);
+      mouse(card, "mouseup", x, y, free);
     }
     card.finishPolygon();
     expect(zoneSaves(hass)[1].data.points).toEqual([
@@ -11172,25 +11407,29 @@ describe("zone map card zoom and pan", () => {
   it("keeps a drag's first corner on the map when the view zooms under it", async () => {
     const { card, hass } = await zoomCard();
     card._setView({ zoom: 2, cx: 0, cy: 5000 });
-    // (100, 100) px is (-1875, 3125) mm.
+    // (100, 100) px is (-1875, 3125) mm, which the press snaps to (-1850,
+    // 3150): 5 cm at 2x, where the grid is 0.5 m.
     mouse(card, "mousedown", 100, 100);
     wheel(card, { ctrlKey: true, clientX: 400, clientY: 400 });
     // 2.83x on (0, 5000): the first corner is off the canvas now, still at
-    // the same mm.
-    expect(card.pixelsToValue(card.startPoint.x, "x")).toBeCloseTo(-1875, 6);
-    expect(card.pixelsToValue(card.startPoint.y, "y")).toBeCloseTo(3125, 6);
+    // the same mm, and not snapped again to the finer 2 cm of a 0.2 m grid
+    // (which would make it -1860 or -1840).
+    expect(card.pixelsToValue(card.startPoint.x, "x")).toBeCloseTo(-1850, 6);
+    expect(card.pixelsToValue(card.startPoint.y, "y")).toBeCloseTo(3150, 6);
     mouse(card, "mousemove", 300, 300);
     mouse(card, "mouseup", 300, 300);
 
-    // Half the window: the 10 m map's span at 2 * SQRT2, halved.
+    // Half the window: the 10 m map's span at 2 * SQRT2, halved. The release
+    // snaps to 2 cm.
     const half = 10000 / (2 * Math.SQRT2) / 2;
     const perPx = (2 * half) / 800;
+    const snap2cm = (mm: number) => Math.round(mm / 20) * 20;
     expect(zoneSaves(hass).map((call) => call.data)).toEqual([
       {
-        x_min: -1875,
-        x_max: Math.round(-half + 300 * perPx),
-        y_min: 3125,
-        y_max: Math.round(5000 - half + 300 * perPx),
+        x_min: -1850,
+        x_max: snap2cm(-half + 300 * perPx),
+        y_min: 3150,
+        y_max: snap2cm(5000 - half + 300 * perPx),
       },
     ]);
   });

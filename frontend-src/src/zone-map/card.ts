@@ -106,6 +106,7 @@ import { formatHold, formatSize, zoneSize } from './format';
 import { pointInZone, rotateToMap } from './geometry';
 import { decodeMovement, heatCells, positionAt, sparkBuckets, trailAt } from './history';
 import { fallbackPresenceId, presenceLook } from './presence';
+import { snapDecimals, snapMm, snapStepMm } from './snap';
 import { TRAIL_GAP_MS, TRAIL_MS, TrailBuffer } from './trails';
 import {
   ZOOM_MAX,
@@ -544,6 +545,11 @@ export class ZoneMapCard extends HTMLElement {
     this.isDrawing = false;
     this.startPoint = null;
     this._cursorPoint = null;
+    // Whether the pointer's corner at _cursorPoint goes where it is or
+    // snaps to a round value (see _placeMm): Alt or Option held at the last
+    // move places it freely. startPoint is placed when pressed, snapped or
+    // not, and stays there.
+    this._cursorFree = false;
     this._activeInput = null;
     // The identifier of the finger a touch gesture follows, null when no
     // finger is tracked (mouse input, or between gestures).
@@ -3298,6 +3304,10 @@ export class ZoneMapCard extends HTMLElement {
       ) {
         return;
       }
+      if (event.key === 'Alt') {
+        this._setCursorFree(true);
+        return;
+      }
       if (this.drawMode !== DRAW_MODES.POLYGON) return;
       if (event.key === 'Escape') {
         this._polyPoints = [];
@@ -3310,6 +3320,11 @@ export class ZoneMapCard extends HTMLElement {
       }
     };
     window.addEventListener('keydown', this._onKeyDown);
+    // Alt or Option let go mid-drag snaps the pointer's corner again.
+    this._onKeyUp = (event) => {
+      if (event.key === 'Alt') this._setCursorFree(false);
+    };
+    window.addEventListener('keyup', this._onKeyUp);
 
     const canvasContainer = this.canvas.parentElement;
     this._outsideClickHandler = (event) => {
@@ -4446,6 +4461,7 @@ export class ZoneMapCard extends HTMLElement {
     this._polyPoints = [];
     this._cursorPoint = null;
     this.startPoint = null;
+    this._cursorFree = false;
     this._lastPolyTap = 0;
     this._activeInput = null;
     this._activeTouchId = null;
@@ -4563,9 +4579,11 @@ export class ZoneMapCard extends HTMLElement {
         else this._notifyThrottled(POLY_TOO_FEW_TOAST);
         return;
       }
-      // Add a vertex on each other mouse/touch end
-      const vx = this._clampAndRound(this.pixelsToValue(p.x, 'x'), this.xMin, this.xMax);
-      const vy = this._clampAndRound(this.pixelsToValue(p.y, 'y'), this.yMin, this.yMax);
+      // Add a vertex on each other mouse/touch end, snapped unless Alt or
+      // Option is held.
+      const placed = this._placeMm(p, !!e.altKey);
+      const vx = this._clampAndRound(placed.x, this.xMin, this.xMax);
+      const vy = this._clampAndRound(placed.y, this.yMin, this.yMax);
       if (this._polyPoints.length < this.polyMaxPoints) {
         this._polyPoints.push({ x: vx, y: vy });
         // Auto-finish if we hit max and have at least 3 points
@@ -4590,6 +4608,8 @@ export class ZoneMapCard extends HTMLElement {
       this.cancelDrawing();
       return;
     }
+    // The release places the last corner, freely if Alt or Option is held.
+    this._cursorFree = !!e.altKey;
     const payload = this._shapeFromDrag(this.startPoint, endPoint, this.drawMode);
     if (!payload) {
       // A click, a tap or a perfectly straight drag has no area. The backend
@@ -4608,27 +4628,27 @@ export class ZoneMapCard extends HTMLElement {
   /**
    * The `{ shape, data }` a rect or ellipse drag from canvas point `startPx`
    * to `endPx` (backing px) saves, in whole mm clamped to the map, or null
-   * for a rect with no area. Anything that shows a drag's result (the size
-   * readout) reads it from here, so it always matches what is saved.
+   * for a rect with no area. `startPx` is the corner as placed when pressed
+   * (startDrawing snaps it), and `endPx` snaps here (see _placeMm) unless
+   * Alt or Option is held (_cursorFree). Anything that shows a drag's
+   * result (the size readout) reads it from here, so it always matches what
+   * is saved.
    */
   _shapeFromDrag(startPx, endPx, mode) {
+    const start = this._placeMm(startPx, true);
+    const end = this._placeMm(endPx, this._cursorFree);
     if (mode === DRAW_MODES.RECT) {
-      return this._rectFromMm(
-        this.pixelsToValue(startPx.x, 'x'),
-        this.pixelsToValue(startPx.y, 'y'),
-        this.pixelsToValue(endPx.x, 'x'),
-        this.pixelsToValue(endPx.y, 'y'),
-      );
+      return this._rectFromMm(start.x, start.y, end.x, end.y);
     }
     if (mode === DRAW_MODES.ELLIPSE) {
       // Bounding box -> ellipse center/radii. The corners are clamped to the
       // grid first, like the rect's: a touch keeps reporting after the finger
       // leaves the canvas, and an unclamped corner gave an edge-pinned center
       // with a radius reaching past the grid.
-      const x1 = this._clampValue(this.pixelsToValue(startPx.x, 'x'), this.xMin, this.xMax);
-      const y1 = this._clampValue(this.pixelsToValue(startPx.y, 'y'), this.yMin, this.yMax);
-      const x2 = this._clampValue(this.pixelsToValue(endPx.x, 'x'), this.xMin, this.xMax);
-      const y2 = this._clampValue(this.pixelsToValue(endPx.y, 'y'), this.yMin, this.yMax);
+      const x1 = this._clampValue(start.x, this.xMin, this.xMax);
+      const y1 = this._clampValue(start.y, this.yMin, this.yMax);
+      const x2 = this._clampValue(end.x, this.xMin, this.xMax);
+      const y2 = this._clampValue(end.y, this.yMin, this.yMax);
       const cx = this._clampAndRound((x1 + x2) / 2, this.xMin, this.xMax);
       const cy = this._clampAndRound((y1 + y2) / 2, this.yMin, this.yMax);
       const rx = Math.max(1, Math.round(Math.abs(x2 - x1) / 2));
@@ -4654,6 +4674,47 @@ export class ZoneMapCard extends HTMLElement {
       shape: DRAW_MODES.RECT,
       data: { x_min: xMin, x_max: xMax, y_min: yMin, y_max: yMax },
     };
+  }
+
+  /**
+   * The snap for corners drawn now, in mm (see ./snap): about a tenth of
+   * the grid step the map shows at its zoom, in the map's unit, so 10 cm at
+   * a 1 m grid and 2 in at a 2 ft one. A YAML grid with a step per axis
+   * snaps both axes to the finer one's.
+   */
+  _snapStep() {
+    const { stepX, stepY } = this._computeGridMetrics();
+    return snapStepMm(Math.min(stepX, stepY), this._unitFamily(this._displayUnit()));
+  }
+
+  /**
+   * The map point (mm) a corner drawn at canvas point `px` (backing px)
+   * goes to: on the nearest round value of the snap, or right under the
+   * pointer when `free` (Alt or Option held). Not clamped or rounded yet:
+   * the shape's save does both, so what is saved is the snapped point in
+   * whole mm. A walked corner never comes through here.
+   */
+  _placeMm(px, free = false) {
+    const at = { x: this.pixelsToValue(px.x, 'x'), y: this.pixelsToValue(px.y, 'y') };
+    if (free) return at;
+    const step = this._snapStep();
+    return { x: snapMm(at.x, step), y: snapMm(at.y, step) };
+  }
+
+  /** Alt or Option pressed (`free`) or let go while a shape is drawn: the
+   *  pointer's corner and the readout follow at once, with no move needed.
+   *  A corner already placed stays where it went. */
+  _setCursorFree(free) {
+    if (!this.isDrawing || this._cursorFree === free) return;
+    this._cursorFree = free;
+    this.drawGrid();
+  }
+
+  /** `px` (backing px) moved to where _placeMm puts its corner, for the
+   *  previews, so they show the corner where it will be saved. */
+  _placedPx(px, free = false) {
+    const at = this._placeMm(px, free);
+    return { x: this.valueToPixels(at.x, 'x'), y: this.valueToPixels(at.y, 'y') };
   }
 
   /**
@@ -5511,7 +5572,7 @@ export class ZoneMapCard extends HTMLElement {
       Math.max(...xs) - Math.min(...xs),
       Math.max(...ys) - Math.min(...ys),
       { x: this.valueToPixels(newest.x, 'x'), y: this.valueToPixels(newest.y, 'y') },
-      READOUT_OFFSET_TOUCH_PX,
+      { offsetCssPx: READOUT_OFFSET_TOUCH_PX },
     );
   }
 
@@ -6043,9 +6104,10 @@ export class ZoneMapCard extends HTMLElement {
         ctx.stroke();
         ctx.restore();
       }
-      // Rubber-band from last point to first
+      // Rubber-band from last point to first, to where the pointer's
+      // corner would go (snapped, or free with Alt or Option).
       if (this._cursorPoint && (pts.length || this.startPoint)) {
-        const cur = this._cursorPoint;
+        const cur = this._placedPx(this._cursorPoint, this._cursorFree);
         const previewColor = this.darkMode
           ? COLOR.canvas.polygonPreviewDark
           : COLOR.canvas.polygonPreviewLight;
@@ -6081,13 +6143,15 @@ export class ZoneMapCard extends HTMLElement {
       this.startPoint &&
       (this.drawMode === DRAW_MODES.RECT || this.drawMode === DRAW_MODES.ELLIPSE)
     ) {
+      // The start corner, placed when pressed.
       const pt = this.startPoint;
       ctx.save();
       this._drawVertexDot(ctx, pt.x, pt.y);
       ctx.restore();
-      // The dashed rubber band from the start point to the last pointer
-      // position. Nothing to outline until the pointer has moved.
-      const cur = this._cursorPoint;
+      // The dashed rubber band from the start point to the pointer's corner,
+      // where it will be saved: snapped, or free with Alt or Option. Nothing
+      // to outline until that corner has moved off the first.
+      const cur = this._cursorPoint && this._placedPx(this._cursorPoint, this._cursorFree);
       if (cur && (cur.x !== pt.x || cur.y !== pt.y)) {
         const width = cur.x - pt.x;
         const height = cur.y - pt.y;
@@ -6120,9 +6184,10 @@ export class ZoneMapCard extends HTMLElement {
   /**
    * The size of the shape being drawn. drawGrid draws it after the trails
    * and dots, so none of them runs through it. A rect or an ellipse shows
-   * the size of exactly what letting go would save, so the readout and the
-   * zone list agree to the mm; a rect with no area saves nothing and shows
-   * no size.
+   * the size of exactly what letting go would save, snapped corners and
+   * all, so the readout and the zone list agree to the mm; a rect with no
+   * area saves nothing and shows no size. In meters it reads to 0.01 m
+   * while corners snap finer than 10 cm (_readoutDecimals).
    */
   _drawInProgressReadout(ctx) {
     if (!this.isDrawing) return;
@@ -6133,11 +6198,25 @@ export class ZoneMapCard extends HTMLElement {
     if (this.drawMode !== DRAW_MODES.RECT && this.drawMode !== DRAW_MODES.ELLIPSE) return;
     const pt = this.startPoint;
     const cur = this._cursorPoint;
-    // Nothing to measure until the pointer has moved.
-    if (!pt || !cur || (cur.x === pt.x && cur.y === pt.y)) return;
+    if (!pt || !cur) return;
+    // Nothing to measure until the pointer's corner has moved off the first,
+    // which a move shorter than half a snap does not do.
+    const placed = this._placedPx(cur, this._cursorFree);
+    if (placed.x === pt.x && placed.y === pt.y) return;
     const payload = this._shapeFromDrag(pt, cur, this.drawMode);
     const size = payload ? zoneSize(payload.shape, payload.data) : null;
-    if (size) this._drawSizeReadout(ctx, size.width, size.depth, cur);
+    if (size) {
+      this._drawSizeReadout(ctx, size.width, size.depth, cur, {
+        decimals: this._readoutDecimals(),
+      });
+    }
+  }
+
+  /** The decimals a drawn shape's size reads to in meters: enough to show
+   *  a size snapped at this zoom exactly (see snapDecimals). A corner placed
+   *  freely reads at the same precision. */
+  _readoutDecimals() {
+    return snapDecimals(this._snapStep(), this._unitFamily(this._displayUnit()));
   }
 
   /**
@@ -6151,13 +6230,14 @@ export class ZoneMapCard extends HTMLElement {
     if (!cur || !corners.length) return;
     const xs = corners.map((p) => p.x);
     const ys = corners.map((p) => p.y);
-    xs.push(this._clampAndRound(this.pixelsToValue(cur.x, 'x'), this.xMin, this.xMax));
-    ys.push(this._clampAndRound(this.pixelsToValue(cur.y, 'y'), this.yMin, this.yMax));
+    const next = this._placeMm(cur, this._cursorFree);
+    xs.push(this._clampAndRound(next.x, this.xMin, this.xMax));
+    ys.push(this._clampAndRound(next.y, this.yMin, this.yMax));
     const width = Math.max(...xs) - Math.min(...xs);
     const depth = Math.max(...ys) - Math.min(...ys);
     // The pointer still on the first corner has nothing to measure yet.
     if (width === 0 && depth === 0) return;
-    this._drawSizeReadout(ctx, width, depth, cur);
+    this._drawSizeReadout(ctx, width, depth, cur, { decimals: this._readoutDecimals() });
   }
 
   /**
@@ -6166,13 +6246,14 @@ export class ZoneMapCard extends HTMLElement {
    * covers more than a mouse pointer, so the readout sits further above it;
    * where that runs off the top of the canvas it goes as far below instead.
    * Sized in CSS px, so it reads the same on a phone and a desktop.
-   * `offsetCssPx` sets the distance where the anchor is not the pointer.
+   * `offsetCssPx` sets the distance where the anchor is not the pointer, and
+   * `decimals` the meters' precision (formatSize).
    */
-  _drawSizeReadout(ctx, widthMm, depthMm, anchorPx, offsetCssPx = null) {
+  _drawSizeReadout(ctx, widthMm, depthMm, anchorPx, { offsetCssPx = null, decimals = 1 } = {}) {
     if (!ctx || !this.canvas || !anchorPx) return;
     const scale = this._frameScale || 1;
     const fontPx = Math.round(14 * scale);
-    const text = formatSize(widthMm, depthMm, this._unitFamily(this._displayUnit()));
+    const text = formatSize(widthMm, depthMm, this._unitFamily(this._displayUnit()), decimals);
     ctx.save();
     ctx.font = `bold ${fontPx}px sans-serif`;
     // The same estimate _measureLabels falls back to where the canvas
@@ -6559,8 +6640,12 @@ export class ZoneMapCard extends HTMLElement {
     this.isDrawing = true;
     this._activeInput = isTouch ? 'touch' : 'mouse';
     this._activeTouchId = touchId;
-    this.startPoint = point;
+    // The press places the first corner: on a round value, or right where
+    // it is with Alt or Option held. A zoom or a pan mid-drag carries it
+    // across in mm (_setView), so it never snaps again.
+    this.startPoint = this._placedPx(point, !!e.altKey);
     this._cursorPoint = point;
+    this._cursorFree = !!e.altKey;
     this.drawGrid();
   }
 
@@ -6581,6 +6666,7 @@ export class ZoneMapCard extends HTMLElement {
     const point = this._getPointFromEvent(e);
     if (!point) return;
     this._cursorPoint = point;
+    this._cursorFree = !!e.altKey;
     this.drawGrid();
   }
 
@@ -6966,6 +7052,10 @@ export class ZoneMapCard extends HTMLElement {
     if (this._onKeyDown) {
       window.removeEventListener('keydown', this._onKeyDown);
       this._onKeyDown = null;
+    }
+    if (this._onKeyUp) {
+      window.removeEventListener('keyup', this._onKeyUp);
+      this._onKeyUp = null;
     }
     if (this._outsideClickHandler) {
       document.removeEventListener('mousedown', this._outsideClickHandler, true);
