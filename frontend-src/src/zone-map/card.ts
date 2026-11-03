@@ -331,7 +331,9 @@ const READOUT_OFFSET_MOUSE_PX = 28;
 const READOUT_OFFSET_TOUCH_PX = 64;
 // Where the readout has no room above a finger (near the radar, on a fitted
 // map), it goes beside the finger instead, its near edge this far (CSS px,
-// about a fingertip's width) from the touch point.
+// about a fingertip's width) from the touch point. Where it does not fit that
+// far out on either side, as a wide feet readout near the middle of a phone's
+// map, it goes below the finger, never closer.
 const READOUT_BESIDE_TOUCH_PX = 44;
 // Walk's readout keeps this much clear space (CSS px) from the corners'
 // rings and numbers and from the buttons over the map, where it can.
@@ -6435,7 +6437,10 @@ export class ZoneMapCard extends HTMLElement {
    * covers more than a mouse pointer, so the readout sits further above it.
    * Where that runs off the top of the canvas, a mouse pointer's goes as far
    * below; a finger's goes beside it at its height instead, on the side with
-   * more room, since below it would sit under the fingertip. Sized in CSS
+   * more room, since below it would sit under the fingertip. Where the plate
+   * does not fit there with READOUT_BESIDE_TOUCH_PX clear of the touch, it
+   * goes as far below as a mouse pointer's: pulled back onto the canvas
+   * beside the finger, it would sit under the fingertip. Sized in CSS
    * px, so it reads the same on a phone and a desktop. `offsetCssPx` sets
    * the distance where the anchor is not the pointer (Walk's newest
    * corner), which goes below too, and `decimals` the meters' precision
@@ -6477,9 +6482,12 @@ export class ZoneMapCard extends HTMLElement {
     if (clearSpot) {
       ({ x, y } = clearSpot);
     } else if (y - plateHeight / 2 < 0) {
-      if (finger) {
-        const side = this.canvas.width - anchorPx.x >= anchorPx.x ? 1 : -1;
-        x = anchorPx.x + side * (READOUT_BESIDE_TOUCH_PX * scale + plateWidth / 2);
+      // A finger's goes beside it on the side with more room, the one side
+      // worth trying, and below it where the plate does not fit there.
+      const besideOffset = READOUT_BESIDE_TOUCH_PX * scale + plateWidth / 2;
+      const roomRight = this.canvas.width - anchorPx.x;
+      if (finger && Math.max(roomRight, anchorPx.x) >= besideOffset + plateWidth / 2) {
+        x = anchorPx.x + (roomRight >= anchorPx.x ? 1 : -1) * besideOffset;
         y = anchorPx.y;
       } else {
         y = anchorPx.y + offset;

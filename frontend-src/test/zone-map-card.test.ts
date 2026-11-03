@@ -7414,9 +7414,11 @@ describe("zone map card drawing", () => {
  *
  * A rect or ellipse drag, and a polygon's corners with the pointer, show
  * their width by depth in the map's unit on a plate over the pointer: 28 CSS
- * px above a mouse pointer, 64 above a finger, and as far below where that
- * would leave the top of the canvas. The numbers come from the same
- * _shapeFromDrag the save uses, so the readout says what letting go saves.
+ * px above a mouse pointer, 64 above a finger. Where that would leave the top
+ * of the canvas, a mouse pointer's goes as far below, and a finger's beside
+ * it, or as far below where it does not fit beside it. The numbers come from
+ * the same _shapeFromDrag the save uses, so the readout says what letting go
+ * saves.
  * Facing ahead on the 10 m grid, canvas (100, 100) is (-3750, 1250) mm.
  */
 describe("zone map card size readout", () => {
@@ -7599,6 +7601,23 @@ describe("zone map card size readout", () => {
     touch(card, "touchstart", 300, 150);
     touch(card, "touchmove", 100, 20);
     expect(readouts(card).map((r) => [r.x, r.y])).toEqual([[200 + 88 + 138, 40]]);
+  });
+
+  it("puts the readout below a finger where it does not fit beside it", async () => {
+    // On a card shown 240 px wide the plate is 139 CSS px ("2.50 m × 3.75 m"
+    // by the canvas's fallback estimate, and its padding). With its near
+    // edge 44 px from the finger it needs 183 px beside it, more than either
+    // half of the canvas. Pulled back onto the canvas it sat under the
+    // fingertip, so it goes as far below the finger as a mouse pointer's.
+    const { card } = await drawingCard("rect", { cssWidth: 240 });
+    const scale = 800 / 240;
+    touch(card, "touchstart", 60, 100);
+    touch(card, "touchmove", 120, 10);
+
+    const [readout] = readouts(card);
+    expect(readout.text).toBe("2.50 m × 3.75 m");
+    expect(readout.plateCenter[0]).toBeCloseTo(120 * scale, 6);
+    expect(readout.plateCenter[1]).toBeCloseTo((10 + 64) * scale, 6);
   });
 
   it("draws the readout over the targets", async () => {
