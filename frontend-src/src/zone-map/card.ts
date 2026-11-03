@@ -332,6 +332,9 @@ const READOUT_OFFSET_TOUCH_PX = 64;
 // map), it goes beside the finger instead, its near edge this far (CSS px,
 // about a fingertip's width) from the touch point.
 const READOUT_BESIDE_TOUCH_PX = 44;
+// Walk's readout keeps this much clear space (CSS px) from the corners'
+// rings and numbers and from the buttons over the map, where it can.
+const READOUT_CLEAR_CSS_PX = 4;
 // A second finger that lands while the first has moved less than this (CSS
 // px) since it went down starts a pinch, and the first finger's shape is
 // dropped. Once the first finger has moved farther it is drawing, and a
@@ -2621,9 +2624,6 @@ export class ZoneMapCard extends HTMLElement {
     return !this._viewOnly && this._isAdmin() && this._movementHistory;
   }
 
-  /** The History chip: shown only where History is allowed, disabled while
-   *  Walk is on (its replay would hide the walker's dot), pressed and
-   *  expanded while the panel is open. */
   /**
    * Walk's labeled chip beside Coverage: an administrator's, as the 🚶 in
    * the drawing modes is, and gone while Walk is on, whose panel is right
@@ -2636,6 +2636,9 @@ export class ZoneMapCard extends HTMLElement {
     chip.hidden = !this._isAdmin() || this.drawMode === DRAW_MODES.WALK;
   }
 
+  /** The History chip: shown only where History is allowed, disabled while
+   *  Walk is on (its replay would hide the walker's dot), pressed and
+   *  expanded while the panel is open. */
   _renderHistoryChip() {
     const chip = this.shadowRoot?.getElementById('btnHistory');
     if (!chip) return;
@@ -5386,10 +5389,13 @@ export class ZoneMapCard extends HTMLElement {
       const { thetaStart, thetaEnd, radius } = this._coneSector();
       const rings = this._getConeRingsRenderState(thetaStart, thetaEnd, radius, gridMetrics);
       rangeLabel = this._rangeLabel();
-      const labels = this._clearAround(
-        this._layOutLabels(rings?.labels, gridState),
-        rangeLabel,
-        gridState?.labelGap ?? LABEL_GAP_CSS_PX,
+      const gap = gridState?.labelGap ?? LABEL_GAP_CSS_PX;
+      // The zones' names keep their places too: a zone across the radar's
+      // line (x = 0) put its name over the y labels running down it.
+      const labels = this._clearOfBoxes(
+        this._clearAround(this._layOutLabels(rings?.labels, gridState), rangeLabel, gap),
+        this._zoneLabelBoxes(replay?.lit ?? null),
+        gap,
       );
       if (gridState) {
         this._drawGridLabels(ctx, labels.grid);
@@ -5587,8 +5593,11 @@ export class ZoneMapCard extends HTMLElement {
   /**
    * The size of the zone the corners walked so far make, above the newest
    * corner, as far above as over a finger, which keeps it clear of that
-   * corner's ring and number. drawGrid draws it after the rings, so an
-   * earlier corner's ring never runs through it.
+   * corner's ring and number. On a phone's map that is about 2 m, where an
+   * earlier corner's ring and number, or the buttons over the map, can be,
+   * so it goes below or beside the corner instead where that is clear of
+   * them all. drawGrid draws it after the rings, so where nothing is clear
+   * no ring runs through it.
    */
   _drawWalkReadout(ctx) {
     const corners = this._walkMapCorners();
@@ -5596,12 +5605,13 @@ export class ZoneMapCard extends HTMLElement {
     const xs = corners.map((c) => c.x);
     const ys = corners.map((c) => c.y);
     const newest = corners[corners.length - 1];
+    const markers = this._walkMarkerLayout(ctx).flatMap((marker) => [marker.ring, marker.plate]);
     this._drawSizeReadout(
       ctx,
       Math.max(...xs) - Math.min(...xs),
       Math.max(...ys) - Math.min(...ys),
       { x: this.valueToPixels(newest.x, 'x'), y: this.valueToPixels(newest.y, 'y') },
-      { offsetCssPx: READOUT_OFFSET_TOUCH_PX },
+      { offsetCssPx: READOUT_OFFSET_TOUCH_PX, avoid: [...markers, ...this._overlayBoxes()] },
     );
   }
 
@@ -5670,42 +5680,77 @@ export class ZoneMapCard extends HTMLElement {
    * shows through.
    */
   _drawWalkMarkers(ctx) {
-    const corners = this._walkMapCorners();
-    if (!corners.length) return;
+    const markers = this._walkMarkerLayout(ctx);
+    if (!markers.length) return;
     const scale = this._frameScale || 1;
-    const r = Math.max(14, Math.round(14 * scale));
     const axis = this.darkMode ? COLOR.canvas.axisDark : COLOR.canvas.axisLight;
     const plate = this.darkMode ? COLOR.ui.darkCanvasBackground : COLOR.ui.lightCanvasBackground;
-    const pad = 2 * scale;
     ctx.save();
     ctx.lineWidth = 3 * scale;
-    ctx.font = `bold ${r}px sans-serif`;
     ctx.textAlign = 'left';
     ctx.textBaseline = 'bottom';
-    corners.forEach((corner, i) => {
-      const x = this.valueToPixels(corner.x, 'x');
-      const y = this.valueToPixels(corner.y, 'y');
+    markers.forEach(({ x, y, r, text, font, plate: box }) => {
+      ctx.font = font;
       ctx.strokeStyle = axis;
       ctx.beginPath();
       ctx.arc(x, y, r, 0, 2 * Math.PI);
       ctx.stroke();
+      ctx.fillStyle = plate;
+      ctx.fillRect(box.left, box.top, box.right - box.left, box.bottom - box.top);
+      ctx.fillStyle = axis;
+      // From the ring's corner box outward, so the plate clears the ring.
+      ctx.fillText(text, x + r, y - r);
+    });
+    ctx.restore();
+  }
+
+  /**
+   * Where each walked corner's marker goes, in backing px: its center, its
+   * ring's radius `r` and box, and its number's text, font and plate box,
+   * up and to the right of the ring. _drawWalkMarkers draws from it and
+   * _drawWalkReadout keeps clear of it.
+   */
+  _walkMarkerLayout(ctx) {
+    const corners = this._walkMapCorners();
+    if (!corners.length) return [];
+    const scale = this._frameScale || 1;
+    const r = Math.max(14, Math.round(14 * scale));
+    const pad = 2 * scale;
+    const font = `bold ${r}px sans-serif`;
+    if (ctx) {
+      ctx.save();
+      ctx.font = font;
+    }
+    const markers = corners.map((corner, i) => {
+      const x = this.valueToPixels(corner.x, 'x');
+      const y = this.valueToPixels(corner.y, 'y');
       const text = String(i + 1);
       // The same estimate _measureLabels falls back to where the canvas
       // cannot measure text.
-      const measured = ctx.measureText?.(text)?.width;
+      const measured = ctx?.measureText?.(text)?.width;
       const width =
         typeof measured === 'number' && measured > 0
           ? measured
           : text.length * r * LABEL_FALLBACK_EM_PER_CHAR;
-      // From the ring's corner box outward, so the plate clears the ring.
       const left = x + r;
       const bottom = y - r;
-      ctx.fillStyle = plate;
-      ctx.fillRect(left - pad, bottom - r - pad, width + 2 * pad, r + 2 * pad);
-      ctx.fillStyle = axis;
-      ctx.fillText(text, left, bottom);
+      return {
+        x,
+        y,
+        r,
+        text,
+        font,
+        ring: { left: x - r, right: x + r, top: y - r, bottom: y + r },
+        plate: {
+          left: left - pad,
+          right: left + width + pad,
+          top: bottom - r - pad,
+          bottom: bottom + pad,
+        },
+      };
     });
-    ctx.restore();
+    if (ctx) ctx.restore();
+    return markers;
   }
 
   /**
@@ -5763,8 +5808,18 @@ export class ZoneMapCard extends HTMLElement {
    *  The range label is the one that says what the cone is, so it stays. */
   _clearAround(labels, rangeLabel, gap) {
     if (!rangeLabel) return labels;
-    const box = this._labelBox(rangeLabel);
-    const clear = (label) => this._boxGap(box, this._labelBox(label)) >= gap;
+    return this._clearOfBoxes(labels, [this._labelBox(rangeLabel)], gap);
+  }
+
+  /** `labels` without the grid and ring labels that come within `gap` of
+   *  any of `boxes` (backing px). Their lines, and the labels either side,
+   *  still give the values left out. */
+  _clearOfBoxes(labels, boxes, gap) {
+    if (!boxes.length) return labels;
+    const clear = (label) => {
+      const box = this._labelBox(label);
+      return boxes.every((other) => this._boxGap(other, box) >= gap);
+    };
     return {
       grid: { x: labels.grid.x.filter(clear), y: labels.grid.y.filter(clear) },
       rings: labels.rings.filter(clear),
@@ -5954,31 +6009,19 @@ export class ZoneMapCard extends HTMLElement {
       ctx.fillStyle = look.fill;
       ctx.lineWidth = look.lineWidth;
       ctx.setLineDash(look.dash);
-      let bbox = null; // {x,y,width,height}
+      // {x, y, width, height} in px, the one _zoneLabelBoxes lays the
+      // labels out from too.
+      const bbox = this._zonePixelBox(zone);
       if (zone.shape === DRAW_MODES.RECT) {
-        const { x_min, x_max, y_min, y_max } = zone.data;
-        const x1 = this.valueToPixels(x_min, 'x');
-        const y1 = this.valueToPixels(y_min, 'y');
-        const x2 = this.valueToPixels(x_max, 'x');
-        const y2 = this.valueToPixels(y_max, 'y');
-        const x = Math.min(x1, x2);
-        const y = Math.min(y1, y2);
-        const width = Math.abs(x2 - x1);
-        const height = Math.abs(y2 - y1);
+        const { x, y, width, height } = bbox;
         ctx.fillRect(x, y, width, height);
         ctx.strokeRect(x, y, width, height);
-        bbox = { x, y, width, height };
       } else if (zone.shape === DRAW_MODES.ELLIPSE) {
-        const { cx, cy, rx, ry } = zone.data;
-        const cxPix = this.valueToPixels(cx, 'x');
-        const cyPix = this.valueToPixels(cy, 'y');
-        const rxPix = Math.abs(this.valueToPixels(cx + rx, 'x') - this.valueToPixels(cx, 'x'));
-        const ryPix = Math.abs(this.valueToPixels(cy + ry, 'y') - this.valueToPixels(cy, 'y'));
+        const { x, y, width, height } = bbox;
         ctx.beginPath();
-        ctx.ellipse(cxPix, cyPix, rxPix, ryPix, 0, 0, Math.PI * 2);
+        ctx.ellipse(x + width / 2, y + height / 2, width / 2, height / 2, 0, 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
-        bbox = { x: cxPix - rxPix, y: cyPix - ryPix, width: rxPix * 2, height: ryPix * 2 };
       } else if (zone.shape === DRAW_MODES.POLYGON && Array.isArray(zone.data.points)) {
         const pts = zone.data.points.map((point) => ({
           x: this.valueToPixels(point.x, 'x'),
@@ -5995,25 +6038,92 @@ export class ZoneMapCard extends HTMLElement {
           // nobody.
           ctx.fill('evenodd');
           ctx.stroke();
-          // Compute bounding box
-          let minX = pts[0].x,
-            minY = pts[0].y,
-            maxX = pts[0].x,
-            maxY = pts[0].y;
-          for (let i = 1; i < pts.length; i++) {
-            if (pts[i].x < minX) minX = pts[i].x;
-            if (pts[i].y < minY) minY = pts[i].y;
-            if (pts[i].x > maxX) maxX = pts[i].x;
-            if (pts[i].y > maxY) maxY = pts[i].y;
-          }
-          bbox = { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
         }
       }
       ctx.restore();
-      if (bbox && bbox.width > 20 && bbox.height > 14) {
+      if (this._zoneLabeled(bbox)) {
         this._drawZoneLabel(zone, bbox, look.suffix);
       }
     });
+  }
+
+  /**
+   * Zone `zone`'s box on the canvas, `{ x, y, width, height }` in backing
+   * px: a rect's corners, an ellipse's center and radii, the box around a
+   * polygon's 3 or more points. null for any other shape.
+   */
+  _zonePixelBox(zone) {
+    const data = zone?.data;
+    if (!data) return null;
+    if (zone.shape === DRAW_MODES.RECT) {
+      const x1 = this.valueToPixels(data.x_min, 'x');
+      const y1 = this.valueToPixels(data.y_min, 'y');
+      const x2 = this.valueToPixels(data.x_max, 'x');
+      const y2 = this.valueToPixels(data.y_max, 'y');
+      return {
+        x: Math.min(x1, x2),
+        y: Math.min(y1, y2),
+        width: Math.abs(x2 - x1),
+        height: Math.abs(y2 - y1),
+      };
+    }
+    if (zone.shape === DRAW_MODES.ELLIPSE) {
+      const { cx, cy, rx, ry } = data;
+      const cxPix = this.valueToPixels(cx, 'x');
+      const cyPix = this.valueToPixels(cy, 'y');
+      const rxPix = Math.abs(this.valueToPixels(cx + rx, 'x') - cxPix);
+      const ryPix = Math.abs(this.valueToPixels(cy + ry, 'y') - cyPix);
+      return { x: cxPix - rxPix, y: cyPix - ryPix, width: rxPix * 2, height: ryPix * 2 };
+    }
+    const points = data.points;
+    if (zone.shape === DRAW_MODES.POLYGON && Array.isArray(points) && points.length >= 3) {
+      const xs = points.map((point) => this.valueToPixels(point.x, 'x'));
+      const ys = points.map((point) => this.valueToPixels(point.y, 'y'));
+      const minX = Math.min(...xs);
+      const minY = Math.min(...ys);
+      return { x: minX, y: minY, width: Math.max(...xs) - minX, height: Math.max(...ys) - minY };
+    }
+    return null;
+  }
+
+  /** Whether a zone this big on the canvas (_zonePixelBox) gets its name. */
+  _zoneLabeled(bbox) {
+    return !!bbox && bbox.width > 20 && bbox.height > 14;
+  }
+
+  /**
+   * The boxes (backing px) the zones' names cover this frame, laid out as
+   * _drawZoneLabel lays them out, for the axis and ring labels to keep
+   * clear of. `lit` is a replay's lit zones, as drawZones takes it.
+   */
+  _zoneLabelBoxes(lit = null) {
+    if (!this.ctx || !this.canvas) return [];
+    return (this.zones || []).flatMap((zone) => {
+      if (!zone || !zone.shape || !zone.data) return [];
+      const bbox = this._zonePixelBox(zone);
+      if (!this._zoneLabeled(bbox)) return [];
+      const place = this._zoneLabelPlacement(zone, bbox, this._zoneSuffix(zone.id, lit));
+      if (!place) return [];
+      return [
+        {
+          left: place.x - place.width / 2,
+          right: place.x + place.width / 2,
+          top: place.y - place.fontPx / 2,
+          bottom: place.y + place.fontPx / 2,
+        },
+      ];
+    });
+  }
+
+  /** What zone `zoneId`'s name is followed by on the map: " (ignored)" for
+   *  an ignore zone, " (held)" while its sensor says a hold keeps it on
+   *  (never in a replay, which has no holds to show), else nothing. */
+  _zoneSuffix(zoneId, lit = null) {
+    if (this._isIgnoreZone(zoneId)) return IGNORED_SUFFIX;
+    if (lit) return '';
+    const entityId = this._presenceEntityFor(zoneId);
+    const stateObj = entityId ? this._hass?.states?.[entityId] : null;
+    return stateObj?.attributes?.held === true ? HELD_SUFFIX : '';
   }
 
   /** Whether zone `zoneId` is an ignore zone, by the payload's zone_type. */
@@ -6044,16 +6154,14 @@ export class ZoneMapCard extends HTMLElement {
       };
     }
     let state = null;
-    let held = false;
     if (lit) {
       state = lit.has(Number(zoneId)) ? 'on' : 'off';
     } else {
       const entityId = this._presenceEntityFor(zoneId);
       const stateObj = entityId ? this._hass?.states?.[entityId] : null;
       state = presenceLook(stateObj?.state);
-      held = stateObj?.attributes?.held === true;
     }
-    const suffix = held ? HELD_SUFFIX : '';
+    const suffix = this._zoneSuffix(zoneId, lit);
     if (state === 'on') {
       return { fill: color.fillOn, stroke: color.stroke, dash: [], lineWidth: 3, suffix };
     }
@@ -6279,9 +6387,18 @@ export class ZoneMapCard extends HTMLElement {
    * px, so it reads the same on a phone and a desktop. `offsetCssPx` sets
    * the distance where the anchor is not the pointer (Walk's newest
    * corner), which goes below too, and `decimals` the meters' precision
-   * (formatSize).
+   * (formatSize). With `avoid`, boxes in backing px ({ left, right, top,
+   * bottom }), the readout takes the first of above, below, right and left
+   * of the anchor that lies on the canvas clear of all of them, and the
+   * placement above otherwise.
    */
-  _drawSizeReadout(ctx, widthMm, depthMm, anchorPx, { offsetCssPx = null, decimals = 1 } = {}) {
+  _drawSizeReadout(
+    ctx,
+    widthMm,
+    depthMm,
+    anchorPx,
+    { offsetCssPx = null, decimals = 1, avoid = null } = {},
+  ) {
     if (!ctx || !this.canvas || !anchorPx) return;
     const scale = this._frameScale || 1;
     const fontPx = Math.round(14 * scale);
@@ -6302,7 +6419,12 @@ export class ZoneMapCard extends HTMLElement {
     const offset = (offsetCssPx ?? pointerOffset) * scale;
     let x = anchorPx.x;
     let y = anchorPx.y - offset;
-    if (y - plateHeight / 2 < 0) {
+    const clearSpot = avoid
+      ? this._clearReadoutSpot(anchorPx, offset, plateWidth, plateHeight, avoid)
+      : null;
+    if (clearSpot) {
+      ({ x, y } = clearSpot);
+    } else if (y - plateHeight / 2 < 0) {
       if (finger) {
         const side = this.canvas.width - anchorPx.x >= anchorPx.x ? 1 : -1;
         x = anchorPx.x + side * (READOUT_BESIDE_TOUCH_PX * scale + plateWidth / 2);
@@ -6322,6 +6444,68 @@ export class ZoneMapCard extends HTMLElement {
     ctx.textBaseline = 'middle';
     ctx.fillText(text, x, y);
     ctx.restore();
+  }
+
+  /**
+   * Where a readout plate `width` by `height` (backing px) can sit around
+   * `anchor`: centered `offset` above it, as far below, or beside it at its
+   * height, right then left, with its near edge `offset` minus half its
+   * height away. The first that lies wholly on the canvas and keeps
+   * READOUT_CLEAR_CSS_PX from every box in `avoid`, or null for none.
+   */
+  _clearReadoutSpot(anchor, offset, width, height, avoid) {
+    const gap = READOUT_CLEAR_CSS_PX * (this._frameScale || 1);
+    const beside = offset - height / 2 + width / 2;
+    const spots = [
+      { x: anchor.x, y: anchor.y - offset },
+      { x: anchor.x, y: anchor.y + offset },
+      { x: anchor.x + beside, y: anchor.y },
+      { x: anchor.x - beside, y: anchor.y },
+    ];
+    const { width: canvasW, height: canvasH } = this.canvas;
+    return (
+      spots.find(({ x, y }) => {
+        const box = {
+          left: x - width / 2,
+          right: x + width / 2,
+          top: y - height / 2,
+          bottom: y + height / 2,
+        };
+        if (box.left < 0 || box.top < 0 || box.right > canvasW || box.bottom > canvasH) {
+          return false;
+        }
+        return avoid.every((other) => this._boxGap(box, other) >= gap);
+      }) || null
+    );
+  }
+
+  /**
+   * The boxes (backing px) of the buttons and notes laid over the canvas
+   * that are showing now: the drawing modes, the unit switch, Undo and
+   * Locked, the zoom row and the offline note. Nothing drawn on the canvas
+   * under them can be read. None while the canvas has no layout box.
+   */
+  _overlayBoxes() {
+    const root = this.shadowRoot;
+    const canvasRect = this.canvas?.getBoundingClientRect?.();
+    if (!root || !canvasRect || !(canvasRect.width > 0) || !(canvasRect.height > 0)) return [];
+    const scaleX = this.canvas.width / canvasRect.width;
+    const scaleY = this.canvas.height / canvasRect.height;
+    const ids = ['overlayControlsLeft', 'overlayControlsRight', 'zoomControls', 'offlineNote'];
+    return ids.flatMap((id) => {
+      const element = root.getElementById(id);
+      if (!element || element.hidden) return [];
+      const rect = element.getBoundingClientRect();
+      if (!(rect.width > 0 && rect.height > 0)) return [];
+      return [
+        {
+          left: (rect.left - canvasRect.left) * scaleX,
+          right: (rect.right - canvasRect.left) * scaleX,
+          top: (rect.top - canvasRect.top) * scaleY,
+          bottom: (rect.bottom - canvasRect.top) * scaleY,
+        },
+      ];
+    });
   }
 
   /** One in-progress vertex marker: a filled dot with a contrasting ring. */
@@ -6345,19 +6529,11 @@ export class ZoneMapCard extends HTMLElement {
    *  " (ignored)") when its look needs one, moved in as far as it takes to
    *  stay on the canvas. A zone wholly off the canvas gets none. */
   _drawZoneLabel(zone, bbox, suffix = '') {
+    const place = this._zoneLabelPlacement(zone, bbox, suffix);
+    if (!place) return;
     const ctx = this.ctx;
-    const name = this._zoneLabel(zone.id);
-    if (!name) return;
-    // A YAML grid smaller than the room can leave a zone off the canvas,
-    // and its name, pulled onto the edge, would label whatever is drawn
-    // there. A fitted map takes in every zone.
-    const { width: canvasW, height: canvasH } = this.canvas;
-    if (bbox.x >= canvasW || bbox.x + bbox.width <= 0) return;
-    if (bbox.y >= canvasH || bbox.y + bbox.height <= 0) return;
-    const label = `${name}${suffix}`;
-    const fontPx = 24;
     ctx.save();
-    ctx.font = `${fontPx}px sans-serif`;
+    ctx.font = `${place.fontPx}px sans-serif`;
     ctx.fillStyle = this.darkMode ? COLOR.canvas.axisDark : COLOR.canvas.axisLight;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
@@ -6367,6 +6543,28 @@ export class ZoneMapCard extends HTMLElement {
     ctx.shadowBlur = 2;
     ctx.shadowOffsetX = 0;
     ctx.shadowOffsetY = 0;
+    ctx.fillText(place.text, place.x, place.y);
+    ctx.restore();
+  }
+
+  /**
+   * Where zone `zone`'s name goes: `{ text, x, y, width, fontPx }` in
+   * backing px, centered at (x, y), or null for none. At the shape's center
+   * (a polygon's centroid, anything else's box center), moved in as far as
+   * it takes to stay on the canvas. A zone wholly off the canvas gets none.
+   */
+  _zoneLabelPlacement(zone, bbox, suffix = '') {
+    const ctx = this.ctx;
+    const name = this._zoneLabel(zone.id);
+    if (!name || !ctx || !this.canvas) return null;
+    // A YAML grid smaller than the room can leave a zone off the canvas,
+    // and its name, pulled onto the edge, would label whatever is drawn
+    // there. A fitted map takes in every zone.
+    const { width: canvasW, height: canvasH } = this.canvas;
+    if (bbox.x >= canvasW || bbox.x + bbox.width <= 0) return null;
+    if (bbox.y >= canvasH || bbox.y + bbox.height <= 0) return null;
+    const text = `${name}${suffix}`;
+    const fontPx = 24;
 
     // Shape center; polygons use centroid, others use bbox center
     let cx = bbox.x + bbox.width / 2;
@@ -6399,15 +6597,17 @@ export class ZoneMapCard extends HTMLElement {
     // start or its " (ignored)". Measured the way _drawSizeReadout measures,
     // with 2 px to spare at either side; one wider than the canvas is
     // centered on it.
-    const measured = ctx.measureText?.(label)?.width;
+    ctx.save();
+    ctx.font = `${fontPx}px sans-serif`;
+    const measured = ctx.measureText?.(text)?.width;
+    ctx.restore();
     const width =
       typeof measured === 'number' && measured > 0
         ? measured
-        : label.length * fontPx * LABEL_FALLBACK_EM_PER_CHAR;
-    cx = clampOnto(cx, width / 2 + 2, this.canvas.width);
-    cy = clampOnto(cy, fontPx / 2, this.canvas.height);
-    ctx.fillText(label, cx, cy);
-    ctx.restore();
+        : text.length * fontPx * LABEL_FALLBACK_EM_PER_CHAR;
+    cx = clampOnto(cx, width / 2 + 2, canvasW);
+    cy = clampOnto(cy, fontPx / 2, canvasH);
+    return { text, x: cx, y: cy, width, fontPx };
   }
 
   /** The cone's edges in radians, rotation applied, and its range in mm. A

@@ -1151,6 +1151,45 @@ describe("zone map card axis labels", () => {
     expect(grid.map((label) => label.text)).toContain("19 ft");
   });
 
+  it("leaves out the axis and ring labels a zone's name would cover", async () => {
+    // A couch across the radar's line: its name sits on x = 0, where the y
+    // labels run down the map, and it covered the one at its depth.
+    const couch = {
+      shape: "rect",
+      data: { x_min: -1500, x_max: 1500, y_min: 2000, y_max: 4000 },
+      name: "Couch",
+    };
+    const draw = async (zones: Record<string, any>) => {
+      const hass = fakeHass({ ...ZONE_PAYLOAD, zones, rotation_deg: 0 });
+      const card = await mountCard(hass, { ...TEN_METER_GRID, unit_display: true });
+      layOut(card, 800);
+      const { ctx, texts } = textRecordingContext(browserTextWidth);
+      card.ctx = ctx;
+      card._invalidateGridCache();
+      card.drawGrid();
+      return texts;
+    };
+
+    // The y labels run down the radar's line, right-aligned against it.
+    const yLabels = (texts: DrawnText[]) =>
+      texts.filter((label) => label.size < 24 && label.align === "right").map((l) => l.text);
+
+    // Without the zone the y labels at 2.5, 3 and 3.5 m are there.
+    expect(yLabels(await draw({}))).toEqual(expect.arrayContaining(["2.5m", "3m", "3.5m"]));
+
+    const texts = await draw({ "1": couch });
+    const name = texts.find((label) => label.text === "Couch")!;
+    expect([name.x, name.y]).toEqual([400, 240]);
+    // Every label drawn under 24 px (the axis, ring and range labels) keeps
+    // the label gap from the name; the 3 m y label, under it, is left out,
+    // and the rest of the axis stays.
+    const others = texts.filter((label) => label.size < 24);
+    expect(others.filter((label) => spaceBetween(label, name) < 4)).toEqual([]);
+    const shown = yLabels(texts);
+    expect(shown).not.toContain("3m");
+    expect(shown).toEqual(expect.arrayContaining(["2.5m", "3.5m", "1m", "5m"]));
+  });
+
   it("keeps more room between labels on a narrower card", async () => {
     const card = await mountCard(fakeHass(), { ...TEN_METER_GRID, unit_display: true });
     // Every label measures 30 px, 10 px less than the 40 px between lines.
@@ -8498,10 +8537,11 @@ describe("zone map card walk", () => {
     expect(readouts(draws)).toEqual([["2.0 m × 4.0 m", 240, 336]]);
   });
 
-  it("draws the size over the rings of earlier corners", async () => {
-    // On a phone's map the readout sits about 2 m above the newest corner,
-    // a common zone depth. Walking a couch's near side first put it on the
-    // rings of corners 1 and 2, which were stroked across its text.
+  it("keeps the size clear of earlier corners' rings and numbers on a phone", async () => {
+    // On a phone's map the readout above the newest corner sits about 2 m
+    // up, a common zone depth. Walking a couch's near side first put it on
+    // the rings and numbers of corners 1 and 2; it goes below the newest
+    // corner instead, where nothing is.
     const { card, at } = await walkCard({
       config: { grid: undefined },
       payload: { display_units: "ft" },
@@ -8531,17 +8571,88 @@ describe("zone map card walk", () => {
           : d.args;
       return x < left + width && left < x + w && y < top + height && top < y + h;
     };
-    // The rings of corners 1 and 2 reach under the plate...
     const ringRadius = Math.max(14, Math.round(14 * card._frameScale));
     const rings = draws.filter((d) => d.name === "arc" && d.args[2] === ringRadius);
     expect(rings).toHaveLength(3);
-    expect(rings.map(covers)).toEqual([true, true, false]);
+    expect(rings.map(covers)).toEqual([false, false, false]);
+    // The corners' number plates are clear of it too.
+    const numbers = draws
+      .map((d, i) =>
+        d.name === "fillText" && /^[123]$/.test(String(d.args[0])) && draws[i - 1].name === "fillRect"
+          ? draws[i - 1]
+          : null
+      )
+      .filter((d): d is Draw => d !== null);
+    expect(numbers).toHaveLength(3);
+    expect(numbers.map(covers)).toEqual([false, false, false]);
+    // Below the newest corner, as far as above it would have been.
+    const newestY = card.valueToPixels(4200, "y");
+    expect(top + height / 2).toBeCloseTo(newestY + 64 * card._frameScale, 6);
     // ...and no ring, dot or plate is drawn over the readout.
     const after = draws
       .slice(text + 1)
       .filter((d) => (d.name === "arc" && d.args[2] >= 14) || d.name === "fillRect");
     expect(after.filter(covers)).toEqual([]);
     expect(draws.indexOf(rings[2])).toBeLessThan(text);
+  });
+
+  it("keeps the size from under the buttons over the map", async () => {
+    // The drawing modes stand open down the map's left edge on a phone, and
+    // a corner walked near them put the readout under 🚶.
+    const { card, at } = await walkCard();
+    layOut(card, 800);
+    $(card, "btnModeWalk").click();
+    markCorner(card, at, -4000, 6000);
+    // The newest corner is canvas (90, 640), and "0.1 m × 2.0 m" is 121.2
+    // px wide by the canvas's fallback estimate.
+    markCorner(card, at, -3875, 8000);
+    const plate = (draws: Draw[]) => {
+      const text = draws.findIndex(
+        (d) => d.name === "fillText" && String(d.args[0]).includes(" × ")
+      );
+      const [left, top, width, height] = draws[text - 1].args;
+      return { left, x: left + width / 2, y: top + height / 2 };
+    };
+    // With nothing over the map there, above the corner.
+    expect(plate(frame(card))).toMatchObject({ x: 90, y: 640 - 64 });
+
+    // The drawing modes over the left 40 px from 400 px down: above and
+    // below would reach under them, so it goes to the corner's right, at its
+    // height, its near edge 54 px (64 less half its height) from the corner.
+    const modes = $(card, "overlayControlsLeft");
+    vi.spyOn(modes, "getBoundingClientRect").mockReturnValue({
+      left: 4,
+      top: 400,
+      right: 40,
+      bottom: 796,
+      x: 4,
+      y: 400,
+      width: 36,
+      height: 396,
+      toJSON: () => ({}),
+    } as DOMRect);
+    const beside = plate(frame(card));
+    expect(beside.y).toBe(640);
+    expect(beside.x).toBeCloseTo(90 + 54 + 60.6, 9);
+    expect(beside.left).toBeGreaterThanOrEqual(40 + 4);
+  });
+
+  it("draws the size over the rings of earlier corners where nothing is clear", async () => {
+    // Above, below and both sides all crowded: the readout goes above the
+    // newest corner, as before, over the rings, which are drawn first.
+    const { card, at } = await walkCard();
+    layOut(card, 800);
+    $(card, "btnModeWalk").click();
+    const crowd = { left: 0, right: 800, top: 0, bottom: 800 };
+    vi.spyOn(card, "_overlayBoxes").mockReturnValue([crowd]);
+    markCorner(card, at, -3000, 1000);
+    markCorner(card, at, -1000, 3000);
+
+    const draws = frame(card);
+    const readout = draws.filter(
+      (d) => d.name === "fillText" && String(d.args[0]).includes(" × ")
+    );
+    expect(readout.map((d) => d.args)).toEqual([["2.0 m × 2.0 m", 320, 176]]);
   });
 
   it("rings each corner with its number over the dots", async () => {
