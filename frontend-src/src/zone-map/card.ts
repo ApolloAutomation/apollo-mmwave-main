@@ -15,6 +15,7 @@
  */
 
 import { registerElement } from '../register';
+import { versionNoticeElement, watchVersion } from '../version-check';
 import { clearMovement, connectZones, fetchMovement, isMovementPayload } from './api';
 import { CELL_MM, CellGrid, bucketCells } from './cells';
 import {
@@ -618,6 +619,10 @@ export class ZoneMapCard extends HTMLElement {
     this._toastAt = new Map();
     // Whether the "Radar offline" note is showing (see _renderOfflineNote).
     this._offlineShown = false;
+    // The page's version check while the card is on the page, and the
+    // notice it last put under the title (see _renderVersionNotice).
+    this._version = null;
+    this._versionShown = undefined;
     // The ignore zones' hatch pattern per theme, made once per context.
     this._hatch = { light: null, dark: null };
     // Canvas backing px per CSS px, read once at the top of each frame.
@@ -970,6 +975,8 @@ export class ZoneMapCard extends HTMLElement {
     // saves for everyone) and which controls can be used.
     const adminBefore = this._isAdmin();
     this._hass = hass;
+    // The version check asks again on a new connection (version-check.ts).
+    this._version?.update(hass);
     // hass is set repeatedly, several times a second while the LD2450 pushes
     // coordinates, so this only acts when the card is not overriding the
     // theme AND the theme actually changed. Anything else here would redraw
@@ -1306,6 +1313,15 @@ export class ZoneMapCard extends HTMLElement {
     // view-only map never had any.
     this._connectZones();
     if (this.canvas && !this._onKeyDown && !this._viewOnly) this._attachGlobalListeners();
+    // The page's version check, while the card is on the page.
+    if (!this._version) {
+      const version = watchVersion(() => {
+        if (this._version === version) this._renderVersionNotice();
+      });
+      this._version = version;
+      version.update(this._hass);
+    }
+    this._renderVersionNotice();
     // A trail that was fading when the card left the page fades on.
     this._kickTrailTimer();
   }
@@ -1557,6 +1573,24 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   /**
+   * Under the title, on the map alone and the error screen too: the page's
+   * version notice (version-check.ts), Reload when this page runs older
+   * cards than the Apollo mmWave Home Assistant runs, a restart when it
+   * runs newer ones. A failed zone read after an update is often that, so
+   * the error screen says it as well. One card on the page shows it, the
+   * first that started watching. Touches the DOM only when the notice
+   * changes; render() resets _versionShown with its empty host.
+   */
+  _renderVersionNotice() {
+    const notice = this._version?.notice;
+    if (notice === this._versionShown) return;
+    const host = this.shadowRoot?.getElementById('versionNotice');
+    if (!host) return;
+    this._versionShown = notice;
+    host.replaceChildren(...(notice ? [versionNoticeElement(notice)] : []));
+  }
+
+  /**
    * What the card shows when the store could not answer.
    *
    * Deliberately not a blank map: an empty canvas is indistinguishable from a
@@ -1574,6 +1608,7 @@ export class ZoneMapCard extends HTMLElement {
       </style>
       <div class="container ${this.darkMode ? 'dark' : ''}">
         <div class="device-title" id="deviceTitle"></div>
+        <div id="versionNotice"></div>
         <div class="load-error" id="loadError"></div>
       </div>
     `;
@@ -1782,6 +1817,7 @@ export class ZoneMapCard extends HTMLElement {
       </style>
       <div class="container ${this.darkMode ? 'dark' : ''}">
         <div class="device-title" id="deviceTitle"></div>
+        <div id="versionNotice"></div>
         <div class="canvas-container">
           <canvas id="zoneCanvas"></canvas>
           <div class="map-note" id="offlineNote" role="status" ${this._offlineShown ? '' : 'hidden'}>${OFFLINE_NOTE}</div>
@@ -1887,10 +1923,10 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   /**
-   * The map alone (view_only): the title, the canvas and the offline note,
-   * with no drawing tools, chips, Configure or zone list. render() attaches
-   * no listeners to it, and the canvas leaves a vertical swipe to the
-   * browser, so a phone scrolls past the card. The rules are _template's for
+   * The map alone (view_only): the title, the version notice, the canvas
+   * and the offline note, with no drawing tools, chips, Configure or zone
+   * list. render() attaches no listeners to it, and the canvas leaves a
+   * vertical swipe to the browser, so a phone scrolls past the card. The rules are _template's for
    * the same elements, but for the canvas's cursor and touch-action.
    */
   _viewOnlyTemplate() {
@@ -1911,6 +1947,7 @@ export class ZoneMapCard extends HTMLElement {
       </style>
       <div class="container ${this.darkMode ? 'dark' : ''}">
         <div class="device-title" id="deviceTitle"></div>
+        <div id="versionNotice"></div>
         <div class="canvas-container">
           <canvas id="zoneCanvas"></canvas>
           <div class="map-note" id="offlineNote" role="status" ${this._offlineShown ? '' : 'hidden'}>${OFFLINE_NOTE}</div>
@@ -2000,6 +2037,9 @@ export class ZoneMapCard extends HTMLElement {
     this._detachGlobalListeners();
     this.shadowRoot.innerHTML = this._template();
     this._renderTitle();
+    // The new template's host is empty, whatever the old one showed.
+    this._versionShown = undefined;
+    this._renderVersionNotice();
 
     if (this._loadError) {
       // Assigned as text, not interpolated into the markup: the message quotes
@@ -7287,6 +7327,10 @@ export class ZoneMapCard extends HTMLElement {
     this._stopTrailTimer();
     // A replay nobody can see stops, and the card comes back live.
     this._closeHistory();
+    // A card further down the page may show the notice now.
+    this._version?.close();
+    this._version = null;
+    this._renderVersionNotice();
   }
 
   _detachGlobalListeners() {

@@ -6190,8 +6190,11 @@ describe("zone map card view only", () => {
     const card = await mountCard(fakeHass(), VIEW_ONLY);
     const root = card.shadowRoot;
 
+    // versionNotice stays empty unless the page runs other cards than Home
+    // Assistant (zone-map-version.test.ts).
     expect(Array.from(root.querySelectorAll("[id]"), (el: any) => el.id)).toEqual([
       "deviceTitle",
+      "versionNotice",
       "zoneCanvas",
       "offlineNote",
     ]);
