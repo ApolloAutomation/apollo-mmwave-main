@@ -218,6 +218,9 @@ it did not.
 - **Walk on a phone.** A **🚶 Mark corners by walking** chip beside
   **Coverage** starts Walk, where the 🚶 among the drawing modes was often
   missed. A zoomed map follows the walker.
+- **Map labels.** A distance label that a zone's name or a button over the
+  map would cover is left out, so labels no longer run under a zone's name
+  or show through the zoom buttons. The grid line it names still shows.
 - **Hints.** The flip hint reads "Turn this on if, with the map turned the
   way the room is, a dot moves the opposite way from you.", since at a Cone
   rotation of 180° a correct map fails the old test. A new hint under

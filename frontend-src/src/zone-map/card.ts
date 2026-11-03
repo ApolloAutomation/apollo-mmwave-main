@@ -4174,10 +4174,11 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   /** Canvas backing px per CSS px. The backing store is a fixed 800 px that
-   *  the card scales to its width. 1 while the canvas has no layout box. */
-  _canvasScale() {
+   *  the card scales to its width. 1 while the canvas has no layout box.
+   *  `rect` is the canvas's box where the caller has read it already. */
+  _canvasScale(rect = this.canvas?.getBoundingClientRect?.()) {
     if (!this.canvas || !(this.canvas.width > 0)) return 1;
-    const rendered = this.canvas.getBoundingClientRect?.().width;
+    const rendered = rect?.width;
     if (!(rendered > 0)) return 1;
     return this.canvas.width / rendered;
   }
@@ -5405,7 +5406,8 @@ export class ZoneMapCard extends HTMLElement {
     if (!this.ctx || !this.canvas) return;
     const ctx = this.ctx;
     // One layout read per frame; what is sized in CSS px reads it from here.
-    this._frameScale = this._canvasScale();
+    const canvasRect = this.canvas.getBoundingClientRect?.();
+    this._frameScale = this._canvasScale(canvasRect);
     // Worked out before anything is drawn: the zones its dots light are
     // drawn before the dots.
     const replay = this._replayShowing() ? this._replayFrame() : null;
@@ -5431,10 +5433,15 @@ export class ZoneMapCard extends HTMLElement {
       rangeLabel = this._rangeLabel();
       const gap = gridState?.labelGap ?? LABEL_GAP_CSS_PX;
       // The zones' names keep their places too: a zone across the radar's
-      // line (x = 0) put its name over the y labels running down it.
+      // line (x = 0) put its name over the y labels running down it. So do
+      // the buttons over the map: a zoomed map moves an axis's labels to the
+      // edge, where they showed through the zoom row and the unit switch.
       const labels = this._clearOfBoxes(
         this._clearAround(this._layOutLabels(rings?.labels, gridState), rangeLabel, gap),
-        this._zoneLabelBoxes(replay?.lit ?? null),
+        [
+          ...this._zoneLabelBoxes(replay?.lit ?? null),
+          ...this._overlayBoxes({ notes: false, canvasRect }),
+        ],
         gap,
       );
       if (gridState) {
@@ -6523,15 +6530,18 @@ export class ZoneMapCard extends HTMLElement {
    * The boxes (backing px) of the buttons and notes laid over the canvas
    * that are showing now: the drawing modes, the unit switch, Undo and
    * Locked, the zoom row and the offline note. Nothing drawn on the canvas
-   * under them can be read. None while the canvas has no layout box.
+   * under them can be read. None while the canvas has no layout box. With
+   * `notes` false, the buttons only: _placeMapNotes puts the offline note
+   * under the x labels, so the labels never make room for it. `canvasRect`
+   * is the canvas's box where the frame has read it already.
    */
-  _overlayBoxes() {
+  _overlayBoxes({ notes = true, canvasRect = this.canvas?.getBoundingClientRect?.() } = {}) {
     const root = this.shadowRoot;
-    const canvasRect = this.canvas?.getBoundingClientRect?.();
     if (!root || !canvasRect || !(canvasRect.width > 0) || !(canvasRect.height > 0)) return [];
     const scaleX = this.canvas.width / canvasRect.width;
     const scaleY = this.canvas.height / canvasRect.height;
-    const ids = ['overlayControlsLeft', 'overlayControlsRight', 'zoomControls', 'offlineNote'];
+    const ids = ['overlayControlsLeft', 'overlayControlsRight', 'zoomControls'];
+    if (notes) ids.push('offlineNote');
     return ids.flatMap((id) => {
       const element = root.getElementById(id);
       if (!element || element.hidden) return [];

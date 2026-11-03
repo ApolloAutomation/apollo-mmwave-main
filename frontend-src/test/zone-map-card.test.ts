@@ -1190,6 +1190,47 @@ describe("zone map card axis labels", () => {
     expect(shown).toEqual(expect.arrayContaining(["2.5m", "3.5m", "1m", "5m"]));
   });
 
+  it("leaves out the axis labels under the buttons over the map, not under the offline note", async () => {
+    // A zoomed map moves an axis's labels to its edge, under the zoom row
+    // and the unit switch, which are see-through: '16 ft' read as '16 ft2x'.
+    // Here the zoom row lies across the y labels at 3 m.
+    const hass = fakeHass({ ...ZONE_PAYLOAD, rotation_deg: 0 });
+    const card = await mountCard(hass, { ...TEN_METER_GRID, unit_display: true });
+    layOut(card, 800);
+    const over = (id: string, box: { left: number; top: number; right: number; bottom: number }) =>
+      vi.spyOn(card.shadowRoot.getElementById(id), "getBoundingClientRect").mockReturnValue({
+        ...box,
+        x: box.left,
+        y: box.top,
+        width: box.right - box.left,
+        height: box.bottom - box.top,
+        toJSON: () => ({}),
+      } as DOMRect);
+    const yLabels = () => {
+      const { ctx, texts } = textRecordingContext(browserTextWidth);
+      card.ctx = ctx;
+      card._invalidateGridCache();
+      card.drawGrid();
+      return texts.filter((label) => label.size < 24 && label.align === "right").map((l) => l.text);
+    };
+    const row = { left: 340, top: 230, right: 800, bottom: 250 };
+
+    expect(yLabels()).toEqual(expect.arrayContaining(["2.5m", "3m", "3.5m"]));
+
+    const zoomRow = over("zoomControls", row);
+    const shown = yLabels();
+    expect(shown).not.toContain("3m");
+    expect(shown).toEqual(expect.arrayContaining(["2.5m", "3.5m", "1m", "5m"]));
+    zoomRow.mockRestore();
+
+    // The offline note sits under the x labels, placed from them, so the
+    // labels never make room for it.
+    const note = card.shadowRoot.getElementById("offlineNote");
+    note.hidden = false;
+    over("offlineNote", row);
+    expect(yLabels()).toEqual(expect.arrayContaining(["2.5m", "3m", "3.5m"]));
+  });
+
   it("keeps more room between labels on a narrower card", async () => {
     const card = await mountCard(fakeHass(), { ...TEN_METER_GRID, unit_display: true });
     // Every label measures 30 px, 10 px less than the 40 px between lines.
