@@ -18,9 +18,9 @@ values, so you can place them to the centimeter. You can mark a zone's
 corners by walking them, read a zone's size while you draw it, put a
 view-only map on a phone dashboard, and, as an administrator, replay up to
 24 hours of movement. On a phone, a locked map now scrolls the page. Gate
-radar tabs show the radar's own answer under the Gate Energy chart, and
-every tab says when the page runs other cards than Home Assistant after an
-update.
+radar tabs show the radar's own answer under the Gate Energy chart, and from
+the next update on, every tab says when the page runs other cards than Home
+Assistant.
 Nothing needs changing by hand unless your Lovelace resources are managed in
 YAML (replace both `?v=` URLs; see
 [Lovelace resources](docs/configuration.md#lovelace-resources)), or an
@@ -173,7 +173,10 @@ a second later than in 2.3.0 (see the presence item below).
 - **Out-of-date pages.** After an update, the Radar setup card, or the zone
   map card when it comes first on the page, says when the page still runs
   the old cards, with a **Reload** button, or when Home Assistant needs a
-  restart to finish updating. See
+  restart to finish updating. This works from the next update on, once the
+  page runs these cards: cards from 2.4.0b2 and earlier, 2.3.0 among them,
+  have no check, so on the update from them, reload the page even when no
+  notice shows. See
   [After an update](docs/configuration.md#after-an-update).
 - **Going back to 2.3.0.** Before going back to 2.3.0, turn Movement history
   off on every radar. 2.3.0 neither reads nor deletes the movement history
@@ -268,7 +271,9 @@ it did not.
 - **Out-of-date pages.** The Radar setup card, and the zone map card when
   it comes first on the page, say when the page runs older cards than Home
   Assistant ("Reload") or newer ones ("Restart Home Assistant to finish
-  updating").
+  updating"). This starts with the next update: 2.4.0b2's cards have no
+  check, so after updating to 2.4.0b3, reload the page even when no notice
+  shows.
 
 ### Changed since 2.4.0b1
 

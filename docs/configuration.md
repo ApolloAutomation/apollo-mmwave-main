@@ -131,8 +131,8 @@ to Home Assistant, and compare that with their own version. Any signed-in
 user can ask, so the check works for everyone. When the two differ, the card
 says so (the versions here are examples):
 
-- **The page runs older cards:** "Apollo mmWave was updated to 2.4.0b3, but
-  this page still runs 2.4.0b2." with a **Reload** button, and under it "In
+- **The page runs older cards:** "Apollo mmWave was updated to 2.4.1, but
+  this page still runs 2.4.0." with a **Reload** button, and under it "In
   the Home Assistant app, if Reload does not help, close the app fully and
   open it again." If the app still shows the old cards after that, reset its
   cache:
@@ -140,14 +140,20 @@ says so (the versions here are examples):
     cache**.
   - iPhone and iPad: **Settings → Companion app → Debugging → Clear web view
     cache**.
-- **The page runs newer cards:** "Apollo mmWave 2.4.0b3 is installed, but
-  Home Assistant still runs 2.4.0b2. Restart Home Assistant to finish
+- **The page runs newer cards:** "Apollo mmWave 2.4.1 is installed, but
+  Home Assistant still runs 2.4.0. Restart Home Assistant to finish
   updating." There is no button: restart Home Assistant (Settings → System,
   the power icon in the top right).
 
 If Home Assistant restarted into another version while the page was open,
 also after going back to an older release, the card asks for a reload.
 Matching versions, or an answer the card cannot read, show nothing.
+
+The check runs in the cards the page has loaded, and cards from 2.4.0b2 and
+earlier have none. On an update from them, a page that still runs the old
+cards shows no notice, so no notice does not mean the page is current:
+reload it anyway (Ctrl/Cmd+Shift+R in a browser, or close the Home
+Assistant app fully and open it again).
 
 One card per page shows the notice: on the Apollo mmWave dashboard that is
 the **Radar setup** card near the top of the tab, above its checks. The zone
@@ -974,10 +980,12 @@ turned or picked up after you drew zones moves the room under them.
 
 The map fills the card's width, and on the Apollo mmWave dashboard its
 column is twice as wide on a wide screen. It is never taller than the
-browser window less about 200 px, and never less than 240 px tall: where the
-window is too short for the map at the card's width, the map gets narrower
-and sits in the middle of the card, so a meter stays as long across as down.
-To see more detail, zoom in (see [Zoom and pan](#zoom-and-pan)).
+browser window less about 200 px: where the window is too short for the map
+at the card's width, the map gets narrower and sits in the middle of the
+card, so a meter stays as long across as down. That limit never makes it
+shorter than 240 px, so a phone on its side still gets a map. On a narrow
+phone held upright, the card's width sets the map's height, which can be
+less. To see more detail, zoom in (see [Zoom and pan](#zoom-and-pan)).
 
 A card with its own `grid` in YAML keeps that grid, on a square map. A card
 with `grid_units` in YAML uses that unit until an administrator saves one
