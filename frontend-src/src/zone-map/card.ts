@@ -86,11 +86,20 @@ import {
   WALK_TOO_CLOSE_TOAST,
   WALK_UNDO,
   ZONE_SETTINGS_HINT,
+  ZOOM_FIT,
+  ZOOM_FIT_ALL_LABEL,
+  ZOOM_FIT_ZONES_LABEL,
+  ZOOM_GROUP_LABEL,
+  ZOOM_IN_LABEL,
+  ZOOM_IN_TITLE,
+  ZOOM_OUT_LABEL,
+  ZOOM_PAN_HINT,
   formatAgo,
   historyClearError,
   historyError,
   replayBadge,
   walkHintNext,
+  zoomReadout,
 } from './copy';
 import { ZONE_MAP_EDITOR_TAG, firstLd2450DeviceId } from './editor';
 import { formatHold, formatSize, zoneSize } from './format';
@@ -98,6 +107,18 @@ import { pointInZone, rotateToMap } from './geometry';
 import { decodeMovement, heatCells, positionAt, sparkBuckets, trailAt } from './history';
 import { fallbackPresenceId, presenceLook } from './presence';
 import { TRAIL_GAP_MS, TRAIL_MS, TrailBuffer } from './trails';
+import {
+  ZOOM_MAX,
+  ZOOM_STEP,
+  boundsOf,
+  clampView,
+  fitView,
+  followPoints,
+  sameView,
+  viewAt,
+  viewWindow,
+  zoomAt,
+} from './view';
 import { WALK_AVERAGE_MS, WALK_MIN_CORNER_GAP_MM, walkShape } from './walk';
 
 const COLOR = Object.freeze({
@@ -305,6 +326,19 @@ const TRAIL_FRAME_MS = 100;
 // drawn. A fingertip covers far more than a mouse pointer does.
 const READOUT_OFFSET_MOUSE_PX = 28;
 const READOUT_OFFSET_TOUCH_PX = 64;
+// A second finger that lands while the first has moved less than this (CSS
+// px) since it went down starts a pinch, and the first finger's shape is
+// dropped. Once the first finger has moved farther it is drawing, and a
+// second finger (a resting thumb, a palm) changes nothing.
+const PINCH_SLOP_CSS_PX = 10;
+// Ctrl or Cmd and this much wheel travel (CSS px, a mouse wheel's notch)
+// zoom by one ZOOM_STEP, as one press of + or - does. A trackpad pinch
+// arrives as many small Ctrl wheel events and zooms smoothly. One event
+// counts for at most a notch, so a page-sized delta cannot jump to 8x.
+const WHEEL_PX_PER_STEP = 100;
+// Walk keeps the walker this fraction of a zoomed view's width and height
+// inside each edge, panning (and zooming out only if it must) to do so.
+const WALK_FOLLOW_INSET = 0.15;
 // The notes over the map's top corners ("Radar offline" and the Replay
 // badge) sit this far (CSS px) below its top edge, and are about this tall:
 // .map-note's 12 px text at line height 1.3, with 4 px padding above and
@@ -611,6 +645,21 @@ export class ZoneMapCard extends HTMLElement {
     this.xMax = DEFAULT_GRID.xMax;
     this.yMin = DEFAULT_GRID.yMin;
     this.yMax = DEFAULT_GRID.yMax;
+    // Zoom and pan (see ./view): the zoom and the map point at the canvas's
+    // center, or null for the whole map. Page memory only, kept across
+    // renders, refits and unit changes; a page load, another radar or a new
+    // rotation starts from the whole map. _applyView lays it over the
+    // extents: the window it shows (mm) and pxPerX / pxPerY, the 1x px per
+    // mm (_basePxPerX / _basePxPerY) times the zoom.
+    this._view = null;
+    this._viewAngle = null;
+    this._basePxPerX = 0;
+    this._basePxPerY = 0;
+    // A pinch or a mouse pan in progress (see _startPinch, _startMousePan),
+    // or { kind: 'pinched' } while fingers a pinch left behind are down.
+    this._gesture = null;
+    this._onPanMove = null;
+    this._onPanEnd = null;
     // True when the YAML grid set the extents, which then never move. False
     // means they are fitted to the cone and the zones.
     this._gridFromConfig = false;
@@ -642,6 +691,7 @@ export class ZoneMapCard extends HTMLElement {
     this.unitLabelSize = DEFAULT_UNIT_LABEL_SIZE;
     this._gridCache = null;
     this._coneRingsCache = null;
+    this._applyView();
   }
 
   /** The card's config UI, an `ha-device-picker` and a title field. */
@@ -720,10 +770,12 @@ export class ZoneMapCard extends HTMLElement {
     this._viewOnly = config.view_only === true;
     if (this._viewOnly && !wasViewOnly) {
       // The map alone has no handler left to end a rect or polygon in
-      // progress, no Walk panel and no History, so all three end here.
+      // progress, no Walk panel and no History, so all three end here. It
+      // has no zoom buttons either, so it shows the whole map.
       this._resetDrawingState();
       this._exitWalk();
       this._closeHistory();
+      this._resetView();
     }
     // Display only, so a user can call the card "Kitchen" and still share zone
     // data with the auto-generated dashboard. Deliberately NOT `this.title`:
@@ -884,6 +936,8 @@ export class ZoneMapCard extends HTMLElement {
     // Corners walked on the old radar's map are no corners on the new one.
     this._exitWalk();
     this._walkVisible = null;
+    // The new radar's map starts whole.
+    this._resetView();
   }
 
   set hass(hass) {
@@ -1055,8 +1109,10 @@ export class ZoneMapCard extends HTMLElement {
     this._trails.prune(now);
     // The same states say whether the radar went offline or came back.
     this._renderOfflineNote();
-    // Walk's hint and Corner here follow who is in view.
+    // Walk's hint and Corner here follow who is in view, and a zoomed
+    // view follows the walker. The repaint after this shows both.
     this._renderWalkPanel();
+    this._followWalker();
     this._kickTrailTimer();
   }
 
@@ -1370,6 +1426,11 @@ export class ZoneMapCard extends HTMLElement {
       this.coneAngleDeg = nextAngle;
       this._invalidateConeCache();
     }
+    // Turned, the map shows the room another way round, and whatever was
+    // zoomed in on is somewhere else: start from the whole map again. Held
+    // against the rotation the view was set at, not the drawn one, which a
+    // same-radar setConfig puts back to the YAML's for a moment.
+    if (this._view && this._viewAngle !== this.coneAngleDeg) this._resetView();
     const angleSlider = this.shadowRoot.getElementById('coneAngleSlider');
     const angleLabel = this.shadowRoot.getElementById('coneAngleLabel');
     if (angleSlider) angleSlider.value = String(this.coneAngleDeg);
@@ -1523,9 +1584,9 @@ export class ZoneMapCard extends HTMLElement {
         .canvas-container { position: relative; width: 100%; aspect-ratio: 1; border: 1px solid var(--divider-color); border-radius: var(--zm-radius); overflow: hidden; background: ${COLOR.ui.lightCanvasBackground}; isolation: isolate; container-type: size; }
         canvas { width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
         /* A map that cannot be drawn on (locked, in Walk, or with no zone
-           selected) lets a vertical swipe scroll the page. Two declarations:
-           iOS 14 does not know pinch-zoom and keeps the first. */
-        canvas.pans { touch-action: pan-y; touch-action: pan-y pinch-zoom; }
+           selected) lets a vertical swipe scroll the page. Not a pinch: two
+           fingers zoom and pan the map (_pinchTouch). */
+        canvas.pans { touch-action: pan-y; }
         /* A note over the map's top left corner. It takes no pointer, so a
            press on it still lands on the canvas. _placeMapNotes moves it
            below the x labels when they run along the top edge. */
@@ -1535,6 +1596,13 @@ export class ZoneMapCard extends HTMLElement {
         .overlay-controls { position: absolute; bottom: 4px; display: flex; gap: 4px; z-index: 1; }
         .overlay-controls-left { left: 4px; flex-direction: column; align-items: flex-start; }
         .overlay-controls-right { right: 4px; }
+        /* The zoom row, over the row of unit switch, Undo and Locked (32 px
+           tall, 4 px from the edge, with a 4 px gap). */
+        .overlay-controls-zoom { right: 4px; bottom: 40px; align-items: center; }
+        #zoomControls button { font-size: 18px; width: 32px; height: 32px; min-width: 32px; padding: 0; }
+        #zoomControls #btnZoomFit { width: auto; font-size: 13px; padding: 6px 8px; }
+        .zoom-readout { padding: 4px 6px; border-radius: 6px; font-size: 12px; line-height: 1.3; font-variant-numeric: tabular-nums; background: ${COLOR.ui.overlayButtonLightBg}; color: ${COLOR.ui.overlayButtonText}; }
+        .container.dark .zoom-readout { background: ${COLOR.ui.overlayButtonDarkBg}; }
         .overlay-controls button { background: ${COLOR.ui.overlayButtonLightBg}; color: ${COLOR.ui.overlayButtonText}; border: none; border-radius: 6px; font-size: 11px; line-height: 1; cursor: pointer; backdrop-filter: blur(4px); display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 6px; min-height: 32px; }
         #modeGroup button { font-size: 16px; width: 32px; height: 32px; min-width: 32px; min-height: 32px; padding: 0; }
         /* A fitted map can be shorter than wide, and on a phone shorter than the
@@ -1694,6 +1762,13 @@ export class ZoneMapCard extends HTMLElement {
             </div>
             <button id="btnUndo" class="undo-toggle" title="Undo last zone change" disabled>↶</button>
             <button id="btnLock" class="lock-toggle" title="Lock drawing and cone rotation">🔓</button>
+          </div>
+          <!-- _renderZoomControls sets the readout, what is disabled and what Fit says. -->
+          <div class="overlay-controls overlay-controls-zoom" id="zoomControls" role="group" aria-label="${ZOOM_GROUP_LABEL}">
+            <span class="zoom-readout" id="zoomReadout" title="${ZOOM_PAN_HINT}" hidden></span>
+            <button id="btnZoomOut" title="${ZOOM_OUT_LABEL}" aria-label="${ZOOM_OUT_LABEL}" disabled>−</button>
+            <button id="btnZoomIn" title="${ZOOM_IN_TITLE}" aria-label="${ZOOM_IN_LABEL}">+</button>
+            <button id="btnZoomFit" title="${ZOOM_FIT_ALL_LABEL}" aria-label="${ZOOM_FIT_ALL_LABEL}">${ZOOM_FIT}</button>
           </div>
         </div>
         ${this._walkPanelTemplate()}
@@ -2034,6 +2109,7 @@ export class ZoneMapCard extends HTMLElement {
   attachEventListeners() {
     this._attachZoneListEvents();
     this._attachCanvasEvents();
+    this._attachZoomControls();
     this._attachConeControls();
     this._attachDrawingModeControls();
     this._attachUnitSwitch();
@@ -2372,6 +2448,8 @@ export class ZoneMapCard extends HTMLElement {
     this._walkConfirmCancel = false;
     // Ends any shape in progress, shows the panel and lets the canvas pan.
     this._setDrawMode(DRAW_MODES.WALK);
+    // A zoomed view goes to the walker now, not at their next step.
+    this._followWalker({ draw: true });
   }
 
   /** Leave Walk, back to the drawing mode it came from, and drop the
@@ -3066,23 +3144,39 @@ export class ZoneMapCard extends HTMLElement {
   _attachCanvasEvents() {
     if (!this.canvas) return;
 
-    const handleMouseDown = (event) => this.startDrawing(event);
+    // Shift and the left button, or the middle button, pan the map instead
+    // of drawing, and the release that ends a pan places no corner.
+    const handleMouseDown = (event) => {
+      if (this._startMousePan(event)) return;
+      this.startDrawing(event);
+    };
     const handleMouseMove = (event) => this.draw(event);
-    const handleMouseUp = (event) => this.endDrawing(event);
+    const handleMouseUp = (event) => {
+      if (this._gesture?.kind === 'pan') return;
+      this.endDrawing(event);
+    };
 
     this.canvas.addEventListener('mousedown', handleMouseDown);
     this.canvas.addEventListener('mousemove', handleMouseMove);
     this.canvas.addEventListener('mouseup', handleMouseUp);
+    // On the canvas's container, so the wheel over the buttons on the map
+    // zooms it too. Not passive: Ctrl or Cmd and the wheel zoom the map, not
+    // the page.
+    this.canvas.parentElement?.addEventListener('wheel', (event) => this._onWheel(event), {
+      passive: false,
+    });
 
     // A map nothing can be drawn on (see _canvasPans) leaves the touch to the
     // browser, so a swipe that starts on it scrolls the page instead of
     // trapping a phone user in the card. A tap still reaches startDrawing
     // through the mousedown the browser makes of it, so a locked map still
     // says how to unlock. Read at event time, and a gesture already drawing
-    // finishes or cancels as before.
+    // finishes or cancels as before. Two fingers pinch and pan the map on
+    // any map, one that pans or not (see _pinchTouch), before all of that.
     this.canvas.addEventListener(
       'touchstart',
       (event) => {
+        if (this._pinchTouch(event, 'touchstart')) return;
         if (this._canvasPans() && !this.isDrawing) return;
         event.preventDefault();
         this.startDrawing(event);
@@ -3092,6 +3186,7 @@ export class ZoneMapCard extends HTMLElement {
     this.canvas.addEventListener(
       'touchmove',
       (event) => {
+        if (this._pinchTouch(event, 'touchmove')) return;
         if (this._canvasPans() && !this.isDrawing) return;
         event.preventDefault();
         this.draw(event);
@@ -3101,6 +3196,7 @@ export class ZoneMapCard extends HTMLElement {
     this.canvas.addEventListener(
       'touchend',
       (event) => {
+        if (this._pinchTouch(event, 'touchend')) return;
         if (this._canvasPans() && !this.isDrawing) return;
         event.preventDefault();
         this.endDrawing(event);
@@ -3109,11 +3205,18 @@ export class ZoneMapCard extends HTMLElement {
     );
     // The browser ends a touch it takes away (a system gesture, an incoming
     // call, an app switch, palm rejection) with touchcancel, never touchend.
-    this.canvas.addEventListener('touchcancel', (event) => this._cancelTouch(event), {
-      passive: true,
-    });
+    this.canvas.addEventListener(
+      'touchcancel',
+      (event) => {
+        if (this._pinchTouch(event, 'touchcancel')) return;
+        this._cancelTouch(event);
+      },
+      { passive: true },
+    );
 
-    this.canvas.addEventListener('dblclick', () => {
+    this.canvas.addEventListener('dblclick', (event) => {
+      // The second press of a Shift double-click panned; it placed nothing.
+      if (event.shiftKey) return;
       if (this.drawMode === DRAW_MODES.POLYGON) {
         this.finishPolygon();
       }
@@ -3226,6 +3329,8 @@ export class ZoneMapCard extends HTMLElement {
       if (Number.isNaN(value)) return;
       this.coneAngleDeg = this._clampConeAngle(value);
       this._invalidateConeCache();
+      // A new rotation starts from the whole map (see _applyRotation).
+      this._resetView();
       updateDisplay();
       this.drawGrid();
     });
@@ -3243,6 +3348,7 @@ export class ZoneMapCard extends HTMLElement {
       if (this.isLocked) return;
       this.coneAngleDeg = this.coneAngleDefault;
       this._invalidateConeCache();
+      this._resetView();
       updateDisplay();
       this._refitAndDraw();
       this._persistRotation();
@@ -3816,26 +3922,37 @@ export class ZoneMapCard extends HTMLElement {
 
   _computeGridMetrics() {
     const unit = this._displayUnit();
+    // At the zoom, so a zoomed map gets finer lines (and labels) wherever
+    // the coarser step would leave them over GRID_MIN_SPACING_PX apart.
     const pxPerMmX = this.pxPerX || 0;
     const pxPerMmY = this.pxPerY || 0;
-    const spanX = Math.max(1, this.xMax - this.xMin);
-    const spanY = Math.max(1, this.yMax - this.yMin);
+    // The part of the map on the canvas: the whole map at 1x.
+    const spanX = Math.max(1, this._viewXMax - this._viewXMin);
+    const spanY = Math.max(1, this._viewYMax - this._viewYMin);
 
     // A fitted grid draws both axes at the one step its edges were rounded
     // to. Picking each axis's step from its own px per mm drew X and Y lines
     // at different steps when 2 ft came out at exactly 40 px (float error
     // decided each axis), and could pick a step the edges were not rounded
     // to. A YAML grid can scale X and Y apart, so it keeps a step per axis.
-    const fittedStep = this._fittedStep();
+    // Zoomed in, a fitted grid takes the finer step the zoom allows, still
+    // one for both axes and never coarser than the fit's.
+    let fittedStep = this._fittedStep();
+    if (fittedStep !== null && this._zoom() > 1) {
+      fittedStep = Math.min(
+        fittedStep,
+        this._chooseGridStep(Math.min(pxPerMmX, pxPerMmY), Math.max(spanX, spanY), unit),
+      );
+    }
     const stepX = fittedStep ?? this._chooseGridStep(pxPerMmX, spanX, unit);
     const stepY = fittedStep ?? this._chooseGridStep(pxPerMmY, spanY, unit);
     // The tolerance keeps an edge that is a whole number of steps, give or
     // take float error (a fitted grid in feet), from growing a line off the
-    // canvas past it.
-    const startX = Math.floor(this.xMin / stepX + 1e-9) * stepX;
-    const startY = Math.floor(this.yMin / stepY + 1e-9) * stepY;
-    const endX = Math.ceil(this.xMax / stepX - 1e-9) * stepX;
-    const endY = Math.ceil(this.yMax / stepY - 1e-9) * stepY;
+    // canvas past it. Only the lines in the view's window are drawn.
+    const startX = Math.floor(this._viewXMin / stepX + 1e-9) * stepX;
+    const startY = Math.floor(this._viewYMin / stepY + 1e-9) * stepY;
+    const endX = Math.ceil(this._viewXMax / stepX - 1e-9) * stepX;
+    const endY = Math.ceil(this._viewYMax / stepY - 1e-9) * stepY;
     const countX = this._countSteps(endX, startX, stepX);
     const countY = this._countSteps(endY, startY, stepY);
 
@@ -3878,6 +3995,11 @@ export class ZoneMapCard extends HTMLElement {
       this._roundKeyValue(this.yMax),
       this._roundKeyValue(this.pxPerX),
       this._roundKeyValue(this.pxPerY),
+      // The view's window, which a pan moves at the same zoom.
+      this._roundKeyValue(this._viewXMin),
+      this._roundKeyValue(this._viewXMax),
+      this._roundKeyValue(this._viewYMin),
+      this._roundKeyValue(this._viewYMax),
       canvasWidth,
       canvasHeight,
       this.unitDisplay ? 1 : 0,
@@ -4082,6 +4204,12 @@ export class ZoneMapCard extends HTMLElement {
         xLabelY = y0 + margin;
         xBaseline = 'top';
       }
+    } else if (Number.isFinite(y0) && y0 < 0) {
+      // The radar's line is above the canvas (a map zoomed in on the room,
+      // or a YAML grid that starts past it): the labels run along the top
+      // edge, the nearer one, as they do on a fitted map at 1x.
+      xLabelY = 2;
+      xBaseline = 'top';
     } else {
       xLabelY = canvasHeight - 2;
       xBaseline = 'bottom';
@@ -4117,6 +4245,10 @@ export class ZoneMapCard extends HTMLElement {
         yLabelX = x0 + margin;
         yAlign = 'left';
       }
+    } else if (Number.isFinite(x0) && x0 > width) {
+      // The same along the nearer side edge.
+      yLabelX = width - 2;
+      yAlign = 'right';
     } else {
       yLabelX = 2;
       yAlign = 'left';
@@ -5172,6 +5304,8 @@ export class ZoneMapCard extends HTMLElement {
     // corner's ring, a trail or a dot can be.
     this._drawInProgressReadout(ctx);
     this._drawWalkReadout(ctx);
+    // What Fit does follows the zones, which any frame can be showing anew.
+    this._renderZoomControls();
     // The trail fade timer skips a frame a hass push painted a moment ago.
     this._lastDrawAt = this._now();
   }
@@ -6210,9 +6344,9 @@ export class ZoneMapCard extends HTMLElement {
       this._roundKeyValue(radius),
       this._roundKeyValue(pxPerMmX),
       this._roundKeyValue(pxPerMmY),
-      this._roundKeyValue(this.xMin),
-      this._roundKeyValue(this.xMax),
-      this._roundKeyValue(this.yMin),
+      this._roundKeyValue(this._viewXMin),
+      this._roundKeyValue(this._viewXMax),
+      this._roundKeyValue(this._viewYMin),
       labelUnit,
       stepMm,
       this.canvas?.width || 0,
@@ -6235,11 +6369,12 @@ export class ZoneMapCard extends HTMLElement {
     const cosStep = Math.cos(angStep);
     const sinStart = Math.sin(thetaStart);
     const cosStart = Math.cos(thetaStart);
-    // The rings skip valueToPixels for speed, so they repeat its x mapping:
-    // (x - xMin) * px, or (xMax - x) * px on a flipped map.
+    // The rings skip valueToPixels for speed, so they repeat its mapping
+    // through the view's window: (x - xMin) * px, or (xMax - x) * px on a
+    // flipped map, and (y - yMin) * px.
     const signX = mirror ? -1 : 1;
-    const offsetX = mirror ? this.xMax * pxPerMmX : -this.xMin * pxPerMmX;
-    const offsetY = -this.yMin * pxPerMmY;
+    const offsetX = mirror ? this._viewXMax * pxPerMmX : -this._viewXMin * pxPerMmX;
+    const offsetY = -this._viewYMin * pxPerMmY;
 
     // TODO(REVIEW_REPORT.md X45): rings run out to cone.y_max (no ceiling), even past the grid.
     // If touched, stop at the farthest grid corner distance; do not clamp y_max.
@@ -6344,7 +6479,11 @@ export class ZoneMapCard extends HTMLElement {
   _sizeCanvas() {
     this._invalidateGridCache();
     this._invalidateConeCache();
-    if (!this.canvas) return;
+    if (!this.canvas) {
+      // No canvas to size, but the view still follows the extents.
+      this._applyView();
+      return;
+    }
     // TODO(REVIEW_REPORT.md X39): fixed 800 px store with no devicePixelRatio (blurry on HiDPI);
     // non-square YAML grids draw stretched. DPR sizing must scale the px constants; document stretch.
     const safeWidth = Math.max(1, this.xMax - this.xMin);
@@ -6356,8 +6495,9 @@ export class ZoneMapCard extends HTMLElement {
     // Assigning a size clears the canvas even when it is the same one.
     if (this.canvas.width !== width) this.canvas.width = width;
     if (this.canvas.height !== height) this.canvas.height = height;
-    this.pxPerX = width / safeWidth;
-    this.pxPerY = height / safeHeight;
+    this._basePxPerX = width / safeWidth;
+    this._basePxPerY = height / safeHeight;
+    this._applyView();
     const container = this.canvas.parentElement;
     if (container) container.style.aspectRatio = `${width} / ${height}`;
   }
@@ -6412,29 +6552,350 @@ export class ZoneMapCard extends HTMLElement {
     this.drawGrid();
   }
 
+  /** Map-frame mm to canvas backing px, through the view's window (the
+   *  whole map at 1x), so a zoomed map draws every layer zoomed and a
+   *  handle, a line or a label drawn in px keeps its size. */
   valueToPixels(val, axis) {
     if (axis === 'x') {
-      // A flipped map (mirror_x) puts xMax on the left edge. Only these two
-      // transforms flip, never the context (ctx.scale(-1, 1) or a CSS
-      // scaleX(-1) would mirror the text and the pointer math too).
+      // A flipped map (mirror_x) puts the window's xMax on the left edge.
+      // Only these two transforms flip, never the context (ctx.scale(-1, 1)
+      // or a CSS scaleX(-1) would mirror the text and the pointer math too).
       return this._mirrorX
-        ? (this.xMax - val) * (this.pxPerX || 0)
-        : (val - this.xMin) * (this.pxPerX || 0);
+        ? (this._viewXMax - val) * (this.pxPerX || 0)
+        : (val - this._viewXMin) * (this.pxPerX || 0);
     } else {
       // Y increases downward: map directly without flipping
-      return (val - this.yMin) * (this.pxPerY || 0);
+      return (val - this._viewYMin) * (this.pxPerY || 0);
     }
   }
 
   pixelsToValue(pix, axis) {
     if (axis === 'x') {
-      if (!this.pxPerX) return this._mirrorX ? this.xMax : this.xMin;
-      return this._mirrorX ? this.xMax - pix / this.pxPerX : pix / this.pxPerX + this.xMin;
+      if (!this.pxPerX) return this._mirrorX ? this._viewXMax : this._viewXMin;
+      return this._mirrorX
+        ? this._viewXMax - pix / this.pxPerX
+        : pix / this.pxPerX + this._viewXMin;
     } else {
       // Inverse of valueToPixels when Y increases downward
-      if (!this.pxPerY) return this.yMin;
-      return this.yMin + pix / this.pxPerY;
+      if (!this.pxPerY) return this._viewYMin;
+      return this._viewYMin + pix / this.pxPerY;
     }
+  }
+
+  /** The map's extents, the whole picture a view is a part of. */
+  _mapExtents() {
+    return { xMin: this.xMin, xMax: this.xMax, yMin: this.yMin, yMax: this.yMax };
+  }
+
+  /** How far the map is zoomed in: 1 for the whole map. */
+  _zoom() {
+    return this._view ? clampView(this._view, this._mapExtents()).zoom : 1;
+  }
+
+  /**
+   * Lay the view over the extents as they are now and set the window
+   * valueToPixels maps through, and pxPerX / pxPerY at the zoom. The window
+   * is clamped inside the map (a refit or a unit change can shrink it), but
+   * the view is kept as it was set: a setConfig fits the map around the
+   * YAML's cone for a moment before the store's rotation is laid back over
+   * it, and the view must not lose its place to that. A view at 1x is the
+   * whole map, null.
+   */
+  _applyView() {
+    const map = this._mapExtents();
+    if (this._view && clampView(this._view, map).zoom <= 1) this._view = null;
+    const win = viewWindow(this._view, map);
+    this._viewXMin = win.xMin;
+    this._viewXMax = win.xMax;
+    this._viewYMin = win.yMin;
+    this._viewYMax = win.yMax;
+    const zoom = this._zoom();
+    this.pxPerX = (this._basePxPerX || 0) * zoom;
+    this.pxPerY = (this._basePxPerY || 0) * zoom;
+  }
+
+  /**
+   * Show `next` (a view, or null for the whole map). A rect or ellipse drag
+   * holds its start and the pointer in canvas px (startDrawing), so both are
+   * carried across in mm: the shape keeps its corner where it was put on the
+   * map. A polygon's corners are in mm already.
+   */
+  _setView(next, { draw = true } = {}) {
+    const toMm = (p) => (p ? { x: this.pixelsToValue(p.x, 'x'), y: this.pixelsToValue(p.y, 'y') } : p);
+    const start = toMm(this.startPoint);
+    const cursor = toMm(this._cursorPoint);
+    this._view = next;
+    // The rotation it was set at: another one starts from the whole map
+    // (see _applyRotation).
+    this._viewAngle = this.coneAngleDeg;
+    this._applyView();
+    const toPx = (m) => (m ? { x: this.valueToPixels(m.x, 'x'), y: this.valueToPixels(m.y, 'y') } : m);
+    this.startPoint = toPx(start);
+    this._cursorPoint = toPx(cursor);
+    this._renderZoomControls();
+    if (draw) this.drawGrid();
+  }
+
+  /** Back to the whole map, with no pinch or pan going on: another radar or
+   *  another rotation is another picture. The caller draws. */
+  _resetView() {
+    this._endGesture();
+    if (!this._view) return;
+    this._setView(null, { draw: false });
+  }
+
+  /** The map point at canvas point `p` (backing px). */
+  _mmAt(p) {
+    return { x: this.pixelsToValue(p.x, 'x'), y: this.pixelsToValue(p.y, 'y') };
+  }
+
+  /** Where canvas point `p` (backing px) lies across the view's window, as
+   *  viewAt takes it: 0 to 1 from the window's xMin and yMin edges, which a
+   *  flipped map draws on the right. */
+  _windowFrac(p) {
+    const fx = this.canvas?.width ? p.x / this.canvas.width : 0.5;
+    const fy = this.canvas?.height ? p.y / this.canvas.height : 0.5;
+    return { x: this._mirrorX ? 1 - fx : fx, y: fy };
+  }
+
+  /** Zoom by `factor` around map point `at` (mm), the view's center when
+   *  none is given (the + and - buttons). */
+  _zoomBy(factor, at = null) {
+    const map = this._mapExtents();
+    const view = clampView(this._view, map);
+    this._setView(zoomAt(view, map, factor, at || { x: view.cx, y: view.cy }));
+  }
+
+  /** The view Fit shows next: the zones with a margin, or the whole map
+   *  when there are none or the view already shows them so. */
+  _fitTarget() {
+    const map = this._mapExtents();
+    const box = boundsOf(this._zonePoints());
+    const fit = box ? fitView(map, box) : null;
+    if (!fit || fit.zoom <= 1 || sameView(fit, this._view, map)) return null;
+    return fit;
+  }
+
+  /**
+   * Lay the zoom buttons out from the view: the readout while zoomed, + and
+   * - disabled at the ends of the range, and Fit labeled with what it does
+   * next, disabled when that changes nothing. drawGrid calls it on every
+   * frame, since a zone drawn, saved or deleted changes what Fit does, so
+   * it touches the DOM only when one of those changed (the readout's
+   * data-shown); render() builds the buttons again without it. A view-only
+   * card has none.
+   */
+  _renderZoomControls() {
+    const root = this.shadowRoot;
+    const readout = root?.getElementById('zoomReadout');
+    if (!readout) return;
+    const zoom = this._zoom();
+    const target = this._fitTarget();
+    const key = `${zoom}|${!!target}`;
+    if (readout.dataset.shown === key) return;
+    readout.dataset.shown = key;
+    readout.hidden = zoom <= 1;
+    readout.textContent = zoom > 1 ? zoomReadout(zoom) : '';
+    const zoomIn = root.getElementById('btnZoomIn');
+    if (zoomIn) zoomIn.disabled = zoom >= ZOOM_MAX - 1e-9;
+    const zoomOut = root.getElementById('btnZoomOut');
+    if (zoomOut) zoomOut.disabled = zoom <= 1;
+    const fit = root.getElementById('btnZoomFit');
+    if (fit) {
+      const label = target ? ZOOM_FIT_ZONES_LABEL : ZOOM_FIT_ALL_LABEL;
+      fit.title = label;
+      fit.setAttribute('aria-label', label);
+      fit.disabled = !target && zoom <= 1;
+    }
+  }
+
+  /** The zoom buttons and the gestures over the canvas. View-only cards
+   *  attach none (render() skips them), and their map never zooms. */
+  _attachZoomControls() {
+    const on = (id, handler) => {
+      const button = this.shadowRoot.getElementById(id);
+      if (button) button.addEventListener('click', handler);
+    };
+    on('btnZoomIn', () => this._zoomBy(ZOOM_STEP));
+    on('btnZoomOut', () => this._zoomBy(1 / ZOOM_STEP));
+    on('btnZoomFit', () => this._setView(this._fitTarget()));
+    this._renderZoomControls();
+  }
+
+  /**
+   * Ctrl or Cmd and the wheel (a trackpad pinch on most browsers arrives
+   * the same way) zoom around the pointer. A plain wheel is left to the
+   * page, which scrolls as it always did.
+   */
+  _onWheel(event) {
+    if (!(event.ctrlKey || event.metaKey)) return;
+    // Also keeps the browser from zooming the whole page.
+    event.preventDefault();
+    const p = this._getPointFromEvent(event);
+    if (!p) return;
+    // A wheel that counts in lines (Firefox, on some systems) moves about
+    // 16 px a line; one that counts in pages, a canvas's height.
+    const perLine = 16;
+    const unit =
+      event.deltaMode === 1 ? perLine : event.deltaMode === 2 ? this.canvas.height : 1;
+    const travel = Math.max(-WHEEL_PX_PER_STEP, Math.min(WHEEL_PX_PER_STEP, event.deltaY * unit));
+    if (!travel) return;
+    this._zoomBy(Math.pow(ZOOM_STEP, -travel / WHEEL_PX_PER_STEP), this._mmAt(p));
+  }
+
+  /**
+   * Shift and the left button, or the middle button, drag the map. The map
+   * point pressed stays under the pointer, and the window listeners follow
+   * the drag past the canvas's edge. Returns whether the press was one.
+   */
+  _startMousePan(event) {
+    const pans = event.button === 1 || (event.button === 0 && event.shiftKey);
+    if (!pans || this._gesture) return false;
+    const p = this._getPointFromEvent(event);
+    if (!p) return false;
+    // The middle button would start the browser's autoscroll.
+    event.preventDefault();
+    this._gesture = { kind: 'pan', at: this._mmAt(p), zoom: this._zoom() };
+    this._onPanMove = (move) => {
+      if (this._gesture?.kind !== 'pan') return;
+      const q = this._getPointFromEvent(move);
+      if (!q) return;
+      const map = this._mapExtents();
+      this._setView(viewAt(map, this._gesture.zoom, this._gesture.at, this._windowFrac(q)));
+    };
+    this._onPanEnd = () => this._endGesture();
+    window.addEventListener('mousemove', this._onPanMove);
+    window.addEventListener('mouseup', this._onPanEnd);
+    return true;
+  }
+
+  /** End a pinch or a pan, and drop the window listeners a pan added. */
+  _endGesture() {
+    this._gesture = null;
+    if (this._onPanMove) window.removeEventListener('mousemove', this._onPanMove);
+    if (this._onPanEnd) window.removeEventListener('mouseup', this._onPanEnd);
+    this._onPanMove = null;
+    this._onPanEnd = null;
+  }
+
+  /**
+   * Whether a second finger landing now starts a pinch. Not while the
+   * browser already scrolls the page for the first finger (the event can no
+   * longer be cancelled), and not once the first finger has drawn: moved
+   * more than PINCH_SLOP_CSS_PX since it went down, it is drawing a shape,
+   * and the second finger is a resting thumb or a palm, as it always was.
+   */
+  _pinchStarts(event) {
+    if (!event.touches || event.touches.length < 2 || !event.cancelable) return false;
+    const drawing =
+      this.isDrawing &&
+      this._activeInput === 'touch' &&
+      findTouch(event.touches, this._activeTouchId) !== null;
+    if (!drawing || !this.startPoint || !this._cursorPoint) return true;
+    const scale = this._canvasScale();
+    const moved = Math.hypot(
+      this._cursorPoint.x - this.startPoint.x,
+      this._cursorPoint.y - this.startPoint.y,
+    );
+    return moved / scale <= PINCH_SLOP_CSS_PX;
+  }
+
+  /**
+   * Two fingers down: from here they zoom around their midpoint and pan,
+   * and the stroke the first one began is dropped (a polygon keeps the
+   * corners it has). The map point between them stays between them.
+   */
+  _startPinch(event) {
+    if (this.isDrawing && this._activeInput === 'touch') {
+      if (this.drawMode === DRAW_MODES.POLYGON && this._polyPoints.length) {
+        this._cursorPoint = null;
+        this._activeInput = null;
+        this._activeTouchId = null;
+      } else {
+        // Also fits what a payload brought in while the finger was down.
+        this.cancelDrawing();
+      }
+    }
+    const [a, b] = [event.touches[0], event.touches[1]];
+    const pa = this._getPointFromEvent(event, a.identifier);
+    const pb = this._getPointFromEvent(event, b.identifier);
+    if (!pa || !pb) return;
+    const mid = { x: (pa.x + pb.x) / 2, y: (pa.y + pb.y) / 2 };
+    this._gesture = {
+      kind: 'pinch',
+      ids: [a.identifier, b.identifier],
+      distance: Math.max(1, Math.hypot(pb.x - pa.x, pb.y - pa.y)),
+      zoom: this._zoom(),
+      at: this._mmAt(mid),
+    };
+    this.drawGrid();
+  }
+
+  /** The two pinching fingers moved: zoom by how far apart they are now
+   *  against when they landed, with the map point that was between them
+   *  between them still. */
+  _movePinch(event) {
+    const gesture = this._gesture;
+    const pa = this._getPointFromEvent(event, gesture.ids[0]);
+    const pb = this._getPointFromEvent(event, gesture.ids[1]);
+    if (!pa || !pb) return;
+    const distance = Math.max(1, Math.hypot(pb.x - pa.x, pb.y - pa.y));
+    const mid = { x: (pa.x + pb.x) / 2, y: (pa.y + pb.y) / 2 };
+    const zoom = gesture.zoom * (distance / gesture.distance);
+    this._setView(viewAt(this._mapExtents(), zoom, gesture.at, this._windowFrac(mid)));
+  }
+
+  /**
+   * Route a touch event to a pinch. Returns true when the pinch took it:
+   * two fingers down (see _pinchStarts), the pinch's own moves, and every
+   * touch until the last finger it left behind lifts, which draws nothing
+   * and scrolls nothing. Otherwise the drawing handlers get it.
+   */
+  _pinchTouch(event, type) {
+    if (this._viewOnly) return false;
+    const gesture = this._gesture;
+    if (gesture?.kind === 'pan') return false;
+    if (type === 'touchstart') {
+      // A finger put back down after a pinch can start another.
+      if (gesture?.kind !== 'pinch' && this._pinchStarts(event)) {
+        event.preventDefault();
+        this._startPinch(event);
+        return true;
+      }
+      if (!gesture) return false;
+      if (event.cancelable) event.preventDefault();
+      return true;
+    }
+    if (!gesture) return false;
+    if (type === 'touchmove') {
+      if (event.cancelable) event.preventDefault();
+      if (gesture.kind === 'pinch') this._movePinch(event);
+      return true;
+    }
+    // touchend or touchcancel: the pinch is over once either of its fingers
+    // lifts, and the gesture once every finger has.
+    if (type === 'touchend' && event.cancelable) event.preventDefault();
+    const lifted =
+      gesture.kind === 'pinch' &&
+      gesture.ids.some((id) => findTouch(event.changedTouches, id) !== null);
+    if (!event.touches || event.touches.length === 0) this._gesture = null;
+    else if (lifted) this._gesture = { kind: 'pinched' };
+    return true;
+  }
+
+  /**
+   * Walk keeps the person walking in a zoomed view: when their dot nears
+   * the view's edge, the view pans after them, and zooms out only if two
+   * people in view no longer fit. Not during a pinch or a pan, which the
+   * user is steering.
+   */
+  _followWalker({ draw = false } = {}) {
+    if (this.drawMode !== DRAW_MODES.WALK || !this._view || this._gesture) return;
+    const points = this._walkTargets().map(({ x, y }) => this._toMap(x, y));
+    if (!points.length) return;
+    const map = this._mapExtents();
+    const next = followPoints(this._view, map, points, WALK_FOLLOW_INSET);
+    if (!sameView(next, this._view, map)) this._setView(next, { draw });
   }
 
   getCardSize() {
@@ -6461,6 +6922,8 @@ export class ZoneMapCard extends HTMLElement {
 
   disconnectedCallback() {
     this._detachGlobalListeners();
+    // A pan's window listeners would keep the card alive and moving.
+    this._endGesture();
     this._disconnectZones();
     this._stopTrailTimer();
     // A replay nobody can see stops, and the card comes back live.

@@ -5898,10 +5898,13 @@ describe("zone map card multi-touch and touchcancel", () => {
     tap(card, 1, 100, 100);
     expect(card._polyPoints).toEqual([{ x: -3750, y: 1250 }]);
 
-    // A second finger tapped while the first is held adds nothing; the held
-    // finger's own lift is the next vertex.
+    // A second finger tapped while the first is held, once that one has
+    // moved, adds nothing; the held finger's own lift is the next vertex.
+    // (On a first finger that has not moved, a second one pinches: see the
+    // zoom tests.)
     card._lastPolyTap = 0;
-    fire(card, "touchstart", [finger(card, 2, 300, 100)], [finger(card, 2, 300, 100)]);
+    fire(card, "touchstart", [finger(card, 2, 280, 100)], [finger(card, 2, 280, 100)]);
+    fire(card, "touchmove", [finger(card, 2, 300, 100)], [finger(card, 2, 300, 100)]);
     fire(
       card,
       "touchstart",
@@ -8316,6 +8319,46 @@ describe("zone map card walk", () => {
     expect(card.selectedZone).toBe(2);
     expect(card._walk.corners).toHaveLength(1);
   });
+
+  it("follows the walker in a zoomed view and marks corners where the radar puts them", async () => {
+    const { card, at } = await walkCard();
+    // 4x on (-3000, 7000): x -4250..-1750, y 5750..8250, 0.32 px per mm.
+    card._setView({ zoom: 4, cx: -3000, cy: 7000 });
+    at("a", 2000, 2000);
+    const before = { ...card._view };
+    expect(before).toEqual({ zoom: 4, cx: -3000, cy: 7000 });
+
+    // Walk goes to the walker at once, the zoom kept, 15% of the window in
+    // from the edges they were past (2500 mm across: 375 mm).
+    $(card, "btnModeWalk").click();
+    expect(card._view.zoom).toBe(4);
+    expect(card._viewXMax - 2000).toBeCloseTo(375, 6);
+    expect(2000 - card._viewYMin).toBeCloseTo(375, 6);
+
+    // Steps inside the view move nothing; one toward its edge pans after.
+    const settled = { ...card._view };
+    at("a", 1500, 2200);
+    expect(card._view).toEqual(settled);
+    at("a", 2400, 2200);
+    expect(card._view.zoom).toBe(4);
+    expect(card._viewXMax - 2400).toBeCloseTo(375, 6);
+
+    // A corner is the radar's average, not anything on the canvas, so the
+    // zoom changes nothing about where it lands.
+    vi.advanceTimersByTime(2000);
+    $(card, "btnWalkCorner").click();
+    expect(card._walk.corners).toEqual([{ x: 2400, y: 2200 }]);
+    const [ring] = frame(card).filter((d) => d.name === "arc" && d.args[2] === 14);
+    expect(ring.args[0]).toBeCloseTo(card.valueToPixels(2400, "x"), 6);
+    expect(ring.args[1]).toBeCloseTo(card.valueToPixels(2200, "y"), 6);
+
+    // A second person in view zooms out as far as it takes to show both.
+    at("b", -4000, 8000);
+    expect(card._view.zoom).toBeLessThan(4);
+    expect(card._viewXMin).toBeLessThanOrEqual(-4000);
+    expect(card._viewXMax).toBeGreaterThanOrEqual(2400);
+    expect(card._viewYMax).toBeGreaterThanOrEqual(8000);
+  });
 });
 
 /**
@@ -8609,6 +8652,25 @@ describe("zone map card movement history", () => {
     expect(hass.callService).not.toHaveBeenCalled();
     expect(toggle.checked).toBe(true);
     expect($(card, "movementConfirm").hidden).toBe(true);
+  });
+
+  it("replays through a zoomed view, which stays as zoomed as the live map", async () => {
+    const { card } = await historyCard();
+    // 2x on (0, 2500): x -2500..2500 and y 0..5000, at 0.16 px per mm.
+    card._setView({ zoom: 2, cx: 0, cy: 2500 });
+    await openHistory(card);
+    scrub(card, 20);
+
+    expect(dots(frame(card))).toEqual([
+      ["1", 320, 320],
+      ["2", 720, 640],
+    ]);
+    // The trail of target 1's walk-in, at the zoom.
+    scrub(card, 11);
+    expect(segments(frame(card))).toEqual([[240, 320, 320, 320]]);
+    expect(card._zoom()).toBe(2);
+    $(card, "btnHistoryLive").click();
+    expect(card._zoom()).toBe(2);
   });
 
   it("fetches on open and replays numbered dots at the scrub time", async () => {
@@ -10650,5 +10712,668 @@ describe("zone map card units and fitted grid", () => {
     expect(stub).not.toHaveProperty("grid");
     expect(stub).not.toHaveProperty("grid_units");
     expect(stub.unit_display).toBe(true);
+  });
+});
+
+/**
+ * Zoom and pan.
+ *
+ * A zoomed map shows part of the map's extents (the view's window) across
+ * the whole canvas, and every layer goes through that window: zones, the
+ * cone and its rings, the grid and its labels, Coverage cells, trails,
+ * dots, Walk and the replay, and the pointer math that saves a drawn shape.
+ * Handles, lines and text are drawn in canvas px, so they keep their size.
+ * The + and - buttons, Fit, Ctrl or Cmd and the wheel, a two-finger pinch
+ * and Shift-drag or the middle button zoom and pan; a plain wheel and a
+ * one-finger swipe on a map that pans are still the page's. The 10 m grid
+ * at 2x on (0, 5000) shows x -2500..2500 and y 2500..7500 at 0.16 px per mm,
+ * laid out here at 800 by 800 CSS px over the 800 by 800 bitmap.
+ */
+describe("zone map card zoom and pan", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** The canvas laid out at its bitmap's size, so a CSS px is a bitmap px. */
+  function layOut(card: any) {
+    const { width, height } = card.canvas;
+    vi.spyOn(card.canvas, "getBoundingClientRect").mockReturnValue({
+      left: 0,
+      top: 0,
+      right: width,
+      bottom: height,
+      x: 0,
+      y: 0,
+      width,
+      height,
+      toJSON: () => ({}),
+    } as DOMRect);
+  }
+
+  /** Unlocked on the 10 m grid with zone 1 (Doorway) selected in `mode`. */
+  async function zoomCard({
+    config = {},
+    payload = {},
+    mode = "rect",
+  }: { config?: Record<string, any>; payload?: Record<string, any>; mode?: string } = {}) {
+    const hass = fakeHass({ ...ZONE_PAYLOAD, rotation_deg: 0, ...payload });
+    hass.user = { is_admin: true };
+    const card = await mountCard(hass, { ...TEN_METER_GRID, start_locked: false, ...config });
+    card._setSelectedZone(1);
+    card._setDrawMode(mode);
+    layOut(card);
+    hass.callService.mockClear();
+    return { card, hass };
+  }
+
+  const $ = (card: any, id: string) => card.shadowRoot.getElementById(id);
+
+  function zoneSaves(hass: any): any[] {
+    return hass.callService.mock.calls
+      .filter((call: any[]) => call[1] === "update_zone" && "shape" in call[2])
+      .map((call: any[]) => call[2]);
+  }
+
+  function mouse(card: any, type: string, x: number, y: number, init: MouseEventInit = {}) {
+    const event = new MouseEvent(type, { clientX: x, clientY: y, cancelable: true, ...init });
+    card.canvas.dispatchEvent(event);
+    return event;
+  }
+
+  /** A mouse event on the window, where a pan follows the pointer. */
+  function windowMouse(type: string, x: number, y: number) {
+    window.dispatchEvent(new MouseEvent(type, { clientX: x, clientY: y }));
+  }
+
+  /** A wheel event at (200, 600) px over the canvas. happy-dom's
+   *  WheelEvent carries no pointer position or modifier keys, so they are
+   *  laid on as a browser's WheelEvent, a MouseEvent, has them. */
+  function wheel(
+    card: any,
+    {
+      ctrlKey = false,
+      metaKey = false,
+      clientX = 200,
+      clientY = 600,
+      deltaY = -100,
+      deltaMode = 0,
+    }: Record<string, any>
+  ) {
+    const event = new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY, deltaMode });
+    Object.defineProperties(event, {
+      ctrlKey: { value: ctrlKey },
+      metaKey: { value: metaKey },
+      clientX: { value: clientX },
+      clientY: { value: clientY },
+    });
+    card.canvas.dispatchEvent(event);
+    return event;
+  }
+
+  function finger(card: any, id: number, x: number, y: number): Touch {
+    return new Touch({ identifier: id, target: card.canvas, clientX: x, clientY: y });
+  }
+
+  /** A TouchEvent as a browser fills it: `down` is every finger still on
+   *  the screen, `changed` the fingers it is about. */
+  function fire(card: any, type: string, down: Touch[], changed: Touch[], cancelable = true) {
+    const event = new TouchEvent(type, {
+      cancelable,
+      touches: down,
+      targetTouches: down,
+      changedTouches: changed,
+    });
+    card.canvas.dispatchEvent(event);
+    return event;
+  }
+
+  /** Two fingers land at `a` and `b`, the first a moment before. */
+  function pinchStart(card: any, a: [number, number], b: [number, number]) {
+    const one = finger(card, 1, ...a);
+    fire(card, "touchstart", [one], [one]);
+    const two = finger(card, 2, ...b);
+    return fire(card, "touchstart", [one, two], [two]);
+  }
+
+  function pinchMove(card: any, a: [number, number], b: [number, number]) {
+    const both = [finger(card, 1, ...a), finger(card, 2, ...b)];
+    return fire(card, "touchmove", both, both);
+  }
+
+  function frame(card: any): Draw[] {
+    const { ctx, draws } = drawRecordingContext();
+    card.ctx = ctx;
+    card.drawGrid();
+    return draws;
+  }
+
+  /** The size readouts a frame drew. */
+  const readouts = (draws: Draw[]) =>
+    draws
+      .filter((d) => d.name === "fillText" && String(d.args[0]).includes(" × "))
+      .map((d) => d.args[0]);
+
+  it("maps mm to px through the zoomed window and back, flipped or not", async () => {
+    const { card } = await zoomCard();
+    card._setView({ zoom: 2, cx: 1000, cy: 3000 });
+
+    expect([card._viewXMin, card._viewXMax, card._viewYMin, card._viewYMax]).toEqual([
+      -1500, 3500, 500, 5500,
+    ]);
+    expect([card.pxPerX, card.pxPerY]).toEqual([0.16, 0.16]);
+    expect(card.valueToPixels(-1500, "x")).toBe(0);
+    expect(card.valueToPixels(1000, "x")).toBeCloseTo(400, 9);
+    expect(card.valueToPixels(5500, "y")).toBeCloseTo(800, 9);
+    for (const [x, y] of [
+      [0, 0],
+      [-1234, 4321],
+      [3499, 501],
+    ]) {
+      expect(card.pixelsToValue(card.valueToPixels(x, "x"), "x")).toBeCloseTo(x, 9);
+      expect(card.pixelsToValue(card.valueToPixels(y, "y"), "y")).toBeCloseTo(y, 9);
+    }
+
+    // Flipped, the window's xMax is on the left edge, and the same part of
+    // the room stays in view.
+    card._setMirror(true);
+    expect(card.valueToPixels(3500, "x")).toBe(0);
+    expect(card.pixelsToValue(800, "x")).toBeCloseTo(-1500, 9);
+    expect(card.pixelsToValue(card.valueToPixels(-1234, "x"), "x")).toBeCloseTo(-1234, 9);
+  });
+
+  it("zooms in and out from the buttons around the view's center, with a readout", async () => {
+    const { card } = await zoomCard();
+    const readout = $(card, "zoomReadout");
+    expect($(card, "zoomControls").getAttribute("aria-label")).toBe("Map zoom");
+    expect($(card, "btnZoomIn").getAttribute("aria-label")).toBe("Zoom in");
+    expect($(card, "btnZoomIn").title).toBe(
+      "Zoom in. You can also hold Ctrl or Cmd and scroll, or pinch."
+    );
+    expect($(card, "btnZoomOut").getAttribute("aria-label")).toBe("Zoom out");
+    expect($(card, "btnZoomOut").title).toBe("Zoom out");
+    expect(readout.hidden).toBe(true);
+    expect(readout.title).toBe(
+      "Move the map by dragging with Shift held, with the middle mouse button, or with two fingers."
+    );
+    expect($(card, "btnZoomOut").disabled).toBe(true);
+
+    $(card, "btnZoomIn").click();
+    expect(card._zoom()).toBeCloseTo(Math.SQRT2, 12);
+    expect(card._view.cx).toBeCloseTo(0, 9);
+    expect(card._view.cy).toBeCloseTo(5000, 9);
+    expect(readout.hidden).toBe(false);
+    expect(readout.textContent).toBe("1.4x");
+    expect($(card, "btnZoomOut").disabled).toBe(false);
+    $(card, "btnZoomIn").click();
+    expect(readout.textContent).toBe("2x");
+
+    for (let i = 0; i < 4; i += 1) $(card, "btnZoomIn").click();
+    expect(card._zoom()).toBe(8);
+    expect(readout.textContent).toBe("8x");
+    expect($(card, "btnZoomIn").disabled).toBe(true);
+    $(card, "btnZoomIn").click();
+    expect(card._zoom()).toBe(8);
+
+    for (let i = 0; i < 6; i += 1) $(card, "btnZoomOut").click();
+    expect(card._view).toBeNull();
+    expect(card._zoom()).toBe(1);
+    expect(readout.hidden).toBe(true);
+    expect($(card, "btnZoomOut").disabled).toBe(true);
+    expect([card._viewXMin, card._viewXMax, card._viewYMin, card._viewYMax]).toEqual([
+      -5000, 5000, 0, 10000,
+    ]);
+  });
+
+  it("fits the zones with a margin, then shows the whole map", async () => {
+    const { card } = await zoomCard();
+    const fit = $(card, "btnZoomFit");
+    expect(fit.textContent).toBe("Fit");
+    expect(fit.title).toBe("Fit the zones in view");
+    expect(fit.getAttribute("aria-label")).toBe("Fit the zones in view");
+    expect(fit.disabled).toBe(false);
+
+    // Doorway is 0..1000 by 0..1000: 300 mm around it (the floor beats a
+    // tenth of 1 m), cut at the map's top edge, is 1.6 m by 1.3 m, so
+    // 10 m / 1.6 m = 6.25x, moved down to keep the window on the map.
+    fit.click();
+    expect(card._view).toEqual({ zoom: 6.25, cx: 500, cy: 800 });
+    expect(fit.title).toBe("Show the whole map");
+    expect(fit.getAttribute("aria-label")).toBe("Show the whole map");
+    expect($(card, "zoomReadout").textContent).toBe("6.3x");
+
+    fit.click();
+    expect(card._view).toBeNull();
+    expect(fit.title).toBe("Fit the zones in view");
+  });
+
+  it("offers only the whole map when there are no zones", async () => {
+    const { card } = await zoomCard({ payload: { zones: {} } });
+    const fit = $(card, "btnZoomFit");
+    expect(fit.title).toBe("Show the whole map");
+    expect(fit.disabled).toBe(true);
+
+    $(card, "btnZoomIn").click();
+    expect(fit.disabled).toBe(false);
+    fit.click();
+    expect(card._view).toBeNull();
+    expect(fit.disabled).toBe(true);
+  });
+
+  it("zooms around the pointer on Ctrl or Cmd and the wheel, and leaves a plain wheel to the page", async () => {
+    const { card } = await zoomCard();
+    // The pointer at (200, 600) px is (-2500, 7500) mm at 1x.
+    const plain = wheel(card, {});
+    expect(plain.defaultPrevented).toBe(false);
+    expect(card._view).toBeNull();
+
+    const ctrl = wheel(card, { ctrlKey: true });
+    expect(ctrl.defaultPrevented).toBe(true);
+    expect(card._zoom()).toBeCloseTo(Math.SQRT2, 12);
+    expect(card.pixelsToValue(200, "x")).toBeCloseTo(-2500, 6);
+    expect(card.pixelsToValue(600, "y")).toBeCloseTo(7500, 6);
+
+    wheel(card, { metaKey: true });
+    expect(card._zoom()).toBeCloseTo(2, 12);
+    expect(card.pixelsToValue(200, "x")).toBeCloseTo(-2500, 6);
+    // Down zooms out; one event counts for at most a notch.
+    wheel(card, { ctrlKey: true, deltaY: 100 });
+    expect(card._zoom()).toBeCloseTo(Math.SQRT2, 12);
+    wheel(card, { ctrlKey: true, deltaY: -5000 });
+    expect(card._zoom()).toBeCloseTo(2, 12);
+    // Lines (Firefox's wheel) are 16 px each: 3 lines are 48% of a notch.
+    wheel(card, { ctrlKey: true, deltaY: -3, deltaMode: 1 });
+    expect(card._zoom()).toBeCloseTo(2 * Math.pow(Math.SQRT2, 0.48), 12);
+    // A trackpad pinch: small Ctrl wheel steps.
+    const before = card._zoom();
+    for (let i = 0; i < 5; i += 1) wheel(card, { ctrlKey: true, deltaY: -4 });
+    expect(card._zoom()).toBeCloseTo(before * Math.pow(Math.SQRT2, 0.2), 12);
+
+    // Over the buttons on the map, too, rather than zooming the page.
+    const over = new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: -100 });
+    Object.defineProperties(over, {
+      ctrlKey: { value: true },
+      clientX: { value: 700 },
+      clientY: { value: 760 },
+    });
+    const zoomed = card._zoom();
+    $(card, "btnZoomFit").dispatchEvent(over);
+    expect(over.defaultPrevented).toBe(true);
+    expect(card._zoom()).toBeCloseTo(zoomed * Math.SQRT2, 12);
+  });
+
+  it("pinches around the fingers' midpoint and pans with two fingers, drawing nothing", async () => {
+    const { card, hass } = await zoomCard();
+    const start = pinchStart(card, [300, 400], [500, 400]);
+    expect(start.defaultPrevented).toBe(true);
+    // The first finger had not moved: its rect is dropped for the pinch.
+    expect(card.isDrawing).toBe(false);
+    expect(card._gesture.kind).toBe("pinch");
+
+    // Twice as far apart: 2x, with (0, 5000) mm still between them.
+    const move = pinchMove(card, [200, 400], [600, 400]);
+    expect(move.defaultPrevented).toBe(true);
+    expect(card._zoom()).toBeCloseTo(2, 12);
+    expect(card.valueToPixels(0, "x")).toBeCloseTo(400, 6);
+    expect(card.valueToPixels(5000, "y")).toBeCloseTo(400, 6);
+    expect($(card, "zoomReadout").textContent).toBe("2x");
+
+    // Both 100 px right and down: the map moves with them.
+    pinchMove(card, [300, 500], [700, 500]);
+    expect(card._zoom()).toBeCloseTo(2, 12);
+    expect(card.valueToPixels(0, "x")).toBeCloseTo(500, 6);
+    expect(card.valueToPixels(5000, "y")).toBeCloseTo(500, 6);
+
+    // One finger lifts; the one left behind does nothing until it lifts too.
+    fire(card, "touchend", [finger(card, 2, 700, 500)], [finger(card, 1, 300, 500)]);
+    const left = fire(card, "touchmove", [finger(card, 2, 100, 100)], [finger(card, 2, 100, 100)]);
+    expect(left.defaultPrevented).toBe(true);
+    expect(card.valueToPixels(0, "x")).toBeCloseTo(500, 6);
+    fire(card, "touchend", [], [finger(card, 2, 100, 100)]);
+    expect(card._gesture).toBeNull();
+    expect(card.isDrawing).toBe(false);
+    expect(zoneSaves(hass)).toEqual([]);
+
+    // One finger draws again, through the zoom: x -3125..1875, y 1875..6875.
+    const three = (x: number, y: number) => finger(card, 3, x, y);
+    fire(card, "touchstart", [three(100, 100)], [three(100, 100)]);
+    fire(card, "touchmove", [three(300, 300)], [three(300, 300)]);
+    fire(card, "touchend", [], [three(300, 300)]);
+    expect(zoneSaves(hass).map((call) => call.data)).toEqual([
+      { x_min: -2500, x_max: -1250, y_min: 2500, y_max: 3750 },
+    ]);
+  });
+
+  it("starts a pinch from two fresh fingers while a polygon is open, and keeps its corners", async () => {
+    const { card, hass } = await zoomCard({ mode: "polygon" });
+    const tap = (id: number, x: number, y: number) => {
+      card._lastPolyTap = 0;
+      fire(card, "touchstart", [finger(card, id, x, y)], [finger(card, id, x, y)]);
+      fire(card, "touchend", [], [finger(card, id, x, y)]);
+    };
+    tap(1, 100, 100);
+    tap(2, 300, 100);
+    expect(card._polyPoints).toHaveLength(2);
+
+    pinchStart(card, [400, 400], [600, 400]);
+    pinchMove(card, [300, 400], [700, 400]);
+    fire(card, "touchend", [finger(card, 2, 700, 400)], [finger(card, 1, 300, 400)]);
+    fire(card, "touchend", [], [finger(card, 2, 700, 400)]);
+
+    expect(card._zoom()).toBeCloseTo(2, 12);
+    expect(card._polyPoints).toEqual([
+      { x: -3750, y: 1250 },
+      { x: -1250, y: 1250 },
+    ]);
+    expect(card.isDrawing).toBe(true);
+    // (1250, 5000) mm, between the fingers as they landed, is still between
+    // them at 2x: x -1875..3125 and y 2500..7500. The next corner lands
+    // where the finger is: (500, 600) px is (-1875 + 500 / 0.16, 2500 +
+    // 600 / 0.16) mm.
+    tap(3, 500, 600);
+    expect(card._polyPoints[2]).toEqual({ x: 1250, y: 6250 });
+    expect(hass.callService).not.toHaveBeenCalled();
+  });
+
+  it("pinches a map that pans, and leaves one finger and a scrolling page to the browser", async () => {
+    const { card } = await zoomCard({ config: { start_locked: true } });
+    expect(card.isLocked).toBe(true);
+    expect(card.canvas.classList.contains("pans")).toBe(true);
+    // The browser keeps vertical scrolling but leaves pinches to the card.
+    expect(card.shadowRoot.querySelector("style").textContent).toContain(
+      "canvas.pans { touch-action: pan-y; }"
+    );
+
+    const one = finger(card, 1, 300, 400);
+    expect(fire(card, "touchstart", [one], [one]).defaultPrevented).toBe(false);
+    expect(fire(card, "touchmove", [one], [one]).defaultPrevented).toBe(false);
+    // A second finger once the page is scrolling (the event can no longer
+    // be cancelled) is the browser's too.
+    const late = fire(
+      card,
+      "touchstart",
+      [one, finger(card, 2, 500, 400)],
+      [finger(card, 2, 500, 400)],
+      false
+    );
+    expect(late.defaultPrevented).toBe(false);
+    expect(card._gesture).toBeNull();
+    fire(card, "touchend", [], [one, finger(card, 2, 500, 400)]);
+
+    pinchStart(card, [300, 400], [500, 400]);
+    pinchMove(card, [250, 400], [550, 400]);
+    expect(card._zoom()).toBeCloseTo(1.5, 12);
+    expect(card.isLocked).toBe(true);
+  });
+
+  it("pans with Shift-drag and the middle button, placing nothing", async () => {
+    const { card, hass } = await zoomCard({ mode: "polygon" });
+    card._setView({ zoom: 2, cx: 0, cy: 5000 });
+
+    // (400, 400) px is (0, 5000) mm, and it stays under the pointer.
+    mouse(card, "mousedown", 400, 400, { shiftKey: true });
+    expect(card.isDrawing).toBe(false);
+    windowMouse("mousemove", 300, 450);
+    expect(card.valueToPixels(0, "x")).toBeCloseTo(300, 6);
+    expect(card.valueToPixels(5000, "y")).toBeCloseTo(450, 6);
+    mouse(card, "mouseup", 300, 450, { shiftKey: true });
+    windowMouse("mouseup", 300, 450);
+    expect(card._gesture).toBeNull();
+    expect(card._polyPoints).toEqual([]);
+    expect(card.isDrawing).toBe(false);
+
+    // Moving after the release pans no more.
+    windowMouse("mousemove", 100, 100);
+    expect(card.valueToPixels(0, "x")).toBeCloseTo(300, 6);
+
+    // The middle button, past the canvas: the window stops at the map's edge.
+    const middle = mouse(card, "mousedown", 400, 400, { button: 1 });
+    expect(middle.defaultPrevented).toBe(true);
+    windowMouse("mousemove", 2000, 400);
+    expect(card._viewXMin).toBe(-5000);
+    windowMouse("mouseup", 2000, 400);
+    expect(card._gesture).toBeNull();
+    expect(hass.callService).not.toHaveBeenCalled();
+  });
+
+  it("saves a rect and a polygon where they were drawn on a zoomed map", async () => {
+    const { card, hass } = await zoomCard();
+    card._setView({ zoom: 2, cx: 0, cy: 5000 });
+
+    mouse(card, "mousedown", 100, 100);
+    mouse(card, "mousemove", 300, 500);
+    // The readout shows what letting go saves: 1.25 m by 2.5 m.
+    expect(readouts(frame(card))).toEqual(["1.3 m × 2.5 m"]);
+    mouse(card, "mouseup", 300, 500);
+    expect(zoneSaves(hass).map((call) => call.data)).toEqual([
+      { x_min: -1875, x_max: -625, y_min: 3125, y_max: 5625 },
+    ]);
+    // The new zone is drawn where it was drawn.
+    const rect = frame(card).find((d) => d.name === "strokeRect");
+    expect(rect?.args.map((v: number) => Math.round(v * 1e6) / 1e6)).toEqual([100, 100, 200, 400]);
+
+    card._setDrawMode("polygon");
+    for (const [x, y] of [
+      [100, 100],
+      [300, 100],
+      [300, 300],
+    ]) {
+      card._lastPolyTap = 0;
+      mouse(card, "mousedown", x, y);
+      mouse(card, "mouseup", x, y);
+    }
+    card.finishPolygon();
+    expect(zoneSaves(hass)[1].data.points).toEqual([
+      { x: -1875, y: 3125 },
+      { x: -625, y: 3125 },
+      { x: -625, y: 4375 },
+    ]);
+  });
+
+  it("keeps a drag's first corner on the map when the view zooms under it", async () => {
+    const { card, hass } = await zoomCard();
+    card._setView({ zoom: 2, cx: 0, cy: 5000 });
+    // (100, 100) px is (-1875, 3125) mm.
+    mouse(card, "mousedown", 100, 100);
+    wheel(card, { ctrlKey: true, clientX: 400, clientY: 400 });
+    // 2.83x on (0, 5000): the first corner is off the canvas now, still at
+    // the same mm.
+    expect(card.pixelsToValue(card.startPoint.x, "x")).toBeCloseTo(-1875, 6);
+    expect(card.pixelsToValue(card.startPoint.y, "y")).toBeCloseTo(3125, 6);
+    mouse(card, "mousemove", 300, 300);
+    mouse(card, "mouseup", 300, 300);
+
+    // Half the window: the 10 m map's span at 2 * SQRT2, halved.
+    const half = 10000 / (2 * Math.SQRT2) / 2;
+    const perPx = (2 * half) / 800;
+    expect(zoneSaves(hass).map((call) => call.data)).toEqual([
+      {
+        x_min: -1875,
+        x_max: Math.round(-half + 300 * perPx),
+        y_min: 3125,
+        y_max: Math.round(5000 - half + 300 * perPx),
+      },
+    ]);
+  });
+
+  it("draws finer grid lines as the map zooms in, in meters and in feet", async () => {
+    for (const [length, steps] of [
+      ["km", [1000, 500, 200, 100]],
+      ["mi", [2, 1, 0.5, 0.25].map((ft) => ft * 304.8)],
+    ] as const) {
+      const hass = fakeHass({ ...ZONE_PAYLOAD, zones: {}, rotation_deg: 0 });
+      hass.config = { unit_system: { length } };
+      const card = await mountCard(hass);
+      const seen = [1, 2, 4, 8].map((zoom) => {
+        card._setView(zoom === 1 ? null : { zoom, cx: 0, cy: 4000 });
+        const state = card._getGridRenderState();
+        const { stepX, stepY, pxPerMmX } = state.metrics;
+        expect(stepX).toBe(stepY);
+        // The lines over the canvas and no more (one step past the left edge
+        // at most), each on a whole step.
+        const gap = stepX * pxPerMmX;
+        expect(state.xLines[0].pixel).toBeGreaterThan(-gap);
+        expect(state.xLines[0].pixel).toBeLessThan(1e-6);
+        expect(state.xLines[state.xLines.length - 1].pixel).toBeGreaterThan(
+          card.canvas.width - 1e-6
+        );
+        expect(state.xLines[state.xLines.length - 1].pixel).toBeLessThan(card.canvas.width + gap);
+        for (const line of state.xLines) {
+          expect(Math.abs(line.value / stepX - Math.round(line.value / stepX))).toBeLessThan(1e-6);
+        }
+        return stepX;
+      });
+      seen.forEach((step, i) => expect(step).toBeCloseTo(steps[i], 9));
+    }
+  });
+
+  it("labels the axes along the nearer edge once their lines leave the zoomed view", async () => {
+    const hass = fakeHass({ ...ZONE_PAYLOAD, zones: {}, rotation_deg: 0 });
+    hass.config = { unit_system: { length: "km" } };
+    const card = await mountCard(hass, { unit_display: true });
+    // 4x on (3000, 6000): x 1500..4500 and y 4875..7125, so the radar's
+    // lines (x = 0 and y = 0) are left of and above the canvas.
+    card._setView({ zoom: 4, cx: 3000, cy: 6000 });
+    let labels = card._getGridRenderState().labels;
+    expect(labels.x.length).toBeGreaterThan(0);
+    expect(labels.x.every((l: any) => l.y === 2 && l.baseline === "top")).toBe(true);
+    expect(labels.y.every((l: any) => l.x === 2 && l.align === "left")).toBe(true);
+    // The values are the 0.2 m step's, in the window.
+    expect(labels.x.map((l: any) => l.text)).toContain("3m");
+    expect(labels.x.every((l: any) => l.value >= 1500 && l.value <= 4500)).toBe(true);
+
+    // On (-4000, 6000), x = 0 is right of the canvas.
+    card._setView({ zoom: 4, cx: -4000, cy: 6000 });
+    labels = card._getGridRenderState().labels;
+    expect(labels.y.length).toBeGreaterThan(0);
+    expect(labels.y.every((l: any) => l.x === card.canvas.width - 2 && l.align === "right")).toBe(
+      true
+    );
+  });
+
+  it("keeps dots, handles, lines and text the same size at any zoom", async () => {
+    const { card, hass } = await zoomCard({
+      payload: { entities: [{ x: "sensor.a_x", y: "sensor.a_y" }] },
+    });
+    card.hass = { ...hass, states: { "sensor.a_x": { state: "500" }, "sensor.a_y": { state: "1500" } } };
+    const sizes = () => {
+      const draws = frame(card);
+      const dot = draws.filter((d) => d.name === "arc").map((d) => d.args[2]);
+      const label = draws.find((d) => d.name === "fillText" && d.args[0] === "Doorway");
+      const grid = draws.find((d) => d.name === "stroke" && d.lineWidth === 1);
+      return { dot: Math.max(...dot), font: label?.font, grid: grid?.lineWidth };
+    };
+    const whole = sizes();
+    // 4x on (500, 1250): x -750..1750 and y 0..2500, at 0.32 px per mm.
+    card._setView({ zoom: 4, cx: 500, cy: 1250 });
+    const zoomed = sizes();
+    expect(zoomed).toEqual(whole);
+    expect(whole.font).toBe("24px sans-serif");
+    expect(whole.grid).toBe(1);
+
+    // While the dot itself is where the zoom puts it.
+    const dot = frame(card).find((d) => d.name === "arc" && d.args[2] > 10);
+    expect(dot?.args[0]).toBeCloseTo((500 + 750) * 0.32, 6);
+    expect(dot?.args[1]).toBeCloseTo(1500 * 0.32, 6);
+  });
+
+  it("paints Coverage cells and the cone through the zoom", async () => {
+    const { card } = await zoomCard();
+    card._coverage.add(100, 100);
+    card._setCoverage(true);
+    card._setView({ zoom: 2, cx: 0, cy: 2500 });
+    const draws = frame(card);
+    // A 200 mm cell is 32 px at 0.16 px per mm, its corner at (0, 0) mm,
+    // which is (400, 0) px.
+    const cell = draws.findIndex((d) => d.name === "moveTo" && d.args[0] === 400 && d.args[1] === 0);
+    expect(cell).toBeGreaterThanOrEqual(0);
+    expect(draws[cell + 1].args).toEqual([432, 0]);
+    // The cone's apex is the radar, at the same (400, 0) px.
+    const apex = draws.filter((d) => d.name === "moveTo" && d.args[0] === 400 && d.args[1] === 0);
+    expect(apex.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("keeps the zoom across pushes, renders, unit changes and refits, inside the map", async () => {
+    const hass = fakeHass({ ...ZONE_PAYLOAD, zones: {}, rotation_deg: 0 });
+    hass.config = { unit_system: { length: "km" } };
+    hass.user = { is_admin: true };
+    const card = await mountCard(hass, { start_locked: false });
+    // The fitted map is -6000..6000 by 0..9000.
+    card._setView({ zoom: 2, cx: 3000, cy: 6000 });
+    const view = { ...card._view };
+
+    card.hass = { ...hass, states: { "sensor.a_x": { state: "100" } } };
+    expect(card._view).toEqual(view);
+    card.render();
+    expect(card._view).toEqual(view);
+    expect($(card, "zoomReadout").textContent).toBe("2x");
+    expect($(card, "btnZoomOut").disabled).toBe(false);
+
+    // A payload whose zone grows the map, and a unit change that rounds it
+    // to feet: the view keeps its zoom and center where the map allows.
+    hass.handlers[ZONES_SUBSCRIBE].forEach((cb: Handler) =>
+      cb({
+        ...ZONE_PAYLOAD,
+        rotation_deg: 0,
+        zones: { "1": { shape: "rect", data: { x_min: 6000, x_max: 8000, y_min: 0, y_max: 1000 } } },
+      })
+    );
+    expect(card.xMax).toBe(8000);
+    expect(card._view).toEqual(view);
+    $(card, "btnUnitFt").click();
+    expect(card._zoom()).toBe(2);
+    expect(card._viewXMin).toBeGreaterThanOrEqual(card.xMin);
+    expect(card._viewXMax).toBeLessThanOrEqual(card.xMax + 1e-6);
+    expect(card._viewYMax).toBeLessThanOrEqual(card.yMax + 1e-6);
+  });
+
+  it("starts from the whole map for another radar, another rotation and the map alone", async () => {
+    const { card, hass } = await zoomCard();
+    const zoomIn = () => card._setView({ zoom: 2, cx: 1000, cy: 3000 });
+
+    // A push with the same rotation keeps it; a new rotation does not.
+    zoomIn();
+    const push = (fields: Record<string, any>) =>
+      hass.handlers[ZONES_SUBSCRIBE].forEach((cb: Handler) =>
+        cb({ ...ZONE_PAYLOAD, rotation_deg: 0, ...fields })
+      );
+    push({});
+    expect(card._zoom()).toBe(2);
+    push({ rotation_deg: 30 });
+    expect(card._view).toBeNull();
+    expect($(card, "zoomReadout").hidden).toBe(true);
+    expect(card.pxPerX).toBeCloseTo(0.08, 12);
+
+    // A same-radar setConfig puts the YAML's cone back for a moment before
+    // the store's rotation: not a new rotation.
+    zoomIn();
+    card.setConfig({ ...TEN_METER_GRID, device_id: "dev123", start_locked: false });
+    expect(card.coneAngleDeg).toBe(30);
+    expect(card._view).toEqual({ zoom: 2, cx: 1000, cy: 3000 });
+    expect($(card, "zoomReadout").textContent).toBe("2x");
+
+    // The slider, as it turns.
+    zoomIn();
+    const slider = $(card, "coneAngleSlider");
+    slider.value = "45";
+    slider.dispatchEvent(new Event("input"));
+    expect(card._view).toBeNull();
+
+    // Another radar.
+    zoomIn();
+    card.setConfig({ ...TEN_METER_GRID, device_id: "other" });
+    expect(card._view).toBeNull();
+    expect(card.pxPerX).toBeCloseTo(0.08, 12);
+
+    // The map alone has no zoom: no buttons, and the wheel is the page's.
+    zoomIn();
+    card.setConfig({ ...TEN_METER_GRID, device_id: "other", view_only: true });
+    expect(card._view).toBeNull();
+    expect($(card, "zoomControls")).toBeNull();
+    layOut(card);
+    expect(wheel(card, { ctrlKey: true }).defaultPrevented).toBe(false);
+    expect(card._view).toBeNull();
+
+    // A page load is a new card, at 1x.
+    expect(new ZoneMapCard() as any).toHaveProperty("_view", null);
   });
 });

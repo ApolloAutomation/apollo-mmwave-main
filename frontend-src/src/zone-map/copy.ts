@@ -70,6 +70,27 @@ export const COVERAGE_TITLE =
 export const COVERAGE_CLEAR = "Clear coverage";
 export const HISTORY_LABEL = "History";
 export const HISTORY_WALK_TITLE = "Finish or cancel the walk first.";
+// The zoom buttons over the map's lower right corner. A label is also its
+// button's tooltip, but for + (ZOOM_IN_TITLE, which names the gestures).
+// Fit's says what the next press does: fit the zones, or, once they fill
+// the view or with none drawn, show the whole map.
+export const ZOOM_GROUP_LABEL = "Map zoom";
+export const ZOOM_IN_LABEL = "Zoom in";
+export const ZOOM_IN_TITLE = "Zoom in. You can also hold Ctrl or Cmd and scroll, or pinch.";
+export const ZOOM_OUT_LABEL = "Zoom out";
+export const ZOOM_FIT = "Fit";
+export const ZOOM_FIT_ZONES_LABEL = "Fit the zones in view";
+export const ZOOM_FIT_ALL_LABEL = "Show the whole map";
+// The tooltip on the zoom readout ("2x"), which shows while the map is
+// zoomed, when there is somewhere to move it.
+export const ZOOM_PAN_HINT =
+  "Move the map by dragging with Shift held, with the middle mouse button, or with two fingers.";
+
+/** The zoom readout: "2x", "1.4x". */
+export function zoomReadout(zoom: number): string {
+  return `${Number(zoom.toFixed(1))}x`;
+}
+
 export const MIRROR_LABEL = "Flip the map left to right (display only)";
 export const MIRROR_HINT = "Turn this on if a dot moves the opposite way from you.";
 export const MOVEMENT_LABEL = "Movement history";

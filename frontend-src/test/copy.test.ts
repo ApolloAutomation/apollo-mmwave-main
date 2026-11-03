@@ -390,6 +390,7 @@ describe("zone map card copy module", () => {
     historyClearError: [["Home Assistant is restarting"]],
     replayBadge: [["10:24:05 AM"]],
     formatAgo: [[0], [120000], [3900000]],
+    zoomReadout: [[Math.SQRT2], [2], [8]],
   };
 
   /** Every string copy.ts exports, the functions' output included. */
