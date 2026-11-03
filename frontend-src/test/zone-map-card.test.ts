@@ -7462,14 +7462,25 @@ describe("zone map card size readout", () => {
     mouse(card, "mousemove", 300, 400);
     expect(readouts(card).map((r) => [r.x, r.y])).toEqual([[300, 372]]);
 
-    // At the top edge it goes as far below the pointer instead.
+    // At the top edge a mouse pointer's goes as far below the pointer
+    // instead.
     mouse(card, "mousemove", 300, 20);
     expect(readouts(card).map((r) => [r.x, r.y])).toEqual([[300, 48]]);
     mouse(card, "mouseup", 300, 20);
+    // A finger's would sit under the fingertip there, so it goes beside the
+    // finger at its height, on the side with more room, its near edge 44 px
+    // from the touch. The plate is 138 px wide here ("2.50 m × 3.10 m" by
+    // the canvas's fallback estimate, and its padding).
     touch(card, "touchstart", 100, 300);
     touch(card, "touchmove", 300, 50);
-    expect(readouts(card).map((r) => [r.x, r.y])).toEqual([[300, 114]]);
+    expect(readouts(card).map((r) => [r.x, r.y])).toEqual([[300 + 44 + 69, 50]]);
     touch(card, "touchend", 300, 50);
+    touch(card, "touchstart", 700, 300);
+    touch(card, "touchmove", 500, 30);
+    expect(readouts(card).map((r) => [r.text, r.x, r.y])).toEqual([
+      ["2.50 m × 3.35 m", 500 - 44 - 69, 30],
+    ]);
+    touch(card, "touchend", 500, 30);
 
     // Sized in CSS px: on a card shown at 400 px, each is twice as many
     // backing px, and the font with them.
@@ -7479,6 +7490,12 @@ describe("zone map card size readout", () => {
     expect(readouts(card).map((r) => [r.x, r.y, r.font])).toEqual([
       [300, 400 - 128, "bold 28px sans-serif"],
     ]);
+    touch(card, "touchend", 150, 200);
+    // Beside the finger too: 88 backing px from it, the 276 px plate kept
+    // on the canvas.
+    touch(card, "touchstart", 300, 150);
+    touch(card, "touchmove", 100, 20);
+    expect(readouts(card).map((r) => [r.x, r.y])).toEqual([[200 + 88 + 138, 40]]);
   });
 
   it("draws the readout over the targets", async () => {

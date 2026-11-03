@@ -327,6 +327,10 @@ const TRAIL_FRAME_MS = 100;
 // drawn. A fingertip covers far more than a mouse pointer does.
 const READOUT_OFFSET_MOUSE_PX = 28;
 const READOUT_OFFSET_TOUCH_PX = 64;
+// Where the readout has no room above a finger (near the radar, on a fitted
+// map), it goes beside the finger instead, its near edge this far (CSS px,
+// about a fingertip's width) from the touch point.
+const READOUT_BESIDE_TOUCH_PX = 44;
 // A second finger that lands while the first has moved less than this (CSS
 // px) since it went down starts a pinch, and the first finger's shape is
 // dropped. Once the first finger has moved farther it is drawing, and a
@@ -6243,11 +6247,14 @@ export class ZoneMapCard extends HTMLElement {
   /**
    * "2.4 m × 1.8 m" (or feet and inches, with the map's unit) on a plate in
    * the canvas color, centered above `anchorPx`, the pointer. A fingertip
-   * covers more than a mouse pointer, so the readout sits further above it;
-   * where that runs off the top of the canvas it goes as far below instead.
-   * Sized in CSS px, so it reads the same on a phone and a desktop.
-   * `offsetCssPx` sets the distance where the anchor is not the pointer, and
-   * `decimals` the meters' precision (formatSize).
+   * covers more than a mouse pointer, so the readout sits further above it.
+   * Where that runs off the top of the canvas, a mouse pointer's goes as far
+   * below; a finger's goes beside it at its height instead, on the side with
+   * more room, since below it would sit under the fingertip. Sized in CSS
+   * px, so it reads the same on a phone and a desktop. `offsetCssPx` sets
+   * the distance where the anchor is not the pointer (Walk's newest
+   * corner), which goes below too, and `decimals` the meters' precision
+   * (formatSize).
    */
   _drawSizeReadout(ctx, widthMm, depthMm, anchorPx, { offsetCssPx = null, decimals = 1 } = {}) {
     if (!ctx || !this.canvas || !anchorPx) return;
@@ -6265,15 +6272,24 @@ export class ZoneMapCard extends HTMLElement {
         : text.length * fontPx * LABEL_FALLBACK_EM_PER_CHAR;
     const plateWidth = textWidth + 12 * scale;
     const plateHeight = fontPx + 6 * scale;
-    const pointerOffset =
-      this._activeInput === 'touch' ? READOUT_OFFSET_TOUCH_PX : READOUT_OFFSET_MOUSE_PX;
+    const finger = offsetCssPx === null && this._activeInput === 'touch';
+    const pointerOffset = finger ? READOUT_OFFSET_TOUCH_PX : READOUT_OFFSET_MOUSE_PX;
     const offset = (offsetCssPx ?? pointerOffset) * scale;
+    let x = anchorPx.x;
     let y = anchorPx.y - offset;
-    if (y - plateHeight / 2 < 0) y = anchorPx.y + offset;
+    if (y - plateHeight / 2 < 0) {
+      if (finger) {
+        const side = this.canvas.width - anchorPx.x >= anchorPx.x ? 1 : -1;
+        x = anchorPx.x + side * (READOUT_BESIDE_TOUCH_PX * scale + plateWidth / 2);
+        y = anchorPx.y;
+      } else {
+        y = anchorPx.y + offset;
+      }
+    }
     // A finger keeps reporting after it leaves the canvas, and the shape
     // stops at the map's edge, so the readout stays on the canvas too.
     y = clampOnto(y, plateHeight / 2, this.canvas.height);
-    const x = clampOnto(anchorPx.x, plateWidth / 2, this.canvas.width);
+    x = clampOnto(x, plateWidth / 2, this.canvas.width);
     ctx.fillStyle = this.darkMode ? COLOR.ui.darkCanvasBackground : COLOR.ui.lightCanvasBackground;
     ctx.fillRect(x - plateWidth / 2, y - plateHeight / 2, plateWidth, plateHeight);
     ctx.fillStyle = this.darkMode ? COLOR.canvas.axisDark : COLOR.canvas.axisLight;
