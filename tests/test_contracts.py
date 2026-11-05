@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 from custom_components.apollo_mmwave import (
     binary_sensor,
@@ -304,3 +305,18 @@ def test_the_radar_setup_card_asks_for_target_units_as_registered() -> None:
     assert dict(entries) == target_units.UNIT_WORDS
     # Every length unit but mm, which the note never names.
     assert set(target_units.UNIT_WORDS) == set(SENSOR_UNIT_FACTORS) - {"mm"}
+
+
+def test_update_zone_picker_stops_where_add_zone_does() -> None:
+    """The service UI's zone id picker and the card's Add zone stop at one id."""
+    services = yaml.safe_load(
+        _read(REPO_ROOT / "custom_components" / DOMAIN / "services.yaml")
+    )
+    picker = services["update_zone"]["fields"]["zone_id"]["selector"]["number"]
+    card = re.search(
+        r"^const MAX_ZONE_ID = (\d+);$",
+        _read(FRONTEND_SRC / "zone-map" / "card.ts"),
+        re.MULTILINE,
+    )
+    assert card is not None
+    assert picker["max"] == int(card[1])
