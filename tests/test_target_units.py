@@ -52,6 +52,8 @@ RPRO_SERIAL = "apollo_r_pro_1_abc123"
 MTR_SERIAL = "apollo_mtr_1_def456"
 IN_PRIVATE = {"sensor.private": {"suggested_unit_of_measurement": "in"}}
 MM_PICKED = {"unit_of_measurement": "mm"}
+GET = "apollo_mmwave/target_units/get"
+SET = "apollo_mmwave/target_units/set"
 INCHES = {ATTR_UNIT_OF_MEASUREMENT: "in"}
 MILLIMETERS = {ATTR_UNIT_OF_MEASUREMENT: "mm"}
 
@@ -742,3 +744,151 @@ async def test_presence_and_a_hold_survive_a_live_switch(
     state = hass.states.get(presence_id)
     assert (state.state, state.attributes.get("held")) == ("on", True)
     assert "off" not in changes
+
+
+# ---------------------------------------------------------------------------
+# The Radar setup card's tap
+# ---------------------------------------------------------------------------
+
+
+def _rows_radar(hass, entity_registry, device_registry) -> tuple[str, list[str]]:
+    """Register a radar whose X and Y show inches, picked inches, mm or no unit."""
+    rpro = _radar(hass, device_registry)
+    targets = _targets(entity_registry, rpro, RPRO_SERIAL)
+    x1, y1, x2, y2, x3, y3 = targets
+    entity_registry.async_update_entity_options(
+        x2, "sensor", {"unit_of_measurement": "in"}
+    )
+    for entity_id, unit in ((x1, "in"), (y1, "in"), (x2, "in"), (y2, "mm"), (y3, "in")):
+        hass.states.async_set(entity_id, "12", {ATTR_UNIT_OF_MEASUREMENT: unit})
+    # X 3 has no length unit, as a sensor with no device class would.
+    entity_registry.async_update_entity(x3, original_device_class=None)
+    hass.states.async_set(x3, "12", {})
+    return rpro.id, targets
+
+
+@pytest.mark.usefixtures("booting")
+async def test_target_units_get_reads_for_any_user(
+    hass, hass_ws_client, hass_read_only_access_token, entity_registry, device_registry
+) -> None:
+    """Order, fields and who uses a sensor, for a non-admin too."""
+    device_id, targets = _rows_radar(hass, entity_registry, device_registry)
+    x1, y1, x2, y2, x3, y3 = targets
+    assert await async_setup_component(
+        hass,
+        "automation",
+        {
+            "automation": {
+                "id": "uses_y1",
+                "alias": "Uses Y1",
+                "triggers": [{"trigger": "state", "entity_id": y1}],
+                "actions": [],
+            }
+        },
+    )
+    entry = make_entry()
+    # Set up during boot and never started, so nothing is switched before the
+    # rows are read.
+    await setup_integration(hass, entry)
+    user = await hass_ws_client(hass, hass_read_only_access_token)
+
+    await user.send_json_auto_id({"type": GET, "device_id": device_id})
+    reply = await user.receive_json()
+
+    assert reply["success"] is True
+    assert reply["result"] == {
+        "targets": [
+            {
+                "entity_id": x1,
+                "unit": "in",
+                "picked": False,
+                "convertible": True,
+                "used_by": [],
+            },
+            {
+                "entity_id": y1,
+                "unit": "in",
+                "picked": False,
+                "convertible": True,
+                "used_by": ["automation.uses_y1"],
+            },
+            {
+                "entity_id": x2,
+                "unit": "in",
+                "picked": True,
+                "convertible": True,
+                "used_by": [],
+            },
+            {
+                "entity_id": y2,
+                "unit": "mm",
+                "picked": False,
+                "convertible": True,
+                "used_by": [],
+            },
+            {
+                "entity_id": x3,
+                "unit": None,
+                "picked": False,
+                "convertible": False,
+                "used_by": [],
+            },
+            {
+                "entity_id": y3,
+                "unit": "in",
+                "picked": False,
+                "convertible": True,
+                "used_by": [],
+            },
+        ]
+    }
+
+    await user.send_json_auto_id({"type": GET, "device_id": "no-such-device"})
+    assert (await user.receive_json())["error"]["code"] == "not_found"
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await user.send_json_auto_id({"type": GET, "device_id": device_id})
+    assert (await user.receive_json())["error"]["code"] == "not_loaded"
+
+
+@pytest.mark.usefixtures("booting")
+async def test_target_units_set_switches_only_home_assistants_pick(
+    hass, hass_ws_client, hass_read_only_access_token, entity_registry, device_registry
+) -> None:
+    """Admin only, the rows worked out again, a picked unit kept, and idempotent."""
+    device_id, targets = _rows_radar(hass, entity_registry, device_registry)
+    x1, y1, _, _, _, y3 = targets
+    await setup_integration(hass, make_entry())
+    user = await hass_ws_client(hass, hass_read_only_access_token)
+    admin = await hass_ws_client(hass)
+
+    await user.send_json_auto_id({"type": SET, "device_id": device_id})
+    assert (await user.receive_json())["error"]["code"] == "unauthorized"
+    assert [_unit(entity_registry, entity_id) for entity_id in targets] == [
+        None,
+        None,
+        "in",
+        None,
+        None,
+        None,
+    ]
+
+    await admin.send_json_auto_id({"type": SET, "device_id": device_id})
+    reply = await admin.receive_json()
+
+    assert reply["result"] == {"changed": [x1, y1, y3]}
+    assert [_unit(entity_registry, entity_id) for entity_id in targets] == [
+        "mm",
+        "mm",
+        "in",
+        None,
+        None,
+        "mm",
+    ]
+    assert _decision(entity_registry, x1) == "mm"
+    for entity_id in (x1, y1, y3):
+        hass.states.async_set(entity_id, "305", MILLIMETERS)
+
+    await admin.send_json_auto_id({"type": SET, "device_id": device_id})
+    assert (await admin.receive_json())["result"] == {"changed": []}
+    await admin.send_json_auto_id({"type": SET, "device_id": "no-such-device"})
+    assert (await admin.receive_json())["error"]["code"] == "not_found"

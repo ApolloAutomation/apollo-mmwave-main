@@ -14,8 +14,13 @@ truth, the Home Assistant device id is the key, and nothing here builds an
 entity id.
 
 The movement commands read and clear a radar's movement history
-(movement.py). They are the only admin-only commands here: positions over
-time say far more about a household than the zones do.
+(movement.py). They are admin-only: positions over time say far more about a
+household than the zones do.
+
+The target units commands are the Radar setup card's "Show Target X and Y in
+mm" (target_units.py). Reading which unit each X and Y shows is open, like the
+zones; switching them is admin-only, because it is an entity registry change,
+which Home Assistant only lets an administrator make.
 """
 
 from __future__ import annotations
@@ -54,6 +59,7 @@ from .const import (
 from .ld2450 import resolve_target_pairs
 from .movement import _now_ms
 from .store import device_flag, zone_hold_s, zone_type_of
+from .target_units import async_show_in_mm, switchable, target_unit_rows
 
 if TYPE_CHECKING:
     from homeassistant.components.websocket_api import ActiveConnection
@@ -67,6 +73,8 @@ TYPE_CALIBRATION_GET = f"{DOMAIN}/calibration/get"
 TYPE_CALIBRATION_SUBSCRIBE = f"{DOMAIN}/calibration/subscribe"
 TYPE_MOVEMENT_GET = f"{DOMAIN}/movement/get"
 TYPE_MOVEMENT_CLEAR = f"{DOMAIN}/movement/clear"
+TYPE_TARGET_UNITS_GET = f"{DOMAIN}/target_units/get"
+TYPE_TARGET_UNITS_SET = f"{DOMAIN}/target_units/set"
 
 # Detected pairs the user has not chosen, offered so the card can say "using the
 # radar's own targets" instead of demanding a manual pick.
@@ -90,6 +98,8 @@ def async_register(hass: HomeAssistant) -> CALLBACK_TYPE:
     websocket_api.async_register_command(hass, ws_clear_movement)
     websocket_api.async_register_command(hass, ws_get_calibration)
     websocket_api.async_register_command(hass, ws_subscribe_calibration)
+    websocket_api.async_register_command(hass, ws_get_target_units)
+    websocket_api.async_register_command(hass, ws_set_target_units)
     hass.data.setdefault(DOMAIN, {}).setdefault(DATA_SUBSCRIPTIONS, set())
 
     @callback
@@ -346,6 +356,42 @@ def ws_clear_movement(
     if movement is None:
         return
     connection.send_result(msg["id"], {"cleared": movement.clear(msg["device_id"])})
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): TYPE_TARGET_UNITS_GET, vol.Required("device_id"): str}
+)
+@callback
+def ws_get_target_units(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Return which unit each of a radar's paired X and Y shows."""
+    if not _answerable(hass, connection, msg):
+        return
+    connection.send_result(
+        msg["id"], {"targets": target_unit_rows(hass, msg["device_id"])}
+    )
+
+
+# Admin only: the same entity registry change as picking a unit in each
+# sensor's settings. A non-admin gets `unauthorized`. The rows are worked out
+# again here rather than taken from the card, and only Home Assistant's own
+# pick is switched: a unit someone picked stays.
+@websocket_api.websocket_command(
+    {vol.Required("type"): TYPE_TARGET_UNITS_SET, vol.Required("device_id"): str}
+)
+@websocket_api.require_admin
+@callback
+def ws_set_target_units(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Show a radar's paired X and Y in mm; return the sensors switched."""
+    if not _answerable(hass, connection, msg):
+        return
+    rows = target_unit_rows(hass, msg["device_id"])
+    connection.send_result(
+        msg["id"], {"changed": async_show_in_mm(hass, switchable(rows))}
+    )
 
 
 def _calibration_loaded(hass: HomeAssistant) -> bool:
