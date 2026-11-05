@@ -24,9 +24,10 @@ IMAGE_URL = re.compile(
     r"([^/)\s]+)/docs/images/([^)\s]+)"
 )
 
-# Every image the README of a published release (2.2.6, 2.2.7 and 2.3.0)
-# links, with the SHA-256 of the file as those releases were tagged. When a
-# release is published, add the images its README links that are not here.
+# Every image the README of a published release (2.2.6, 2.2.7, 2.3.0 and
+# 2.4.0) links, with the SHA-256 of the file as those releases were tagged.
+# The pull request that makes a release adds the images its README links that
+# are not here yet.
 PUBLISHED_IMAGES = {
     "apollo-mmwave-calibrate.gif": (
         "f64abc2629ceefd56ec0979757ebc842a58c112155b0f685cb893e008ba4d31a"
@@ -36,6 +37,22 @@ PUBLISHED_IMAGES = {
     ),
     "apollo-mmwave-zone-map.png": (
         "1604951e49fa7bd69d0fe8dbd49d48fa1329d64c3426df65c378449bacef306a"
+    ),
+    # 2.4.0
+    "apollo-mmwave-gate-energy-2.4.0.gif": (
+        "d876b6086a657ab13bd02345fc6d71e7091e16e68c7fa72ae368f96170e2420f"
+    ),
+    "apollo-mmwave-radar-setup.png": (
+        "f2ce3d022bf4bcff1d9f11ab98581de141e8e06b90b33a09fcaf6905ccb8987c"
+    ),
+    "apollo-mmwave-slider-lock.gif": (
+        "08a098efea9a9260eb232f39b7e1fb2449c5d7c100c5367f7b319efbf25e17dc"
+    ),
+    "apollo-mmwave-zone-map-2.4.0.png": (
+        "d5e4a57b8f1697ff37dd306a39d2e63aa09cef87722066f127e2c867b9cb77f4"
+    ),
+    "apollo-mmwave-zone-map-live.gif": (
+        "0475a3b87c067efc0ad1618607ce3faa94eac4cb1edeb62ebc30acd9dbc561f1"
     ),
 }
 
