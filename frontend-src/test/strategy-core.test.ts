@@ -1170,6 +1170,35 @@ describe("LD2450 cards beside the zone map", () => {
     ]);
   });
 
+  // A count in the registry with no state yet, such as while its platform
+  // loads, would read Unknown under rows that say nothing is missing.
+  it("leaves the Target Count out of LD2450 Live while the count has no state", () => {
+    const hass = mtrHass();
+    delete hass.states[`sensor.${MTR}_presence_target_count`];
+    const cards = buildDeviceCards(hass, deviceOf(hass));
+    expect(byTitle(cards, "LD2450 Live").type).toBe("entities");
+    expect(JSON.stringify(cards)).not.toContain(`${MTR}_presence_target_count`);
+  });
+
+  it("titles the Target Count LD2450 Live when none of the card's rows exist", () => {
+    const rows = ["presence", "moving_target", "still_target"].map(
+      (r) => `binary_sensor.${MTR}_ld2450_${r}`
+    );
+    for (let n = 1; n <= 3; n++) {
+      rows.push(`sensor.${MTR}_target_${n}_distance`, `sensor.${MTR}_target_${n}_direction`);
+    }
+    const hass = mtrHass(rows);
+    const cards = buildDeviceCards(hass, deviceOf(hass));
+    expect(byTitle(cards, "LD2450 Live")).toEqual({
+      type: "markdown",
+      title: "LD2450 Live",
+      content:
+        `{% set n = states('sensor.${MTR}_presence_target_count') %}` +
+        "Target Count: **{{ n | int if is_number(n) else n | capitalize }}**",
+    });
+    expect(cards.some((c) => c.cards?.some((s: any) => s.title === "LD2450 Live"))).toBe(false);
+  });
+
   it("shows the built-in zones only while Zone Type is not Disabled", () => {
     const cards = buildDeviceCards(rproHass(), deviceOf(rproHass()));
     const conditional = cards.find((c) => c.type === "conditional")!;
@@ -1662,6 +1691,17 @@ describe("plain help, labels and the Device card", () => {
       );
       expect(help(hass)).not.toContain("Combined Presence");
     }
+  });
+
+  // An entity the registry lists before its platform has loaded has no state:
+  // the help names only a Combined Presence the user can pick.
+  it("keeps the LD2412 advice while Combined Presence has no state", () => {
+    const hass = withCombined(rproHass());
+    delete hass.states[`binary_sensor.${RPRO}_combined_presence`];
+    expect(help(hass)).toContain(
+      "**In automations**, use **LD2412 Presence** (Radar Target on this tab)"
+    );
+    expect(help(hass)).not.toContain("Combined Presence");
   });
 
   it("points automations at Combined Presence on an R PRO-1 built without the LD2412", () => {
