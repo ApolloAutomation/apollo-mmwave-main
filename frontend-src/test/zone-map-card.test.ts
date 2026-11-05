@@ -8,7 +8,7 @@
  * the old one.
  */
 
-import { afterEach, describe, it, expect, vi } from "vitest";
+import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { ZoneMapCard } from "../src/zone-map/card";
 import {
   CONFIG_ENTRIES_SUBSCRIBE,
@@ -18,6 +18,14 @@ import {
   ZONES_SUBSCRIBE,
 } from "../src/zone-map/api";
 import type { ZoneConfig } from "../src/zone-map/api";
+import {
+  FULL_WINDOW_CLOSE_LABEL,
+  FULL_WINDOW_CLOSE_TITLE,
+  FULL_WINDOW_OPEN_LABEL,
+  FULL_WINDOW_OPEN_TITLE,
+} from "../src/zone-map/copy";
+import { ICON_COLLAPSE, ICON_EXPAND } from "../src/zone-map/full-window";
+import { backingStore } from "../src/zone-map/resolution";
 
 type Handler = (message: any) => void;
 
@@ -542,6 +550,32 @@ describe("zone map card theme", () => {
     // A push with no theme change must not rebuild the error screen either.
     card.hass = darkHass;
     expect(card.shadowRoot!.querySelector(".container")).toBe(container);
+  });
+
+  it("has no host padding and draws its surface with ha-card's tokens, on every screen", async () => {
+    // A host padding of 16 px on top of the container's own 16 px set the
+    // card 16 px in from its ha-card neighbors and cost the map 32 px.
+    const error = { code: "not_found", message: "No Home Assistant device with id dev123" };
+    const cards = [
+      await mountCard(fakeHass()),
+      await mountCard(fakeHass(), { view_only: true }),
+      await mountCard(fakeHass(ZONE_PAYLOAD, error)),
+    ];
+    expect(cards[2].canvas).toBeNull();
+    for (const card of cards) {
+      const style = card.shadowRoot.querySelector("style").textContent;
+      expect(style).not.toMatch(/:host\s*\{[^}]*padding/);
+      const surface = style.match(/\.container \{[^}]*\}/)?.[0] ?? "";
+      expect(surface).toContain(
+        "background: var(--ha-card-background, var(--card-background-color, white))"
+      );
+      expect(surface).toContain(
+        "border: var(--ha-card-border-width, 1px) solid var(--ha-card-border-color, var(--divider-color, #e0e0e0))"
+      );
+      expect(surface).toContain("border-radius: var(--ha-card-border-radius, 12px)");
+      // The 16 px inside stays.
+      expect(surface).toContain("padding: 16px");
+    }
   });
 
   it("omits dark_mode from the stub config so a manually added card follows the theme", () => {
@@ -5469,8 +5503,10 @@ describe("zone map card coverage", () => {
     const fills = coverageFills(draws);
     expect(fills.map((d) => [d.fill, d.depth])).toEqual([["rgba(255, 152, 0, 0.5)", 1]]);
     const at = draws.indexOf(fills[0]);
-    // Right after the clear: no grid line, label, cone or zone before it.
+    // Right after the frame's scale to the backing store and the clear: no
+    // grid line, label, cone or zone before it.
     expect([...new Set(draws.slice(0, at).map((d) => d.name))]).toEqual([
+      "setTransform",
       "clearRect",
       "save",
       "beginPath",
@@ -12912,5 +12948,879 @@ describe("zone map card zoom and pan", () => {
       // The container queries the overlay buttons size by still apply.
       expect(card.shadowRoot.querySelector("style").textContent).toContain("container-type: size");
     }
+  });
+});
+
+/**
+ * The canvas's backing store follows the screen's device px, so a HiDPI
+ * screen gets a sharp map, while everything is still drawn, hit-tested and
+ * laid out in the logical canvas. happy-dom has no ResizeObserver that
+ * reports and no layout, so the tests stand in for both.
+ */
+describe("zone map card resolution", () => {
+  type Observed = { callback: (entries: any[]) => void; targets: Element[]; disconnected: boolean };
+  let observers: Observed[] = [];
+
+  class FakeResizeObserver {
+    record: Observed;
+    constructor(callback: (entries: any[]) => void) {
+      this.record = { callback, targets: [], disconnected: false };
+      observers.push(this.record);
+    }
+    observe(target: Element) {
+      this.record.targets.push(target);
+    }
+    unobserve() {}
+    disconnect() {
+      this.record.disconnected = true;
+    }
+  }
+
+  beforeEach(() => {
+    observers = [];
+    vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    (window as any).devicePixelRatio = 1;
+    document.body.replaceChildren();
+  });
+
+  /** A fitted 4:3 map (800 x 600 logical px). */
+  async function fittedCard(config: Record<string, any> = {}) {
+    const hass = fakeHass({ ...ZONE_PAYLOAD, zones: {}, rotation_deg: 0 });
+    hass.config = { unit_system: { length: "km" } };
+    return mountCard(hass, config);
+  }
+
+  /** The observer watching the card's canvas container now. */
+  function canvasObserver(card: any): Observed {
+    const container = card.canvas.parentElement;
+    const live = observers.filter((o) => !o.disconnected && o.targets.includes(container));
+    expect(live).toHaveLength(1);
+    return live[0];
+  }
+
+  /** Report the canvas container `width` CSS px wide, and let its frame run. */
+  async function reportWidth(card: any, width: number) {
+    const container = card.canvas.parentElement;
+    const before = card._cssMapWidth;
+    canvasObserver(card).callback([{ target: container, contentRect: { width, height: width } }]);
+    if (width !== before) await vi.waitFor(() => expect(card._cssMapWidth).toBe(width));
+  }
+
+  it("backs a 4:3 map 800 CSS px wide at DPR 2 with a 1600 x 1200 store, drawn scaled", async () => {
+    (window as any).devicePixelRatio = 2;
+    const card = await fittedCard();
+    const container = card.canvas.parentElement;
+    expect([card.canvas.width, card.canvas.height]).toEqual([800, 600]);
+
+    await reportWidth(card, 800);
+    expect([card.canvas.width, card.canvas.height]).toEqual([1600, 1200]);
+    // The logical canvas, and so the map's shape, stay as they were.
+    expect([card._mapW, card._mapH]).toEqual([800, 600]);
+    expect(container.style.aspectRatio).toBe("800 / 600");
+    expect(container.style.getPropertyValue("--zm-aspect")).toBe(String(800 / 600));
+
+    const { ctx, draws } = drawRecordingContext();
+    card.ctx = ctx;
+    card.drawGrid();
+    expect(draws[0]).toMatchObject({ name: "setTransform", args: [2, 0, 0, 2, 0, 0] });
+    expect(draws[1]).toMatchObject({ name: "clearRect", args: [0, 0, 800, 600] });
+  });
+
+  it("keeps one store px per logical px for a small map, and at most three", async () => {
+    (window as any).devicePixelRatio = 2;
+    const card = await fittedCard();
+    await reportWidth(card, 400);
+    expect([card.canvas.width, card.canvas.height]).toEqual([800, 600]);
+
+    (window as any).devicePixelRatio = 3;
+    await reportWidth(card, 1000);
+    expect([card.canvas.width, card.canvas.height]).toEqual([2400, 1800]);
+  });
+
+  it("lands a press on the same map point whatever the store's size", async () => {
+    const card = await mountCard(fakeHass(), { ...TEN_METER_GRID, start_locked: false });
+    layOut(card, 400);
+    const press = { clientX: 100, clientY: 300 };
+    const at1 = card._mmAt(card._getPointFromEvent(press));
+
+    (window as any).devicePixelRatio = 2;
+    await reportWidth(card, 400);
+    (window as any).devicePixelRatio = 3;
+    await reportWidth(card, 401);
+    expect(card.canvas.width).toBe(1203);
+    expect(card._getPointFromEvent(press)).toEqual({ x: 200, y: 600 });
+    expect(card._mmAt(card._getPointFromEvent(press))).toEqual(at1);
+    // A label 18 logical px tall is still sized for the 400 CSS px it shows at.
+    expect(card._canvasScale()).toBe(2);
+  });
+
+  it("sizes the store again when the screen's pixel ratio changes", async () => {
+    const queries: any[] = [];
+    vi.spyOn(window, "matchMedia").mockImplementation((media: string) => {
+      const query: any = {
+        media,
+        matches: true,
+        listeners: [] as Array<() => void>,
+        addEventListener: vi.fn((_type: string, listener: () => void) => query.listeners.push(listener)),
+        removeEventListener: vi.fn(),
+      };
+      queries.push(query);
+      return query;
+    });
+    const card = await fittedCard();
+    document.body.appendChild(card);
+    await reportWidth(card, 800);
+    expect(card.canvas.width).toBe(800);
+    const watching = queries.filter((q) => q.addEventListener.mock.calls.length);
+    const watched = watching[watching.length - 1];
+    expect(watched.media).toBe("(resolution: 1dppx)");
+
+    // Dragged onto a HiDPI screen.
+    (window as any).devicePixelRatio = 2;
+    watched.listeners.forEach((listener: () => void) => listener());
+    expect([card.canvas.width, card.canvas.height]).toEqual([1600, 1200]);
+    expect(queries[queries.length - 1].media).toBe("(resolution: 2dppx)");
+    expect(watched.removeEventListener).toHaveBeenCalled();
+  });
+
+  it("stops following the canvas while off the page and follows it again on return", async () => {
+    const card = await fittedCard();
+    document.body.appendChild(card);
+    const first = canvasObserver(card);
+
+    card.remove();
+    expect(first.disconnected).toBe(true);
+    expect(observers.filter((o) => !o.disconnected)).toHaveLength(0);
+
+    document.body.appendChild(card);
+    expect(canvasObserver(card)).not.toBe(first);
+
+    // A render observes its new canvas and lets the old one go.
+    const before = canvasObserver(card);
+    card.render();
+    expect(before.disconnected).toBe(true);
+    expect(canvasObserver(card).targets).toEqual([card.canvas.parentElement]);
+  });
+});
+
+/**
+ * Expand map: the card's own container moves into a modal dialog at the
+ * end of its shadow root, so the map fills the window with the chips, the
+ * zone editor and Map settings beside it or under it, and moves back.
+ * happy-dom's showModal only sets `open`, close() fires `close` at once,
+ * nothing handles Esc, and there is no layout: the tests send the dialog's
+ * events, the ResizeObserver reports and the boxes themselves.
+ */
+describe("zone map card expand map", () => {
+  type Observed = { callback: (entries: any[]) => void; targets: Element[]; disconnected: boolean };
+  let observers: Observed[] = [];
+  let back: any;
+
+  class FakeResizeObserver {
+    record: Observed;
+    constructor(callback: (entries: any[]) => void) {
+      this.record = { callback, targets: [], disconnected: false };
+      observers.push(this.record);
+    }
+    observe(target: Element) {
+      this.record.targets.push(target);
+    }
+    unobserve() {}
+    disconnect() {
+      this.record.disconnected = true;
+    }
+  }
+
+  beforeEach(() => {
+    observers = [];
+    vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+    back = vi.spyOn(history, "back").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    // Off the page, every card puts its map back.
+    document.body.replaceChildren();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    (window as any).devicePixelRatio = 1;
+    document.documentElement.removeAttribute("style");
+    history.replaceState(null, "");
+  });
+
+  const $ = (card: any, id: string) => card.shadowRoot.getElementById(id);
+  const containerOf = (card: any) => card.shadowRoot.querySelector(".container");
+  const placeholderOf = (card: any) => card.shadowRoot.querySelector(".full-placeholder");
+
+  function box(width: number, height: number, left = 0, top = 0): DOMRect {
+    return {
+      left,
+      top,
+      right: left + width,
+      bottom: top + height,
+      x: left,
+      y: top,
+      width,
+      height,
+      toJSON: () => ({}),
+    } as DOMRect;
+  }
+
+  /** A mounted card on the page. */
+  async function placedCard(hass: any = fakeHass(), config: Record<string, any> = {}) {
+    const card = await mountCard(hass, config);
+    document.body.appendChild(card);
+    return card;
+  }
+
+  /** A keydown as typed into `target`, returned to read defaultPrevented. */
+  function keydown(target: EventTarget, key: string): KeyboardEvent {
+    const event = new KeyboardEvent("keydown", { key, bubbles: true, composed: true, cancelable: true });
+    target.dispatchEvent(event);
+    return event;
+  }
+
+  /** The dialog's cancel, as an engine raises it for Esc. */
+  function cancel(card: any): Event {
+    const event = new Event("cancel", { cancelable: true });
+    $(card, "fullWindow").dispatchEvent(event);
+    return event;
+  }
+
+  /** The observer on the expanded container, reporting a `width` x `height`
+   *  content box, and the frame it lays out on. */
+  async function reportFull(card: any, width: number, height: number) {
+    const container = containerOf(card);
+    const live = observers.filter((o) => !o.disconnected && o.targets.includes(container) && o !== null);
+    // The canvas's own observer watches .canvas-container, not this.
+    expect(live).toHaveLength(1);
+    live[0].callback([{ target: container, contentRect: { width, height } }]);
+    await nextFrame();
+  }
+
+  const nextFrame = () =>
+    new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
+
+  /** Lay the expanded container out with a `width` x `height` content box
+   *  inside the full window's 8 px padding. */
+  function fullBox(container: Element, width: number, height: number) {
+    vi.spyOn(container, "getBoundingClientRect").mockReturnValue(box(width + 16, height + 16));
+    const real = window.getComputedStyle.bind(window);
+    vi.spyOn(window, "getComputedStyle").mockImplementation((element: Element, pseudo?: string | null) =>
+      element === container
+        ? ({ paddingLeft: "8px", paddingRight: "8px", paddingTop: "8px", paddingBottom: "8px" } as any)
+        : real(element, pseudo)
+    );
+  }
+
+  it("puts Expand map in the map's top right corner, labeled for opening", async () => {
+    const card = await placedCard();
+    const group = $(card, "overlayControlsTop");
+    expect(group.parentElement.classList.contains("canvas-container")).toBe(true);
+    expect(group.previousElementSibling.id).toBe("zoomControls");
+    expect(group.classList.contains("overlay-controls")).toBe(true);
+    expect(group.hidden).toBe(false);
+    const button = $(card, "btnFullWindow");
+    expect(button.parentElement).toBe(group);
+    expect(button.getAttribute("type")).toBe("button");
+    expect(button.classList.contains("full-toggle")).toBe(true);
+    expect(button.getAttribute("aria-haspopup")).toBe("dialog");
+    expect(button.getAttribute("aria-label")).toBe(FULL_WINDOW_OPEN_LABEL);
+    expect(button.title).toBe(FULL_WINDOW_OPEN_TITLE);
+    expect(button.querySelector("svg path").getAttribute("d")).toBe(ICON_EXPAND);
+    // The X beside the title is for the expanded map only.
+    const close = $(card, "btnFullWindowClose");
+    expect(close.hidden).toBe(true);
+    expect(close.closest(".title-row").querySelector("#deviceTitle")).not.toBeNull();
+    expect(close.getAttribute("aria-label")).toBe(FULL_WINDOW_CLOSE_LABEL);
+    expect(close.title).toBe(FULL_WINDOW_CLOSE_LABEL);
+    // A replay's badge makes room for it only while it shows.
+    const style = card.shadowRoot.querySelector("style").textContent;
+    expect(style).toContain(".container.has-expand .map-note.replay-badge { right: 40px; }");
+    expect(style).toContain(".overlay-controls-top { top: var(--zm-note-top, 4px); bottom: auto; right: 4px; }");
+    expect(containerOf(card).classList.contains("has-expand")).toBe(true);
+    // The dialog waits empty at the end of the shadow root.
+    const dialog = $(card, "fullWindow");
+    expect(dialog.tagName).toBe("DIALOG");
+    expect(card.shadowRoot.lastElementChild).toBe(dialog);
+    expect(dialog.children).toHaveLength(0);
+  });
+
+  it("shows no Expand map on the map alone, the error screen, a preview or in a dialog", async () => {
+    expect($(await placedCard(fakeHass(), { view_only: true }), "overlayControlsTop")).toBeNull();
+    const error = { code: "not_found", message: "No Home Assistant device with id dev123" };
+    expect($(await placedCard(fakeHass(ZONE_PAYLOAD, error)), "overlayControlsTop")).toBeNull();
+
+    // Home Assistant sets preview after setConfig, in the editor and in edit mode.
+    const preview = await placedCard();
+    preview.preview = true;
+    expect(preview.preview).toBe(true);
+    expect($(preview, "overlayControlsTop").hidden).toBe(true);
+    expect(containerOf(preview).classList.contains("has-expand")).toBe(false);
+    $(preview, "btnFullWindow").click();
+    expect(preview._fullWindow).toBe(false);
+    preview.preview = false;
+    expect($(preview, "overlayControlsTop").hidden).toBe(false);
+
+    // In a more-info or popup card's dialog.
+    for (const tag of ["dialog", "ha-dialog"]) {
+      const around = document.createElement(tag);
+      if (tag === "dialog") around.setAttribute("open", "");
+      document.body.appendChild(around);
+      const inside = await mountCard(fakeHass());
+      around.appendChild(inside);
+      expect($(inside, "overlayControlsTop").hidden, tag).toBe(true);
+      $(inside, "btnFullWindow").click();
+      expect(inside._fullWindow, tag).toBe(false);
+    }
+  });
+
+  it("keeps the map's labels, notes and readouts clear of the button", async () => {
+    const card = await placedCard();
+    layOut(card, 400);
+    vi.spyOn($(card, "overlayControlsTop"), "getBoundingClientRect").mockReturnValue(box(32, 32, 364, 4));
+    const scaleY = card._mapH / 400;
+    const expected = { left: 728, right: 792, top: 4 * scaleY, bottom: 36 * scaleY };
+    expect(card._overlayBoxes()).toContainEqual(expected);
+    expect(card._overlayBoxes({ notes: false })).toContainEqual(expected);
+    // Hidden, it takes no room.
+    card.preview = true;
+    expect(card._overlayBoxes()).not.toContainEqual(expected);
+  });
+
+  it("opens into a modal dialog the card's own DOM moves into, and the X puts it back", async () => {
+    const card = await placedCard();
+    const container = containerOf(card);
+    const dialog = $(card, "fullWindow");
+    vi.spyOn(container, "getBoundingClientRect").mockReturnValue(box(760, 900));
+    document.documentElement.style.overflow = "auto";
+    const push = vi.spyOn(history, "pushState");
+
+    $(card, "btnFullWindow").click();
+
+    expect(card._fullWindow).toBe(true);
+    expect(dialog.open).toBe(true);
+    expect(container.parentElement).toBe(dialog);
+    expect(container.classList.contains("full")).toBe(true);
+    expect(dialog.getAttribute("aria-label")).toBe("Office radar zone map");
+    // The card keeps its place on the dashboard.
+    const placeholder = placeholderOf(card);
+    expect(placeholder.parentNode).toBe(card.shadowRoot);
+    expect(placeholder.nextElementSibling).toBe(dialog);
+    expect(placeholder.style.height).toBe("900px");
+    expect(placeholder.getAttribute("aria-hidden")).toBe("true");
+    // The page under it is locked; no scrollbar is showing, so no gutter.
+    const html = document.documentElement.style;
+    expect(html.overflow).toBe("hidden");
+    expect(html.overscrollBehavior).toBe("none");
+    expect(html.scrollbarGutter).toBe("");
+    // Back closes it.
+    expect(push).toHaveBeenCalledTimes(1);
+    expect(history.state).toEqual({ apolloZoneMapFull: card._fullKey });
+    expect(Object.keys(history.state)).not.toContain("dialog");
+    // The X shows and has the focus; the button now closes.
+    const close = $(card, "btnFullWindowClose");
+    expect(close.hidden).toBe(false);
+    expect(card.shadowRoot.activeElement).toBe(close);
+    const toggle = $(card, "btnFullWindow");
+    expect(toggle.getAttribute("aria-label")).toBe(FULL_WINDOW_CLOSE_LABEL);
+    expect(toggle.title).toBe(FULL_WINDOW_CLOSE_TITLE);
+    expect(toggle.hasAttribute("aria-haspopup")).toBe(false);
+    expect(toggle.querySelector("svg path").getAttribute("d")).toBe(ICON_COLLAPSE);
+
+    close.click();
+
+    expect(card._fullWindow).toBe(false);
+    expect(dialog.open).toBe(false);
+    expect(container.parentNode).toBe(card.shadowRoot);
+    expect(container.nextElementSibling).toBe(dialog);
+    expect(placeholderOf(card)).toBeNull();
+    expect(container.classList.contains("full")).toBe(false);
+    expect(container.dataset.layout).toBeUndefined();
+    expect(container.style.getPropertyValue("--zm-full-width")).toBe("");
+    expect(html.overflow).toBe("auto");
+    expect(html.overscrollBehavior).toBe("");
+    expect(back).toHaveBeenCalledTimes(1);
+    expect(close.hidden).toBe(true);
+    expect(toggle.getAttribute("aria-label")).toBe(FULL_WINDOW_OPEN_LABEL);
+    expect(toggle.getAttribute("aria-haspopup")).toBe("dialog");
+    expect(toggle.querySelector("svg path").getAttribute("d")).toBe(ICON_EXPAND);
+    expect(card.shadowRoot.activeElement).toBe(toggle);
+    // The close event our own close() raised, and any later, do nothing.
+    dialog.dispatchEvent(new Event("close"));
+    expect(back).toHaveBeenCalledTimes(1);
+  });
+
+  it("still expands where the history cannot be written, and closes with the X", async () => {
+    vi.spyOn(history, "pushState").mockImplementation(() => {
+      throw new DOMException("The operation is insecure.", "SecurityError");
+    });
+    const card = await placedCard();
+    $(card, "btnFullWindow").click();
+    expect(card._fullWindow).toBe(true);
+    expect($(card, "fullWindow").open).toBe(true);
+    expect(card.shadowRoot.activeElement).toBe($(card, "btnFullWindowClose"));
+    $(card, "btnFullWindowClose").click();
+    expect(card._fullWindow).toBe(false);
+    // No entry of ours to step back off.
+    expect(back).not.toHaveBeenCalled();
+  });
+
+  it("keeps a gutter for a scrollbar that shows, and the toggle closes it too", async () => {
+    vi.spyOn(document.documentElement, "clientWidth", "get").mockReturnValue(1009);
+    const card = await placedCard();
+    $(card, "btnFullWindow").click();
+    expect(document.documentElement.style.scrollbarGutter).toBe("stable");
+    $(card, "btnFullWindow").click();
+    expect(card._fullWindow).toBe(false);
+    expect(document.documentElement.style.scrollbarGutter).toBe("");
+    expect(back).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes on Esc and on Back, and leaves the history to Back", async () => {
+    const card = await placedCard();
+    const dialog = $(card, "fullWindow");
+
+    // Esc (or Chrome for Android's Back) closes the dialog itself.
+    $(card, "btnFullWindow").click();
+    dialog.close();
+    expect(card._fullWindow).toBe(false);
+    expect(containerOf(card).parentNode).toBe(card.shadowRoot);
+    expect(back).toHaveBeenCalledTimes(1);
+    // Our own back's popstate arrives.
+    window.dispatchEvent(new PopStateEvent("popstate", { state: null }));
+
+    // Back: the entry above ours is gone, and the history is as Back left it.
+    for (const state of [null, { apolloZoneMapFull: "someone-else" }]) {
+      $(card, "btnFullWindow").click();
+      expect(card._fullWindow).toBe(true);
+      history.replaceState(state, "");
+      window.dispatchEvent(new PopStateEvent("popstate", { state }));
+      expect(card._fullWindow).toBe(false);
+      expect(dialog.open).toBe(false);
+      expect(back).toHaveBeenCalledTimes(1);
+    }
+    // A popstate once closed does nothing.
+    window.dispatchEvent(new PopStateEvent("popstate", { state: null }));
+    expect(card._fullWindow).toBe(false);
+    expect(back).toHaveBeenCalledTimes(1);
+  });
+
+  it("brings the zoom, the selected zone, a polygon, Walk and a replay along both ways", async () => {
+    const hass = adminHass();
+    const card = await placedCard(hass, { ...TEN_METER_GRID, start_locked: false });
+    card._zoomBy(2);
+    card._setSelectedZone(1);
+    const view = { ...card._view };
+    const subscribes = hass.connection.subscribeMessage.mock.calls.length;
+    const closeHistory = vi.spyOn(card, "_closeHistory");
+
+    startPolygon(card);
+    const corners = card._polyPoints.map((p: any) => ({ ...p }));
+    $(card, "btnFullWindow").click();
+    expect(card._fullWindow).toBe(true);
+    expect(card._polyPoints).toEqual(corners);
+    expect(card.isDrawing).toBe(true);
+    // A press on the X is not a press away from the polygon.
+    pressOn($(card, "btnFullWindowClose"), "mousedown");
+    expect(card._polyPoints).toEqual(corners);
+    $(card, "btnFullWindowClose").click();
+    expect(card._polyPoints).toEqual(corners);
+    expect(card._view).toEqual(view);
+    expect(card.selectedZone).toBe(1);
+    expect(card._zoom()).toBeCloseTo(2, 9);
+    card.cancelDrawing();
+
+    card._enterWalk();
+    expect(card._walk).not.toBeNull();
+    $(card, "btnFullWindow").click();
+    expect(card._walk).not.toBeNull();
+    expect(card.drawMode).toBe("walk");
+    expect($(card, "walkPanel").hidden).toBe(false);
+    expect($(card, "walkPanel").closest("#mapSide")).not.toBeNull();
+    $(card, "btnFullWindowClose").click();
+    expect(card._walk).not.toBeNull();
+    card._exitWalk();
+    closeHistory.mockClear();
+
+    // A replay plays on through both moves.
+    card._history.open = true;
+    card._history.playing = true;
+    $(card, "btnFullWindow").click();
+    $(card, "btnFullWindowClose").click();
+    expect(card._history).toMatchObject({ open: true, playing: true });
+    expect(closeHistory).not.toHaveBeenCalled();
+    expect(hass.connection.subscribeMessage.mock.calls.length).toBe(subscribes);
+    card._history.playing = false;
+    card._history.open = false;
+  });
+
+  it("drops corners on the first Esc and closes on the next", async () => {
+    const card = await placedCard(fakeHass(), { start_locked: false });
+    $(card, "btnFullWindow").click();
+    startPolygon(card);
+    const close = $(card, "btnFullWindowClose");
+
+    const first = keydown(close, "Escape");
+    expect(first.defaultPrevented).toBe(true);
+    expect(card._polyPoints).toEqual([]);
+    // An engine that still asks to close is told no.
+    expect(cancel(card).defaultPrevented).toBe(true);
+    window.dispatchEvent(new KeyboardEvent("keyup", { key: "Escape" }));
+
+    // No corners: Esc is the window's.
+    card.drawMode = "polygon";
+    expect(keydown(close, "Escape").defaultPrevented).toBe(false);
+    expect(cancel(card).defaultPrevented).toBe(false);
+  });
+
+  it("lets a field put back, and a confirm answered, use the Esc up", async () => {
+    const hass = adminHass();
+    const card = await placedCard(hass, { start_locked: false });
+    $(card, "btnFullWindow").click();
+    const field = nameFieldOf(card);
+
+    field.value = "Fron";
+    expect(keydown(field, "Escape").defaultPrevented).toBe(true);
+    expect(field.value).toBe("Doorway");
+    expect(cancel(card).defaultPrevented).toBe(true);
+    // Unedited, Esc closes, as in Home Assistant's dialogs.
+    expect(keydown(field, "Escape").defaultPrevented).toBe(false);
+    expect(cancel(card).defaultPrevented).toBe(false);
+
+    $(card, "btnDeleteZone").click();
+    expect($(card, "zoneDeleteConfirm").hidden).toBe(false);
+    expect(keydown($(card, "btnDeleteZoneNo"), "Escape").defaultPrevented).toBe(true);
+    expect($(card, "zoneDeleteConfirm").hidden).toBe(true);
+    expect(cancel(card).defaultPrevented).toBe(true);
+
+    $(card, "btnConfigToggle").click();
+    $(card, "clearBtn").click();
+    expect($(card, "clearAllConfirm").hidden).toBe(false);
+    expect(keydown($(card, "btnClearAllNo"), "Escape").defaultPrevented).toBe(true);
+    expect($(card, "clearAllConfirm").hidden).toBe(true);
+    expect(card._fullWindow).toBe(true);
+  });
+
+  it("leaves the keys to the expanded map while another card's polygon is open", async () => {
+    const expanded = await placedCard(fakeHass(), { start_locked: false });
+    const other = await placedCard(fakeHass(), { start_locked: false });
+    startPolygon(other);
+    $(expanded, "btnFullWindow").click();
+
+    const esc = keydown(document.body, "Escape");
+    expect(esc.defaultPrevented).toBe(false);
+    expect(other._polyPoints).toHaveLength(2);
+    // And the other card cannot expand over it.
+    $(other, "btnFullWindow").click();
+    expect(other._fullWindow).toBe(false);
+
+    $(expanded, "btnFullWindowClose").click();
+    expect(keydown(document.body, "Escape").defaultPrevented).toBe(true);
+    expect(other._polyPoints).toEqual([]);
+  });
+
+  it.each(["open", "esc"])("drops a rectangle drag across the move (%s), saving nothing", async (when) => {
+    const hass = adminHass();
+    const card = await placedCard(hass, { ...TEN_METER_GRID, start_locked: false });
+    layOut(card, 400);
+    hass.callService.mockClear();
+    const mouse = (type: string, x: number, y: number) =>
+      card.canvas.dispatchEvent(new MouseEvent(type, { clientX: x, clientY: y, button: 0, bubbles: true }));
+    if (when === "esc") $(card, "btnFullWindow").click();
+    mouse("mousedown", 100, 100);
+    mouse("mousemove", 200, 200);
+    expect(card.isDrawing).toBe(true);
+    if (when === "open") $(card, "btnFullWindow").click();
+    else $(card, "fullWindow").close();
+    expect(card.isDrawing).toBe(false);
+    expect(card.startPoint).toBeNull();
+    mouse("mouseup", 300, 300);
+    await settleWrites();
+    expect(zoneWrites(hass)).toEqual([]);
+  });
+
+  it("opens again in the new card after a theme flip, with the focus where it was", async () => {
+    const hass = fakeHass();
+    hass.themes = { darkMode: false };
+    const card = await placedCard(hass);
+    const push = vi.spyOn(history, "pushState");
+    $(card, "btnFullWindow").click();
+    const oldDialog = $(card, "fullWindow");
+    $(card, "btnZoomIn").focus();
+
+    hass.themes = { darkMode: true };
+    card.hass = hass;
+
+    const dialog = $(card, "fullWindow");
+    expect(dialog).not.toBe(oldDialog);
+    expect(dialog.open).toBe(true);
+    const container = containerOf(card);
+    expect(container.parentElement).toBe(dialog);
+    expect(container.classList.contains("full")).toBe(true);
+    expect(container.classList.contains("dark")).toBe(true);
+    expect(placeholderOf(card).nextElementSibling).toBe(dialog);
+    expect(card.shadowRoot.querySelectorAll(".full-placeholder")).toHaveLength(1);
+    expect(push).toHaveBeenCalledTimes(1);
+    expect(history.state).toEqual({ apolloZoneMapFull: card._fullKey });
+    expect(document.documentElement.style.overflow).toBe("hidden");
+    expect(card.shadowRoot.activeElement).toBe($(card, "btnZoomIn"));
+    expect($(card, "btnFullWindowClose").hidden).toBe(false);
+
+    // And closes as it would have.
+    $(card, "btnFullWindowClose").click();
+    expect(containerOf(card).parentNode).toBe(card.shadowRoot);
+    expect(document.documentElement.style.overflow).toBe("");
+    expect(back).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes when the card can no longer expand: the map alone, a load error, another radar", async () => {
+    for (const change of ["view_only", "error", "radar", "preview"]) {
+      const hass = fakeHass();
+      const card = await placedCard(hass);
+      $(card, "btnFullWindow").click();
+      expect(card._fullWindow, change).toBe(true);
+      if (change === "view_only") card.setConfig({ device_id: "dev123", view_only: true });
+      else if (change === "error") card._setLoadError("The store went away.");
+      else if (change === "radar") card.setConfig({ device_id: "dev456" });
+      else card.preview = true;
+      expect(card._fullWindow, change).toBe(false);
+      expect(card.shadowRoot.querySelector(".container.full"), change).toBeNull();
+      expect(card.shadowRoot.querySelector("dialog[open]"), change).toBeNull();
+      expect(placeholderOf(card), change).toBeNull();
+      expect(document.documentElement.style.overflow, change).toBe("");
+      expect(back, change).toHaveBeenCalledTimes(1);
+      back.mockClear();
+      card.remove();
+      window.dispatchEvent(new PopStateEvent("popstate", { state: null }));
+    }
+  });
+
+  it("puts everything back when the card leaves the page while expanded", async () => {
+    const card = await placedCard();
+    const container = containerOf(card);
+    const dialog = $(card, "fullWindow");
+    $(card, "btnFullWindow").click();
+
+    card.remove();
+    expect(dialog.open).toBe(false);
+    expect(container.parentNode).toBe(card.shadowRoot);
+    expect(placeholderOf(card)).toBeNull();
+    expect(document.documentElement.style.overflow).toBe("");
+    // Nothing navigated, so our entry goes.
+    expect(back).toHaveBeenCalledTimes(1);
+    window.dispatchEvent(new PopStateEvent("popstate", { state: null }));
+
+    document.body.appendChild(card);
+    expect(card.shadowRoot.querySelector(".full")).toBeNull();
+    expect(card.shadowRoot.querySelector("dialog[open]")).toBeNull();
+    expect($(card, "overlayControlsTop").hidden).toBe(false);
+
+    // The page moved on (the quick bar navigated): its history stays.
+    $(card, "btnFullWindow").click();
+    history.pushState({ route: "/lovelace/1" }, "");
+    card.remove();
+    expect(card._fullWindow).toBe(false);
+    expect(back).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes when the card leaves the screen, and keeps the map's size under a keyboard", async () => {
+    const card = await placedCard(adminHass());
+    const container = containerOf(card);
+    fullBox(container, 1368, 768);
+    $(card, "btnFullWindow").click();
+    const width = () => container.style.getPropertyValue("--zm-full-width");
+    const before = width();
+    expect(container.dataset.layout).toBe("side");
+
+    // The Android app's keyboard shrinks the window under the name field.
+    nameFieldOf(card).focus();
+    await reportFull(card, 1368, 368);
+    expect(width()).toBe(before);
+    // Without a field to type in, the map follows the window.
+    nameFieldOf(card).blur();
+    await reportFull(card, 1368, 368);
+    expect(width()).not.toBe(before);
+
+    // Hidden (display none around the card): nothing to show it in.
+    await reportFull(card, 0, 0);
+    expect(card._fullWindow).toBe(false);
+    expect(container.parentNode).toBe(card.shadowRoot);
+  });
+
+  it("saves a name being typed before the map moves, either way", async () => {
+    const hass = adminHass();
+    const card = await placedCard(hass, { start_locked: false });
+    hass.callService.mockClear();
+    const field = nameFieldOf(card);
+    field.focus();
+    field.value = "Front door";
+    // A keyboard press of Expand map leaves the focus in the field.
+    card._openFullWindow();
+    await settleWrites();
+    expect(zoneWrites(hass).map((w) => w.name)).toEqual(["Front door"]);
+
+    // Back, with the field still focused and typed in.
+    const again = nameFieldOf(card);
+    again.focus();
+    again.value = "Hall";
+    history.replaceState(null, "");
+    window.dispatchEvent(new PopStateEvent("popstate", { state: null }));
+    expect(card._fullWindow).toBe(false);
+    await settleWrites();
+    expect(zoneWrites(hass).map((w) => w.name)).toEqual(["Front door", "Hall"]);
+  });
+
+  it("ignores Expand map until the popstate of its own history.back() arrives", async () => {
+    const card = await placedCard();
+    $(card, "btnFullWindow").click();
+    $(card, "btnFullWindowClose").click();
+    expect(card._backPending).toBe(true);
+    $(card, "btnFullWindow").click();
+    expect(card._fullWindow).toBe(false);
+
+    window.dispatchEvent(new PopStateEvent("popstate", { state: null }));
+    expect(card._backPending).toBe(false);
+    $(card, "btnFullWindow").click();
+    expect(card._fullWindow).toBe(true);
+  });
+
+  it("keeps a drag nothing in the window scrolls from reaching the page", async () => {
+    const card = await placedCard();
+    $(card, "btnFullWindow").click();
+    const side = $(card, "mapSide");
+    const scroll = (scrollHeight: number, clientHeight: number, scrollTop: number) => {
+      Object.defineProperty(side, "scrollHeight", { value: scrollHeight, configurable: true });
+      Object.defineProperty(side, "clientHeight", { value: clientHeight, configurable: true });
+      Object.defineProperty(side, "scrollTop", { value: scrollTop, configurable: true, writable: true });
+    };
+    /** A one-finger drag on `target` from y 300 by `dy`: whether its move was
+     *  kept from the page. */
+    const drag = (target: Element, dy: number) => {
+      const touch = (type: string, y: number) => {
+        const event = new Event(type, { bubbles: true, composed: true, cancelable: true });
+        Object.defineProperty(event, "touches", { value: [{ clientY: y, clientX: 50, identifier: 0 }] });
+        Object.defineProperty(event, "changedTouches", { value: [{ clientY: y, clientX: 50, identifier: 0 }] });
+        target.dispatchEvent(event);
+        return event;
+      };
+      touch("touchstart", 300);
+      return touch("touchmove", 300 + dy).defaultPrevented;
+    };
+
+    // The title row, and the stage around the map, scroll nothing.
+    expect(drag(card.shadowRoot.querySelector(".title-row"), 40)).toBe(true);
+    // A panel too short to scroll, or one at the top pulled down.
+    scroll(400, 400, 0);
+    expect(drag($(card, "btnCoverage"), 40)).toBe(true);
+    scroll(1200, 400, 0);
+    expect(drag($(card, "btnCoverage"), 40)).toBe(true);
+    // A panel that can scroll the way the finger goes does.
+    expect(drag($(card, "btnCoverage"), -40)).toBe(false);
+    scroll(1200, 400, 300);
+    expect(drag($(card, "btnCoverage"), 40)).toBe(false);
+    scroll(1200, 400, 800);
+    expect(drag($(card, "btnCoverage"), -40)).toBe(true);
+    // The canvas and the sliders keep their own touches.
+    expect(drag(card.canvas, 40)).toBe(false);
+    $(card, "btnConfigToggle").click();
+    expect(drag($(card, "coneAngleSlider"), 40)).toBe(false);
+    // The canvas never pans the page while expanded.
+    expect(card.shadowRoot.querySelector("style").textContent).toContain(
+      ".container.full canvas, .container.full canvas.pans { touch-action: none; }"
+    );
+  });
+
+  it("names the expanded map after the radar, and follows a rename", async () => {
+    const card = await placedCard();
+    $(card, "btnFullWindow").click();
+    const dialog = $(card, "fullWindow");
+    expect(dialog.getAttribute("aria-label")).toBe("Office radar zone map");
+    card._applyZoneConfig({ ...ZONE_PAYLOAD, label: "Den radar" });
+    expect(dialog.getAttribute("aria-label")).toBe("Den radar zone map");
+    expect($(card, "deviceTitle").textContent).toBe("Den radar");
+    // Reading order: the X, the title, the notice, the map, the panel.
+    const order = ["btnFullWindowClose", "deviceTitle", "versionNotice", "zoneCanvas", "mapSide"].map((id) => $(card, id));
+    for (let i = 1; i < order.length; i += 1) {
+      expect(order[i - 1].compareDocumentPosition(order[i]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
+    expect($(card, "mapSide").querySelector("#zonePanel #zoneManager .zone-editor")).not.toBeNull();
+    expect($(card, "mapSide").querySelector(".config #configContent")).not.toBeNull();
+  });
+
+  it("repeats the card's toasts for screen readers while expanded", async () => {
+    const card = await placedCard();
+    const status = $(card, "fullWindowStatus");
+    expect(status.getAttribute("role")).toBe("status");
+    expect(status.getAttribute("aria-live")).toBe("polite");
+    card._notify("Couch saved");
+    await nextFrame();
+    expect(status.textContent).toBe("");
+
+    $(card, "btnFullWindow").click();
+    card._notify("Couch saved");
+    await nextFrame();
+    expect(status.textContent).toBe("Couch saved");
+    $(card, "btnFullWindowClose").click();
+    expect(status.textContent).toBe("");
+  });
+
+  it("draws in logical px as wide as the expanded map, and in 800 again once closed", async () => {
+    (window as any).devicePixelRatio = 2;
+    const hass = fakeHass({ ...ZONE_PAYLOAD, zones: {}, rotation_deg: 0 });
+    hass.config = { unit_system: { length: "km" } };
+    const card = await placedCard(hass, { start_locked: false });
+    const container = containerOf(card);
+    const mapBox = card.canvas.parentElement;
+    const aspect = mapBox.style.getPropertyValue("--zm-aspect");
+    // 1080p's content box: the map beside the panel, 1258 px wide.
+    fullBox(container, 1904, 944);
+    vi.spyOn(card.canvas, "getBoundingClientRect").mockImplementation(() =>
+      card._fullWindow ? box(1256, 942, 8, 8) : box(400, 300, 20, 100)
+    );
+    const press = (fx: number, fy: number) => {
+      const r = card.canvas.getBoundingClientRect();
+      return card._mmAt(card._getPointFromEvent({ clientX: r.left + r.width * fx, clientY: r.top + r.height * fy }));
+    };
+    const inCard = press(0.25, 0.5);
+    const cardStep = card._computeGridMetrics().stepX;
+
+    $(card, "btnFullWindow").click();
+    expect(container.dataset.layout).toBe("side");
+    expect(container.style.getPropertyValue("--zm-full-width")).toBe("1258px");
+    expect(container.style.getPropertyValue("--zm-side-width")).toBe("420px");
+    expect([card._mapW, card._mapH]).toEqual([1258, Math.round((1258 * 9000) / 12000)]);
+    expect(card.canvas.width).toBe(backingStore(card._mapW, card._mapH, 1256, 2).width);
+    expect(card.canvas.width).toBe(2512);
+    // The same map point under the same spot, a finer grid, the same shape.
+    const expanded = press(0.25, 0.5);
+    expect(expanded.x).toBeCloseTo(inCard.x, 6);
+    expect(expanded.y).toBeCloseTo(inCard.y, 6);
+    expect(card._computeGridMetrics().stepX).toBeLessThan(cardStep);
+    expect(mapBox.style.getPropertyValue("--zm-aspect")).toBe(aspect);
+    // Labels keep the size they have in CSS px.
+    expect(card._canvasScale()).toBeCloseTo(1258 / 1256, 6);
+
+    $(card, "btnFullWindowClose").click();
+    expect([card._mapW, card._mapH]).toEqual([800, 600]);
+    expect([card.canvas.width, card.canvas.height]).toEqual([800, 600]);
+    expect(card._computeGridMetrics().stepX).toBe(cardStep);
+    expect(mapBox.style.getPropertyValue("--zm-aspect")).toBe(aspect);
+  });
+
+  it("steps back off an expanded map's history entry that a reload left on top", async () => {
+    history.pushState({ apolloZoneMapFull: "1730000000000-1" }, "");
+    vi.resetModules();
+    await import("../src/zone-map/card");
+    expect(back).toHaveBeenCalledTimes(1);
+
+    history.replaceState({ route: "/apollo-mmwave" }, "");
+    vi.resetModules();
+    await import("../src/zone-map/card");
+    expect(back).toHaveBeenCalledTimes(1);
   });
 });
