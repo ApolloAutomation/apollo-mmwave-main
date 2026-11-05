@@ -6578,8 +6578,8 @@ describe("zone map card touches on a map nothing can be drawn on", () => {
  *
  * A card for a wall tablet or a phone dashboard that only shows where people
  * are: the title and the map, with its lit zones, numbered dots, trails, the
- * offline note and the flip. No drawing tools, lock, undo, unit switch, chips,
- * Configure or zone list, and nothing listens on the canvas, so a swipe that
+ * offline note and the flip. No drawing tools, lock, undo, unit switch, Zones
+ * panel or Map settings, and nothing listens on the canvas, so a swipe that
  * starts on the map scrolls the page. A live card switched to it drops what
  * it was drawing, since nothing would be left to finish it.
  */

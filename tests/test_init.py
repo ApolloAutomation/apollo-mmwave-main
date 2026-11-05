@@ -2022,8 +2022,8 @@ async def test_empty_name_clears_the_zone_name(
     """Renaming to '' drops the name, and a later rename still applies."""
     _ = init_integration
     await _create_rect_zone(hass, device_id)
-    # Named in a call of its own, as the card's Save button names a stored
-    # zone. A name sent with the creating call reaches the registry as well
+    # Named in a call of its own, as the zone editor's Name field names a
+    # stored zone. A name sent with the creating call reaches the registry as well
     # (test_name_on_the_creating_call_reaches_the_registry).
     await _rename_zone(hass, device_id, "Couch")
     registry = er.async_get(hass)
