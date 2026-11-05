@@ -405,9 +405,9 @@ function helpCardBody(dev: RadarDevice, ctx: HelpContext): Record<string, any> {
   if (!dev.profile || (dev.ld2450 && !ctx.gateRadar)) {
     const steps = [
       ...(ctx.ld2450Setup ? ["Fix anything the Radar setup card flags."] : []),
-      "Set **Cone rotation** (under Configure on the zone map) to match how the sensor is mounted.",
-      "Draw a zone on the map, reload this page, then walk into the zone and watch it" +
-        " turn on under Zone presence.",
+      "Set **Cone rotation** (under Map settings on the zone map) to match how the sensor is mounted.",
+      "Press **Add zone** under the zone map and drag on the map to draw the zone. Reload this" +
+        " page, then walk into the zone and watch it turn on under Zone presence.",
     ];
     return {
       type: "markdown",
@@ -447,8 +447,8 @@ function helpCardBody(dev: RadarDevice, ctx: HelpContext): Record<string, any> {
       `**Start here**\n` +
       numbered([
         ...gateSteps(p, ctx, true),
-        `For the LD2450, ${setup}set **Cone rotation** (under Configure on the zone map) to` +
-          " match how the sensor is mounted, then draw a zone and walk into it.",
+        `For the LD2450, ${setup}set **Cone rotation** (under Map settings on the zone map) to` +
+          " match how the sensor is mounted, then press **Add zone**, draw the zone and walk into it.",
       ]) +
       `\n\n${automations}\n\n` +
       links,
@@ -461,7 +461,7 @@ function noteCard(text: string): Record<string, any> {
 
 export const ZONE_PRESENCE_TITLE = "Zone presence";
 export const ZONE_PRESENCE_HINT =
-  "Draw a zone on the map to get a presence sensor for it. Reload this page to see it here.";
+  "Press **Add zone** under the zone map to get a presence sensor for a zone. Reload this page to see it here.";
 export const BUILT_IN_ZONES_TITLE = "Radar's built-in zones";
 export const BUILT_IN_ZONES_NOTE =
   "These are the radar chip's own zones, not the ones on the zone map." +
@@ -469,11 +469,11 @@ export const BUILT_IN_ZONES_NOTE =
 
 /** Under the LD2450 Controls card: what its Radar Timeout holds, and what it
  *  does not. Drawn zones are evaluated from the live X/Y and hold only for a
- *  hold time set in the zone map's zone list. */
+ *  hold time set in the zone map's Zones panel. */
 export const LD2450_TIMEOUT_NOTE =
   "💡 **Radar Timeout** is how long LD2450 Presence stays on after the radar last" +
   " sees someone. It does not hold the zones you draw: a zone turns off as soon as" +
-  " nobody is in it, unless you give it a hold time in the zone list under Configure.";
+  " nobody is in it, unless you give it a **Hold** time under Zones on the zone map.";
 
 /**
  * Under the LD2410 Zone Config card. The boxes are template numbers in cm, and
