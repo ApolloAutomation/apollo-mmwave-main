@@ -181,9 +181,10 @@ images from `main` (`raw.githubusercontent.com/.../main/docs/images/...`),
 so every published release shows what `docs/images` holds on `main` today.
 Never re-render an image a published README links: save the new render
 under a new name, such as `apollo-mmwave-gate-energy-2.4.0.gif`, and link
-that. When a release is published, add the images its README links to
-`PUBLISHED_IMAGES` in `tests/test_readme_images.py`, which fails if one of
-them changes.
+that. In the pull request that makes a release, add the images its README
+links to `PUBLISHED_IMAGES` in `tests/test_readme_images.py`, which fails if
+one of them changes; from then on they are frozen, so a fix found while
+testing that release gets a new name too.
 
 ### Stored data
 

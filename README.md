@@ -36,9 +36,10 @@ draw presence zones.
   listens to the empty room and sets how sensitive the radar is at each
   distance. **Undo** puts your old values back.
 - **Zone maps** on the R PRO-1 and MTR-1. Draw zones over the people the
-  radar sees, and each zone gets a presence sensor for your automations. The
-  map is in feet or meters to match Home Assistant, zooms in up to 8x and
-  snaps corners to round values. A **Radar setup** card above it checks the
+  radar sees, and each zone gets a presence sensor for your automations.
+  Each zone's name, type and hold time are right under the map. The map is
+  in feet or meters to match Home Assistant, zooms in up to 8x and snaps
+  corners to round values. A **Radar setup** card above it checks the
   radar's settings and fixes them with one tap.
 - **Zones you can watch.** Zones light up while someone is in them, a zone
   can stay on for someone sitting still or ignore a fan, and administrators
@@ -51,6 +52,9 @@ draw presence zones.
 - **Sliders that stay put.** Threshold and range sliders start locked, so
   scrolling on a phone cannot move them. Press **Unlock** above them to make
   a change.
+- **A dashboard that keeps up.** It builds itself each time it opens, so an
+  update brings its new cards. If someone used **Take control** on it, a
+  repair offers to put the automatic one back and keeps their copy.
 - **No YAML** and no separate card downloads. The integration serves its own
   cards.
 
@@ -226,15 +230,24 @@ including what each HACS box says.
    people, sized to what the radar can see (120 degrees, about 6 m or 20 ft).
    It is in feet or meters to match Home Assistant; the **m / ft** switch on
    the map changes it. On a wide screen the map's column is twice as wide as
-   the others. A new radar has no zones yet, so open
-   **Configure → Zones** on that card and press **Add Zone**. Then press the
-   new zone's button, choose a shape from the ✎ menu and draw on the grid.
-   Corners snap to round values, such as every 10 cm at 1 m grid lines;
-   hold Alt (Option on a Mac) to place one freely. Each zone gets a presence
-   sensor, listed on the **Zone presence** card next to the map. Once a
-   radar has zones the map starts locked, so a scroll cannot draw on it or
-   turn the cone; press **Locked** in its corner to unlock it. See
-   [Drawing zones](docs/configuration.md#drawing-zones).
+   the others. A new radar has no zones yet: press **Add zone** in the
+   **Zones** panel under the map, then drag on the map to draw the zone as
+   a rectangle (✎ on the map offers an ellipse or a polygon). Corners snap
+   to round values, such as every 10 cm at 1 m grid lines; hold Alt (Option
+   on a Mac) to place one freely. Each zone gets a presence sensor, listed
+   on the **Zone presence** card next to the map.
+
+   To pick a zone, tap its chip under **Zones** or tap it on the map. The
+   box under the chips is that zone's editor: its **Name** (saved when you
+   press Enter or leave the field), **Type** and **Hold**, whether someone
+   is in it **Now**, and **Delete zone**, which asks first. Once a radar has
+   zones the map starts locked, so a scroll cannot draw on it or turn the
+   cone. Press **Locked** in its corner, or **Unlock** in the editor, to
+   draw; the name, Type and Hold work while it is locked. **Cone rotation**
+   and the map's other options are under **Map settings** at the bottom of
+   the card. See
+   [Drawing zones](docs/configuration.md#drawing-zones) and
+   [The Zones panel](docs/configuration.md#the-zones-panel).
 
    To draw more precisely, zoom in with **+** over the map's lower right
    corner, with Ctrl or Cmd and the scroll wheel, or with two fingers on a
@@ -247,9 +260,9 @@ including what each HACS box says.
    [Zoom and pan](docs/configuration.md#zoom-and-pan) and
    [Mark corners by walking](docs/configuration.md#mark-corners-by-walking).
 
-   ![The zone map on an R PRO-1 in feet, fitted to the radar's view with the caption Radar range 20 ft (6 m), 120°: a rectangle, a circle and a polygon drawn as zones, pale and dashed while nobody is in them, the m / ft switch and the Locked button in the corner, with the minus, + and Fit zoom buttons above them, and under the grid a Coverage button and the zone buttons, with Clear All Zones dimmed while the map is locked](https://raw.githubusercontent.com/ApolloAutomation/apollo-mmwave-main/main/docs/images/apollo-mmwave-zone-map-2.4.0.png)
+   ![The zone map on an R PRO-1 in feet, fitted to the radar's view with the caption Radar range 20 ft (6 m), 120°: a rectangle, a circle and a polygon drawn as zones, pale and dashed while nobody is in them, the m / ft switch and the Locked button in the corner, with the minus, + and Fit zoom buttons above them. Under the map: a Coverage button, then Zones with an Add zone button and a chip with a color dot for each zone, Zone 1 picked, and Zone 1's editor with its Name, Size 6 ft 7 in × 3 ft 3 in, Type Detect, Hold Off, Now Nobody is in this zone, a note that the map is locked with an Unlock button, and Delete zone, above Map settings](https://raw.githubusercontent.com/ApolloAutomation/apollo-mmwave-main/main/docs/images/apollo-mmwave-zone-map-zones-2.4.0.png)
 
-   ![The live zone map in feet: target 1 walks from the Doorway zone to the Couch zone and back with a short fading trail behind its numbered dot, moving in steps as the radar reports about once a second, and each zone turns solid while the dot is inside it and pale and dashed once it leaves; target 2 sits still in the Desk zone, which stays lit, and the Fan zone is hatched and labeled Fan (ignored)](https://raw.githubusercontent.com/ApolloAutomation/apollo-mmwave-main/main/docs/images/apollo-mmwave-zone-map-live.gif)
+   ![The live zone map in feet: target 1 walks from the Doorway zone to the Couch zone and back with a short fading trail behind its numbered dot, moving in steps as the radar reports about once a second, and each zone turns solid while the dot is inside it and pale and dashed once it leaves; target 2 sits still in the Desk zone, which stays lit, and the Fan zone is hatched and labeled Fan (ignored); under the map, a Coverage button, then Zones with an Add zone button and the chips Desk, Couch, Doorway and Fan, each with its zone's color dot, with Couch picked](https://raw.githubusercontent.com/ApolloAutomation/apollo-mmwave-main/main/docs/images/apollo-mmwave-zone-map-live-2.4.0.gif)
 
 ## If something is wrong
 
@@ -278,6 +291,13 @@ including what each HACS box says.
   report only people inside its own built-in zones, and nobody when none are
   set. Press **Set Zone Type to Disabled** (or **Use recommended settings**
   if the card shows that instead).
+- **The dashboard has no LD2450 Controls, Radar setup or Device card:** it
+  is probably a saved copy, made when someone used **Take control** on it
+  under an older release. Open **Settings → System → Repairs**, press "The
+  Apollo mmWave dashboard is a saved copy" and press **Submit**. Your copy
+  is kept as the **Apollo mmWave (saved copy)** dashboard under
+  **Settings → Dashboards**. No repair? See
+  [The dashboard misses newer cards](docs/configuration.md#troubleshooting).
 - **A sensor has no tab:** check that it is added through ESPHome, and that
   **Choose the dashboard's devices** in the integration's options
   (**Settings → Devices & services → Apollo mmWave → Configure**) is empty or

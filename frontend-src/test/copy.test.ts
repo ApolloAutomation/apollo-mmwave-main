@@ -391,6 +391,15 @@ describe("zone map card copy module", () => {
     replayBadge: [["10:24:05 AM"]],
     formatAgo: [[0], [120000], [3900000]],
     zoomReadout: [[Math.SQRT2], [2], [8]],
+    zonesFullNote: [[32]],
+    deleteZoneConfirm: [["Doorway"]],
+    drawHint: [
+      ["rect", false, 32],
+      ["rect", true, 32],
+      ["ellipse", false, 32],
+      ["polygon", false, 32],
+      ["polygon", true, 32],
+    ],
   };
 
   /** Every string copy.ts exports, the functions' output included. */

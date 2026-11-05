@@ -8,10 +8,12 @@ dashboard is created right there, once, and the entry records its id and url
 path; nothing creates or rewrites it on its own later.
 
 The options flow is a menu of explicit actions on that recorded dashboard
-only: add it when the entry owns none, remove it when it owns one, and the
-optional explicit selection of the radars it shows (empty means automatic
-detection). A recorded dashboard that is gone, or that the user took control
-of, is forgotten rather than recreated or written to.
+only: add it when the entry owns none, remove it when it owns one, restore it
+while it is a saved copy, and the optional explicit selection of the radars it
+shows (empty means automatic detection). A recorded dashboard that is gone,
+or that the user made their own, is forgotten rather than recreated or
+written to. A saved copy (taken control of, still made of our cards) stays
+recorded, so the restore and the repair that offers it stay available.
 """
 
 from __future__ import annotations
@@ -36,9 +38,12 @@ from .const import (
     ENTRY_MINOR_VERSION,
 )
 from .frontend import (
+    DashboardState,
+    RestoreResult,
     async_create_dashboard,
-    async_dashboard_owned,
+    async_dashboard_state,
     async_remove_dashboard,
+    async_restore_saved_copy,
     async_set_dashboard_devices,
 )
 
@@ -138,12 +143,13 @@ class ApolloMmwaveOptionsFlow(config_entries.OptionsFlow):
     Options flow: explicit administrator actions on the entry's own dashboard.
 
     Only the row the entry recorded is ever written to or deleted, and only
-    while its config is still our strategy (``frontend._async_our_row``).
+    while its config is still our strategy (``frontend._async_our_row``), or,
+    for the restore, while it is a saved copy.
     """
 
-    # Whether the recorded dashboard is still ours: True, False, or None when
-    # the dashboards collection cannot be read. Set by the menu step.
-    _owned: bool | None = None
+    # What the recorded dashboard holds now, or None when the dashboards
+    # collection cannot be read. Set by the menu step.
+    _state: DashboardState | None = None
 
     def _recorded(self) -> tuple[str | None, str | None]:
         options = self.config_entry.options
@@ -152,8 +158,9 @@ class ApolloMmwaveOptionsFlow(config_entries.OptionsFlow):
     def _save(self, **changes: Any) -> config_entries.ConfigFlowResult:
         """Finish with the entry's options plus ``changes``."""
         options = dict(self.config_entry.options)
-        if self._owned is False and options.get(CONF_DASHBOARD_ID):
-            # Gone, or taken over: it is not ours any more, so forget it. An
+        if self._state is DashboardState.NOT_OURS and options.get(CONF_DASHBOARD_ID):
+            # Gone, or made the user's own: it is not ours any more, so forget
+            # it. A saved copy is kept, since restoring it needs the record. An
             # entry with no record keeps none: one from 2.2.5 whose migration
             # could not read the dashboards yet must still adopt its old
             # dashboard at the next start.
@@ -166,13 +173,17 @@ class ApolloMmwaveOptionsFlow(config_entries.OptionsFlow):
     ) -> config_entries.ConfigFlowResult:
         """Offer the actions that fit the dashboard the entry owns, if any."""
         _ = user_input
-        self._owned = await async_dashboard_owned(self.hass, *self._recorded())
-        if self._owned is None:
+        self._state = await async_dashboard_state(self.hass, *self._recorded())
+        if self._state is None:
             # Nothing is known about the dashboard, so only the selection is
             # offered, and what the entry recorded is kept.
             return await self.async_step_dashboard_devices()
-        if self._owned:
+        if self._state is DashboardState.OURS:
             menu = ["dashboard_devices", "remove_dashboard"]
+        elif self._state is DashboardState.SAVED_COPY:
+            # Never removed: the copy is the user's. Not added either: the
+            # copy holds the url path.
+            menu = ["restore_dashboard", "dashboard_devices"]
         else:
             menu = ["add_dashboard", "dashboard_devices"]
         return self.async_show_menu(step_id="init", menu_options=menu)
@@ -193,7 +204,7 @@ class ApolloMmwaveOptionsFlow(config_entries.OptionsFlow):
                 devices=list(self.config_entry.options.get(CONF_DASHBOARD_DEVICES, [])),
             )
             if dashboard_id is not None:
-                self._owned = True
+                self._state = DashboardState.OURS
                 return self._save(**_ownership(dashboard_id))
             errors["base"] = "dashboard_not_created"
         schema = vol.Schema(
@@ -214,11 +225,29 @@ class ApolloMmwaveOptionsFlow(config_entries.OptionsFlow):
         errors: dict[str, str] = {}
         if user_input is not None:
             if await async_remove_dashboard(self.hass, *self._recorded()):
-                self._owned = False
+                self._state = DashboardState.NOT_OURS
                 return self._save()
             errors["base"] = "dashboard_not_removed"
         return self.async_show_form(
             step_id="remove_dashboard", data_schema=vol.Schema({}), errors=errors
+        )
+
+    async def async_step_restore_dashboard(
+        self, user_input: dict | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Say what Restore does, then restore the automatic dashboard on Submit."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            # The same restore as the repair's fix, which also clears it.
+            result = await async_restore_saved_copy(self.hass, self.config_entry)
+            if result is RestoreResult.RESTORED:
+                self._state = DashboardState.OURS
+                return self._save()
+            if result is RestoreResult.NOT_A_SAVED_COPY:
+                return self.async_abort(reason=result.value)
+            errors["base"] = result.value
+        return self.async_show_form(
+            step_id="restore_dashboard", data_schema=vol.Schema({}), errors=errors
         )
 
     async def async_step_dashboard_devices(
@@ -230,10 +259,12 @@ class ApolloMmwaveOptionsFlow(config_entries.OptionsFlow):
             devices = list(user_input.get(CONF_DASHBOARD_DEVICES, []))
             # Only the dashboard this entry created, and only while it is
             # still our strategy; with none, the selection is just stored and
-            # used if the dashboard is added here later. When the dashboards
-            # could not be read (None), the entry may still own one, so the
-            # write is tried too, and the selection is stored only if it lands.
-            if self._owned is not False and not await async_set_dashboard_devices(
+            # used if the dashboard is added or restored here later. When the
+            # dashboards could not be read (None), the entry may still own
+            # one, so the write is tried too, and the selection is stored only
+            # if it lands.
+            writes = self._state in (None, DashboardState.OURS)
+            if writes and not await async_set_dashboard_devices(
                 self.hass, *self._recorded(), devices
             ):
                 errors["base"] = "dashboard_not_updated"

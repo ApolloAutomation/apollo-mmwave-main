@@ -19,20 +19,32 @@ import { versionNoticeElement, watchVersion } from '../version-check';
 import { clearMovement, connectZones, fetchMovement, isMovementPayload } from './api';
 import { CELL_MM, CellGrid, bucketCells } from './cells';
 import {
+  ADD_ZONE_FIRST_TOAST,
+  ADD_ZONE_LABEL,
   ADMIN_ONLY_NOTE,
   ADMIN_ONLY_TITLE,
+  ALL_CLEARED_TOAST,
+  CLEAR_ALL_CONFIRM,
+  CLEAR_ALL_CONFIRM_NO_UNDO,
+  CLEAR_ALL_LABEL,
+  CLEAR_ALL_NO,
+  CLEAR_ALL_YES,
   CLEAR_LOCKED_TOAST,
   CONE_MOUNT_HINT,
   COVERAGE_CLEAR,
   COVERAGE_LABEL,
   COVERAGE_TITLE,
+  DELETE_ZONE_LABEL,
+  DELETE_ZONE_NO,
+  DELETE_ZONE_YES,
+  DRAW_HINT_WALKING,
   DRAW_LOCKED_TOAST,
   HELD_SUFFIX,
   HISTORY_CLEAR,
+  HISTORY_CLEARED_TOAST,
   HISTORY_CLEAR_CONFIRM,
   HISTORY_CLEAR_NO,
   HISTORY_CLEAR_YES,
-  HISTORY_CLEARED_TOAST,
   HISTORY_EMPTY,
   HISTORY_HEATMAP,
   HISTORY_HINT,
@@ -48,13 +60,15 @@ import {
   HISTORY_UNAUTHORIZED,
   HISTORY_UNREADABLE,
   HISTORY_WALK_TITLE,
-  HOLD_IGNORE_TITLE,
+  HOLD_HINT,
+  HOLD_IGNORE_HINT,
   HOLD_LABEL,
   HOLD_OPTIONS,
-  HOLD_TITLE,
   IGNORED_SUFFIX,
   LOCK_OFF_TOAST,
   LOCK_ON_TOAST,
+  LOCK_TITLE,
+  MAP_SETTINGS_LABEL,
   MIRROR_HINT,
   MIRROR_LABEL,
   MOVEMENT_HINT,
@@ -67,11 +81,21 @@ import {
   NO_SHAPE_TEXT,
   OFFLINE_NOTE,
   POLY_TOO_FEW_TOAST,
+  PRESENCE_HELD,
+  PRESENCE_IGNORED,
+  PRESENCE_LABEL,
+  PRESENCE_NOT_DRAWN,
+  PRESENCE_NO_SENSOR,
+  PRESENCE_OFF,
+  PRESENCE_ON,
   SELECT_ZONE_TOAST,
   SIZE_PREFIX,
+  TYPE_DETECT_HINT,
+  TYPE_IGNORE_HINT,
   TYPE_LABEL,
   TYPE_OPTIONS,
-  TYPE_TITLE,
+  UNLOCK_LABEL,
+  UNLOCK_TITLE,
   WALK_BUTTON_TITLE,
   WALK_CANCEL,
   WALK_CANCEL_CONFIRM,
@@ -87,7 +111,15 @@ import {
   WALK_HINT_START,
   WALK_TOO_CLOSE_TOAST,
   WALK_UNDO,
-  ZONE_SETTINGS_HINT,
+  ZONES_EMPTY,
+  ZONES_EMPTY_ROTATION,
+  ZONES_EMPTY_VIEWER,
+  ZONES_LOCKED_HINT,
+  ZONES_TITLE,
+  ZONE_NAME_LABEL,
+  ZONE_NOT_SAVED,
+  ZONE_SAVED,
+  ZONE_SAVING,
   ZOOM_FIT,
   ZOOM_FIT_ALL_LABEL,
   ZOOM_FIT_ZONES_LABEL,
@@ -96,11 +128,14 @@ import {
   ZOOM_IN_TITLE,
   ZOOM_OUT_LABEL,
   ZOOM_PAN_HINT,
+  deleteZoneConfirm,
+  drawHint,
   formatAgo,
   historyClearError,
   historyError,
   replayBadge,
   walkHintNext,
+  zonesFullNote,
   zoomReadout,
 } from './copy';
 import { ZONE_MAP_EDITOR_TAG, firstLd2450DeviceId } from './editor';
@@ -307,6 +342,16 @@ const RING_LABEL_REPEAT_EM = 2;
 const RING_LABEL_SAME_DISTANCE_MM = 1;
 
 const POLYGON_MAX_POINTS = 32;
+
+// Add zone gives out zone ids 1 to this, the most the update_zone service's
+// zone_id selector offers. Only the card stops there: a zone a service call
+// stored under a higher id still shows and edits.
+const MAX_ZONE_ID = 32;
+
+// A press and release on the map this close together (CSS px) is a tap, not
+// a drag: in Rectangle or Ellipse mode it picks the zone under it and draws
+// nothing. A UI gesture tolerance for finger jitter, not a radar setting.
+const TAP_SLOP_CSS_PX = 8;
 
 // How far (CSS px) the second tap of a polygon double-tap may land from the
 // last vertex and still count as the finishing gesture rather than a new
@@ -579,10 +624,22 @@ export class ZoneMapCard extends HTMLElement {
     // the next save takes (see _saveZoneSetting).
     this._zoneSettingPending = new Map();
     this._zoneSettingSeq = 0;
+    // What the zone editor says beside its heading about the newest name,
+    // Type or Hold save: { zoneId, state: 'saving' | 'saved' | 'failed',
+    // seq }, or null. Only the save numbered `seq` settles it.
+    this._zoneSaveStatus = null;
+    this._zoneSaveSeq = 0;
+    // The zone whose Delete zone is asking first, and whether Clear all
+    // shapes is.
+    this._deleteConfirmZone = null;
+    this._clearAllConfirm = false;
+    // Where the press of a rect or ellipse gesture landed (backing px, not
+    // snapped), so its release can tell a tap from a drag.
+    this._pressPx = null;
     // The radar's map is drawn mirrored left to right (mirror_x).
     this._mirrorX = false;
     // An administrator keeps this radar's movement history (movement_history),
-    // and whether Configure is asking before turning it off.
+    // and whether Map settings is asking before turning it off.
     this._movementHistory = false;
     this._movementConfirm = false;
     // The History panel and its replay (see _openHistory). The range, speed
@@ -652,7 +709,7 @@ export class ZoneMapCard extends HTMLElement {
     this._modeBeforeWalk = null;
     this._walkConfirmCancel = false;
     this._walkVisible = null;
-    this.showZones = false;
+    // Whether Map settings is open. Page memory, kept across renders.
     this.showConfig = false;
     this._polyPoints = [];
     this.zones = [];
@@ -942,6 +999,9 @@ export class ZoneMapCard extends HTMLElement {
     // on the old radar settles nothing on the new one's rows.
     this._zoneMeta = new Map();
     this._zoneSettingPending = new Map();
+    this._zoneSaveStatus = null;
+    this._deleteConfirmZone = null;
+    this._clearAllConfirm = false;
     this._paintedZoneKey = null;
     this._mirrorX = false;
     this._movementHistory = false;
@@ -1005,9 +1065,10 @@ export class ZoneMapCard extends HTMLElement {
     if (this._displayUnit() !== unitBefore) this._displayUnitChanged();
     if (this._isAdmin() !== adminBefore) {
       // The switch's tooltips, the controls only an administrator can use and
-      // the zone list's settings all depend on who is viewing.
+      // the zone panel all depend on who is viewing.
       this._renderUnitSwitch();
       this._renderAdminControls();
+      this._renderZonePanel();
       this._renderZoneManager();
     }
     // Home Assistant assigns a new hass on every state change in the whole
@@ -1021,10 +1082,13 @@ export class ZoneMapCard extends HTMLElement {
       const zoneKey = this._zoneStatesKey();
       const trackedChanged = trackedKey !== this._paintedTrackedKey;
       if (trackedChanged || zoneKey !== this._paintedZoneKey) {
+        const zoneChanged = zoneKey !== this._paintedZoneKey;
         this._paintedTrackedKey = trackedKey;
         this._paintedZoneKey = zoneKey;
         // Only a target move is sampled: a presence flip moved nobody.
         if (trackedChanged) this._onTargetsChanged(this._now());
+        // The editor's Now line follows the selected zone's sensor.
+        if (zoneChanged) this._renderZonePresence();
         // A replay paints on its own timer and hides live dots and lit zones.
         if (!this._replayShowing()) this.drawGrid();
       }
@@ -1386,6 +1450,7 @@ export class ZoneMapCard extends HTMLElement {
     this._renderTitle();
     this._applyAutoLock();
     this.renderZoneButtons();
+    this._renderZonePanel();
     this._renderZoneManager();
     this._renderAdminControls();
     // After the zones, rotation and unit a fitted grid is drawn around.
@@ -1428,7 +1493,7 @@ export class ZoneMapCard extends HTMLElement {
       });
     });
 
-    // The zone list the buttons and the manager render. The store is
+    // The zone list the chips and the editor render. The store is
     // authoritative, but a zone written into the card's YAML has to survive a
     // radar that has never been drawn on.
     const seeded = Array.isArray(this.config?.zones) ? this.config.zones : [];
@@ -1749,9 +1814,24 @@ export class ZoneMapCard extends HTMLElement {
           color: ${COLOR.ui.overlayButtonText};
           border-color: ${COLOR.ui.darkZoneButtonActiveBorder};
         }
+        /* A pressed zone chip keeps the plain chip fill and gets a ring
+           instead: on a blue fill, a blue zone's dot (Zone 2, 7, ...) would
+           look as hollow as a zone that is not drawn yet. */
+        button.zone-btn[data-zone-id].active {
+          background: var(--zm-chip-bg);
+          color: var(--zm-chip-color);
+          border-color: var(--zm-chip-active);
+          box-shadow: inset 0 0 0 1px var(--zm-chip-active);
+        }
+        .container.dark button.zone-btn[data-zone-id].active {
+          background: ${COLOR.ui.darkZoneButtonBg};
+          color: ${COLOR.ui.darkZoneButtonText};
+          border-color: ${COLOR.ui.darkZoneButtonActiveBorder};
+          box-shadow: inset 0 0 0 1px ${COLOR.ui.darkZoneButtonActiveBorder};
+        }
         /* Dimmed, not disabled, while the map is locked: a disabled button
            takes no tap, so a phone user would get no word of why. */
-        button.zone-btn.locked-action { opacity: 0.5; cursor: not-allowed; }
+        button.locked-action { opacity: 0.5; cursor: not-allowed; }
         /* Walk's panel under the map, used on a phone carried around the
            room: Corner here across a row of its own, and every button a
            finger-sized 48 px. Its rows are flex, so [hidden] needs saying. */
@@ -1786,36 +1866,70 @@ export class ZoneMapCard extends HTMLElement {
         .history-status, .history-hint { font-size: 0.85em; opacity: 0.75; }
         .info { margin-top: 12px; font-size: 14px; color: var(--secondary-text-color); }
         .container.dark .info { color: ${COLOR.ui.infoDarkText}; }
-        .container.dark .zone-item { background: ${COLOR.ui.zoneItemDarkBg}; color: ${COLOR.ui.zoneItemDarkText}; }
-        .entity-selection { margin: 4px 0; padding: 0; background: transparent; border-radius: 0; }
-        .entity-row { display: grid; grid-template-columns: auto 1fr 1fr auto; gap: 6px; align-items: center; margin: 6px 0; }
-        .entity-row label { font-weight: 600; opacity: 0.95; }
-        .entity-row select, .entity-row input { width: 100%; padding: 2px 6px; border: 1px solid var(--divider-color); border-radius: 6px; background: var(--card-background-color); color: var(--primary-text-color); font-size: 12px; height: 28px; box-sizing: border-box; }
-        .container.dark .entity-row select, .container.dark .entity-row input { background: ${COLOR.ui.darkSelectBg}; border-color: ${COLOR.ui.darkSelectBorder}; color: ${COLOR.ui.darkSelectText}; }
-        /* A zone row's second line, under its name: the size, then the Type
-           and Hold selects, each kept beside its label when the line wraps. */
-        .entity-row .zone-meta { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; font-size: 12px; }
-        .entity-row .zone-meta label { font-weight: normal; }
-        .entity-row .zone-meta select { width: auto; }
-        .entity-row .zone-meta select:disabled { opacity: 0.6; cursor: not-allowed; }
-        .zone-setting { display: inline-flex; align-items: center; gap: 4px; }
-        .zone-size { opacity: 0.85; }
-        .zone-settings-hint { font-size: 0.85em; opacity: 0.75; margin: 4px 0; }
         .device-title { font-size: 1.2em; font-weight: bold; margin-bottom: 8px; }
-        .entity-controls { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
-        .entity-controls select, .entity-controls input { width: 100%; }
-        .pair-actions { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
         .subtle { opacity: 0.85; font-size: 0.92em; }
+        /* The Zones panel: its heading and Add zone, the chips and the
+           selected zone's editor, open under the map. Flex columns, so
+           [hidden] needs saying. Everything in it is a finger-sized 44 px,
+           and its fields take 16 px text, below which iOS zooms the page in
+           on focus. */
+        .zone-panel { display: flex; flex-direction: column; gap: var(--zm-gap); margin: 12px 0; }
+        .zone-panel[hidden], .zone-panel [hidden] { display: none; }
+        .zone-panel-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--zm-gap); }
+        .zone-panel-title { margin: 0; font-size: 1.05em; font-weight: 600; }
+        .zone-panel button, .zone-panel input, .zone-panel select, button.config-header, .clear-all button { min-height: 44px; box-sizing: border-box; }
+        .zone-panel input, .zone-panel select { font-size: 16px; }
+        .zone-panel button:disabled { opacity: 0.5; cursor: not-allowed; }
+        #zone-buttons { margin: 0; }
+        #zone-buttons:empty { display: none; }
+        /* A chip's dot is its zone's color on the map: hollow and dashed
+           until it is drawn, hatched grey for an ignore zone. A long name
+           ends in an ellipsis rather than widening the card. */
+        button.zone-btn[data-zone-id] { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .zone-dot { display: inline-block; width: 10px; height: 10px; margin-right: 6px; border-radius: 50%; vertical-align: -1px; background: var(--zone-color); box-sizing: border-box; }
+        .zone-dot.undrawn { background: transparent; border: 2px dashed var(--zone-color); }
+        .zone-dot.ignore { background: repeating-linear-gradient(45deg, ${COLOR.canvas.ignoreStrokeLight} 0 2px, transparent 2px 4px); border: 1px solid ${COLOR.canvas.ignoreStrokeLight}; }
+        .container.dark .zone-dot.ignore { background: repeating-linear-gradient(45deg, ${COLOR.canvas.ignoreStrokeDark} 0 2px, transparent 2px 4px); border-color: ${COLOR.canvas.ignoreStrokeDark}; }
+        .zone-empty { display: flex; flex-direction: column; gap: 4px; }
+        .zone-hint { font-size: 0.85em; color: var(--secondary-text-color); }
+        .container.dark .zone-hint { color: ${COLOR.ui.infoDarkText}; }
+        /* The selected zone's editor, edged in the zone's color. */
+        .zone-editor { display: flex; flex-direction: column; gap: var(--zm-gap); padding: 12px; border: 1px solid var(--divider-color); border-left: 4px solid var(--zone-color, var(--primary-color)); border-radius: 8px; min-width: 0; }
+        .container.dark .zone-editor { border-top-color: ${COLOR.ui.darkZoneButtonBorder}; border-right-color: ${COLOR.ui.darkZoneButtonBorder}; border-bottom-color: ${COLOR.ui.darkZoneButtonBorder}; }
+        .zone-editor-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px var(--zm-gap); }
+        .zone-editor-title { font-weight: 600; }
+        .zone-save-status { font-size: 0.85em; color: var(--secondary-text-color); }
+        .container.dark .zone-save-status { color: ${COLOR.ui.infoDarkText}; }
+        .zone-save-status.failed { color: var(--error-color, ${COLOR.canvas.defaultTarget}); }
+        .zone-field { display: flex; flex-direction: column; gap: 4px; }
+        .zone-field label, .zone-setting label { font-weight: 600; }
+        .zone-editor input, .zone-editor select { padding: 8px 10px; border: 1px solid var(--divider-color); border-radius: 6px; background: var(--card-background-color); color: var(--primary-text-color); }
+        .zone-editor input { width: 100%; max-width: 420px; min-width: 0; }
+        .container.dark .zone-editor input, .container.dark .zone-editor select { background: ${COLOR.ui.darkSelectBg}; border-color: ${COLOR.ui.darkSelectBorder}; color: ${COLOR.ui.darkSelectText}; }
+        .zone-editor input:disabled, .zone-editor select:disabled { opacity: 0.6; cursor: not-allowed; }
+        .zone-settings { display: flex; flex-wrap: wrap; align-items: center; gap: var(--zm-gap) 16px; }
+        .zone-setting { display: inline-flex; align-items: center; gap: var(--zm-gap); }
+        .zone-presence-label { font-weight: 600; margin-right: 6px; }
+        /* How to draw the zone: a callout while it has no shape yet. */
+        .zone-draw { display: flex; flex-direction: column; align-items: flex-start; gap: var(--zm-gap); }
+        .zone-draw:not(.callout) #zoneDrawText { font-size: 0.85em; color: var(--secondary-text-color); }
+        .container.dark .zone-draw:not(.callout) #zoneDrawText { color: ${COLOR.ui.infoDarkText}; }
+        .zone-draw.callout { padding: 8px 10px; border-left: 3px solid var(--primary-color); border-radius: 4px; background: var(--secondary-background-color); }
+        .container.dark .zone-draw.callout { background: ${COLOR.ui.zoneItemDarkBg}; border-left-color: ${COLOR.ui.darkPrimaryButton}; }
+        .zone-delete-row { display: flex; justify-content: flex-end; }
+        .zone-delete-confirm, .clear-all-confirm { display: flex; flex-direction: column; gap: var(--zm-gap); }
+        .clear-all { display: flex; flex-direction: column; align-items: flex-start; gap: var(--zm-gap); margin: 8px 0; }
+        .clear-all[hidden], .clear-all [hidden] { display: none; }
+        /* Map settings: a real button, so it takes Tab, Enter and Space, and
+           a content that is hidden when shut, so nothing in it is tabbed to
+           or read out. */
         .config { margin-top: 0; }
-        .config-header { display: flex; align-items: center; justify-content: space-between; cursor: pointer; padding: 4px 0; background: transparent; border-radius: 0; }
+        button.config-header { display: flex; width: 100%; align-items: center; justify-content: space-between; padding: 8px 0; background: transparent; color: inherit; border-radius: 0; font: inherit; text-align: left; }
+        .container.dark button.config-header { background: transparent; }
         .config-title { font-weight: 600; }
-        .config-content { max-height: 0; overflow: hidden; transition: max-height 200ms ease, padding 200ms ease; padding: 0; }
-        /* Only a cap for the open transition. Zone rows take two lines, so
-           1200 px clipped the list at about a dozen zones. */
-        .config-content.open { max-height: 5000px; padding: 4px 0; }
-        .subsection-header { display: flex; align-items: center; justify-content: space-between; cursor: pointer; padding: 4px 0; background: transparent; border-radius: 0; margin-top: 4px; }
-        .subsection-title { font-weight: 600; }
-        @media (max-width: 520px) { .entity-row { grid-template-columns: 1fr; } }
+        .config-content { padding: 4px 0; }
+        .config-content[hidden] { display: none; }
+        .container :focus-visible { outline: 2px solid var(--primary-color); outline-offset: 2px; }
       </style>
       <div class="container ${this.darkMode ? 'dark' : ''}">
         <div class="device-title" id="deviceTitle"></div>
@@ -1844,7 +1958,7 @@ export class ZoneMapCard extends HTMLElement {
               <button id="btnUnitFt" data-unit="ft" aria-pressed="false">ft</button>
             </div>
             <button id="btnUndo" class="undo-toggle" title="Undo last zone change" disabled>↶</button>
-            <button id="btnLock" class="lock-toggle" title="Lock drawing and cone rotation">🔓</button>
+            <button id="btnLock" class="lock-toggle" title="${LOCK_TITLE}">🔓</button>
           </div>
           <!-- _renderZoomControls sets the readout, what is disabled and what Fit says. -->
           <div class="overlay-controls overlay-controls-zoom" id="zoomControls" role="group" aria-label="${ZOOM_GROUP_LABEL}">
@@ -1857,14 +1971,13 @@ export class ZoneMapCard extends HTMLElement {
         ${this._walkPanelTemplate()}
         ${this._viewToolsTemplate()}
         ${this._historyPanelTemplate()}
-        <div class="controls" id="zone-buttons">
-        </div>
+        ${this._zonePanelTemplate()}
         <div class="config">
-          <div id="btnConfigToggle" class="config-header">
-            <span class="config-title">Configure</span>
-            <span>${this.showConfig ? '▾' : '▸'}</span>
-          </div>
-          <div id="configContent" class="config-content ${this.showConfig ? 'open' : ''}">
+          <button type="button" id="btnConfigToggle" class="config-header" aria-expanded="${this.showConfig ? 'true' : 'false'}" aria-controls="configContent">
+            <span class="config-title">${MAP_SETTINGS_LABEL}</span>
+            <span class="config-caret" aria-hidden="true">${this.showConfig ? '▾' : '▸'}</span>
+          </button>
+          <div id="configContent" class="config-content" ${this.showConfig ? '' : 'hidden'}>
             <div class="controls" id="cone-controls">
               <label for="coneAngleSlider">Cone rotation: </label>
               <input type="range" id="coneAngleSlider" min="-180" max="180" step="1" value="${this.coneAngleDeg}" />
@@ -1900,17 +2013,15 @@ export class ZoneMapCard extends HTMLElement {
                  integration, and the DIY override is the update_zone
                  service, not a second pair picker in here. -->
             <div class="info subtle" id="entityStatus"></div>
-            <div class="subsection-header" id="toggleZones">
-              <span class="subsection-title">Zones</span>
-              <span id="caretZones">${this.showZones ? '▾' : '▸'}</span>
-            </div>
-            <div class="config-content ${this.showZones ? 'open' : ''}" id="sectionZones">
-              <div class="entity-selection">
-                <div class="entity-controls">
-                  <div class="pair-actions">
-                    <button id="btnAddZone" title="Add new zone">Add Zone</button>
-                  </div>
-                  <div id="zoneManager"></div>
+            <!-- Administrators only, with a shape to clear: _renderClearAll
+                 shows it, and the question it asks first. -->
+            <div class="clear-all" id="clearAll" hidden>
+              <button id="clearBtn" class="zone-btn clear-all-btn">${CLEAR_ALL_LABEL}</button>
+              <div class="clear-all-confirm" id="clearAllConfirm" hidden>
+                <div>${this.showUndo ? CLEAR_ALL_CONFIRM : CLEAR_ALL_CONFIRM_NO_UNDO}</div>
+                <div class="confirm-row">
+                  <button id="btnClearAllYes">${CLEAR_ALL_YES}</button>
+                  <button id="btnClearAllNo" class="zone-btn">${CLEAR_ALL_NO}</button>
                 </div>
               </div>
             </div>
@@ -1926,8 +2037,8 @@ export class ZoneMapCard extends HTMLElement {
 
   /**
    * The map alone (view_only): the title, the version notice, the canvas
-   * and the offline note, with no drawing tools, chips, Configure or zone
-   * list. render() attaches no listeners to it, and the canvas leaves a
+   * and the offline note, with no drawing tools, chips, Zones panel or Map
+   * settings. render() attaches no listeners to it, and the canvas leaves a
    * vertical swipe to the browser, so a phone scrolls past the card. The rules are _template's for
    * the same elements, but for the canvas's cursor and touch-action.
    */
@@ -1973,6 +2084,34 @@ export class ZoneMapCard extends HTMLElement {
           <button id="btnCoverageClear" class="zone-btn" hidden>${COVERAGE_CLEAR}</button>
           <button id="btnHistory" class="zone-btn" aria-expanded="false" aria-controls="historyPanel" hidden>${HISTORY_LABEL}</button>
         </div>
+    `;
+  }
+
+  /**
+   * The Zones panel, under the map's own chips: the Zones heading and Add zone,
+   * the empty state or the note that the map is full, the zone chips, and
+   * the editor for the zone they select (_renderZoneManager). Everything a
+   * zone has, its name, Type, Hold, shape and Delete, is one tap on its chip
+   * or on the zone itself away, with nothing to expand. Built from copy.ts
+   * constants only; _renderZonePanel sets what depends on the zones and the
+   * viewer.
+   */
+  _zonePanelTemplate() {
+    return `
+        <section class="zone-panel" id="zonePanel" aria-labelledby="zonePanelTitle">
+          <div class="zone-panel-head">
+            <h3 class="zone-panel-title" id="zonePanelTitle">${ZONES_TITLE}</h3>
+            <!-- Administrators only: _renderZonePanel shows it. -->
+            <button id="btnAddZone" type="button" hidden>${ADD_ZONE_LABEL}</button>
+          </div>
+          <div class="zone-empty" id="zoneEmpty" hidden>
+            <div id="zoneEmptyText"></div>
+            <div class="zone-hint" id="zoneEmptyRotation" hidden>${ZONES_EMPTY_ROTATION}</div>
+          </div>
+          <div class="zone-hint" id="zonesFull" hidden></div>
+          <div class="controls" id="zone-buttons" role="group" aria-label="${ZONES_TITLE}"></div>
+          <div id="zoneManager"></div>
+        </section>
     `;
   }
 
@@ -2059,6 +2198,7 @@ export class ZoneMapCard extends HTMLElement {
     // below find no host for what its template leaves out and return.
     if (!this._viewOnly) this.attachEventListeners();
     this._renderEntityStatus();
+    this._renderZonePanel();
     this._renderZoneManager();
     this._renderUnitSwitch();
     this._renderInfo();
@@ -2077,38 +2217,50 @@ export class ZoneMapCard extends HTMLElement {
     this._kickTrailTimer();
   }
 
+  /**
+   * One chip per zone, in id order, each with its zone's color dot, and the
+   * selected one pressed. A chip already there is kept and relabeled, not
+   * made again: every payload comes through here, the echo of the card's
+   * own name save among them, and a chip swapped out between the press and
+   * the release of a click never gets the click. A press selects through
+   * the listener on the row (_attachZoneListEvents). A chip's double-click
+   * no longer clears its zone: a stray double tap on a phone made it, and
+   * a drawn shape is replaced by drawing it again.
+   */
   renderZoneButtons() {
     const container = this.shadowRoot.getElementById('zone-buttons');
     if (!container) return;
-    container.innerHTML = '';
     if (!this.zoneConfig || this.zoneConfig.length === 0) {
       this._setSelectedZone(null);
     }
-    this.zoneConfig.forEach((zone) => {
-      const btn = document.createElement('button');
-      btn.className = 'zone-btn';
-      btn.dataset.zoneId = zone.id;
-      btn.textContent = this._zoneLabel(zone.id);
-      btn.addEventListener('click', () => this._setSelectedZone(zone.id));
-      btn.addEventListener('dblclick', (e) => {
-        e.preventDefault();
-        // One quick gesture, which a stray double tap on a phone makes too,
-        // so the lock guards it like drawing.
-        if (this.isLocked) {
-          this._remindLocked(CLEAR_LOCKED_TOAST);
-          return;
-        }
-        this._clearZone(zone.id, true);
-      });
-      container.appendChild(btn);
+    const existing = new Map();
+    container.querySelectorAll('.zone-btn[data-zone-id]').forEach((btn) => {
+      existing.set(btn.dataset.zoneId, btn);
     });
-
-    const clearBtn = document.createElement('button');
-    clearBtn.id = 'clearBtn';
-    clearBtn.className = 'zone-btn clear-all';
-    clearBtn.textContent = 'Clear All Zones';
-    this._renderClearAllLock(clearBtn);
-    container.appendChild(clearBtn);
+    const chips = (this.zoneConfig || []).map((zone) => {
+      const key = String(zone.id);
+      let btn = existing.get(key);
+      if (!btn) {
+        btn = document.createElement('button');
+        btn.className = 'zone-btn';
+        btn.type = 'button';
+        btn.dataset.zoneId = key;
+        btn.setAttribute('aria-pressed', 'false');
+        btn.setAttribute('aria-controls', 'zoneManager');
+      }
+      existing.delete(key);
+      this._renderZoneChip(btn, zone.id);
+      return btn;
+    });
+    // In id order, moving only what is out of place, so a chip being
+    // pressed stays in the document.
+    chips.forEach((btn, i) => {
+      if (container.children[i] !== btn) container.insertBefore(btn, container.children[i] || null);
+    });
+    existing.forEach((btn) => btn.remove());
+    Array.from(container.children)
+      .filter((child) => !chips.includes(child))
+      .forEach((child) => child.remove());
 
     const firstZone = container.querySelector('.zone-btn[data-zone-id]');
     if (this.selectedZone !== null && this.selectedZone !== undefined) {
@@ -2123,6 +2275,84 @@ export class ZoneMapCard extends HTMLElement {
     if (firstZone) {
       this._setSelectedZone(Number(firstZone.dataset.zoneId));
     }
+  }
+
+  /** Chip `btn` for zone `zoneId`: its dot and its name, so the chip's text
+   *  is the name alone. */
+  _renderZoneChip(btn, zoneId) {
+    const dot = btn.querySelector('.zone-dot') || document.createElement('span');
+    dot.className = 'zone-dot';
+    dot.setAttribute('aria-hidden', 'true');
+    // An Ignore whose save is on its way shows at once, as in the editor.
+    if (this._zoneSettings(zoneId).type === 'ignore') dot.classList.add('ignore');
+    else if (!this._getZone(zoneId)) dot.classList.add('undrawn');
+    dot.style.setProperty('--zone-color', this._zoneColor(zoneId).stroke);
+    btn.replaceChildren(dot, document.createTextNode(this._zoneLabel(zoneId)));
+  }
+
+  /** Bring every chip's name and dot up to date in place, after a rename or
+   *  a shape change, without making any chip again. */
+  _renderZoneChips() {
+    this.shadowRoot?.querySelectorAll('#zone-buttons .zone-btn[data-zone-id]').forEach((btn) => {
+      this._renderZoneChip(btn, Number(btn.dataset.zoneId));
+    });
+  }
+
+  /** Zone `zoneId`'s colors on the map, by id, as drawZones picks them. */
+  _zoneColor(zoneId) {
+    const colors = COLOR.canvas.zonePalette;
+    return colors[(Number(zoneId) - 1) % colors.length] || colors[0];
+  }
+
+  /**
+   * What the Zones panel shows around the chips: Add zone for an
+   * administrator, disabled once every id up to MAX_ZONE_ID is taken, with
+   * the note why; the empty state while there are no zones; and Clear all
+   * shapes under Map settings (_renderClearAll).
+   */
+  _renderZonePanel() {
+    const root = this.shadowRoot;
+    if (!root?.getElementById('zonePanel')) return;
+    const admin = this._isAdmin();
+    const empty = !(this.zoneConfig || []).length;
+    const full = this._nextZoneId() > MAX_ZONE_ID;
+    const add = root.getElementById('btnAddZone');
+    if (add) {
+      add.hidden = !admin;
+      add.disabled = full;
+    }
+    const fullNote = root.getElementById('zonesFull');
+    if (fullNote) {
+      fullNote.hidden = !(admin && full);
+      fullNote.textContent = zonesFullNote(MAX_ZONE_ID);
+    }
+    const emptyBox = root.getElementById('zoneEmpty');
+    if (emptyBox) emptyBox.hidden = !empty;
+    const emptyText = root.getElementById('zoneEmptyText');
+    if (emptyText) emptyText.textContent = admin ? ZONES_EMPTY : ZONES_EMPTY_VIEWER;
+    const rotation = root.getElementById('zoneEmptyRotation');
+    if (rotation) rotation.hidden = !admin;
+    this._renderClearAll();
+  }
+
+  /**
+   * Clear all shapes under Map settings: an administrator's, shown while a
+   * zone has a shape to clear, dimmed while the map is locked, and asking
+   * first while _clearAllConfirm.
+   */
+  _renderClearAll() {
+    const root = this.shadowRoot;
+    const box = root?.getElementById('clearAll');
+    if (!box) return;
+    const shown = this._isAdmin() && (this.zones || []).length > 0;
+    box.hidden = !shown;
+    if (!shown) this._clearAllConfirm = false;
+    if (this.isLocked) this._clearAllConfirm = false;
+    const clearBtn = root.getElementById('clearBtn');
+    this._renderClearAllLock(clearBtn);
+    if (clearBtn) clearBtn.hidden = this._clearAllConfirm;
+    const confirm = root.getElementById('clearAllConfirm');
+    if (confirm) confirm.hidden = !this._clearAllConfirm;
   }
 
   /** A target dot's radius in backing px: it follows the card's width,
@@ -2362,7 +2592,7 @@ export class ZoneMapCard extends HTMLElement {
     this._renderHistoryChip();
   }
 
-  /** Configure's Movement history option: shown to administrators only,
+  /** Map settings' Movement history option: shown to administrators only,
    *  ticked as the store holds it, and asking while _movementConfirm. */
   _renderMovementOption() {
     const option = this.shadowRoot?.getElementById('movementOption');
@@ -3161,14 +3391,14 @@ export class ZoneMapCard extends HTMLElement {
     });
   }
 
-  /** The help line under the map, in the map's unit. */
+  /** The grid line under Map settings, in the map's unit. */
   _renderInfo() {
     const host = this.shadowRoot?.getElementById('gridInfo');
     if (!host) return;
     const value = (mm) => this._formatGridValue(mm);
+    // How to draw is said in the zone editor, for the mode in use.
     host.textContent =
-      'Click & drag for Rectangle/Ellipse. Polygon: click points, double-click to finish' +
-      ` (max ${this.polyMaxPoints} pts). Grid units: ${this._unitLabel(this._displayUnit())}` +
+      `Grid units: ${this._unitLabel(this._displayUnit())}` +
       ` (X: ${value(this.xMin)}..${value(this.xMax)}, Y: ${value(this.yMin)}..${value(this.yMax)}).` +
       ` Input units (sensors without a length unit): ${this._unitLabel(this.inputUnits)}.` +
       ` Radar range: ${this._rangeText()}`;
@@ -3219,24 +3449,53 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   _attachZoneListEvents() {
-    const zoneButtons = this.shadowRoot.getElementById('zone-buttons');
-    if (!zoneButtons) return;
-    zoneButtons.addEventListener('click', (event) => {
-      const target = event.target;
-      if (!target || target.id !== 'clearBtn') {
-        return;
-      }
-      // One press wipes every zone, so the lock guards it like drawing. The
-      // button stays enabled (see _renderClearAllLock) so the press can say why.
+    const root = this.shadowRoot;
+    const zoneButtons = root.getElementById('zone-buttons');
+    if (zoneButtons) {
+      // On the row, so a chip made by a later payload selects too.
+      zoneButtons.addEventListener('click', (event) => {
+        const chip = event.target?.closest?.('.zone-btn[data-zone-id]');
+        if (chip) this._setSelectedZone(Number(chip.dataset.zoneId));
+      });
+    }
+    const add = root.getElementById('btnAddZone');
+    if (add) add.addEventListener('click', () => this._handleAddZone());
+    const clearBtn = root.getElementById('clearBtn');
+    if (clearBtn) {
+      clearBtn.addEventListener('click', () => {
+        // One press wipes every zone's shape, so the lock guards it like
+        // drawing. The button stays enabled (see _renderClearAllLock) so the
+        // press can say why. Unlocked, it asks first.
+        if (this.isLocked) {
+          this._remindLocked(CLEAR_LOCKED_TOAST);
+          return;
+        }
+        this._clearAllConfirm = true;
+        this._renderClearAll();
+        root.getElementById('btnClearAllNo')?.focus();
+      });
+    }
+    const closeClearAll = () => {
+      this._clearAllConfirm = false;
+      this._renderClearAll();
+      root.getElementById('clearBtn')?.focus();
+    };
+    root.getElementById('btnClearAllYes')?.addEventListener('click', () => {
+      this._clearAllConfirm = false;
+      this._renderClearAll();
       if (this.isLocked) {
         this._remindLocked(CLEAR_LOCKED_TOAST);
         return;
       }
       this._clearAllZones();
     });
+    root.getElementById('btnClearAllNo')?.addEventListener('click', closeClearAll);
+    root.getElementById('clearAllConfirm')?.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') closeClearAll();
+    });
   }
 
-  /** Dim Clear All Zones while the map is locked, and tell assistive tech it
+  /** Dim Clear all shapes while the map is locked, and tell assistive tech it
    *  will not act. It stays enabled: a disabled button takes no tap and shows
    *  no tooltip on touch, so a phone user would see a dim chip that does
    *  nothing and not know why. */
@@ -3506,6 +3765,26 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   /**
+   * The Locked button, and Unlock in the zone editor: lock the map or
+   * unlock it, remember that for the radar in this browser, and say so.
+   * Locking ends a shape being drawn and a walk, which would save a zone.
+   */
+  _toggleLock() {
+    this.isLocked = !this.isLocked;
+    writeStoredLock(this.deviceId, this.isLocked);
+    this._updateLockVisual?.();
+    this._lastLockWarningTs = 0;
+    if (this.isLocked) {
+      if (this.isDrawing) this.cancelDrawing();
+      // Walk saves a zone too, so the lock ends it, corners and all.
+      this._exitWalk();
+      this._notify(LOCK_ON_TOAST);
+    } else {
+      this._notify(LOCK_OFF_TOAST);
+    }
+  }
+
+  /**
    * Something the lock guards was tried: ring the Locked button, so the way
    * out is in view, and say `message`. The draw, clear and cone reminders
    * share one throttle, so a burst of tries on a locked map toasts once per
@@ -3579,9 +3858,7 @@ export class ZoneMapCard extends HTMLElement {
         btnLock.innerHTML = this.isLocked
           ? '<span>Locked</span><span class="icon">🔒</span>'
           : '<span>Unlocked</span><span class="icon">🔓</span>';
-        btnLock.title = this.isLocked
-          ? 'Unlock drawing and cone rotation'
-          : 'Lock drawing and cone rotation';
+        btnLock.title = this.isLocked ? UNLOCK_TITLE : LOCK_TITLE;
         if (this.canvas) {
           this.canvas.style.cursor = this.isLocked ? 'not-allowed' : 'crosshair';
         }
@@ -3591,23 +3868,14 @@ export class ZoneMapCard extends HTMLElement {
         if (coneControls) coneControls.classList.toggle('locked', this.isLocked);
         const hint = this.shadowRoot.getElementById('coneLockHint');
         if (hint) hint.hidden = !this.isLocked;
-        this._renderClearAllLock(this.shadowRoot.getElementById('clearBtn'));
+        this._renderClearAll();
         this._updateCanvasTouchMode();
+        // The editor's drawing hint says whether the map can be drawn on,
+        // and the selected zone stands out on the map only while it can.
+        this._renderZoneDraw();
+        this.drawGrid();
       };
-      btnLock.addEventListener('click', () => {
-        this.isLocked = !this.isLocked;
-        writeStoredLock(this.deviceId, this.isLocked);
-        updateLockVisual();
-        this._lastLockWarningTs = 0;
-        if (this.isLocked) {
-          if (this.isDrawing) this.cancelDrawing();
-          // Walk saves a zone too, so the lock ends it, corners and all.
-          this._exitWalk();
-          this._notify(LOCK_ON_TOAST);
-        } else {
-          this._notify(LOCK_OFF_TOAST);
-        }
-      });
+      btnLock.addEventListener('click', () => this._toggleLock());
       this._updateLockVisual = updateLockVisual;
       updateLockVisual();
     }
@@ -3631,25 +3899,10 @@ export class ZoneMapCard extends HTMLElement {
     if (btnConfigToggle && configContent) {
       btnConfigToggle.addEventListener('click', () => {
         this.showConfig = !this.showConfig;
-        configContent.classList.toggle('open', this.showConfig);
-        const caret = btnConfigToggle.querySelector('span:last-child');
+        configContent.hidden = !this.showConfig;
+        btnConfigToggle.setAttribute('aria-expanded', this.showConfig ? 'true' : 'false');
+        const caret = btnConfigToggle.querySelector('.config-caret');
         if (caret) caret.textContent = this.showConfig ? '▾' : '▸';
-      });
-    }
-
-    const btnAddZone = this.shadowRoot.getElementById('btnAddZone');
-    if (btnAddZone) {
-      btnAddZone.addEventListener('click', () => this._handleAddZone());
-    }
-
-    const toggleZones = this.shadowRoot.getElementById('toggleZones');
-    const caretZones = this.shadowRoot.getElementById('caretZones');
-    const sectionZones = this.shadowRoot.getElementById('sectionZones');
-    if (toggleZones && caretZones && sectionZones) {
-      toggleZones.addEventListener('click', () => {
-        this.showZones = !this.showZones;
-        sectionZones.classList.toggle('open', this.showZones);
-        caretZones.textContent = this.showZones ? '▾' : '▸';
       });
     }
   }
@@ -4463,6 +4716,8 @@ export class ZoneMapCard extends HTMLElement {
     this._renderWalkPanel();
     this._renderWalkChip();
     this._renderHistoryChip();
+    // The editor says how to draw in this mode.
+    this._renderZoneDraw();
     this._invalidateGridCache();
     this._refitAndDraw();
   }
@@ -4483,20 +4738,32 @@ export class ZoneMapCard extends HTMLElement {
     });
   }
 
+  /**
+   * Select zone `zoneId` (null for none): its chip pressed, and the editor
+   * under the chips made for it. Selecting another zone answers the old
+   * one's Delete question with no, and its save status goes with it. The
+   * name being typed is saved before the editor changes zones: a press on a
+   * chip takes the focus from the field first, but a pick on the map (a
+   * press on a locked map, a tap on a phone) does not.
+   */
   _setSelectedZone(zoneId) {
-    if (zoneId === null || zoneId === undefined) {
-      this.selectedZone = null;
-      this._updateCanvasTouchMode();
-      return;
-    }
-    this.selectedZone = Number(zoneId);
+    const next = zoneId === null || zoneId === undefined ? null : Number(zoneId);
+    const changed = next !== (this.selectedZone ?? null);
+    this.selectedZone = next;
     this._updateCanvasTouchMode();
-    const buttons = this.shadowRoot?.querySelectorAll('.zone-btn[data-zone-id]');
-    if (!buttons) return;
-    buttons.forEach((btn) => {
-      const targetId = Number(btn.dataset.zoneId);
-      btn.classList.toggle('active', targetId === this.selectedZone);
+    this.shadowRoot?.querySelectorAll('#zone-buttons .zone-btn[data-zone-id]').forEach((btn) => {
+      const pressed = Number(btn.dataset.zoneId) === this.selectedZone;
+      btn.classList.toggle('active', pressed);
+      btn.setAttribute('aria-pressed', pressed ? 'true' : 'false');
     });
+    if (!changed) return;
+    const field = this.shadowRoot?.getElementById('zoneName');
+    if (field && field.value !== field.dataset.storedName) this._commitZoneName(field);
+    this._deleteConfirmZone = null;
+    this._zoneSaveStatus = null;
+    this._renderZoneManager();
+    // The selected zone stands out on the map (see drawZones).
+    this.drawGrid();
   }
 
   /**
@@ -4536,6 +4803,7 @@ export class ZoneMapCard extends HTMLElement {
     this._polyPoints = [];
     this._cursorPoint = null;
     this.startPoint = null;
+    this._pressPx = null;
     this._cursorFree = false;
     this._lastPolyTap = 0;
     this._activeInput = null;
@@ -4581,21 +4849,6 @@ export class ZoneMapCard extends HTMLElement {
     }
   }
 
-  _clearZone(zoneId, notifyBackend = false) {
-    if (notifyBackend) {
-      this._setUndoSnapshot(this._snapshotZones([zoneId]));
-    }
-    this._removeZone(zoneId);
-    this._renderZoneSizes();
-    if (notifyBackend) {
-      this.updateHomeAssistantShape(zoneId, 'none', null, `${this._zoneLabel(zoneId)} cleared`);
-    }
-    if (Number(this.selectedZone) === Number(zoneId)) {
-      this._resetDrawingState();
-    }
-    this.drawGrid();
-  }
-
   _clearAllZones() {
     // TODO(REVIEW_REPORT.md X43): this and undo write shape none for YAML-seeded ids the store
     // never held. Consider clearing only ids in this.zones or the payload; no delete from undo.
@@ -4610,7 +4863,7 @@ export class ZoneMapCard extends HTMLElement {
     // partial failure has already said which one refused.
     Promise.all(zoneIds.map((id) => this.updateHomeAssistantShape(id, 'none', null))).then(
       (saved) => {
-        if (saved.every(Boolean)) this._notify('All zones cleared');
+        if (saved.every(Boolean)) this._notify(ALL_CLEARED_TOAST);
       },
     );
   }
@@ -4681,6 +4934,14 @@ export class ZoneMapCard extends HTMLElement {
     this._activeTouchId = null;
     if (!endPoint) {
       this.cancelDrawing();
+      return;
+    }
+    // A tap draws nothing (an ellipse used to save at 1 mm) and picks the
+    // zone under it, so a zone is one tap away on the map as on its chip.
+    const press = this._pressPx;
+    if (press && this._cssDistance(press, endPoint) <= TAP_SLOP_CSS_PX) {
+      this.cancelDrawing();
+      this._pickZoneAt(press);
       return;
     }
     // The release places the last corner, freely if Alt or Option is held.
@@ -4822,6 +5083,42 @@ export class ZoneMapCard extends HTMLElement {
     const dx = (p.x - this.valueToPixels(last.x, 'x')) * cssPerPxX;
     const dy = (p.y - this.valueToPixels(last.y, 'y')) * cssPerPxY;
     return Math.hypot(dx, dy) <= POLY_DOUBLE_TAP_SLOP_PX;
+  }
+
+  /** How far apart canvas points `a` and `b` (backing px) are on screen, in
+   *  CSS px. */
+  _cssDistance(a, b) {
+    const rect = this.canvas?.getBoundingClientRect?.();
+    const cssPerPxX = rect && this.canvas.width ? rect.width / this.canvas.width : 1;
+    const cssPerPxY = rect && this.canvas.height ? rect.height / this.canvas.height : 1;
+    return Math.hypot((a.x - b.x) * cssPerPxX, (a.y - b.y) * cssPerPxY);
+  }
+
+  /**
+   * The zone drawn under canvas point `p` (backing px), or null. Where zones
+   * overlap the smallest wins, by the box around it, so a zone drawn inside
+   * a bigger one can still be picked; on a tie the lower id.
+   */
+  _zoneAt(p) {
+    const at = this._mmAt(p);
+    let best = null;
+    (this.zones || []).forEach((zone) => {
+      if (!zone?.shape || !zone.data || !pointInZone(zone.shape, zone.data, at.x, at.y)) return;
+      const size = zoneSize(zone.shape, zone.data);
+      const area = size ? size.width * size.depth : Infinity;
+      const id = Number(zone.id);
+      if (!best || area < best.area || (area === best.area && id < best.id)) best = { id, area };
+    });
+    return best ? best.id : null;
+  }
+
+  /** A tap on the map at canvas point `p`: select the zone there, if any.
+   *  Whether it was picked or not, nothing is saved. */
+  _pickZoneAt(p) {
+    const hit = this._zoneAt(p);
+    if (hit === null) return false;
+    this._setSelectedZone(hit);
+    return true;
   }
 
   /** The event's position in canvas backing px, or null when there is no
@@ -4979,167 +5276,465 @@ export class ZoneMapCard extends HTMLElement {
     }
   }
 
+  /**
+   * The selected zone's editor, under the chips: its heading and save
+   * status, how to draw it, its name, size, Type and Hold with what they do,
+   * its presence sensor now, and Delete zone, which asks first. Made again
+   * only for another zone or another viewer. Everything else (a payload, the
+   * echo of its own save, a unit switch, a lock) is laid over the editor
+   * that is there (_syncZoneEditor), so a field or a select in use is never
+   * swapped out from under the finger, and what is being typed, and where
+   * the caret is, stay as they are.
+   */
   _renderZoneManager() {
     const host = this.shadowRoot?.getElementById('zoneManager');
     if (!host) return;
-    // Every payload rebuilds these rows, and the card's own Add Zone and
-    // rotation writes echo back as payloads, as does any other client's save.
-    // What the user is typing, and where the caret is, has to outlive that.
-    const drafts = this._captureZoneNameDrafts(host);
-    host.innerHTML = '';
-    const zones = (this.zoneConfig || []).slice().sort((a, b) => Number(a.id) - Number(b.id));
-    const admin = this._isAdmin();
-    if (zones.length) {
-      // What the two selects on each row do, said once above the rows. A
-      // disabled select's title never reaches touch or keyboard users, so a
-      // viewer is told in plain text why they cannot change them.
-      const hint = document.createElement('div');
-      hint.className = 'zone-settings-hint';
-      hint.textContent = ZONE_SETTINGS_HINT;
-      host.appendChild(hint);
-      if (!admin) {
-        const note = document.createElement('div');
-        note.className = 'zone-settings-hint zone-settings-note';
-        note.textContent = ADMIN_ONLY_NOTE;
-        host.appendChild(note);
-      }
+    const zoneId = this.selectedZone;
+    const listed =
+      zoneId !== null &&
+      zoneId !== undefined &&
+      (this.zoneConfig || []).some((zone) => Number(zone.id) === Number(zoneId));
+    if (!listed) {
+      this._swapZoneEditor(host, null);
+      return;
     }
-    zones.forEach((z) => {
-      const row = document.createElement('div');
-      row.className = 'entity-row';
-      const label = document.createElement('label');
-      label.textContent = `Zone ${z.id}`;
-      const input = document.createElement('input');
-      input.type = 'text';
-      const storedName = z.name || `Zone ${z.id}`;
-      input.value = storedName;
-      input.placeholder = `Zone ${z.id}`;
-      // What the row was built with, so the next rebuild can tell an edit.
-      input.dataset.zoneId = String(z.id);
-      input.dataset.storedName = storedName;
-      const saveBtn = document.createElement('button');
-      saveBtn.textContent = 'Save';
-      const delBtn = document.createElement('button');
-      delBtn.textContent = 'Delete';
+    const admin = this._isAdmin();
+    let editor = host.querySelector('.zone-editor');
+    if (
+      !editor ||
+      editor.dataset.editorZone !== String(Number(zoneId)) ||
+      editor.dataset.admin !== String(admin)
+    ) {
+      editor = this._buildZoneEditor(Number(zoneId), admin);
+      this._swapZoneEditor(host, editor);
+    }
+    this._syncZoneEditor(editor);
+  }
 
-      saveBtn.addEventListener('click', () => {
-        const newName = input.value?.trim() || `Zone ${z.id}`;
-        // By id, at click time: _applyZones replaces every zoneConfig entry on
-        // each payload, so the `z` this row was built from may be a stale copy.
-        const current = (this.zoneConfig || []).find((zz) => String(zz.id) === String(z.id));
-        if (current) current.name = newName;
-        // Persist the friendly name to backend. A stored zone keeps its
-        // shape and data; one only the YAML names is created without a shape.
-        if (this._hass) {
-          const zoneId = Number(z.id);
-          if (!Number.isFinite(zoneId) || zoneId <= 0) {
-            this._notify('Unable to save name: invalid zone id');
-            return;
-          }
-          const rename = { device_id: this.deviceId, zone_id: zoneId, name: newName };
-          const payload = this._zoneIsUnsaved(zoneId)
-            ? { ...rename, shape: 'none', data: null }
-            : rename;
-          this._saveZoneUpdate(payload, `${this._zoneLabel(z.id)} saved`);
-        }
-        this.renderZoneButtons();
-        this.drawGrid();
-      });
-
-      delBtn.addEventListener('click', () => {
-        const label = this._zoneLabel(z.id);
-        // Delete the zone and remove its entities
-        if (this._hass) {
-          const zoneId = Number(z.id);
-          if (!Number.isFinite(zoneId) || zoneId <= 0) {
-            this._notify('Unable to delete: invalid zone id');
-            return;
-          }
-          this._saveZoneUpdate(
-            { device_id: this.deviceId, zone_id: zoneId, delete: true },
-            `${label} deleted`,
-          );
-        }
-        // Remove from UI state
-        this.zoneConfig = (this.zoneConfig || []).filter((zz) => String(zz.id) !== String(z.id));
-        this.zones = (this.zones || []).filter((zz) => String(zz.id) !== String(z.id));
-        if (String(this.selectedZone) === String(z.id)) this.selectedZone = null;
-        // Undo writes every snapshot entry back, and the backend stores any
-        // zone id it is given, so an entry for this zone would re-create it and
-        // its entities (or overwrite a zone added later under the freed id).
-        // Delete itself is not undoable; the other entries still are.
-        const removedId = Number(z.id);
-        this._setUndoSnapshot((this._undoSnapshot || []).filter((s) => s.zoneId !== removedId));
-        this.renderZoneButtons();
-        this._renderZoneManager();
-        this.drawGrid();
-      });
-
-      // The first line stays label, name, Save and Delete; the second spans
-      // the row under them.
-      row.appendChild(label);
-      row.appendChild(input);
-      row.appendChild(saveBtn);
-      row.appendChild(delBtn);
-      row.appendChild(this._zoneMetaLine(z.id, admin));
-      host.appendChild(row);
-    });
-    this._restoreZoneNameDrafts(host, drafts);
+  /** Put `editor` (or nothing) in `host`. The field losing focus on the way
+   *  out saves nothing (see _attachZoneNameField). */
+  _swapZoneEditor(host, editor) {
+    this._rebuildingZoneManager = true;
+    try {
+      host.replaceChildren(...(editor ? [editor] : []));
+    } finally {
+      this._rebuildingZoneManager = false;
+    }
   }
 
   /**
-   * A zone row's second line: the zone's size (what _renderZoneSizes keeps
-   * current), then its Type and its Hold. Only an administrator can save
-   * either, and an ignore zone never holds, so its Hold is disabled too.
-   * The selects carry data-zone, never data-zone-id, which marks the name
-   * inputs whose drafts a rebuild keeps.
-   *
-   * A select shows its newest choice while that choice's save is on its
-   * way, not what the store holds: the echo of an earlier save rebuilds the
-   * rows, and the next arrow key would step from the older value.
+   * Make the editor for zone `zoneId`, as a viewer who is an administrator
+   * (`admin`) or not. Only an administrator can save, so anyone else gets
+   * the name, Type and Hold disabled with a note that says why, and no
+   * Delete zone. The selects carry data-zone, never data-zone-id, which
+   * marks the name field only. _syncZoneEditor fills in the values.
    */
-  _zoneMetaLine(zoneId, admin) {
+  _buildZoneEditor(zoneId, admin) {
+    const make = (tag, className = '', id = '') => {
+      const element = document.createElement(tag);
+      if (className) element.className = className;
+      if (id) element.id = id;
+      return element;
+    };
+    const editor = make('div', 'zone-editor');
+    editor.dataset.editorZone = String(zoneId);
+    editor.dataset.admin = String(admin);
+    editor.setAttribute('role', 'group');
+    editor.setAttribute('aria-labelledby', 'zoneEditorTitle');
+    editor.style.setProperty('--zone-color', this._zoneColor(zoneId).stroke);
+
+    const head = make('div', 'zone-editor-head');
+    const title = make('span', 'zone-editor-title', 'zoneEditorTitle');
+    title.textContent = `Zone ${zoneId}`;
+    const status = make('span', 'zone-save-status', 'zoneSaveStatus');
+    status.setAttribute('role', 'status');
+    head.append(title, status);
+
+    // How to draw it; _renderZoneDraw words it and puts it in its place.
+    const draw = make('div', 'zone-draw', 'zoneDraw');
+    const drawText = make('div', '', 'zoneDrawText');
+    drawText.setAttribute('aria-live', 'polite');
+    const unlock = make('button', 'zone-btn', 'btnZoneUnlock');
+    unlock.type = 'button';
+    unlock.textContent = UNLOCK_LABEL;
+    unlock.hidden = true;
+    unlock.addEventListener('click', () => {
+      if (this.isLocked) this._toggleLock();
+    });
+    draw.append(drawText, unlock);
+
+    const nameField = make('div', 'zone-field');
+    const nameLabel = make('label');
+    nameLabel.htmlFor = 'zoneName';
+    nameLabel.textContent = ZONE_NAME_LABEL;
+    const input = make('input', '', 'zoneName');
+    input.type = 'text';
+    input.autocomplete = 'off';
+    input.setAttribute('enterkeyhint', 'done');
+    input.placeholder = `Zone ${zoneId}`;
+    input.dataset.zoneId = String(zoneId);
+    // What the field shows from the store, so a payload can tell an edit.
+    input.dataset.storedName = this._zoneStoredName(zoneId);
+    input.value = input.dataset.storedName;
+    input.disabled = !admin;
+    this._attachZoneNameField(input);
+    nameField.append(nameLabel, input);
+
+    const size = make('div', 'zone-size');
+    size.dataset.zone = String(zoneId);
+
+    const meta = this._zoneSettings(zoneId);
+    const settings = make('div', 'zone-settings');
+    const type = this._zoneSettingSelect(zoneId, 'zone_type', TYPE_OPTIONS, meta.type);
+    type.className = 'zone-type';
+    const hold = this._zoneSettingSelect(zoneId, 'hold_s', this._holdOptions(meta.holdS), String(meta.holdS));
+    hold.className = 'zone-hold';
+    settings.append(this._zoneSettingLabel(TYPE_LABEL, type), this._zoneSettingLabel(HOLD_LABEL, hold));
+    const hint = make('div', 'zone-hint', 'zoneSettingsHint');
+
+    const presence = make('div', 'zone-presence', 'zonePresence');
+    const presenceLabel = make('span', 'zone-presence-label');
+    presenceLabel.textContent = PRESENCE_LABEL;
+    const presenceText = make('span', '', 'zonePresenceText');
+    presence.append(presenceLabel, presenceText);
+
+    editor.append(head, draw, nameField, size, settings, hint, presence);
+    if (!admin) {
+      // A disabled field's title never reaches touch or keyboard users.
+      const note = make('div', 'zone-hint zone-settings-note');
+      note.textContent = ADMIN_ONLY_NOTE;
+      editor.append(note);
+      return editor;
+    }
+
+    const deleteRow = make('div', 'zone-delete-row');
+    const del = make('button', 'zone-btn', 'btnDeleteZone');
+    del.type = 'button';
+    del.textContent = DELETE_ZONE_LABEL;
+    deleteRow.append(del);
+    const confirm = make('div', 'zone-delete-confirm', 'zoneDeleteConfirm');
+    confirm.hidden = true;
+    const question = make('div', '', 'zoneDeleteText');
+    const row = make('div', 'confirm-row');
+    const yes = make('button', '', 'btnDeleteZoneYes');
+    yes.type = 'button';
+    yes.textContent = DELETE_ZONE_YES;
+    const no = make('button', 'zone-btn', 'btnDeleteZoneNo');
+    no.type = 'button';
+    no.textContent = DELETE_ZONE_NO;
+    row.append(yes, no);
+    confirm.append(question, row);
+    editor.append(deleteRow, confirm);
+
+    const keep = () => {
+      this._deleteConfirmZone = null;
+      this._renderZoneManager();
+      this.shadowRoot?.getElementById('btnDeleteZone')?.focus();
+    };
+    del.addEventListener('click', () => {
+      this._deleteConfirmZone = zoneId;
+      this._renderZoneManager();
+      this.shadowRoot?.getElementById('btnDeleteZoneNo')?.focus();
+    });
+    no.addEventListener('click', keep);
+    yes.addEventListener('click', () => this._deleteZone(zoneId));
+    confirm.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') keep();
+    });
+    return editor;
+  }
+
+  /**
+   * Lay what the store and the card now hold over `editor`. The name field
+   * takes a new stored name only while nobody has edited it, focused or not;
+   * an edit stays until it is saved or Escape puts the name back.
+   */
+  _syncZoneEditor(editor) {
+    const zoneId = Number(editor.dataset.editorZone);
+    const admin = editor.dataset.admin === 'true';
+    const input = editor.querySelector('#zoneName');
+    if (input) {
+      const edited = input.value !== input.dataset.storedName;
+      input.dataset.storedName = this._zoneStoredName(zoneId);
+      if (!edited && input.value !== input.dataset.storedName) input.value = input.dataset.storedName;
+    }
+    const size = editor.querySelector('.zone-size');
+    if (size) size.textContent = this._zoneSizeText(zoneId);
+
+    // A select shows its newest choice while that choice's save is on its
+    // way, not what the store holds: the echo of an earlier save lands here
+    // too, and the next arrow key would step from the older value.
+    const meta = this._zoneSettings(zoneId);
+    const ignore = meta.type === 'ignore';
+    const type = editor.querySelector('select.zone-type');
+    if (type) {
+      if (type.value !== meta.type) type.value = meta.type;
+      type.disabled = !admin;
+      type.title = admin ? '' : ADMIN_ONLY_TITLE;
+    }
+    const hold = editor.querySelector('select.zone-hold');
+    if (hold) {
+      const options = this._holdOptions(meta.holdS);
+      const listed = Array.from(hold.options).map((option) => option.value);
+      if (listed.join() !== options.map((option) => option.value).join()) {
+        hold.replaceChildren(
+          ...options.map((option) => {
+            const element = document.createElement('option');
+            element.value = option.value;
+            element.textContent = option.label;
+            return element;
+          }),
+        );
+      }
+      if (hold.value !== String(meta.holdS)) hold.value = String(meta.holdS);
+      // An ignore zone never holds.
+      hold.disabled = !admin || ignore;
+      hold.title = admin ? '' : ADMIN_ONLY_TITLE;
+    }
+    const hint = editor.querySelector('#zoneSettingsHint');
+    if (hint) {
+      hint.textContent = ignore
+        ? `${TYPE_IGNORE_HINT} ${HOLD_IGNORE_HINT}`
+        : `${TYPE_DETECT_HINT} ${HOLD_HINT}`;
+    }
+
+    const confirming = admin && this._deleteConfirmZone === zoneId;
+    const deleteRow = editor.querySelector('.zone-delete-row');
+    if (deleteRow) deleteRow.hidden = confirming;
+    const confirm = editor.querySelector('#zoneDeleteConfirm');
+    if (confirm) confirm.hidden = !confirming;
+    const question = editor.querySelector('#zoneDeleteText');
+    if (question) question.textContent = confirming ? deleteZoneConfirm(this._zoneLabel(zoneId)) : '';
+
+    this._renderZoneDraw();
+    this._renderZonePresence();
+    this._renderZoneSaveStatus();
+  }
+
+  /**
+   * The editor's word on drawing the zone: how to in the drawing mode, that
+   * Walk is marking it, or that the map is locked, with Unlock beside it. A
+   * zone with no shape yet gets it at the top, as a callout; one with a
+   * shape below its settings, since it only says how to change it. A viewer
+   * draws nothing and gets none.
+   */
+  _renderZoneDraw() {
+    const box = this.shadowRoot?.getElementById('zoneDraw');
+    const editor = box?.closest('.zone-editor');
+    if (!editor) return;
+    const zoneId = Number(editor.dataset.editorZone);
+    const admin = editor.dataset.admin === 'true';
+    const drawn = !!this._getZone(zoneId);
+    let text = '';
+    if (!admin) text = '';
+    else if (this.drawMode === DRAW_MODES.WALK) text = DRAW_HINT_WALKING;
+    else if (this.isLocked) text = ZONES_LOCKED_HINT;
+    else text = drawHint(this.drawMode, drawn, this.polyMaxPoints);
+    box.hidden = !text;
+    const textEl = editor.querySelector('#zoneDrawText');
+    if (textEl && textEl.textContent !== text) textEl.textContent = text;
+    const unlock = editor.querySelector('#btnZoneUnlock');
+    if (unlock) unlock.hidden = !(admin && this.isLocked && this.drawMode !== DRAW_MODES.WALK);
+    const callout = admin && !drawn;
+    box.classList.toggle('callout', callout);
+    const head = editor.querySelector('.zone-editor-head');
+    const before = callout ? head?.nextSibling : editor.querySelector('.zone-delete-row');
+    if (box.nextSibling !== (before || null) && before !== box) editor.insertBefore(box, before || null);
+  }
+
+  /** The editor's Now line: what the selected zone's presence sensor says. */
+  _renderZonePresence() {
+    const text = this.shadowRoot?.getElementById('zonePresenceText');
+    const editor = text?.closest('.zone-editor');
+    if (!editor) return;
+    const value = this._zonePresenceText(Number(editor.dataset.editorZone));
+    if (text.textContent !== value) text.textContent = value;
+  }
+
+  /**
+   * What zone `zoneId`'s presence sensor says now, in words: on, held, off
+   * or offline. An ignore zone's never turns on, a zone with no shape has
+   * nothing to detect in yet, and a new zone's sensor can still be on its
+   * way to Home Assistant.
+   */
+  _zonePresenceText(zoneId) {
+    if (this._isIgnoreZone(zoneId)) return PRESENCE_IGNORED;
+    if (!this._getZone(zoneId)) return PRESENCE_NOT_DRAWN;
+    const entityId = this._presenceEntityFor(zoneId);
+    if (!entityId) return PRESENCE_NO_SENSOR;
+    const stateObj = this._hass?.states?.[entityId];
+    const look = presenceLook(stateObj?.state);
+    if (look === 'unavailable') return OFFLINE_NOTE;
+    if (look === 'on') return stateObj?.attributes?.held === true ? PRESENCE_HELD : PRESENCE_ON;
+    return PRESENCE_OFF;
+  }
+
+  /** The save status beside the editor's heading, for the zone it shows. */
+  _renderZoneSaveStatus() {
+    const status = this.shadowRoot?.getElementById('zoneSaveStatus');
+    const editor = status?.closest('.zone-editor');
+    if (!editor) return;
+    const current = this._zoneSaveStatus;
+    const state = current && String(current.zoneId) === editor.dataset.editorZone ? current.state : null;
+    const text =
+      state === 'saving'
+        ? ZONE_SAVING
+        : state === 'saved'
+          ? ZONE_SAVED
+          : state === 'failed'
+            ? ZONE_NOT_SAVED
+            : '';
+    if (status.textContent !== text) status.textContent = text;
+    status.classList.toggle('failed', state === 'failed');
+  }
+
+  /** A name, Type or Hold save for zone `zoneId` is on its way: say so, and
+   *  return its number for _settleZoneSave. */
+  _startZoneSave(zoneId) {
+    this._zoneSaveSeq += 1;
+    this._zoneSaveStatus = { zoneId: Number(zoneId), state: 'saving', seq: this._zoneSaveSeq };
+    this._renderZoneSaveStatus();
+    return this._zoneSaveSeq;
+  }
+
+  /** Save number `seq` came back (`saved` or refused). Only the newest one
+   *  settles the status. */
+  _settleZoneSave(seq, saved) {
+    if (this._zoneSaveStatus?.seq !== seq) return;
+    this._zoneSaveStatus = { ...this._zoneSaveStatus, state: saved ? 'saved' : 'failed' };
+    this._renderZoneSaveStatus();
+  }
+
+  /** Zone `zoneId`'s name as the store (or the YAML) holds it. */
+  _zoneStoredName(zoneId) {
+    const zone = (this.zoneConfig || []).find((z) => Number(z.id) === Number(zoneId));
+    return zone?.name || `Zone ${zoneId}`;
+  }
+
+  /** Zone `zoneId`'s Type and Hold, each its newest choice while that
+   *  choice's save is on its way, else what the store holds. */
+  _zoneSettings(zoneId) {
     const stored = this._zoneMeta.get(Number(zoneId)) || { type: 'detect', holdS: 0 };
-    const pending = (setting) =>
-      this._zoneSettingPending.get(`${Number(zoneId)}:${setting}`)?.value;
-    const meta = {
+    const pending = (setting) => this._zoneSettingPending.get(`${Number(zoneId)}:${setting}`)?.value;
+    return {
       ...stored,
       type: pending('zone_type') ?? stored.type,
       holdS: pending('hold_s') ?? stored.holdS,
     };
-    const line = document.createElement('div');
-    line.className = 'zone-meta';
+  }
 
-    const size = document.createElement('span');
-    size.className = 'zone-size';
-    size.dataset.zone = String(zoneId);
-    size.textContent = this._zoneSizeText(zoneId);
-    line.appendChild(size);
-
-    const type = this._zoneSettingSelect(zoneId, 'zone_type', TYPE_OPTIONS, meta.type);
-    type.className = 'zone-type';
-    type.disabled = !admin;
-    type.title = admin ? TYPE_TITLE : ADMIN_ONLY_TITLE;
-    line.appendChild(this._zoneSettingLabel(TYPE_LABEL, type));
-
-    // A hold the list does not offer (saved through the service) still shows,
-    // as one more option in its place by length.
-    const holds = HOLD_OPTIONS.includes(meta.holdS)
+  /** The Hold choices. A hold the list does not offer (saved through the
+   *  service) still shows, as one more option in its place by length. */
+  _holdOptions(holdS) {
+    const holds = HOLD_OPTIONS.includes(holdS)
       ? HOLD_OPTIONS
-      : [...HOLD_OPTIONS, meta.holdS].sort((a, b) => a - b);
-    const hold = this._zoneSettingSelect(
-      zoneId,
-      'hold_s',
-      holds.map((seconds) => ({ value: String(seconds), label: formatHold(seconds) })),
-      String(meta.holdS),
+      : [...HOLD_OPTIONS, holdS].sort((a, b) => a - b);
+    return holds.map((seconds) => ({ value: String(seconds), label: formatHold(seconds) }));
+  }
+
+  /**
+   * The name field saves on its own: on Enter, or when it loses focus to
+   * anything in the page, as a press on another zone's chip. Not when the
+   * editor is swapped out, nor when another window or tab takes the focus,
+   * which comes back to the field. Escape puts the stored name back.
+   */
+  _attachZoneNameField(input) {
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        this._commitZoneName(input);
+        // On a phone, Done also closes the keyboard over the map.
+        if (window.matchMedia?.('(pointer: coarse)')?.matches) input.blur();
+      } else if (event.key === 'Escape') {
+        input.value = input.dataset.storedName;
+      }
+    });
+    input.addEventListener('blur', () => {
+      if (this._rebuildingZoneManager || !input.isConnected) return;
+      if (typeof document.hasFocus === 'function' && !document.hasFocus()) return;
+      this._commitZoneName(input);
+    });
+  }
+
+  /**
+   * Save the name in field `input` for the zone the field belongs to, unless
+   * it is the name the zone has. An emptied field saves "Zone N". The chip
+   * and the map take the name at once, in place: the chips are never made
+   * again here, since the press that took the focus from the field may be on
+   * one. Refused, the zone keeps its old name, and the field keeps what was
+   * typed, for Enter to try again. A zone deleted elsewhere since is not
+   * made again. A zone only the card YAML names is created with the name,
+   * the way Add zone creates one.
+   */
+  async _commitZoneName(input) {
+    const zoneId = Number(input.dataset.zoneId);
+    if (!this._isAdmin() || !Number.isFinite(zoneId) || zoneId <= 0) return false;
+    const current = (this.zoneConfig || []).find((zone) => Number(zone.id) === zoneId);
+    if (!current) return false;
+    const newName = input.value.trim() || `Zone ${zoneId}`;
+    const before = current.name || `Zone ${zoneId}`;
+    input.value = newName;
+    if (newName === before) {
+      input.dataset.storedName = newName;
+      return true;
+    }
+    this._setZoneName(zoneId, newName);
+    input.dataset.storedName = newName;
+    this._renderZoneChips();
+    this.drawGrid();
+    const rename = { device_id: this.deviceId, zone_id: zoneId, name: newName };
+    const payload = this._zoneIsUnsaved(zoneId) ? { ...rename, shape: 'none', data: null } : rename;
+    const seq = this._startZoneSave(zoneId);
+    const saved = await this._saveZoneUpdate(payload, null);
+    if (!saved) {
+      const still = (this.zoneConfig || []).find((zone) => Number(zone.id) === zoneId);
+      if (still && still.name === newName) this._setZoneName(zoneId, before);
+      if (input.dataset.storedName === newName) input.dataset.storedName = this._zoneStoredName(zoneId);
+      this._renderZoneChips();
+      this.drawGrid();
+    }
+    this._settleZoneSave(seq, saved);
+    return saved;
+  }
+
+  /** Give zone `zoneId` `name` in the list the chips and the map read. The
+   *  entry is replaced, not changed: before the first payload the entries
+   *  are the card YAML's own objects. */
+  _setZoneName(zoneId, name) {
+    this.zoneConfig = (this.zoneConfig || []).map((zone) =>
+      Number(zone.id) === Number(zoneId) ? { ...zone, name } : zone,
     );
-    hold.className = 'zone-hold';
-    const ignore = meta.type === 'ignore';
-    hold.disabled = !admin || ignore;
-    if (!admin) hold.title = ADMIN_ONLY_TITLE;
-    else hold.title = ignore ? HOLD_IGNORE_TITLE : HOLD_TITLE;
-    line.appendChild(this._zoneSettingLabel(HOLD_LABEL, hold));
-    return line;
+  }
+
+  /**
+   * Delete zone `zoneId` and its entities, once Delete zone was answered.
+   * Undo writes every snapshot entry back, and the backend stores any zone
+   * id it is given, so an entry for this zone would re-create it and its
+   * entities (or overwrite a zone added later under the freed id). Delete
+   * itself is not undoable; the other entries still are. The focus goes to
+   * the zone selected next, or to Add zone.
+   */
+  _deleteZone(zoneId) {
+    const id = Number(zoneId);
+    this._deleteConfirmZone = null;
+    if (!Number.isFinite(id) || id <= 0) return;
+    if (this._hass) {
+      this._saveZoneUpdate(
+        { device_id: this.deviceId, zone_id: id, delete: true },
+        `${this._zoneLabel(id)} deleted`,
+      );
+    }
+    this.zoneConfig = (this.zoneConfig || []).filter((zone) => Number(zone.id) !== id);
+    this.zones = (this.zones || []).filter((zone) => Number(zone.id) !== id);
+    if (Number(this.selectedZone) === id) this.selectedZone = null;
+    this._setUndoSnapshot((this._undoSnapshot || []).filter((s) => s.zoneId !== id));
+    this.renderZoneButtons();
+    this._renderZonePanel();
+    this._renderZoneManager();
+    this.drawGrid();
+    const root = this.shadowRoot;
+    const chip = root?.querySelector(`#zone-buttons .zone-btn[data-zone-id="${this.selectedZone}"]`);
+    (chip || root?.getElementById('btnAddZone'))?.focus();
   }
 
   /** A select for zone setting `setting` (a key update_zone takes) that
@@ -5179,12 +5774,14 @@ export class ZoneMapCard extends HTMLElement {
    * Save one zone setting (`{ zone_type }` or `{ hold_s }`) for zone
    * `zoneId`. A zone only the card YAML names is created with it, the way a
    * rename creates one. A setting changes nothing about how readings scale,
-   * so input_units stays out, as with the flip. Each change saves, and until
-   * the newest save for this select settles, a rebuild shows its value
-   * (_zoneMetaLine). Only that save settles the select: refused, the rows
-   * are built again from what the store holds, which also puts back a Hold
-   * that a pending Ignore disabled; accepted, the save's echo rebuilt the
-   * row. An older save settles nothing, so it cannot undo a newer choice.
+   * so input_units stays out, as with the flip. Each change saves, says so
+   * beside the editor's heading rather than in a toast, and shows at once
+   * (an Ignore disables Hold and changes what the hint says). Until the
+   * newest save for this select settles, the editor shows its value
+   * (_zoneSettings). Only that save settles the select: refused, the editor
+   * goes back to what the store holds, which also gives back a Hold that a
+   * pending Ignore disabled; accepted, the save's echo brings the same. An
+   * older save settles nothing, so it cannot undo a newer choice.
    */
   async _saveZoneSetting(zoneId, fields) {
     const id = Number(zoneId);
@@ -5205,13 +5802,19 @@ export class ZoneMapCard extends HTMLElement {
     this._zoneSettingSeq += 1;
     const seq = this._zoneSettingSeq;
     this._zoneSettingPending.set(key, { value: fields[setting], seq });
-    const saved = await this._saveZoneUpdate(payload, `${this._zoneLabel(id)} saved`, {
-      withInputUnits: false,
-    });
+    this._renderZoneManager();
+    // The chip's dot turns hatched for an Ignore at once too.
+    this._renderZoneChips();
+    const statusSeq = this._startZoneSave(id);
+    const saved = await this._saveZoneUpdate(payload, null, { withInputUnits: false });
+    this._settleZoneSave(statusSeq, saved);
     // A newer choice, or another radar since, owns the select now.
     if (this._zoneSettingPending.get(key)?.seq !== seq) return saved;
     this._zoneSettingPending.delete(key);
-    if (!saved) this._renderZoneManager();
+    if (!saved) {
+      this._renderZoneManager();
+      this._renderZoneChips();
+    }
     return saved;
   }
 
@@ -5224,8 +5827,8 @@ export class ZoneMapCard extends HTMLElement {
     if (select) select.value = String(setting === 'hold_s' ? meta.holdS : meta.type);
   }
 
-  /** "Size 2.4 m × 1.8 m" in the map's unit, or the hint for a zone with no
-   *  shape to measure. */
+  /** "Size 2.4 m × 1.8 m" in the map's unit, or "Not drawn yet" for a zone
+   *  with no shape to measure. */
   _zoneSizeText(zoneId) {
     const zone = this._getZone(zoneId);
     const size = zone ? zoneSize(zone.shape, zone.data) : null;
@@ -5235,77 +5838,22 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   /**
-   * Bring each zone row's size up to date after a shape or the map's unit
-   * changed. Only the size texts change, so a name being typed, a focused
-   * select and an open dropdown are left alone.
+   * Bring everything that follows a zone's shape up to date after a shape
+   * or the map's unit changed: the editor's size, drawing hint and Now line,
+   * the chips' dots, and whether Clear all shapes has anything to clear.
+   * Each is changed in place, so a name being typed, a focused select and
+   * an open dropdown are left alone.
    */
   _renderZoneSizes() {
     const host = this.shadowRoot?.getElementById('zoneManager');
     if (!host) return;
-    host.querySelectorAll('.zone-size').forEach((span) => {
-      span.textContent = this._zoneSizeText(span.dataset.zone);
+    host.querySelectorAll('.zone-size').forEach((element) => {
+      element.textContent = this._zoneSizeText(element.dataset.zone);
     });
-  }
-
-  /**
-   * The zone-name edits a rebuild of the manager rows would throw away.
-   *
-   * `values` holds every input whose text differs from the name its row was
-   * built with, keyed by zone id; a row nobody edited is left out, so it picks
-   * up a rename from the payload. `focus` is the focused input's zone id and
-   * selection, or null when focus is elsewhere. `selectFocus` is the focused
-   * setting select's zone and setting: a select saves on change, so it has no
-   * draft, but keyboard focus on it has to outlive the rebuild too.
-   */
-  _captureZoneNameDrafts(host) {
-    const values = new Map();
-    let focus = null;
-    let selectFocus = null;
-    const active = this.shadowRoot?.activeElement;
-    host.querySelectorAll('input[data-zone-id]').forEach((input) => {
-      const zoneId = input.dataset.zoneId;
-      if (input.value !== input.dataset.storedName) values.set(zoneId, input.value);
-      if (input === active) {
-        focus = {
-          zoneId,
-          start: input.selectionStart,
-          end: input.selectionEnd,
-          direction: input.selectionDirection,
-        };
-      }
-    });
-    host.querySelectorAll('select[data-zone-setting]').forEach((select) => {
-      if (select === active) {
-        selectFocus = { zone: select.dataset.zone, setting: select.dataset.zoneSetting };
-      }
-    });
-    return { values, focus, selectFocus };
-  }
-
-  /** Lay captured drafts back over the rebuilt rows of the zones still listed. */
-  _restoreZoneNameDrafts(host, drafts) {
-    const inputs = new Map();
-    host.querySelectorAll('input[data-zone-id]').forEach((input) => {
-      inputs.set(input.dataset.zoneId, input);
-    });
-    drafts.values.forEach((value, zoneId) => {
-      const input = inputs.get(zoneId);
-      if (input) input.value = value;
-    });
-    if (drafts.selectFocus) {
-      const { zone, setting } = drafts.selectFocus;
-      const select = Array.from(host.querySelectorAll('select[data-zone-setting]')).find(
-        (s) => s.dataset.zone === zone && s.dataset.zoneSetting === setting,
-      );
-      if (select) select.focus({ preventScroll: true });
-    }
-    const focused = drafts.focus ? inputs.get(drafts.focus.zoneId) : null;
-    if (!focused) return;
-    focused.focus({ preventScroll: true });
-    const { start, end, direction } = drafts.focus;
-    if (typeof start === 'number' && typeof end === 'number') {
-      focused.setSelectionRange(start, end, direction || undefined);
-    }
+    this._renderZoneDraw();
+    this._renderZonePresence();
+    this._renderZoneChips();
+    this._renderClearAll();
   }
 
   /**
@@ -5313,7 +5861,7 @@ export class ZoneMapCard extends HTMLElement {
    *
    * The backend renames only zones the store holds, so a name-only save for
    * such a zone was dropped while the card said it was saved, and the next
-   * payload put the YAML name back. Saving it the way Add Zone does creates it.
+   * payload put the YAML name back. Saving it the way Add zone does creates it.
    * Before the first payload the store's contents are unknown, and a zone drawn
    * here may still be on its way to the store; shape none would erase real
    * geometry in either case, so both keep the name-only save.
@@ -5326,19 +5874,33 @@ export class ZoneMapCard extends HTMLElement {
     return !(this.zones || []).some((zone) => Number(zone.id) === zoneId);
   }
 
-  _handleAddZone() {
-    // Compute next available id
+  /** The lowest zone id no zone has, counting zones only the YAML names. */
+  _nextZoneId() {
     const ids = new Set([
       ...(this.zoneConfig || []).map((z) => Number(z.id)),
       ...(this.zones || []).map((z) => Number(z.id)),
     ]);
-    // TODO(REVIEW_REPORT.md X19): no upper bound here, but services.yaml says
-    // max 32 and the schema allows any safe integer; pick one rule for all three.
     let next = 1;
     while (ids.has(next)) next += 1;
+    return next;
+  }
+
+  /**
+   * Add zone: the lowest free id, as "Zone N" with no shape, saved so its
+   * entities are created, and selected, so the next drag on the map draws
+   * it. The lock does not stop it, as it does not stop a rename: the editor
+   * then says to unlock the map to draw the zone. The focus stays on Add
+   * zone, so a phone keyboard does not open over the map. Every id up to
+   * MAX_ZONE_ID taken, it adds nothing (the button is disabled then).
+   */
+  _handleAddZone() {
+    const next = this._nextZoneId();
+    if (next > MAX_ZONE_ID) {
+      this._renderZonePanel();
+      return;
+    }
     const newZone = { id: next, name: `Zone ${next}` };
     this.zoneConfig = [...(this.zoneConfig || []), newZone];
-    this.selectedZone = next;
     // Persist the empty zone so its entities are created. It carries the
     // default name, which the backend stores but keeps out of the registry,
     // so the entities keep the names they were created with.
@@ -5352,7 +5914,9 @@ export class ZoneMapCard extends HTMLElement {
       },
       null,
     );
+    this._setSelectedZone(next);
     this.renderZoneButtons();
+    this._renderZonePanel();
     this._renderZoneManager();
   }
 
@@ -6052,6 +6616,10 @@ export class ZoneMapCard extends HTMLElement {
       ...byId.filter((zone) => !this._isIgnoreZone(zone?.id)),
       ...byId.filter((zone) => this._isIgnoreZone(zone?.id)),
     ];
+    // While the map can be drawn on, the next drag replaces the selected
+    // zone's shape, so its outline is drawn thicker: the zone the editor
+    // under the map is showing is the one that changes.
+    const marked = this._drawingTarget();
     orderedZones.forEach((zone, idx) => {
       if (!zone || !zone.shape || !zone.data) return;
       const color = colors[(Number(zone.id) - 1) % colors.length] || colors[idx % colors.length];
@@ -6061,7 +6629,7 @@ export class ZoneMapCard extends HTMLElement {
       ctx.save();
       ctx.strokeStyle = look.stroke;
       ctx.fillStyle = look.fill;
-      ctx.lineWidth = look.lineWidth;
+      ctx.lineWidth = look.lineWidth + (!lit && Number(zone.id) === marked ? 2 : 0);
       ctx.setLineDash(look.dash);
       // {x, y, width, height} in px, the one _zoneLabelBoxes lays the
       // labels out from too.
@@ -6099,6 +6667,15 @@ export class ZoneMapCard extends HTMLElement {
         this._drawZoneLabel(zone, bbox, look.suffix);
       }
     });
+  }
+
+  /** The zone a drag on the map would draw now, or null when the map takes
+   *  no drawing: locked, in Walk, or with no zone selected. */
+  _drawingTarget() {
+    if (this._viewOnly || this.isLocked || this.drawMode === DRAW_MODES.WALK) return null;
+    return this.selectedZone === null || this.selectedZone === undefined
+      ? null
+      : Number(this.selectedZone);
   }
 
   /**
@@ -6376,7 +6953,7 @@ export class ZoneMapCard extends HTMLElement {
    * The size of the shape being drawn. drawGrid draws it after the trails
    * and dots, so none of them runs through it. A rect or an ellipse shows
    * the size of exactly what letting go would save, snapped corners and
-   * all, so the readout and the zone list agree to the mm; a rect with no
+   * all, so the readout and the zone editor agree to the mm; a rect with no
    * area saves nothing and shows no size. In meters it reads to 0.01 m
    * while corners snap finer than 10 cm (_readoutDecimals).
    */
@@ -6933,10 +7510,21 @@ export class ZoneMapCard extends HTMLElement {
     // either finger committed a collapsed or truncated shape over the zone.
     if (isTouch && e.touches.length > 1) return;
     if (this.isLocked) {
+      // A press on a zone picks it, which the lock does not guard: it
+      // changes nothing. Anywhere else it is a try at drawing.
+      const at = this._getPointFromEvent(e, isTouch ? this._touchIdOf(e) : null);
+      if (at && this._pickZoneAt(at)) return;
       this._remindLocked(DRAW_LOCKED_TOAST);
       return;
     }
-    if (this.selectedZone === null) return;
+    if (this.selectedZone === null || this.selectedZone === undefined) {
+      // A radar with no zones has nothing to draw yet: say where to start.
+      // An administrator's only, as Add zone is.
+      if (!(this.zoneConfig || []).length && this._isAdmin()) {
+        this._notifyThrottled(ADD_ZONE_FIRST_TOAST);
+      }
+      return;
+    }
     if (!this.canvas) return;
     const touchId = isTouch ? this._touchIdOf(e) : null;
     const point = this._getPointFromEvent(e, touchId);
@@ -6944,6 +7532,8 @@ export class ZoneMapCard extends HTMLElement {
     this.isDrawing = true;
     this._activeInput = isTouch ? 'touch' : 'mouse';
     this._activeTouchId = touchId;
+    // Unsnapped, so the release can tell a tap from a drag.
+    this._pressPx = point;
     // The press places the first corner: on a round value, or right where
     // it is with Alt or Option held. A zoom or a pan mid-drag carries it
     // across in mm (_setView), so it never snaps again.
@@ -7046,6 +7636,7 @@ export class ZoneMapCard extends HTMLElement {
     const toMm = (p) => (p ? { x: this.pixelsToValue(p.x, 'x'), y: this.pixelsToValue(p.y, 'y') } : p);
     const start = toMm(this.startPoint);
     const cursor = toMm(this._cursorPoint);
+    const press = toMm(this._pressPx);
     this._view = next;
     // The rotation it was set at: another one starts from the whole map
     // (see _applyRotation).
@@ -7054,6 +7645,7 @@ export class ZoneMapCard extends HTMLElement {
     const toPx = (m) => (m ? { x: this.valueToPixels(m.x, 'x'), y: this.valueToPixels(m.y, 'y') } : m);
     this.startPoint = toPx(start);
     this._cursorPoint = toPx(cursor);
+    this._pressPx = toPx(press);
     this._renderZoomControls();
     if (draw) this.drawGrid();
   }
@@ -7321,8 +7913,9 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   getCardSize() {
-    // The map alone has no chips, Configure or zone list under it.
-    return this._viewOnly ? 6 : 8;
+    // The map alone has no chips, Zones panel or Map settings under it. The
+    // full card's Zones panel, open under the map, is about 8 more rows.
+    return this._viewOnly ? 6 : 14;
   }
 
   _updatePolygonButtonsVisibility() {

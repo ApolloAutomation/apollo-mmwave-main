@@ -12,6 +12,7 @@ from homeassistant.const import Platform
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.service import async_register_admin_service
 from homeassistant.util import slugify
@@ -52,6 +53,7 @@ from .const import (
     EVENT_ZONE_UPDATED,
     HOLD_S_MAX,
     INPUT_UNIT_FACTORS,
+    ISSUE_DASHBOARD_SAVED_COPY,
     POLYGON_MAX_POINTS,
     POLYGON_MIN_POINTS,
     SERVICE_UPDATE_ZONE,
@@ -85,7 +87,9 @@ from .const import (
 )
 from .frontend import (
     DashboardsUnreadableError,
+    async_check_saved_copy,
     async_find_legacy_dashboard,
+    async_forget_deleted_dashboard,
     async_register_frontend_assets,
     async_remove_dashboard,
     async_remove_lovelace_resources,
@@ -322,8 +326,9 @@ def _update_registry_names(
     # name that is still one of ours, so "Kitchen door" stays "Kitchen door".
     registry = er.async_get(hass)
     sensor_uid, presence_uid = _zone_entity_unique_ids(device_id, zone_id)
-    # The zone list's Save sends the default name for a cleared field, and
-    # for a row nobody touched: a clear, never "Zone 1 - Zone 1".
+    # The zone editor sends the default name for a cleared name field (the
+    # 2.4.0b2 and 2.4.0b3 zone list also sent it for a row nobody touched):
+    # a clear, never "Zone 1 - Zone 1".
     default = zone_name == f"Zone {zone_id}"
 
     for domain, unique_id, base in (
@@ -967,9 +972,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     Setup never creates, rewrites or deletes a dashboard. The Apollo mmWave
     dashboard is created once, when an administrator asks for it in the config
     or options flow, and later changes to it come only from options flow
-    actions on the row the entry recorded (``config_flow.py``). The frontend
-    assets are registered whether or not that dashboard exists: the cards and
-    strategy work on any dashboard.
+    actions on the row the entry recorded (``config_flow.py``) and from the
+    saved-copy repair's fix (``repairs.py``). The frontend assets are
+    registered whether or not that dashboard exists: the cards and strategy
+    work on any dashboard.
     """
     store = ZoneStore(hass)
     if not await store.async_load():
@@ -1045,7 +1051,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # the extra JS module and the dashboard timed out waiting for the strategy.
     await async_register_frontend_assets(hass)
 
+    # Read only: a repair while the dashboard this entry recorded is a saved
+    # copy, whose fix is the administrator's click. Checked again after every
+    # options change, which is also how a restore from the options flow ends.
+    await async_check_saved_copy(hass, entry)
+    entry.async_on_unload(entry.add_update_listener(_async_options_updated))
+    # Deleting the recorded dashboard forgets it, an options change like any
+    # other, so the next one made on its url path is not judged as ours.
+    entry.async_on_unload(async_forget_deleted_dashboard(hass, entry))
+
     return True
+
+
+async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Recheck the saved-copy repair once the options changed. Read only."""
+    await async_check_saved_copy(hass, entry)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -1071,6 +1091,8 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
         entry.options.get(CONF_DASHBOARD_ID),
         entry.options.get(CONF_DASHBOARD_URL_PATH),
     )
+    # A saved copy is the user's and stays, but nothing is left to restore it.
+    ir.async_delete_issue(hass, DOMAIN, ISSUE_DASHBOARD_SAVED_COPY)
     # The resource rows load the cards for every entry. The config flow allows
     # only one, so this keeps them for a second entry made some other way.
     # Home Assistant drops the removed entry from the list before calling this;

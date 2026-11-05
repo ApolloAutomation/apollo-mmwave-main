@@ -2045,7 +2045,7 @@ async def test_empty_name_clears_the_zone_name(
 async def test_zone_list_save_with_the_default_name_clears_the_entity_names(
     hass, init_integration, device_id
 ) -> None:
-    """The zone list's Save sends "Zone 1" for a cleared name: that is a clear."""
+    """The zone editor sends "Zone 1" for a cleared name: that is a clear."""
     _ = init_integration
     await _create_rect_zone(hass, device_id)
     await _rename_zone(hass, device_id, "Couch")

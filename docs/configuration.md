@@ -6,6 +6,7 @@ install the integration and run your first calibration.
 ## Contents
 
 - [The Apollo mmWave dashboard](#the-apollo-mmwave-dashboard)
+  - [A saved copy misses new cards](#a-saved-copy-misses-new-cards)
 - [Lovelace resources](#lovelace-resources)
   - [After an update](#after-an-update)
 - [Choosing which devices appear](#choosing-which-devices-appear)
@@ -22,6 +23,7 @@ install the integration and run your first calibration.
   - [What the map shows](#what-the-map-shows)
   - [Zoom and pan](#zoom-and-pan)
 - [Drawing zones](#drawing-zones)
+  - [The Zones panel](#the-zones-panel)
   - [Mark corners by walking](#mark-corners-by-walking)
   - [Map units and size](#map-units-and-size)
   - [Ignore zones and hold time](#ignore-zones-and-hold-time)
@@ -61,6 +63,9 @@ when you ask in its options (Settings → Devices & services → Apollo mmWave �
   again.
 - **Remove the Apollo mmWave dashboard** shows up while it has one. It says
   what will be deleted and deletes it when you press **Submit**.
+- **Restore the automatic dashboard** shows up instead of both while the
+  dashboard is a saved copy; see
+  [A saved copy misses new cards](#a-saved-copy-misses-new-cards).
 - **Choose the dashboard's devices** sets which sensors the dashboard shows;
   see [Choosing which devices appear](#choosing-which-devices-appear).
 
@@ -85,6 +90,44 @@ above work on it. If you had turned the dashboard option off, the integration
 records none, and a strategy dashboard you made on `/apollo-mmwave` is no
 longer deleted at every restart.
 
+### A saved copy misses new cards
+
+**Take control** saves the cards the dashboard had at that moment. From then
+on it no longer builds itself, so it misses every card a later release adds,
+such as the Radar setup card, **LD2450 Controls** (Zone Type and Multi
+Target Tracking) and the Device card, and nothing on it says so. While the
+dashboard the integration created is such a saved copy, still made of
+Apollo mmWave cards, Home Assistant lists the repair "The Apollo mmWave
+dashboard is a saved copy" under Settings → System → Repairs, and the
+integration's options offer **Restore the automatic dashboard**.
+
+[![Open your Home Assistant instance and show your repairs.](https://my.home-assistant.io/badges/repairs.svg)](https://my.home-assistant.io/redirect/repairs/)
+
+Both say what they do and change nothing until you press **Submit**. Then:
+
+1. Your copy is saved as a new dashboard named **Apollo mmWave (saved
+   copy)**, at `/apollo-mmwave-saved` (or `/apollo-mmwave-saved-2` and so on
+   when that is taken). It is not in the sidebar, so open it from Settings →
+   Dashboards, and it is admin-only if your dashboard was.
+2. Only once the copy is saved, `/apollo-mmwave` gets the automatic dashboard
+   back, with the devices chosen in the options. Its title, icon, sidebar
+   and admin settings stay as they are.
+
+If the copy cannot be saved, nothing changes. If the dashboard cannot be
+restored, the copy stays and the dashboard is left as it was; the log says
+why, and the repair stays so you can try again. Each try keeps another copy,
+which you can delete in Settings → Dashboards.
+
+The integration checks each time it starts and whenever its options change.
+A dashboard you rebuilt with no Apollo mmWave cards on it is yours and gets
+no repair. The check only looks at the dashboard the integration recorded as
+the one it created, so a copy it no longer knows gets no repair either; see
+[Troubleshooting](#troubleshooting). Deleting that dashboard makes the
+integration forget it, so one you make on `/apollo-mmwave` later gets no
+repair, unless you deleted it while the integration was not running (see
+[Use your own dashboards instead](#use-your-own-dashboards-instead)).
+Removing the integration removes the repair and keeps the copy.
+
 ## Lovelace resources
 
 The integration registers its JS as a Lovelace resource, so the cards work in
@@ -108,13 +151,13 @@ Copy the URLs from the warning exactly and add each one once, as a module:
 lovelace:
   resource_mode: yaml
   resources:
-    - url: /apollo_mmwave/apollo-radar-tuning.js?v=2.4.0b3
+    - url: /apollo_mmwave/apollo-radar-tuning.js?v=2.4.0
       type: module
-    - url: /apollo_mmwave/apollo-radar-zone-map-card.js?v=2.4.0b3
+    - url: /apollo_mmwave/apollo-radar-zone-map-card.js?v=2.4.0
       type: module
 ```
 
-The `?v=` is the integration version, such as `?v=2.4.0b3`, and nothing else,
+The `?v=` is the integration version, such as `?v=2.4.0`, and nothing else,
 so a bundle's URL changes only when the version does. After every upgrade,
 replace each row's URL with the new one from the warning instead of adding a
 second row. An out-of-date row makes the browser run the bundle twice, once
@@ -184,8 +227,10 @@ The selection is written only into the Apollo mmWave dashboard the integration
 created, and only while it still uses the strategy. Without that dashboard the
 selection is kept and used if you add the dashboard from the options later.
 Once you take control of it, the integration no longer writes to it, so add or
-remove devices in the dashboard itself. A dashboard you added yourself takes
-its own `devices` list (below).
+remove devices in the dashboard itself; the selection is kept and used if you
+restore the automatic dashboard (see
+[A saved copy misses new cards](#a-saved-copy-misses-new-cards)). A dashboard
+you added yourself takes its own `devices` list (below).
 
 A selected device that Home Assistant reports nothing for (for example one
 whose ESPHome entities are disabled) keeps a tab saying no radar data is
@@ -257,14 +302,16 @@ in Home Assistant, where every setting this dashboard leaves out lives.
 - **R PRO-1:** first what each radar is for: the LD2412 senses people
   anywhere in range, even sitting still, and the LD2450 tracks where people
   are and drives the zone map. Then the LD2412 steps above, and for the
-  LD2450: fix anything its Radar setup card flags, set **Cone rotation**,
-  then draw a zone and walk into it. **In automations**, use **LD2412
+  LD2450: fix anything its Radar setup card flags, set **Cone rotation**
+  (under Map settings on the zone map), then press **Add zone**, draw the
+  zone and walk into it. **In automations**, use **LD2412
   Presence** (the Radar Target row on this tab) for the whole room, or a
   zone's presence sensor for one part of it.
 - **MTR-1:** fix anything the Radar setup card flags, set **Cone rotation**
-  (under Configure on the zone map) to match how the sensor is mounted, then
-  draw a zone, reload the page, and walk into the zone to watch it turn on
-  under Zone presence. **In automations**, use a zone's presence sensor, or
+  (under Map settings on the zone map) to match how the sensor is mounted,
+  then press **Add zone** under the zone map and drag on the map to draw the
+  zone, reload the page, and walk into the zone to watch it turn on under
+  Zone presence. **In automations**, use a zone's presence sensor, or
   **LD2450 Presence** for anywhere the radar sees. An R PRO-1 without the
   optional LD2412 gets these steps too.
 
@@ -623,12 +670,15 @@ bottom in this order:
 - **Radar setup** checks the radar's settings and fixes them with one tap;
   see [Radar setup](#radar-setup).
 - **The zone map** shows where the radar sees people and which zones are on
-  (see [What the map shows](#what-the-map-shows)). Draw zones on it; see
+  (see [What the map shows](#what-the-map-shows)). Add, name and set zones
+  in the **Zones** panel under it and draw them on the map; see
   [Drawing zones](#drawing-zones).
 - **Zone presence** lists each zone's presence sensor, colored while someone
-  is in the zone. A zone you just drew shows up here after you reload the
-  page; a zone you delete leaves the list at once. While the radar is
-  offline the rows hide, because zone presence then reads `unavailable`.
+  is in the zone. A zone you add shows up here after you reload the page; a
+  zone you delete leaves the list at once. With no zones it says "Press
+  **Add zone** under the zone map to get a presence sensor for a zone.
+  Reload this page to see it here." While the radar is offline the rows
+  hide, because zone presence then reads `unavailable`.
 - **LD2450 Live** shows what the radar reports right now: LD2450 Presence,
   Moving Target, Still Target, Target Count, and each target's distance and
   direction. LD2450 Presence covers the radar's whole view, not a room or a
@@ -648,8 +698,8 @@ bottom in this order:
   setting was turned off, so most people never need it. The note under the
   card says **Radar Timeout** is how long LD2450 Presence stays on after the
   radar last sees someone. It does not hold the zones you draw: a zone turns
-  off as soon as nobody is in it, unless you give it a hold time in the zone
-  list under Configure (see
+  off as soon as nobody is in it, unless you give it a **Hold** time under
+  Zones on the zone map (see
   [Ignore zones and hold time](#ignore-zones-and-hold-time)). The LD2450's
   firmware version is on the [Device card](#device-card).
 - **Radar's built-in zones** shows the radar chip's own zone corners and
@@ -735,19 +785,19 @@ The zone map draws what the radar sees right now over the zones you drew:
   **Clear coverage** empties it. The paint lives in the open page only, and
   the browser remembers for each radar whether Coverage is on.
 - **Flip.** An administrator can tick **Flip the map left to right (display
-  only)** under Configure. The hint under it reads "Turn this on if, with the
-  map turned the way the room is, a dot moves the opposite way from you." To
-  check, hold the phone so the map's view cone points the way the sensor faces
-  in the room (at Cone rotation 0°, that is with the map's radar edge toward
-  the sensor while you face it), stand about 2 m (6 ft) in front of the sensor
-  and step to one side: the dot should move the same way on the screen. A
-  radar that passes this at one rotation needs no flip at another. The flip is
-  saved for the radar, so everyone who opens its map sees it flipped. Only the
-  drawing changes: the zones as stored, their presence sensors, movement
-  history and walked corners stay the same. The distance labels along the top
-  keep their values, so they read from high to low, and the **Cone rotation**
-  slider turns the cone the way you drag it. Other users see the box but
-  cannot change it.
+  only)** under **Map settings**. The hint under it reads "Turn this on if,
+  with the map turned the way the room is, a dot moves the opposite way from
+  you." To check, hold the phone so the map's view cone points the way the
+  sensor faces in the room (at Cone rotation 0°, that is with the map's radar
+  edge toward the sensor while you face it), stand about 2 m (6 ft) in front
+  of the sensor and step to one side: the dot should move the same way on the
+  screen. A radar that passes this at one rotation needs no flip at another.
+  The flip is saved for the radar, so everyone who opens its map sees it
+  flipped. Only the drawing changes: the zones as stored, their presence
+  sensors, movement history and walked corners stay the same. The distance
+  labels along the top keep their values, so they read from high to low, and
+  the **Cone rotation** slider turns the cone the way you drag it. Other users
+  see the box but cannot change it.
 
 **History** under the map replays movement instead, when an administrator has
 turned movement history on for the radar; see
@@ -810,18 +860,29 @@ presence sensors and other viewers' maps stay as they are.
 The zone map card on R PRO-1 and MTR-1 tabs draws occupancy zones over the
 LD2450's live targets. If the map shows no dot with someone in the room,
 check the [Radar setup](#radar-setup) card first. Only administrators can
-draw or change zones; other users see them, and the card answers a change
-with "Could not save". A new radar has no zones yet, so open **Configure →
-Zones** on the card and press **Add Zone** first. Then pick a zone with its
-button, choose Rectangle, Ellipse or Polygon from the drawing-mode menu (✎),
-and draw on the grid, or walk the zone's corners with 🚶 (see
-[Mark corners by walking](#mark-corners-by-walking)):
+add, draw or change zones; other users see them, and the card answers a
+change with "Could not save".
 
-- **Rectangle:** drag out a box. A click, a tap or a perfectly straight drag
-  draws and saves nothing.
-- **Ellipse:** drag out its bounding box. A click, a tap or a perfectly
-  straight drag still saves an ellipse with a 1 mm radius over the zone, so
-  use **Undo last zone change** (↶) if that happens.
+A new radar has no zones yet. The **Zones** panel under the map then says
+"No zones yet. Press Add zone, then drag on the map to draw it.", and a
+press on the map says "Press Add zone under the map first." If the sensor is
+turned or mounted in a corner, set **Cone rotation** under **Map settings**
+first (see [Map units and size](#map-units-and-size)). Then press **Add
+zone**: it adds "Zone 1" and picks it. Drag on the map to draw it as a
+rectangle, or first choose Ellipse or Polygon from the drawing-mode menu
+(✎) on the map, or walk the zone's corners with 🚶 (see
+[Mark corners by walking](#mark-corners-by-walking)). The zone's editor
+under the chips says how to draw it in the mode you chose. Drawing a zone
+that already has a shape replaces that shape. Naming, **Type**, **Hold**
+and deleting are under [The Zones panel](#the-zones-panel).
+
+- **Rectangle:** drag out a box. A click or a tap draws and saves nothing;
+  on a zone it picks that zone instead. A perfectly straight drag saves
+  nothing either.
+- **Ellipse:** drag out its bounding box. A click or a tap saves nothing
+  and picks the zone under it, as for a rectangle. A perfectly straight
+  drag still saves an ellipse with a 1 mm radius one way, so use **Undo
+  last zone change** (↶) if that happens.
 - **Polygon:** click or tap each corner, then press **Finish polygon** (✓) or
   double-click or double-tap the last corner. A polygon needs at least 3
   distinct corners and finishes on its own at 32. With fewer, **Finish
@@ -831,7 +892,7 @@ and draw on the grid, or walk the zone's corners with 🚶 (see
   says "Select a zone first." Backspace or **Undo last point** removes the
   last corner and Escape discards the polygon; keys typed into a text field
   go to that field instead.
-- Pressing anywhere else in the card, such as a zone button, **Add Zone** or
+- Pressing anywhere else in the card, such as a zone's chip, **Add zone** or
   the rotation slider, cancels a shape in progress (the buttons on the grid
   itself do not). Moving the mouse off the grid cancels a rectangle or ellipse
   drag but keeps a polygon's corners.
@@ -861,8 +922,8 @@ the centimeter, such as "2.45 m × 1.80 m", while corners snap finer than
 them. Near the top edge of the map, where the radar is on most maps, a
 mouse pointer's readout shows below it instead, and a finger's beside it, on
 the side with more room. A polygon shows the size of the box around its
-corners. The size is the one the save stores, as snapped. The zone list
-under **Configure → Zones** reads sizes to 0.1 m.
+corners. The size is the one the save stores, as snapped. The zone's
+editor under **Zones** reads sizes to 0.1 m.
 
 The map starts locked once the radar has zones, so a scroll on a phone
 cannot draw over a zone. The button in the corner of the map reads
@@ -872,35 +933,95 @@ them." or "Drawing and cone rotation unlocked. You can edit zones now." The
 browser remembers your choice for each radar. While the map is locked:
 
 - A swipe that starts on the map scrolls the page, and two fingers still
-  zoom and pan it. A tap on it outlines the **Locked** button and says
-  "Unlock the map to draw zones."
-- Double-clicking a zone's button or pressing **Clear All Zones** clears
+  zoom and pan it. A tap on a zone picks it. A tap anywhere else outlines
+  the **Locked** button and says "Unlock the map to draw zones."
+- **Clear all shapes** under **Map settings** looks dimmed and clears
   nothing: the **Locked** button is outlined and the card says "Unlock the
-  map to clear zones." **Clear All Zones** looks dimmed meanwhile. **Undo
-  last zone change**, renaming, **Delete** and **Add Zone** still work.
-- The **Cone rotation** slider under Configure is gray, a scroll that starts
-  on it scrolls the page, and a tap or drag on it outlines the **Locked**
-  button and shows "Cone rotation is locked. Press Locked on the map to
-  change it."
+  map to clear zones."
+- **Add zone**, a zone's name, **Type** and **Hold**, **Delete zone** and
+  **Undo last zone change** still work. Instead of how to draw, the zone's
+  editor says "The map is locked, so drawing is off. Unlock it to draw this
+  zone or change its shape." Its **Unlock** button unlocks the map, as
+  **Locked** does.
+- The **Cone rotation** slider under **Map settings** is gray, a scroll
+  that starts on it scrolls the page, and a tap or drag on it outlines the
+  **Locked** button and shows "Cone rotation is locked. Press Locked on the
+  map to change it."
 
 An unlocked map lets a swipe scroll the page too while no zone is selected,
 or while you mark corners by walking, since nothing can be drawn then.
 
-Double-clicking a zone's button clears its shape, and **Clear All Zones**
-clears every zone; **Undo last zone change** (↶) puts them back. Under
-**Configure → Zones**, **Add Zone** adds a zone and each row renames (**Save**)
-or deletes (**Delete**) one. A second line in each row shows the zone's size,
-or "No shape yet. Select the zone and draw it on the map.", then its **Type**
-and **Hold** (see [Ignore zones and hold time](#ignore-zones-and-hold-time)).
-Saving a name for a zone that only the card's YAML `zones:` list names
-creates that zone, so the name sticks, and a name you are typing is kept when
-the card receives an update from elsewhere. **Delete** cannot be undone: Undo
-does not bring a deleted zone back.
+### The Zones panel
 
-Other users see the zones, the zone settings grayed out under "Only an
-administrator can change these." and the flip box grayed out. They get no
-🚶 (in the menu or as a chip), no **History** and no Movement history
-setting.
+The **Zones** panel sits right under the map, below **Coverage** (and
+**History**, while movement history is on), and is always open. It has
+three parts:
+
+- **Add zone** adds a zone with the lowest free number, such as "Zone 2",
+  with no shape yet, and picks it. Its sensors are created at once. The map
+  holds up to 32 zones; then **Add zone** is grayed out and the panel says
+  "The map holds up to 32 zones. Delete one to add another."
+- **The chips** name each zone, with a dot in its color on the map: hollow
+  and dashed while the zone is not drawn yet, and gray and hatched for an
+  ignore zone. The picked zone's chip has a colored ring around it. Press a
+  chip to pick its zone. You can also tap the zone on the map: on a locked
+  map, and in Rectangle or Ellipse mode on an unlocked one, a tap picks the
+  zone under it, the smallest one where zones overlap. While the map is
+  unlocked, the picked zone is outlined thicker. When the card opens, the
+  first zone is picked.
+- **The editor** under the chips belongs to the picked zone, with its
+  number as the heading:
+  - **Name.** Type a name and press Enter, leave the field, or pick
+    another zone, to save it. Escape puts the saved name back, and an empty
+    field saves the default name, such as "Zone 2". The chip and the label
+    on the map change as you save.
+  - The zone's size, such as "Size 2.0 m × 0.9 m", or "Not drawn yet".
+  - **Type** and **Hold** (see
+    [Ignore zones and hold time](#ignore-zones-and-hold-time)), with a line
+    under them that says what they do for this zone.
+  - **Now** says what the zone's presence sensor reads: "Someone is in this
+    zone", "On, held for someone who went still", "Nobody is in this zone",
+    or "Radar offline". An ignore zone reads "Never turns on, since it
+    ignores targets", a zone with no shape "Turns on once the zone is
+    drawn", and a zone whose sensor is not there yet "No presence sensor
+    yet".
+  - How to draw the zone in the drawing mode chosen on the map, such as
+    "Drag on the map to draw this zone as a rectangle. ✎ on the map offers
+    an ellipse or a polygon. A tap on another zone picks it.", or the lock
+    note with **Unlock** while the map is locked.
+  - **Delete zone** asks first, for example "Delete Couch? Its sensors
+    leave Home Assistant, so automations that use them stop working. This
+    cannot be undone." **Delete** deletes the zone, and **Keep it** or
+    Escape keeps it. Undo does not bring a deleted zone back.
+
+A name, a **Type** or a **Hold** saves on its own. Beside the zone's
+heading the card shows "Saving...", then "Saved", or "Not saved" in red
+with a "Could not save" message; a name you typed then stays in the field,
+so you can try again. A shape you draw says "Couch saved", with the zone's
+name. Saving a name for a zone that only the card's YAML `zones:` list
+names creates that zone, so the name sticks, and a name you are typing is
+kept when the card receives an update from elsewhere.
+
+**Map settings**, at the bottom of the card, opens the map's options:
+**Cone rotation** (see [Map units and size](#map-units-and-size)), **Flip
+the map left to right (display only)** (see
+[What the map shows](#what-the-map-shows)), **Movement history** (see
+[Movement history](#movement-history)), a line that says which target
+sensors the map reads, **Clear all shapes** and the grid's units and range.
+**Clear all shapes** shows while any zone has a shape, and asks first:
+"Clear every zone's shape? The zones keep their names, types and hold
+times, and ↶ on the map brings the shapes back." On a card whose YAML hides
+↶ (`show_undo: false`) it ends "This cannot be undone." instead. **Clear
+shapes** clears them and says "All shapes cleared", and **Keep them** keeps
+them. No button clears a single zone's shape: draw a new one over it,
+delete the zone, or send `shape: none` with `apollo_mmwave.update_zone`.
+
+Other users see the zones and the editor, with its fields grayed out under
+"Only an administrator can change these.", and no **Add zone**, **Delete
+zone** or **Clear all shapes**. With no zones the panel tells them "No
+zones yet. An administrator can add them." They also see the flip box
+grayed out, and get no 🚶 (in the menu or as a chip), no **History** and no
+Movement history setting.
 
 ### Mark corners by walking
 
@@ -909,11 +1030,11 @@ its corners where you stand. You need to be an administrator, the map must be
 unlocked (on a locked map 🚶 says "Unlock the map to draw zones."), and you
 must be the only person the radar sees.
 
-1. Select the zone with its button. Open the drawing-mode menu (✎) and press
-   🚶 (**Mark corners by walking**). On a phone or tablet you can press the
-   **🚶 Mark corners by walking** chip beside **Coverage** under the map
-   instead. A panel opens under the map, and the chip hides until you leave
-   Walk.
+1. Pick the zone with its chip under **Zones**. Open the drawing-mode menu
+   (✎) and press 🚶 (**Mark corners by walking**). On a phone or tablet you
+   can press the **🚶 Mark corners by walking** chip beside **Coverage**
+   under the map instead. A panel opens under the map, and the chip hides
+   until you leave Walk.
 2. Stand still in one corner of the area for about 3 seconds and press
    **Corner here**.
 3. Walk along the edge to the next corner, stand still for about 3 seconds,
@@ -972,7 +1093,7 @@ drew outside it. It fits again when you let go of the slider. A caption at
 the edge of that area reads "Radar range 6 m (20 ft), 120°". The map can be
 wider than it is tall, and the radar stays at the edge it is mounted on.
 
-Set **Cone rotation** under **Configure** to match how the sensor is
+Set **Cone rotation** under **Map settings** to match how the sensor is
 mounted. The hint under the slider reads "Mount the sensor first, then set
 this. Zones match the room only while the sensor stays mounted that way."
 Nothing on the radar tells the map how it is mounted, so a sensor that is
@@ -1002,13 +1123,16 @@ and `apollo_mmwave.update_zone` can set it too (see below).
 
 ### Ignore zones and hold time
 
-Each row under **Configure → Zones** has two settings on its second line,
-**Type** and **Hold**. A hint above the rows sums them up: "Ignore drops
-targets inside that zone, such as a fan or a curtain, before the other zones
-are checked. Hold keeps a zone on for a while after the radar loses someone
-who sat still." A change is saved for the radar as soon as you pick it. Only
-administrators can change them; anyone else sees them grayed out under "Only
-an administrator can change these."
+Each zone's editor in the **Zones** panel (see
+[The Zones panel](#the-zones-panel)) has two settings, **Type** and
+**Hold**. The line under them follows the zone's type. For a detect zone it
+reads "Detect: its presence sensor turns on while someone is inside. Hold
+keeps it on for a while after someone inside goes still and the radar loses
+them.", and for an ignore zone "Ignore: targets inside, such as a fan or a
+curtain, are dropped before the other zones are checked. Ignore zones never
+hold." A change is saved for the radar as soon as you pick it, and "Saved"
+shows beside the zone's heading. Only administrators can change them; anyone
+else sees them grayed out under "Only an administrator can change these."
 
 **Type** is **Detect** (the default) or **Ignore**:
 
@@ -1143,25 +1267,26 @@ is inside the zone, or while the zone is held (see
   presence sensor has the attribute `zone_type: ignore`. The shape sensor
   adds `zone_type` and `hold_s` to its attributes when they are not the
   defaults.
-- Naming a zone (in the zone manager, or with `update_zone`'s `name`, also in
-  the call that creates the zone) renames its entities to "Zone 1 - Couch"
-  and "Zone 1 presence - Couch". The radar's name is then no longer part of
-  their friendly names, so with several radars give zones distinct names, or
-  rename an entity yourself in its settings (a name you set there is kept by
-  later zone renames). Clearing the name sets them back to "Zone 1" and "Zone
-  1 presence", still without the radar name. The zone manager saves a
-  cleared name as the default "Zone 1", which does the same for entities
-  that were named and leaves entities that never were as they are. The
-  card's own zone labels are not affected.
-- **Add Zone** takes the lowest free zone number, so after you delete a
-  zone its number can come back. A zone number used before starts with
-  fresh entity names: names Apollo mmWave gave the old zone, such as "Zone 1
-  presence - Couch", are cleared, and names you typed in the entity settings
-  stay. An `update_zone` call that creates a zone with no name, or with its
-  default name, does the same. Home Assistant brings the entity id back with
-  the number, for example `binary_sensor.couch_presence` if you had renamed
-  it, and no public Home Assistant API prevents that, so automations written
-  for the deleted zone follow the new one. Check them after you add a zone.
+- Naming a zone (in its editor under **Zones**, or with `update_zone`'s
+  `name`, also in the call that creates the zone) renames its entities to
+  "Zone 1 - Couch" and "Zone 1 presence - Couch". The radar's name is then no
+  longer part of their friendly names, so with several radars give zones
+  distinct names, or rename an entity yourself in its settings (a name you set
+  there is kept by later zone renames). Clearing the name sets them back to
+  "Zone 1" and "Zone 1 presence", still without the radar name. The zone's
+  editor saves a cleared name as the default "Zone 1", which does the same for
+  entities that were named and leaves entities that never were as they are.
+  The card's own zone labels are not affected.
+- **Add zone** takes the lowest free zone number, up to 32, so after you
+  delete a zone its number can come back. A zone number used before starts
+  with fresh entity names: names Apollo mmWave gave the old zone, such as
+  "Zone 1 presence - Couch", are cleared, and names you typed in the entity
+  settings stay. An `update_zone` call that creates a zone with no name, or
+  with its default name, does the same. Home Assistant brings the entity id
+  back with the number, for example `binary_sensor.couch_presence` if you had
+  renamed it, and no public Home Assistant API prevents that, so automations
+  written for the deleted zone follow the new one. Check them after you add a
+  zone.
 - `apollo_mmwave.update_zone` changes zones from automations and scripts;
   Settings → Tools → Actions lists its fields (also in the table below). It
   takes the radar's `device_id` and a `zone_id` of 1 or more, with geometry in
@@ -1221,7 +1346,7 @@ the zone map: to find where a ghost comes from, see how people move through a
 room, or learn why a zone turned on. It is off for every radar until an
 administrator turns it on, one radar at a time.
 
-**Turn it on.** On the zone map, open **Configure** and tick **Movement
+**Turn it on.** On the zone map, open **Map settings** and tick **Movement
 history**. Its hint reads "Keeps up to 24 hours of target positions so
 administrators can replay them here. Backups include them. Turning it off
 deletes them from Home Assistant." The card answers "Movement history is on.
@@ -1318,13 +1443,19 @@ Dashboards. The cards and strategies stay available:
   ```
 
   The integration never writes to or deletes a dashboard you made, with one
-  catch: give yours a URL other than `apollo-mmwave`. If you delete the
-  integration's own dashboard and make one on that URL whose configuration is
-  exactly the strategy above, the integration may take it for its own. While
-  a dashboard of yours holds `apollo-mmwave`, the integration cannot add its
-  own there and says so. A YAML dashboard on `apollo-mmwave` is left alone,
-  and so is a dashboard row the integration created there earlier while that
-  YAML dashboard holds the path. To get rid of that old one, take the YAML
+  catch: give yours a URL other than `apollo-mmwave`. When you delete the
+  integration's own dashboard, the integration forgets it, so a dashboard you
+  make on that URL later is yours. It cannot forget a dashboard you deleted
+  while it was not running, for example while it was disabled. Then a
+  dashboard you make on `apollo-mmwave` is taken for its own if its
+  configuration is exactly the strategy above, and if it holds Apollo mmWave
+  cards, it is offered the restore of
+  [A saved copy misses new cards](#a-saved-copy-misses-new-cards). Either
+  way nothing changes until you press **Submit**. While a dashboard of yours
+  holds `apollo-mmwave`, the integration cannot add its own there and says
+  so. A YAML dashboard on `apollo-mmwave` is left alone, and so is a
+  dashboard row the integration created there earlier while that YAML
+  dashboard holds the path. To get rid of that old one, take the YAML
   dashboard off the path first and then delete it in Settings → Dashboards;
   deleting it while the YAML dashboard is there takes the YAML dashboard's
   panel down with it.
@@ -1441,8 +1572,8 @@ card `grid_options: {columns: full}`, or put the card on a Panel view.
 **View only (the map without drawing tools)** in its card editor, for a map
 with nothing to press: the title and the map with its lit zones, numbered
 dots, trails, the "Radar offline" note and the flip. It has no drawing tools,
-lock, undo, unit switch, zoom, zone buttons, Coverage, History, Walk or
-Configure, and a finger on it scrolls the page, which suits a phone dashboard.
+lock, undo, unit switch, zoom, Zones panel, Coverage, History, Walk or Map
+settings, and a finger on it scrolls the page, which suits a phone dashboard.
 The card editor hides the lock setting while View only is ticked, since a
 view-only map has no lock. The Apollo mmWave dashboard keeps the full map.
 
@@ -1568,6 +1699,25 @@ the two rows yourself under Settings → Dashboards → ⋮ → **Resources**.
   Home Assistant to finish updating.** The new files are installed, but Home
   Assistant still runs the old version: restart it. See
   [After an update](#after-an-update).
+- **The dashboard misses newer cards**, such as Radar setup, **LD2450
+  Controls** or the Device card, while their sensors exist. The dashboard is
+  a saved copy from an older release: someone used **Take control** on it.
+  Open Settings → System → Repairs and press "The Apollo mmWave dashboard is
+  a saved copy", or choose **Restore the automatic dashboard** in the
+  integration's options, then press **Submit** (see
+  [A saved copy misses new cards](#a-saved-copy-misses-new-cards)). If
+  neither shows up, the integration no longer knows that dashboard as its
+  own, for example because it was taken control of under 2.2.5 or earlier.
+  Then either add a second dashboard with the Community dashboards picker
+  (see [Use your own dashboards instead](#use-your-own-dashboards-instead)),
+  or delete the old one in Settings → Dashboards, after copying anything you
+  want to keep from its raw configuration editor, and add it again from the
+  integration's options with **Add the Apollo mmWave dashboard**.
+- **Where are a zone's name, Type and Hold?** In the **Zones** panel right
+  under the map: press the zone's chip, or tap the zone on the map, and its
+  editor opens under the chips. **Cone rotation**, the flip, movement
+  history and **Clear all shapes** are under **Map settings** at the bottom
+  of the card (see [The Zones panel](#the-zones-panel)).
 - **There is no Apollo mmWave dashboard in the sidebar.** It is only for
   administrators unless you unticked that box, so sign in as one. If you
   unticked **Add the Apollo mmWave dashboard to the sidebar**, or setup could
@@ -1643,7 +1793,7 @@ the two rows yourself under Settings → Dashboards → ⋮ → **Resources**.
   edge of the map ahead of you, so the map is turned the way the room is,
   face the radar and step to your right: the dot should move right. If it
   moves left, an administrator can tick **Flip the map left to right
-  (display only)** under **Configure** (see
+  (display only)** under **Map settings** (see
   [What the map shows](#what-the-map-shows)). It changes only the drawing,
   not the zones or their presence sensors.
 - **Zones are hard to place precisely.** Zoom in with **+**, with Ctrl or
@@ -1680,7 +1830,7 @@ the two rows yourself under Settings → Dashboards → ⋮ → **Resources**.
 - **Movement history is empty.** History says "No movement recorded in this
   range yet." when nothing was recorded in the range you picked. Recording
   starts when an administrator turns **Movement history** on under
-  **Configure**, and keeps nothing from before that. Targets inside ignore
+  **Map settings**, and keeps nothing from before that. Targets inside ignore
   zones are never recorded, and **Clear history**, turning it off and
   removing the radar delete what was there. Try **24 h**. If History says
   "Only an administrator can open movement history.", sign in as an

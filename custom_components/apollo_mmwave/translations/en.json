@@ -24,6 +24,7 @@
                 "description": "These actions change only the Apollo mmWave dashboard this integration created. A dashboard you made on another URL is never touched.",
                 "menu_options": {
                     "add_dashboard": "Add the Apollo mmWave dashboard",
+                    "restore_dashboard": "Restore the automatic dashboard",
                     "remove_dashboard": "Remove the Apollo mmWave dashboard",
                     "dashboard_devices": "Choose the dashboard's devices"
                 }
@@ -42,9 +43,13 @@
                 "title": "Remove the Apollo mmWave dashboard",
                 "description": "This deletes the **Apollo mmWave** dashboard at /apollo-mmwave that this integration created, along with any title, icon or strategy options you changed on it. Your sensors, zones and calibration values stay, and the cards still work on your own dashboards. You can add the dashboard again from these options.\n\nPress Submit to delete it."
             },
+            "restore_dashboard": {
+                "title": "Restore the automatic dashboard",
+                "description": "The **Apollo mmWave** dashboard at /apollo-mmwave is a saved copy. Someone used **Take control** on it, so it stopped building itself and misses the cards added since it was saved, for example the Radar setup card, **LD2450 Controls** (Zone Type and Multi Target Tracking) and the Device card.\n\nRestore puts the automatic dashboard back at /apollo-mmwave. It shows every current card for each Apollo mmWave sensor and keeps itself up to date. Your copy is kept as a separate dashboard named **Apollo mmWave (saved copy)**. It is not in the sidebar: open it from Settings > Dashboards.\n\nNothing changes until you press Submit."
+            },
             "dashboard_devices": {
                 "title": "Dashboard devices",
-                "description": "Choose which sensors the Apollo mmWave dashboard shows. The choice is written into the dashboard this integration created, if there is one, and is used if you add it from these options later. A dashboard you made on another URL is never touched: set `devices` in its raw configuration instead.",
+                "description": "Choose which sensors the Apollo mmWave dashboard shows. The choice is written into the dashboard this integration created, if there is one, and is used if you add or restore it from these options later. A dashboard you made on another URL is never touched: set `devices` in its raw configuration instead.",
                 "data": {
                     "dashboard_devices": "Dashboard devices"
                 },
@@ -56,7 +61,30 @@
         "error": {
             "dashboard_not_created": "The dashboard could not be created. Another dashboard may already use /apollo-mmwave; the Home Assistant log says why. You can add one from Settings > Dashboards > Add dashboard > Apollo Radar Tuning instead.",
             "dashboard_not_removed": "The dashboard could not be removed. The Home Assistant log says why. You can delete it in Settings > Dashboards.",
-            "dashboard_not_updated": "The dashboard could not be updated. The Home Assistant log says why."
+            "dashboard_not_updated": "The dashboard could not be updated. The Home Assistant log says why.",
+            "copy_not_saved": "Nothing was changed: your copy could not be saved as a separate dashboard, so the Apollo mmWave dashboard was left as it is. The Home Assistant log says why. Once that is fixed, try again.",
+            "dashboard_not_restored": "Your copy is saved as the **Apollo mmWave (saved copy)** dashboard under Settings > Dashboards, but the Apollo mmWave dashboard could not be restored and was left as it is. The Home Assistant log says why. Once that is fixed, try again. Each try keeps another copy, and you can delete the extra ones in Settings > Dashboards."
+        },
+        "abort": {
+            "not_a_saved_copy": "The Apollo mmWave dashboard is not a saved copy any more, so there is nothing to restore."
+        }
+    },
+    "issues": {
+        "dashboard_saved_copy": {
+            "title": "The Apollo mmWave dashboard is a saved copy",
+            "fix_flow": {
+                "step": {
+                    "confirm": {
+                        "title": "Restore the automatic Apollo mmWave dashboard",
+                        "description": "The **Apollo mmWave** dashboard at /apollo-mmwave is a saved copy. Someone used **Take control** on it, so it stopped building itself and misses the cards added since it was saved, for example the Radar setup card, **LD2450 Controls** (Zone Type and Multi Target Tracking) and the Device card.\n\nRestore puts the automatic dashboard back at /apollo-mmwave. It shows every current card for each Apollo mmWave sensor and keeps itself up to date. Your copy is kept as a separate dashboard named **Apollo mmWave (saved copy)**. It is not in the sidebar: open it from Settings > Dashboards.\n\nNothing changes until you press Submit."
+                    }
+                },
+                "abort": {
+                    "not_a_saved_copy": "The Apollo mmWave dashboard is not a saved copy any more, so there is nothing to restore.",
+                    "copy_not_saved": "Nothing was changed: your copy could not be saved as a separate dashboard, so the Apollo mmWave dashboard was left as it is. The Home Assistant log says why. Once that is fixed, try again.",
+                    "dashboard_not_restored": "Your copy is saved as the **Apollo mmWave (saved copy)** dashboard under Settings > Dashboards, but the Apollo mmWave dashboard could not be restored and was left as it is. The Home Assistant log says why. Once that is fixed, try again. Each try keeps another copy, and you can delete the extra ones in Settings > Dashboards."
+                }
+            }
         }
     },
     "exceptions": {
