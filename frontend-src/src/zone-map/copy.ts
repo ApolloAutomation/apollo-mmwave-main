@@ -167,6 +167,19 @@ export function zoomReadout(zoom: number): string {
   return `${Number(zoom.toFixed(1))}x`;
 }
 
+// Expand map: the button in the map's top right corner, and while the map
+// fills the window, the same button (now closing it) and the X beside the
+// title. The X's label is also its tooltip.
+export const FULL_WINDOW_OPEN_LABEL = "Expand map";
+export const FULL_WINDOW_OPEN_TITLE = "Expand the map to fill the window. Press Esc to return.";
+export const FULL_WINDOW_CLOSE_LABEL = "Close expanded map";
+export const FULL_WINDOW_CLOSE_TITLE = "Close expanded map. You can also press Esc.";
+
+/** What a screen reader calls the expanded map: "Office zone map". */
+export function fullWindowLabel(title: string): string {
+  return title ? `${title} zone map` : "Zone map";
+}
+
 export const MIRROR_LABEL = "Flip the map left to right (display only)";
 // Under Cone rotation. Nothing on the radar tells the map how it is
 // mounted, so a unit turned on its side or picked up moves the room under

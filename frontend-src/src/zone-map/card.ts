@@ -39,6 +39,10 @@ import {
   DELETE_ZONE_YES,
   DRAW_HINT_WALKING,
   DRAW_LOCKED_TOAST,
+  FULL_WINDOW_CLOSE_LABEL,
+  FULL_WINDOW_CLOSE_TITLE,
+  FULL_WINDOW_OPEN_LABEL,
+  FULL_WINDOW_OPEN_TITLE,
   HELD_SUFFIX,
   HISTORY_CLEAR,
   HISTORY_CLEARED_TOAST,
@@ -131,6 +135,7 @@ import {
   deleteZoneConfirm,
   drawHint,
   formatAgo,
+  fullWindowLabel,
   historyClearError,
   historyError,
   replayBadge,
@@ -140,10 +145,20 @@ import {
 } from './copy';
 import { ZONE_MAP_EDITOR_TAG, firstLd2450DeviceId } from './editor';
 import { formatHold, formatSize, zoneSize } from './format';
-import { backingStore } from './resolution';
+import {
+  FULL_WINDOW_BACK_MS,
+  FULL_WINDOW_HEADER_PX,
+  ICON_CLOSE,
+  ICON_COLLAPSE,
+  ICON_EXPAND,
+  fullWindowLayout,
+  iconSvg,
+  insideDialog,
+} from './full-window';
 import { pointInZone, rotateToMap } from './geometry';
 import { decodeMovement, heatCells, positionAt, sparkBuckets, trailAt } from './history';
 import { fallbackPresenceId, presenceLook } from './presence';
+import { backingStore, logicalWidth } from './resolution';
 import { snapDecimals, snapMm, snapStepMm } from './snap';
 import { TRAIL_GAP_MS, TRAIL_MS, TrailBuffer } from './trails';
 import {
@@ -596,6 +611,22 @@ const UNIT_ALIASES = Object.freeze({
   feet: 'ft',
 });
 
+// The one card on the page whose map fills the window (Expand map), or
+// null. Every zone map listens for keys on window, and only this one acts
+// on them while it is set.
+let expandedCard = null;
+// Makes each expanded map's history entry its own (see _openFullWindow).
+let fullWindowOpens = 0;
+
+// A reload while a map was expanded leaves its history entry on top, with
+// nothing open to close: step back off it, as Home Assistant does for the
+// entries its own dialogs leave.
+try {
+  if (typeof history !== 'undefined' && history.state?.apolloZoneMapFull !== undefined) history.back();
+} catch {
+  // No session history to tidy.
+}
+
 /** Run `callback` on the next animation frame, or in 16 ms where there are
  *  none. */
 function requestFrame(callback) {
@@ -713,6 +744,35 @@ export class ZoneMapCard extends HTMLElement {
     this._cssMapWidth = 0;
     this._canvasObserver = null;
     this._resolutionWatch = null;
+    // Expand map (see _openFullWindow): whether the map fills the window,
+    // the key of the history entry its open pushed, whether a history.back()
+    // of ours is still on its way, and whether the key going down now was
+    // used up (an Esc that put a field back, say). _fullParts holds the
+    // dialog, the container in it and the placeholder left in the card, and
+    // _fullLayout the split of the window it was last laid out to.
+    this._fullWindow = false;
+    this._fullKey = null;
+    this._backPending = false;
+    this._escConsumed = false;
+    this._fullLayout = null;
+    this._fullParts = null;
+    this._fullBox = null;
+    this._cardMapWidth = 0;
+    this._savedScrollY = 0;
+    this._savedHtml = null;
+    // Home Assistant's editor preview and dashboard edit mode set preview;
+    // a card in someone else's dialog (a more-info or popup card) has no
+    // room to expand. Neither shows Expand map.
+    this._preview = false;
+    this._inDialog = false;
+    // The map's width over its height (see _sizeCanvas).
+    this._aspect = 1;
+    // Back, or a history entry another page put on top: the expanded map
+    // closes, and leaves the history as it is.
+    this._onFullWindowPop = () => {
+      if (!this._fullWindow) return;
+      if (history.state?.apolloZoneMapFull !== this._fullKey) this._closeFullWindow({ reason: 'history' });
+    };
     // When the canvas was last painted, on the _now() clock.
     this._lastDrawAt = 0;
     // A few seconds of each live target's positions, page memory only: the
@@ -806,6 +866,20 @@ export class ZoneMapCard extends HTMLElement {
     this._applyView();
   }
 
+  /** Home Assistant sets this on a card in the editor's preview and in
+   *  dashboard edit mode, after setConfig: neither shows Expand map, and
+   *  an expanded map closes. */
+  get preview() {
+    return this._preview;
+  }
+
+  set preview(value) {
+    this._preview = !!value;
+    if (this._preview && this._fullWindow) this._closeFullWindow({ reason: 'user' });
+    if (this.isConnected) this._inDialog = insideDialog(this);
+    this._renderFullWindowButton();
+  }
+
   /** The card's config UI, an `ha-device-picker` and a title field. */
   static getConfigElement() {
     return document.createElement(ZONE_MAP_EDITOR_TAG);
@@ -867,6 +941,8 @@ export class ZoneMapCard extends HTMLElement {
     const previousDeviceId = this.deviceId;
     this.deviceId = String(config.device_id);
     if (previousDeviceId !== this.deviceId) {
+      // The expanded map was the old radar's.
+      if (this._fullWindow) this._closeFullWindow({ reason: 'rebuild' });
       // A live element can be pointed at another radar: a parent that
       // reassigns `config` on the same hui-card, or a wrapper card that calls
       // setConfig directly. (On supported Home Assistant the editor preview
@@ -1409,6 +1485,9 @@ export class ZoneMapCard extends HTMLElement {
     // The canvas's size and the screen's pixel ratio, which a detach stopped
     // following.
     if (this.canvas && !this._canvasObserver) this._observeCanvas();
+    // Whether this card sits in a dialog, where it has no room to expand.
+    this._inDialog = insideDialog(this);
+    this._renderFullWindowButton();
     // The page's version check, while the card is on the page.
     if (!this._version) {
       const version = watchVersion(() => {
@@ -1666,7 +1745,17 @@ export class ZoneMapCard extends HTMLElement {
   _renderTitle() {
     const host = this.shadowRoot.getElementById('deviceTitle');
     if (!host) return;
-    host.textContent = this.cardTitle || this._deviceLabel || '';
+    host.textContent = this._titleText();
+    if (this._fullWindow) {
+      // The expanded map is named after the radar, and its header may wrap.
+      this._fullParts?.dialog?.setAttribute('aria-label', fullWindowLabel(this._titleText()));
+      this._scheduleFullLayout();
+    }
+  }
+
+  /** The title over the map: the card's own, else the radar's name. */
+  _titleText() {
+    return this.cardTitle || this._deviceLabel || '';
   }
 
   /**
@@ -1685,6 +1774,8 @@ export class ZoneMapCard extends HTMLElement {
     if (!host) return;
     this._versionShown = notice;
     host.replaceChildren(...(notice ? [versionNoticeElement(notice)] : []));
+    // A notice above an expanded map takes room from it.
+    if (this._fullWindow) this._scheduleFullLayout();
   }
 
   /**
@@ -1960,10 +2051,47 @@ export class ZoneMapCard extends HTMLElement {
         .config-content { padding: 4px 0; }
         .config-content[hidden] { display: none; }
         .container :focus-visible { outline: 2px solid var(--primary-color); outline-offset: 2px; }
+        /* Expand map, in the map's top right corner, under the x labels
+           with the notes. A replay's badge moves left of it. */
+        .overlay-controls-top { top: var(--zm-note-top, 4px); bottom: auto; right: 4px; }
+        .overlay-controls-top[hidden], .full-close[hidden] { display: none; }
+        .overlay-controls button.full-toggle { width: 32px; height: 32px; min-width: 32px; padding: 0; }
+        .full-toggle:focus-visible, .full-close:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 2px; }
+        .container.has-expand .map-note.replay-badge { right: 40px; }
+        .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+        /* Where the card was while the map fills the window, so the
+           dashboard behind keeps its place. */
+        .full-placeholder { border-radius: var(--ha-card-border-radius, 12px); background: var(--ha-card-background, var(--card-background-color)); }
+        .map-side { container: map-side / inline-size; }
+        /* The full window: the top layer, opaque, and nothing behind it
+           scrolls or reloads with a pull. */
+        dialog.full-window { position: fixed; inset: 0; width: auto; height: auto; max-width: none; max-height: none; margin: 0; padding: 0; border: 0; background: var(--primary-background-color, Canvas); color: inherit; overflow: hidden; overscroll-behavior: none; }
+        dialog.full-window::backdrop { background: rgba(0, 0, 0, 0.6); }
+        .container.full { box-sizing: border-box; width: 100%; height: 100%; border: 0; border-radius: 0; box-shadow: none; display: grid; gap: 8px 16px;
+          padding: calc(8px + var(--safe-area-inset-top, env(safe-area-inset-top, 0px))) calc(8px + var(--safe-area-inset-right, env(safe-area-inset-right, 0px))) calc(8px + var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px))) calc(8px + var(--safe-area-inset-left, env(safe-area-inset-left, 0px))); }
+        .container.full .title-row { display: flex; align-items: center; gap: 8px; min-height: 40px; min-width: 0; }
+        .container.full .title-row .device-title { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .container.full .full-close { flex: none; width: 40px; height: 40px; padding: 0; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; background: transparent; color: inherit; }
+        .container.full .full-close:hover { background: rgba(127, 127, 127, 0.16); opacity: 1; }
+        .container.full .canvas-container { box-sizing: border-box; width: var(--zm-full-width); margin: 0 auto; flex: none; }
+        .container.full canvas, .container.full canvas.pans { touch-action: none; }
+        .container.full .map-side { min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding-inline-end: 4px; }
+        .container.full[data-layout="stacked"] { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto auto minmax(0, 1fr); }
+        .container.full[data-layout="side"] { grid-template-columns: minmax(0, 1fr) var(--zm-side-width); grid-template-rows: auto auto minmax(0, 1fr); }
+        .container.full[data-layout="side"] .map-stage { grid-column: 1; grid-row: 1 / -1; display: flex; align-items: center; justify-content: center; min-height: 0; }
+        .container.full[data-layout="side"] .title-row { grid-column: 2; grid-row: 1; }
+        .container.full[data-layout="side"] #versionNotice { grid-column: 2; grid-row: 2; }
+        .container.full[data-layout="side"] .map-side { grid-column: 2; grid-row: 3; }
       </style>
       <div class="container ${this.darkMode ? 'dark' : ''}">
-        <div class="device-title" id="deviceTitle"></div>
+        <!-- Expand map moves this container into the dialog at the end and
+             back (_openFullWindow): the X beside the title closes it there. -->
+        <div class="title-row">
+          <button id="btnFullWindowClose" class="full-close" type="button" aria-label="${FULL_WINDOW_CLOSE_LABEL}" title="${FULL_WINDOW_CLOSE_LABEL}" hidden>${iconSvg(ICON_CLOSE)}</button>
+          <div class="device-title" id="deviceTitle"></div>
+        </div>
         <div id="versionNotice"></div>
+        <div class="map-stage" id="mapStage">
         <div class="canvas-container">
           <canvas id="zoneCanvas"></canvas>
           <div class="map-note" id="offlineNote" role="status" ${this._offlineShown ? '' : 'hidden'}>${OFFLINE_NOTE}</div>
@@ -1997,7 +2125,14 @@ export class ZoneMapCard extends HTMLElement {
             <button id="btnZoomIn" title="${ZOOM_IN_TITLE}" aria-label="${ZOOM_IN_LABEL}">+</button>
             <button id="btnZoomFit" title="${ZOOM_FIT_ALL_LABEL}" aria-label="${ZOOM_FIT_ALL_LABEL}">${ZOOM_FIT}</button>
           </div>
+          <!-- _renderFullWindowButton shows it where the map can expand. -->
+          <div class="overlay-controls overlay-controls-top" id="overlayControlsTop" hidden>
+            <button id="btnFullWindow" class="full-toggle" type="button" aria-haspopup="dialog" aria-label="${FULL_WINDOW_OPEN_LABEL}" title="${FULL_WINDOW_OPEN_TITLE}" data-icon="expand">${iconSvg(ICON_EXPAND)}</button>
+          </div>
         </div>
+        </div>
+        <!-- Everything under the map: beside it or under it while expanded. -->
+        <div class="map-side" id="mapSide">
         ${this._walkPanelTemplate()}
         ${this._viewToolsTemplate()}
         ${this._historyPanelTemplate()}
@@ -2061,7 +2196,12 @@ export class ZoneMapCard extends HTMLElement {
           </div>
 
         </div>
+        </div>
+        <!-- The card's toasts, repeated for screen readers while expanded:
+             Home Assistant's own are inert under the modal dialog. -->
+        <div id="fullWindowStatus" class="visually-hidden" role="status" aria-live="polite"></div>
       </div>
+      <dialog class="full-window" id="fullWindow"></dialog>
     `;
   }
 
@@ -2197,6 +2337,12 @@ export class ZoneMapCard extends HTMLElement {
   render() {
     // TODO(REVIEW_REPORT.md X47): with a cached payload, chips, manager, status and drawGrid run
     // twice. Skipping the first pass changes selection on a same-device setConfig; decide first.
+    // A theme flip or a same-radar setConfig while the map is expanded
+    // builds the card again. The old dialog goes with the old DOM, which
+    // fires no close, and the new one opens in its place at the end
+    // (_remountFullWindow), with the focus where it was.
+    const reopen = this._fullWindow ? { focusId: this.shadowRoot.activeElement?.id || null } : null;
+    if (reopen) this._unobserveFullWindow();
     // The old template's lock closure would otherwise set a cursor and a
     // slider that are about to go, from _applyAutoLock, on a template that
     // has no Locked button to make a new one.
@@ -2219,6 +2365,8 @@ export class ZoneMapCard extends HTMLElement {
       if (host) host.textContent = this._loadError;
       this.canvas = null;
       this.ctx = null;
+      this._unobserveCanvas();
+      this._remountFullWindow(reopen);
       return;
     }
 
@@ -2245,6 +2393,8 @@ export class ZoneMapCard extends HTMLElement {
     this._updateCanvasTouchMode();
     // A trail fading when the theme flipped keeps fading on the new canvas.
     this._kickTrailTimer();
+    this._renderFullWindowButton();
+    this._remountFullWindow(reopen);
   }
 
   /**
@@ -2469,6 +2619,7 @@ export class ZoneMapCard extends HTMLElement {
     this._attachWalkPanel();
     this._attachViewTools();
     this._attachHistoryPanel();
+    this._attachFullWindow();
   }
 
   _attachViewTools() {
@@ -3521,7 +3672,9 @@ export class ZoneMapCard extends HTMLElement {
     });
     root.getElementById('btnClearAllNo')?.addEventListener('click', closeClearAll);
     root.getElementById('clearAllConfirm')?.addEventListener('keydown', (event) => {
-      if (event.key === 'Escape') closeClearAll();
+      if (event.key !== 'Escape') return;
+      this._consumeEscape(event);
+      closeClearAll();
     });
   }
 
@@ -3649,6 +3802,9 @@ export class ZoneMapCard extends HTMLElement {
     this._detachGlobalListeners();
 
     this._onKeyDown = (event) => {
+      // While one zone map fills the window, the keys are its alone: a
+      // polygon open on another map must not take the Esc that closes it.
+      if (expandedCard && expandedCard !== this) return;
       // Keys typed into a text field belong to that field, not to the
       // drawing: without this, editing a zone name (in this card's manager or
       // anywhere else on the dashboard) popped a vertex per Backspace and
@@ -3672,6 +3828,9 @@ export class ZoneMapCard extends HTMLElement {
       }
       if (this.drawMode !== DRAW_MODES.POLYGON) return;
       if (event.key === 'Escape') {
+        // Dropping corners uses the key up, so an expanded map stays open;
+        // with none placed, Esc closes it.
+        if (this._polyPoints.length > 0) this._consumeEscape(event);
         this._polyPoints = [];
         this.isDrawing = false;
         // A payload or a unit change that came in while the polygon was open
@@ -3685,6 +3844,7 @@ export class ZoneMapCard extends HTMLElement {
     // Alt or Option let go mid-drag snaps the pointer's corner again.
     this._onKeyUp = (event) => {
       if (event.key === 'Alt') this._setCursorFree(false);
+      if (event.key === 'Escape') this._escConsumed = false;
     };
     window.addEventListener('keyup', this._onKeyUp);
 
@@ -3696,9 +3856,12 @@ export class ZoneMapCard extends HTMLElement {
       // nested), which neither the shadow root nor the canvas container
       // contains. The composed path still lists the real nodes, so ask it.
       const path = event.composedPath();
-      // The overlay buttons (Finish, Undo, mode, lock) live in the container
-      // and act on the drawing, so a press on them must not cancel it.
+      // The overlay buttons (Finish, Undo, mode, lock, Expand map) live in
+      // the container and act on the drawing, so a press on them must not
+      // cancel it. Nor does the X that closes the expanded map: a polygon
+      // comes back to the card with its corners.
       if (canvasContainer && path.includes(canvasContainer)) return;
+      if (path.some((node) => node?.id === 'btnFullWindowClose')) return;
       if (!path.includes(this)) return;
       if (this.isDrawing) this.cancelDrawing();
     };
@@ -4333,10 +4496,12 @@ export class ZoneMapCard extends HTMLElement {
     // at different steps when 2 ft came out at exactly 40 px (float error
     // decided each axis), and could pick a step the edges were not rounded
     // to. A YAML grid can scale X and Y apart, so it keeps a step per axis.
-    // Zoomed in, a fitted grid takes the finer step the zoom allows, still
-    // one for both axes and never coarser than the fit's.
+    // Zoomed in or expanded, a fitted grid takes the finer step the px per
+    // mm allow, still one for both axes and never coarser than the fit's.
+    // Expanded, the logical canvas is wider than the 800 px the fit was
+    // stepped for, which refines the grid the same way.
     let fittedStep = this._fittedStep();
-    if (fittedStep !== null && this._zoom() > 1) {
+    if (fittedStep !== null && (this._zoom() > 1 || this._mapW > CANVAS_WIDTH_PX)) {
       fittedStep = Math.min(
         fittedStep,
         this._chooseGridStep(Math.min(pxPerMmX, pxPerMmY), Math.max(spanX, spanY), unit),
@@ -5469,7 +5634,9 @@ export class ZoneMapCard extends HTMLElement {
     no.addEventListener('click', keep);
     yes.addEventListener('click', () => this._deleteZone(zoneId));
     confirm.addEventListener('keydown', (event) => {
-      if (event.key === 'Escape') keep();
+      if (event.key !== 'Escape') return;
+      this._consumeEscape(event);
+      keep();
     });
     return editor;
   }
@@ -5676,7 +5843,12 @@ export class ZoneMapCard extends HTMLElement {
         // On a phone, Done also closes the keyboard over the map.
         if (window.matchMedia?.('(pointer: coarse)')?.matches) input.blur();
       } else if (event.key === 'Escape') {
-        input.value = input.dataset.storedName;
+        // Putting the name back uses the key up; an Esc with nothing to put
+        // back closes an expanded map, as in Home Assistant's dialogs.
+        if (input.value !== input.dataset.storedName) {
+          input.value = input.dataset.storedName;
+          this._consumeEscape(event);
+        }
       }
     });
     input.addEventListener('blur', () => {
@@ -7160,7 +7332,7 @@ export class ZoneMapCard extends HTMLElement {
   /**
    * The boxes (backing px) of the buttons and notes laid over the canvas
    * that are showing now: the drawing modes, the unit switch, Undo and
-   * Locked, the zoom row and the offline note. Nothing drawn on the canvas
+   * Locked, the zoom row, Expand map and the offline note. Nothing drawn on the canvas
    * under them can be read. None while the canvas has no layout box. With
    * `notes` false, the buttons only: _placeMapNotes puts the offline note
    * under the x labels, so the labels never make room for it. `canvasRect`
@@ -7171,7 +7343,7 @@ export class ZoneMapCard extends HTMLElement {
     if (!root || !canvasRect || !(canvasRect.width > 0) || !(canvasRect.height > 0)) return [];
     const scaleX = this._mapW / canvasRect.width;
     const scaleY = this._mapH / canvasRect.height;
-    const ids = ['overlayControlsLeft', 'overlayControlsRight', 'zoomControls'];
+    const ids = ['overlayControlsLeft', 'overlayControlsRight', 'zoomControls', 'overlayControlsTop'];
     if (notes) ids.push('offlineNote');
     return ids.flatMap((id) => {
       const element = root.getElementById(id);
@@ -7528,7 +7700,12 @@ export class ZoneMapCard extends HTMLElement {
     const safeHeight = Math.max(1, this.yMax - this.yMin);
     const heightAt = (width) =>
       this._gridFromConfig ? width : Math.max(1, Math.round((width * safeHeight) / safeWidth));
-    const width = CANVAS_WIDTH_PX;
+    // The map's CSS width while expanded, so text and lines keep their size
+    // and the grid gets finer; the card's 800 px otherwise.
+    const width = logicalWidth(
+      CANVAS_WIDTH_PX,
+      this._fullWindow && this._fullLayout ? this._fullLayout.mapWidth : null,
+    );
     const height = heightAt(width);
     this._mapW = width;
     this._mapH = height;
@@ -7544,6 +7721,12 @@ export class ZoneMapCard extends HTMLElement {
       // shape too.
       container.style.setProperty('--zm-aspect', String(CANVAS_WIDTH_PX / cardHeight));
     }
+    const aspect = CANVAS_WIDTH_PX / heightAt(CANVAS_WIDTH_PX);
+    const reshaped = aspect !== this._aspect;
+    this._aspect = aspect;
+    // A refit (a new rotation, a zone drawn past the edge) can change the
+    // shape of an expanded map, and so how the window is split.
+    if (reshaped && this._fullWindow) this._scheduleFullLayout();
   }
 
   /**
@@ -8053,6 +8236,461 @@ export class ZoneMapCard extends HTMLElement {
     if (!sameView(next, this._view, map)) this._setView(next, { draw });
   }
 
+  // ---- Expand map ----------------------------------------------------------
+  //
+  // The button in the map's top right corner moves the card's own container
+  // into a modal <dialog> at the end of its shadow root, so the map fills
+  // the window in the top layer, with the chips, the zone editor and Map
+  // settings beside it or under it. The same nodes move, so the zoom, the
+  // selected zone, an open polygon, Walk, a replay, Coverage and what a
+  // field holds come along. A placeholder keeps the card's place on the
+  // dashboard, the page under it is locked, and a history entry lets Back
+  // close it. The X, the button again, Esc and Back close it.
+
+  /** Whether Expand map shows: not on the map alone or the error screen,
+   *  not in an editor preview or dashboard edit mode, not in someone else's
+   *  dialog, and not in a browser with no modal dialogs. */
+  _canExpand() {
+    return (
+      !!this.canvas &&
+      !this._viewOnly &&
+      !this._loadError &&
+      !this._preview &&
+      !this._inDialog &&
+      typeof HTMLDialogElement === 'function' &&
+      typeof HTMLDialogElement.prototype.showModal === 'function'
+    );
+  }
+
+  /** The button over the map and the X beside the title, from the state. */
+  _renderFullWindowButton() {
+    const root = this.shadowRoot;
+    if (!root) return;
+    const group = root.getElementById('overlayControlsTop');
+    const show = !!group && this._canExpand();
+    if (group) group.hidden = !show;
+    // A replay's badge moves left of the button.
+    root.querySelector('.container')?.classList.toggle('has-expand', show);
+    const open = this._fullWindow;
+    const toggle = root.getElementById('btnFullWindow');
+    if (toggle) {
+      const icon = open ? 'collapse' : 'expand';
+      if (toggle.dataset.icon !== icon) {
+        toggle.dataset.icon = icon;
+        toggle.innerHTML = iconSvg(open ? ICON_COLLAPSE : ICON_EXPAND);
+      }
+      toggle.setAttribute('aria-label', open ? FULL_WINDOW_CLOSE_LABEL : FULL_WINDOW_OPEN_LABEL);
+      toggle.title = open ? FULL_WINDOW_CLOSE_TITLE : FULL_WINDOW_OPEN_TITLE;
+      if (open) toggle.removeAttribute('aria-haspopup');
+      else toggle.setAttribute('aria-haspopup', 'dialog');
+    }
+    const close = root.getElementById('btnFullWindowClose');
+    if (close) close.hidden = !open;
+  }
+
+  _attachFullWindow() {
+    const root = this.shadowRoot;
+    root.getElementById('btnFullWindow')?.addEventListener('click', () => {
+      if (this._fullWindow) this._closeFullWindow({ reason: 'user' });
+      else this._openFullWindow();
+    });
+    root.getElementById('btnFullWindowClose')?.addEventListener('click', () => {
+      this._closeFullWindow({ reason: 'user' });
+    });
+    const dialog = root.getElementById('fullWindow');
+    if (!dialog) return;
+    // First for every key inside: a new key has used nothing up yet.
+    dialog.addEventListener(
+      'keydown',
+      () => {
+        this._escConsumed = false;
+      },
+      true,
+    );
+    // An engine that still asks to close after an Esc a field or the
+    // polygon took is told no. Everything else happens on close.
+    dialog.addEventListener('cancel', (event) => {
+      if (this._escConsumed && event.cancelable) event.preventDefault();
+    });
+    // Esc, or Back in Chrome for Android, closed it. Our own close()
+    // lands here too, and so does a dialog a render has replaced: both do
+    // nothing.
+    dialog.addEventListener('close', () => {
+      if (!dialog.open && this._fullParts?.dialog === dialog) this._closeFullWindow({ reason: 'esc' });
+    });
+  }
+
+  /** A key went to something it changed (a field put back, corners
+   *  dropped, a confirm answered): it closes nothing else. */
+  _consumeEscape(event) {
+    event.preventDefault();
+    this._escConsumed = true;
+  }
+
+  /** Fill the window with the map (see the section comment above). */
+  _openFullWindow() {
+    if (!this._canExpand() || this._fullWindow || this._backPending) return;
+    if (expandedCard && expandedCard !== this) return;
+    const root = this.shadowRoot;
+    const container = root.querySelector('.container');
+    const dialog = root.getElementById('fullWindow');
+    const mapBox = this.canvas?.parentElement;
+    if (!container || !dialog || !mapBox) return;
+    // A pan or a pinch ends, and a rect or ellipse drag is dropped: its
+    // release would land on the moved canvas somewhere else. A polygon's
+    // corners are in mm, and come along.
+    this._endGesture();
+    if (this.isDrawing && this.drawMode !== DRAW_MODES.POLYGON) this.cancelDrawing();
+    this._cursorPoint = null;
+    this._cardMapWidth = mapBox.getBoundingClientRect().width || 0;
+    this._savedScrollY = window.scrollY || 0;
+    // A field saves on blur only while it is on the page.
+    this._blurInside(container);
+    this._lockPage();
+    if (!this._mountFullWindow({ container, dialog })) {
+      this._unlockPage();
+      this._renderFullWindowButton();
+      return;
+    }
+    fullWindowOpens += 1;
+    this._fullKey = `${Date.now()}-${fullWindowOpens}`;
+    window.addEventListener('popstate', this._onFullWindowPop);
+    // Back closes it. Not Home Assistant's dialog keys, which its own
+    // history handling would act on. A page with no session history to
+    // write to still expands; only Back cannot close it there.
+    try {
+      history.pushState({ apolloZoneMapFull: this._fullKey }, '');
+    } catch {
+      // The X, the button and Esc still close it.
+    }
+    this._renderFullWindowButton();
+    root.getElementById('btnFullWindowClose')?.focus();
+  }
+
+  /**
+   * Move `container` into `dialog` and show it modal, leaving a placeholder
+   * of its height in its place, then lay it out and follow the window.
+   * Returns false, with everything put back, when the dialog cannot open.
+   */
+  _mountFullWindow({ container, dialog }) {
+    const height = container.getBoundingClientRect().height || 0;
+    const placeholder = document.createElement('div');
+    placeholder.className = 'full-placeholder';
+    placeholder.setAttribute('aria-hidden', 'true');
+    placeholder.style.height = `${height}px`;
+    container.before(placeholder);
+    dialog.append(container);
+    container.classList.add('full');
+    dialog.setAttribute('aria-label', fullWindowLabel(this._titleText()));
+    // Shown before the dialog opens, so its first focus lands on the X and
+    // never on a field (which on a phone would bring up the keyboard).
+    const close = this.shadowRoot.getElementById('btnFullWindowClose');
+    if (close) close.hidden = false;
+    try {
+      dialog.showModal();
+    } catch {
+      container.classList.remove('full');
+      placeholder.replaceWith(container);
+      return false;
+    }
+    this._fullWindow = true;
+    expandedCard = this;
+    this._fullParts = { container, dialog, placeholder };
+    // Laid out now, so no frame shows the card's map stretched.
+    this._layoutFullWindow({ force: true });
+    this._observeFullWindow(container, dialog);
+    return true;
+  }
+
+  /** After a render while expanded: open the new dialog with the new
+   *  container (no new history entry, page lock or key), or close if the
+   *  new card cannot expand (the error screen, the map alone). */
+  _remountFullWindow(reopen) {
+    if (!reopen || !this._fullWindow) return;
+    const root = this.shadowRoot;
+    const container = root.querySelector('.container');
+    const dialog = root.getElementById('fullWindow');
+    if (!this._canExpand() || !container || !dialog || !this._mountFullWindow({ container, dialog })) {
+      this._closeFullWindow({ reason: 'rebuild' });
+      return;
+    }
+    this._renderFullWindowButton();
+    const target =
+      (reopen.focusId && root.getElementById(reopen.focusId)) || root.getElementById('btnFullWindowClose');
+    target?.focus?.();
+  }
+
+  /** The expanded container's content box, inside its safe area padding. */
+  _fullContentBox(container) {
+    const rect = container.getBoundingClientRect();
+    const style = window.getComputedStyle?.(container);
+    const px = (value) => parseFloat(value) || 0;
+    return {
+      width: Math.max(0, rect.width - px(style?.paddingLeft) - px(style?.paddingRight)),
+      height: Math.max(0, rect.height - px(style?.paddingTop) - px(style?.paddingBottom)),
+    };
+  }
+
+  /** Whether a field that brings up an on-screen keyboard has the focus. */
+  _textFieldFocused() {
+    const active = this.shadowRoot?.activeElement;
+    if (!active || !this._fullParts?.container?.contains(active)) return false;
+    if (active instanceof HTMLTextAreaElement || active instanceof HTMLSelectElement) return true;
+    const typed = ['text', 'search', 'email', 'number', 'tel', 'url', 'password'];
+    return active instanceof HTMLInputElement && typed.includes(active.type || 'text');
+  }
+
+  /**
+   * Split the window between the map and its panel (fullWindowLayout), from
+   * the content box `box` (a ResizeObserver's report) or one measured now,
+   * and size the canvas to it: the logical width follows the map's width,
+   * the backing store its device px. `force` redraws even when nothing
+   * changed (a new dialog's canvas).
+   */
+  _layoutFullWindow({ force = false, box = null } = {}) {
+    const parts = this._fullParts;
+    if (!this._fullWindow || !parts) return;
+    const { container } = parts;
+    let size = box ?? this._fullContentBox(container);
+    // An on-screen keyboard shrinks the window under a field being typed
+    // in (the Android app resizes its WebView): the map keeps its size.
+    if (this._fullBox && size.height < this._fullBox.height && this._textFieldFocused()) {
+      size = { width: size.width, height: this._fullBox.height };
+    }
+    this._fullBox = size;
+    const root = this.shadowRoot;
+    const header =
+      (root.querySelector('.title-row')?.getBoundingClientRect().height || 0) +
+      (root.getElementById('versionNotice')?.getBoundingClientRect().height || 0);
+    const layout = fullWindowLayout({
+      width: size.width,
+      height: size.height,
+      aspect: this._aspect,
+      // The title row and the notice, and the grid's three 8 px row gaps.
+      headerPx: header > 0 ? header + 24 : FULL_WINDOW_HEADER_PX,
+      cardMapWidth: this._cardMapWidth,
+    });
+    this._fullLayout = layout;
+    container.dataset.layout = layout.layout;
+    container.style.setProperty('--zm-full-width', `${layout.mapWidth}px`);
+    container.style.setProperty('--zm-side-width', `${layout.sideWidth}px`);
+    // One layout read, after the width is set: the store follows it.
+    const cssWidth = this.canvas?.getBoundingClientRect?.().width;
+    let redraw = force;
+    if (cssWidth > 0 && cssWidth !== this._cssMapWidth) {
+      this._cssMapWidth = cssWidth;
+      redraw = true;
+    }
+    if (logicalWidth(CANVAS_WIDTH_PX, layout.mapWidth) !== this._mapW) {
+      this._sizeCanvas();
+      redraw = true;
+    } else if (this._sizeBackingStore()) {
+      redraw = true;
+    }
+    if (redraw) this.drawGrid();
+  }
+
+  /** Lay the expanded map out again on the next frame, once however many
+   *  reports come in before it. A report of no box at all (the card was
+   *  hidden) closes it. */
+  _scheduleFullLayout() {
+    if (!this._fullWindow || this._fullFrame) return;
+    this._fullFrame = requestFrame(() => {
+      this._fullFrame = null;
+      const box = this._pendingFullBox ?? null;
+      this._pendingFullBox = null;
+      if (!this._fullWindow) return;
+      if (box && box.width === 0 && box.height === 0) {
+        this._closeFullWindow({ reason: 'hidden' });
+        return;
+      }
+      this._layoutFullWindow({ box });
+    });
+  }
+
+  /**
+   * While expanded: follow the window's size, and keep a drag that nothing
+   * in the window scrolls from reaching the page, where the Home Assistant
+   * iOS app's pull to refresh would reload it. The canvas, fields and
+   * sliders keep their own touches, and the panel scrolls while it can.
+   */
+  _observeFullWindow(container, dialog) {
+    this._unobserveFullWindow();
+    if (typeof ResizeObserver === 'function') {
+      const observer = new ResizeObserver((entries) => {
+        const rect = entries[entries.length - 1]?.contentRect;
+        if (rect) this._pendingFullBox = { width: rect.width, height: rect.height };
+        this._scheduleFullLayout();
+      });
+      observer.observe(container);
+      this._fullObserver = observer;
+    }
+    const start = (event) => {
+      if (!event.touches || event.touches.length !== 1) {
+        this._touchGuard = null;
+        return;
+      }
+      const path = event.composedPath?.() ?? [];
+      const exempt = path.some(
+        (node) =>
+          node === this.canvas ||
+          node instanceof HTMLInputElement ||
+          node instanceof HTMLSelectElement ||
+          node instanceof HTMLTextAreaElement,
+      );
+      const side = this.shadowRoot?.getElementById('mapSide');
+      this._touchGuard = {
+        y: event.touches[0].clientY,
+        exempt,
+        side: side && path.includes(side) ? side : null,
+      };
+    };
+    const move = (event) => {
+      const guard = this._touchGuard;
+      if (!guard || guard.exempt || !event.touches || event.touches.length !== 1) return;
+      const y = event.touches[0].clientY;
+      const dy = y - guard.y;
+      guard.y = y;
+      const side = guard.side;
+      const scrolls =
+        !!side &&
+        side.scrollHeight > side.clientHeight + 1 &&
+        ((dy > 0 && side.scrollTop > 0) ||
+          (dy < 0 && side.scrollTop + side.clientHeight < side.scrollHeight - 1));
+      if (!scrolls && event.cancelable) event.preventDefault();
+    };
+    dialog.addEventListener('touchstart', start, { passive: true });
+    dialog.addEventListener('touchmove', move, { passive: false });
+    this._fullTouch = { dialog, start, move };
+  }
+
+  _unobserveFullWindow() {
+    this._fullObserver?.disconnect();
+    this._fullObserver = null;
+    this._pendingFullBox = null;
+    const touch = this._fullTouch;
+    this._fullTouch = null;
+    this._touchGuard = null;
+    if (touch) {
+      touch.dialog.removeEventListener('touchstart', touch.start);
+      touch.dialog.removeEventListener('touchmove', touch.move);
+    }
+  }
+
+  /**
+   * Put the map back in the card. `reason` is 'user' (the X, the button,
+   * preview), 'esc' (the dialog closed itself), 'history' (Back), 'hidden'
+   * (the card left the screen), 'rebuild' (a render that cannot expand, or
+   * another radar) or 'disconnect'. Safe to call again: only the first
+   * call after an open acts.
+   */
+  _closeFullWindow({ reason }) {
+    if (!this._fullWindow) return;
+    this._fullWindow = false;
+    if (expandedCard === this) expandedCard = null;
+    const { container = null, dialog = null, placeholder = null } = this._fullParts || {};
+    this._fullParts = null;
+    window.removeEventListener('popstate', this._onFullWindowPop);
+    this._unobserveFullWindow();
+    // A field being typed in saves on blur, while it is still on the page.
+    // A rebuild's fields are gone already.
+    if (reason !== 'rebuild') this._blurInside(container);
+    this._endGesture();
+    if (this.isDrawing && this.drawMode !== DRAW_MODES.POLYGON) this.cancelDrawing();
+    this._cursorPoint = null;
+    if (dialog?.open) {
+      try {
+        dialog.close();
+      } catch {
+        // Closed already.
+      }
+    }
+    // The placeholder is gone after a render, whose new container is in
+    // the card already.
+    if (placeholder?.parentNode && container) placeholder.replaceWith(container);
+    else placeholder?.remove();
+    if (container) {
+      container.classList.remove('full');
+      delete container.dataset.layout;
+      container.style.removeProperty('--zm-full-width');
+      container.style.removeProperty('--zm-side-width');
+    }
+    this._fullLayout = null;
+    this._fullBox = null;
+    const status = this.shadowRoot?.getElementById('fullWindowStatus');
+    if (status) status.textContent = '';
+    this._unlockPage();
+    // Our history entry goes, unless Back took it already, or the page has
+    // moved on to another entry (Home Assistant's quick bar navigating),
+    // whose history stays as it is.
+    if (reason !== 'history' && history.state?.apolloZoneMapFull === this._fullKey) this._historyBack();
+    this._fullKey = null;
+    this._renderFullWindowButton();
+    // The card's 800 px logical width again, and the store for its width.
+    const cssWidth = this.canvas?.getBoundingClientRect?.().width;
+    if (cssWidth > 0) this._cssMapWidth = cssWidth;
+    this._sizeCanvas();
+    this.drawGrid();
+    if (reason !== 'disconnect') {
+      this.shadowRoot?.getElementById('btnFullWindow')?.focus?.({ preventScroll: true });
+    }
+  }
+
+  /** Step back off our history entry, and ignore Expand map until the
+   *  popstate that brings arrives (or FULL_WINDOW_BACK_MS passes). */
+  _historyBack() {
+    this._backPending = true;
+    const done = () => {
+      this._backPending = false;
+      window.removeEventListener('popstate', done);
+      clearTimeout(timer);
+    };
+    const timer = setTimeout(done, FULL_WINDOW_BACK_MS);
+    window.addEventListener('popstate', done);
+    try {
+      history.back();
+    } catch {
+      done();
+    }
+  }
+
+  /** Lock the page under the expanded map: no scroll, and no pull to
+   *  refresh or overscroll glow. A page whose scrollbar shows keeps its
+   *  gutter, so nothing behind moves sideways. */
+  _lockPage() {
+    const html = document.documentElement;
+    this._savedHtml = {
+      overflow: html.style.overflow,
+      overscrollBehavior: html.style.overscrollBehavior,
+      scrollbarGutter: html.style.scrollbarGutter,
+    };
+    const scrollbar = html.clientWidth > 0 && window.innerWidth > html.clientWidth;
+    html.style.overflow = 'hidden';
+    html.style.overscrollBehavior = 'none';
+    if (scrollbar) html.style.scrollbarGutter = 'stable';
+  }
+
+  /** The page as it was, scrolled where it was. */
+  _unlockPage() {
+    const saved = this._savedHtml;
+    if (!saved) return;
+    this._savedHtml = null;
+    const html = document.documentElement;
+    html.style.overflow = saved.overflow;
+    html.style.overscrollBehavior = saved.overscrollBehavior;
+    html.style.scrollbarGutter = saved.scrollbarGutter;
+    if ((window.scrollY || 0) !== this._savedScrollY) {
+      window.scrollTo({ top: this._savedScrollY, behavior: 'instant' });
+    }
+  }
+
+  /** Take the focus off whatever in `container` has it, so a field runs its
+   *  own blur (a name saves) while it is still on the page. */
+  _blurInside(container) {
+    const active = this.shadowRoot?.activeElement;
+    if (active && active.isConnected && container?.contains(active)) active.blur?.();
+  }
+
   getCardSize() {
     // The map alone has no chips, Zones panel or Map settings under it. The
     // full card's Zones panel, open under the map, is about 8 more rows.
@@ -8077,6 +8715,8 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   disconnectedCallback() {
+    // A removed modal dialog would come back as a box over the dashboard.
+    if (this._fullWindow) this._closeFullWindow({ reason: 'disconnect' });
     this._detachGlobalListeners();
     this._unobserveCanvas();
     // A pan's window listeners would keep the card alive and moving.
@@ -8146,6 +8786,18 @@ export class ZoneMapCard extends HTMLElement {
       this.dispatchEvent(ev);
     } catch {
       alert(message);
+    }
+    // Home Assistant's toast is inert under the expanded map's modal
+    // dialog, so a screen reader would hear nothing. Emptied first and set
+    // a frame later, so the same message twice is read twice.
+    if (this._fullWindow) {
+      const region = this.shadowRoot?.getElementById('fullWindowStatus');
+      if (region) {
+        region.textContent = '';
+        requestFrame(() => {
+          if (this._fullWindow) region.textContent = message;
+        });
+      }
     }
   }
 }
