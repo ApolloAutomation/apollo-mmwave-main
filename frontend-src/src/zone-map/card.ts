@@ -4727,8 +4727,10 @@ export class ZoneMapCard extends HTMLElement {
   /**
    * Select zone `zoneId` (null for none): its chip pressed, and the editor
    * under the chips made for it. Selecting another zone answers the old
-   * one's Delete question with no, and its save status goes with it; the
-   * name being typed was saved when its field lost focus to the chip.
+   * one's Delete question with no, and its save status goes with it. The
+   * name being typed is saved before the editor changes zones: a press on a
+   * chip takes the focus from the field first, but a pick on the map (a
+   * press on a locked map, a tap on a phone) does not.
    */
   _setSelectedZone(zoneId) {
     const next = zoneId === null || zoneId === undefined ? null : Number(zoneId);
@@ -4741,6 +4743,8 @@ export class ZoneMapCard extends HTMLElement {
       btn.setAttribute('aria-pressed', pressed ? 'true' : 'false');
     });
     if (!changed) return;
+    const field = this.shadowRoot?.getElementById('zoneName');
+    if (field && field.value !== field.dataset.storedName) this._commitZoneName(field);
     this._deleteConfirmZone = null;
     this._zoneSaveStatus = null;
     this._renderZoneManager();

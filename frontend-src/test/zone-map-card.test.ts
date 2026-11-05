@@ -11162,6 +11162,50 @@ describe("zone map card picking a zone on the map", () => {
     expect(hass.callService).not.toHaveBeenCalled();
   });
 
+  // A pick on the map gives the name field no blur first: a press on a
+  // locked map picks on the way down, and a touch on a map that can be drawn
+  // on keeps the focus where it is. The name being typed was dropped.
+  it.each([
+    ["a press on a locked map", {}, (card: any) => mouse(card, "mousedown", 600, 200)],
+    ["a mouse tap", { start_locked: false }, (card: any) => tap(card, 600, 200)],
+    [
+      "a touch tap",
+      { start_locked: false },
+      (card: any) => {
+        touch(card, "touchstart", 600, 200);
+        touch(card, "touchend", 600, 200);
+      },
+    ],
+  ])("saves the name being typed when %s picks another zone", async (_how, config, pick) => {
+    const { card, hass } = await mapCard(config);
+    document.body.appendChild(card);
+    const input = nameFieldOf(card);
+    input.focus();
+    input.value = "Front door";
+
+    pick(card);
+
+    expect(card.selectedZone).toBe(2);
+    expect(zoneWrites(hass)).toEqual([
+      { device_id: "dev123", zone_id: 1, name: "Front door", input_units: "mm" },
+    ]);
+    expect(chipOf(card, 1).textContent).toBe("Front door");
+    expect(nameFieldOf(card).value).toBe("Couch");
+    document.body.replaceChildren();
+  });
+
+  it("saves no name when a pick on the map leaves the field as it was", async () => {
+    const { card, hass } = await mapCard();
+    document.body.appendChild(card);
+    nameFieldOf(card).focus();
+
+    mouse(card, "mousedown", 600, 200);
+
+    expect(card.selectedZone).toBe(2);
+    expect(hass.callService).not.toHaveBeenCalled();
+    document.body.replaceChildren();
+  });
+
   it("places a corner, not a pick, with a tap in Polygon mode", async () => {
     const { card } = await mapCard({ start_locked: false });
     card._setDrawMode("polygon");

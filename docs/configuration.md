@@ -970,10 +970,10 @@ three parts:
   card opens, the first zone is picked.
 - **The editor** under the chips belongs to the picked zone, with its
   number as the heading:
-  - **Name.** Type a name and press Enter, or leave the field, to save it.
-    Escape puts the saved name back, and an empty field saves the default
-    name, such as "Zone 2". The chip and the label on the map change as you
-    save.
+  - **Name.** Type a name and press Enter, leave the field, or pick
+    another zone, to save it. Escape puts the saved name back, and an empty
+    field saves the default name, such as "Zone 2". The chip and the label
+    on the map change as you save.
   - The zone's size, such as "Size 2.0 m × 0.9 m", or "Not drawn yet".
   - **Type** and **Hold** (see
     [Ignore zones and hold time](#ignore-zones-and-hold-time)), with a line
