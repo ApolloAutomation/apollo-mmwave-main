@@ -362,6 +362,12 @@ off inches meant opening six sensors' settings one at a time.
   it differently.
 - **Out-of-date pages.** 2.4.0b3's cards have the check, so after updating
   from 2.4.0b3 a page that still runs it says so, with a **Reload** button.
+- **Home Assistant 2026.11.** Fixed: on Home Assistant 2026.11, setup failed
+  on every start for anyone who still had zones from before 1.2.0 or from
+  the standalone Zone Mapper and no Apollo mmWave zone store yet, because
+  Home Assistant 2026.11 changed how restored states are read. 2.3.0 and
+  earlier have this problem on 2026.11. On 2026.11, a zone you renamed also
+  shows the device name in front of its name, as other entities do.
 
 ## What changed in 2.3.0
 

@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING
 
 from homeassistant.core import State
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import restore_state
+from homeassistant.util import dt as dt_util
 from homeassistant.util import slugify
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
@@ -150,6 +152,34 @@ async def test_migrates_restore_state_into_store(
     assert entry["entities"] == [{"x": TARGET_X, "y": TARGET_Y}]
     assert entry["rotation_deg"] == 15
     assert entry["label"] == "Office"
+
+
+async def test_migrates_from_a_restore_cache_without_last_states(
+    hass, config_entry, esphome_device, monkeypatch
+) -> None:
+    """HA 2026.11 dropped last_states; its async_get_stored_state still works."""
+    _register_legacy_entities(hass)
+    stored = restore_state.StoredState(
+        State("sensor.zone_mapper_office_zone_1", "1", LEGACY_ATTRS),
+        None,
+        dt_util.utcnow(),
+    )
+
+    class _RestoreData:
+        """The 2026.11 shape: a lookup by entity id, no last_states dict."""
+
+        def async_get_stored_state(
+            self, entity_id: str
+        ) -> restore_state.StoredState | None:
+            return stored if entity_id == stored.state.entity_id else None
+
+    monkeypatch.setattr(restore_state, "async_get", lambda _hass: _RestoreData())
+
+    await setup_integration(hass, config_entry)
+
+    entry = get_store(hass).devices[esphome_device.id]
+    assert entry[STORE_ZONES][1]["name"] == "Desk"
+    assert entry["rotation_deg"] == 15
 
 
 async def test_fresh_setup_writes_the_migrated_store_once(
