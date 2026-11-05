@@ -649,6 +649,14 @@ async def test_existing_sensors_something_names_are_left_and_recorded(
         "Sensors that an automation, a script or a helper uses were left as they"
         " were. The Radar setup card above the zone map can switch them."
     ) in message
+    # The notification sends the administrator to the Radar setup card, whose
+    # warning names what kept each sensor, the helper too.
+    used_by = {
+        row["entity_id"]: row["used_by"] for row in target_unit_rows(hass, rpro.id)
+    }
+    assert used_by[y2] == ["the template entry Bed side"]
+    assert all(used_by[entity_id] for entity_id in (x1, y1, x2))
+    assert used_by[x3] == []
 
 
 async def test_existing_sensors_a_device_trigger_or_condition_names_are_left(

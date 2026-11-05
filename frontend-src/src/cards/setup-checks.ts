@@ -246,7 +246,7 @@ export const UNITS_PROGRESS = "Switching Target X and Y to mm...";
 export const UNITS_FAILURE = "Could not change the Target X and Y units";
 export const UNITS_NOT_LOADED = "Apollo mmWave is not loaded. Reload the page and try again.";
 const UNITS_HINT = "After the change, automations and templates that use these sensors read mm.";
-const UNITS_USED_HINT = "An automation or script uses them: check any number it compares them to.";
+const UNITS_USED_HINT = "An automation, a script or a helper uses them: check any number it compares them to.";
 
 /** Each length unit in words. `UNIT_WORDS` in target_units.py says them the
  *  same way; tests/test_contracts.py keeps the two equal. */
@@ -270,7 +270,8 @@ export interface TargetUnitRow {
   picked: boolean;
   /** A distance sensor in a length unit, which can show mm. */
   convertible: boolean;
-  /** The automations and scripts that name it. */
+  /** The automations, scripts and helpers that name it, as the backend's
+   *  automatic pass finds them. */
   used_by: string[];
 }
 

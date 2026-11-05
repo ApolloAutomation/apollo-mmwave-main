@@ -31,7 +31,7 @@ const NOTE_INCHES =
   " either way. In mm they match the radar's built-in zone corners and Apollo's zone guides.";
 const HINT =
   "After the change, automations and templates that use these sensors read mm.";
-const USED_HINT = "An automation or script uses them: check any number it compares them to.";
+const USED_HINT = "An automation, a script or a helper uses them: check any number it compares them to.";
 
 function row(entity_id: string, fields: Partial<TargetUnitRow> = {}): TargetUnitRow {
   return { entity_id, unit: "in", picked: false, convertible: true, used_by: [], ...fields };
@@ -140,7 +140,8 @@ describe("setup card units note", () => {
   it("names every unit it would switch in words, and warns when something uses them", async () => {
     const rows = [
       row(IDS[0], { unit: "ft" }),
-      row(IDS[1], { unit: "in", used_by: ["automation.bed"] }),
+      // A helper alone, as the startup pass keeps a sensor for one.
+      row(IDS[1], { unit: "in", used_by: ["the template entry Bed side"] }),
       row(IDS[2], { unit: "cm", picked: true }),
     ];
     const el = await mount(fakeHass(() => rows));

@@ -517,7 +517,8 @@ def target_unit_rows(hass: HomeAssistant, device_id: str) -> list[dict[str, Any]
     In X1, Y1, X2, Y2, X3, Y3 order. ``unit`` is the unit the sensor shows,
     ``picked`` whether a unit was picked in its settings, ``convertible``
     whether it is a distance sensor in a length unit, and ``used_by`` the
-    automations and scripts that name it.
+    automations, scripts and helpers that name it: all that keeps a sensor
+    out of the automatic pass, so the card warns about each one it can switch.
     """
     registry = er.async_get(hass)
     users = _Users(hass)
@@ -535,7 +536,7 @@ def target_unit_rows(hass: HomeAssistant, device_id: str) -> list[dict[str, Any]
                     "picked": unit_picked(entry),
                     "convertible": device_class == SensorDeviceClass.DISTANCE
                     and unit in SENSOR_UNIT_FACTORS,
-                    "used_by": users.scripted(entity_id),
+                    "used_by": users.of(entity_id),
                 }
             )
     return rows
