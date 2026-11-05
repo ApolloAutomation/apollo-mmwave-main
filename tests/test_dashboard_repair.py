@@ -322,6 +322,118 @@ async def test_the_repair_clears_once_ours_again_or_gone(hass) -> None:
     assert _issue(hass) is None
 
 
+# A dashboard the user makes on our url path: views holding one of our cards,
+# or exactly our strategy.
+USERS_VIEWS_WITH_OUR_CARD: dict[str, Any] = {
+    "views": [
+        {
+            "title": "Mine",
+            "cards": [
+                {"type": "markdown", "content": "Hi"},
+                {"type": "custom:apollo-radar-zone-map-card", "device_id": "abc123"},
+            ],
+        }
+    ]
+}
+
+
+async def _delete_recorded_row(hass, entry: MockConfigEntry) -> None:
+    await _dashboards_collection(hass).async_delete_item(entry.options["dashboard_id"])
+    await hass.async_block_till_done()
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        pytest.param(USERS_VIEWS_WITH_OUR_CARD, id="views-with-our-card"),
+        pytest.param(OUR_CONFIG, id="our-strategy"),
+    ],
+)
+async def test_a_dashboard_made_where_ours_was_deleted_is_not_ours(
+    hass, config
+) -> None:
+    """
+    Deleting ours forgets it, so a new one on its url path is the user's.
+
+    Home Assistant gives the new row the id of its url path, which is the id
+    the entry recorded. Kept, the record made the user's own dashboard look
+    like a saved copy, offered for restore, or ours, written to.
+    """
+    entry = await async_owned_entry(hass)
+    await setup_integration(hass, entry)
+    recorded = entry.options["dashboard_id"]
+
+    with record_dashboard_writes(hass) as writes:
+        await _delete_recorded_row(hass, entry)
+
+    # The user's delete and Lovelace's own cleanup of its config, no more.
+    assert writes == ["delete_item", "delete_config"]
+    assert entry.options["dashboard_id"] is None
+    assert entry.options["dashboard_url_path"] is None
+
+    item = await async_user_dashboard(hass, DASHBOARD_URL_PATH, config)
+    assert item["id"] == recorded
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert _issue(hass) is None
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result["menu_options"] == ["add_dashboard", "dashboard_devices"]
+    assert await async_dashboard_config(hass) == config
+
+
+async def test_deleting_ours_clears_its_repair(hass) -> None:
+    """A saved copy deleted while loaded takes its repair with it at once."""
+    entry = await _saved_copy_entry(hass)
+    await setup_integration(hass, entry)
+    assert _issue(hass) is not None
+
+    await _delete_recorded_row(hass, entry)
+
+    assert entry.options["dashboard_id"] is None
+    assert _issue(hass) is None
+
+
+async def test_deleting_another_dashboard_keeps_the_record(hass) -> None:
+    """Only the recorded row's delete forgets it."""
+    entry = await async_owned_entry(hass)
+    await setup_integration(hass, entry)
+    recorded = dict(entry.options)
+    other = await async_user_dashboard(hass)
+
+    await _dashboards_collection(hass).async_delete_item(other["id"])
+    await hass.async_block_till_done()
+
+    assert dict(entry.options) == recorded
+
+
+async def test_a_delete_while_unloaded_keeps_the_record(hass) -> None:
+    """Nothing watches once the entry is unloaded (the documented catch)."""
+    entry = await async_owned_entry(hass)
+    await setup_integration(hass, entry)
+    recorded = dict(entry.options)
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+    await _delete_recorded_row(hass, entry)
+
+    assert dict(entry.options) == recorded
+
+
+async def test_a_failure_to_forget_never_fails_the_delete(hass, caplog) -> None:
+    """The user's delete goes through, and the log says what went wrong."""
+    entry = await async_owned_entry(hass)
+    await setup_integration(hass, entry)
+
+    with patch.object(
+        hass.config_entries, "async_update_entry", side_effect=RuntimeError("busy")
+    ):
+        await _delete_recorded_row(hass, entry)
+
+    assert rows_on_url_path(hass) == []
+    assert any("could not forget the deleted" in w for w in apollo_warnings(caplog))
+
+
 async def test_an_options_change_rechecks_the_repair(hass) -> None:
     """Taking control after setup shows up at the next options change."""
     entry = await async_owned_entry(hass)

@@ -122,8 +122,11 @@ The integration checks each time it starts and whenever its options change.
 A dashboard you rebuilt with no Apollo mmWave cards on it is yours and gets
 no repair. The check only looks at the dashboard the integration recorded as
 the one it created, so a copy it no longer knows gets no repair either; see
-[Troubleshooting](#troubleshooting). Removing the integration removes the
-repair and keeps the copy.
+[Troubleshooting](#troubleshooting). Deleting that dashboard makes the
+integration forget it, so one you make on `/apollo-mmwave` later gets no
+repair, unless you deleted it while the integration was not running (see
+[Use your own dashboards instead](#use-your-own-dashboards-instead)).
+Removing the integration removes the repair and keeps the copy.
 
 ## Lovelace resources
 
@@ -1438,13 +1441,19 @@ Dashboards. The cards and strategies stay available:
   ```
 
   The integration never writes to or deletes a dashboard you made, with one
-  catch: give yours a URL other than `apollo-mmwave`. If you delete the
-  integration's own dashboard and make one on that URL whose configuration is
-  exactly the strategy above, the integration may take it for its own. While
-  a dashboard of yours holds `apollo-mmwave`, the integration cannot add its
-  own there and says so. A YAML dashboard on `apollo-mmwave` is left alone,
-  and so is a dashboard row the integration created there earlier while that
-  YAML dashboard holds the path. To get rid of that old one, take the YAML
+  catch: give yours a URL other than `apollo-mmwave`. When you delete the
+  integration's own dashboard, the integration forgets it, so a dashboard you
+  make on that URL later is yours. It cannot forget a dashboard you deleted
+  while it was not running, for example while it was disabled. Then a
+  dashboard you make on `apollo-mmwave` is taken for its own if its
+  configuration is exactly the strategy above, and if it holds Apollo mmWave
+  cards, it is offered the restore of
+  [A saved copy misses new cards](#a-saved-copy-misses-new-cards). Either
+  way nothing changes until you press **Submit**. While a dashboard of yours
+  holds `apollo-mmwave`, the integration cannot add its own there and says
+  so. A YAML dashboard on `apollo-mmwave` is left alone, and so is a
+  dashboard row the integration created there earlier while that YAML
+  dashboard holds the path. To get rid of that old one, take the YAML
   dashboard off the path first and then delete it in Settings → Dashboards;
   deleting it while the YAML dashboard is there takes the YAML dashboard's
   panel down with it.

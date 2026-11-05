@@ -47,7 +47,10 @@ This integration ships its own Lovelace frontend so users install ONE thing:
    change. Its fix, also an options flow action, is
    ``async_restore_saved_copy``: on the administrator's click it first keeps
    the copy as a dashboard of its own, out of the sidebar, and only once that
-   is saved writes the strategy back onto the recorded row.
+   is saved writes the strategy back onto the recorded row. A recorded row
+   the user deletes is forgotten at once (``async_forget_deleted_dashboard``),
+   so a dashboard they make later on the same url path, which gets the same
+   id, is never taken for ours.
 
 Lovelace internals (``hass.data[LOVELACE_DATA]`` and the dashboards collection
 behind the ``lovelace/dashboards`` websocket API) are not a public contract, so
@@ -82,7 +85,9 @@ from homeassistant.components.lovelace.const import (
 from homeassistant.components.websocket_api.const import (
     DOMAIN as WEBSOCKET_API_DOMAIN,
 )
+from homeassistant.core import callback
 from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers.collection import CHANGE_REMOVED
 from homeassistant.loader import async_get_integration
 
 from .const import (
@@ -107,7 +112,7 @@ from .const import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Callable, Iterable
 
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
@@ -1039,6 +1044,65 @@ async def async_check_saved_copy(hass: HomeAssistant, entry: ConfigEntry) -> Non
             DASHBOARD_TITLE,
             exc_info=True,
         )
+
+
+@callback
+def async_forget_deleted_dashboard(
+    hass: HomeAssistant, entry: ConfigEntry
+) -> Callable[[], None]:
+    """
+    Forget the entry's recorded dashboard as soon as that row is deleted.
+
+    Home Assistant gives a new dashboard the id of its url path, so one the
+    user makes on our url path after deleting ours gets the recorded id back.
+    Recorded, it would be judged as ours: offered for restore as a saved copy
+    when it holds one of our cards, or written to as ours when its config is
+    our strategy. Writes only the entry's options, never a dashboard; the
+    options update listener then clears the repair. A delete while the entry
+    is not loaded is not seen (docs/configuration.md says so).
+
+    Returns the unsubscribe, which does nothing when the dashboards collection
+    cannot be reached. Like every Lovelace touch here, it never fails setup,
+    nor the user's delete.
+    """
+
+    async def _changed(change_type: str, item_id: str, _item: dict[str, Any]) -> None:
+        try:
+            if change_type != CHANGE_REMOVED or item_id != entry.options.get(
+                CONF_DASHBOARD_ID
+            ):
+                return
+            _LOGGER.debug(
+                "Apollo mmWave: the '%s' dashboard was deleted; forgetting it.",
+                DASHBOARD_TITLE,
+            )
+            hass.config_entries.async_update_entry(
+                entry,
+                options={
+                    **entry.options,
+                    CONF_DASHBOARD_ID: None,
+                    CONF_DASHBOARD_URL_PATH: None,
+                },
+            )
+        except Exception:
+            _LOGGER.warning(
+                "Apollo mmWave: could not forget the deleted '%s' dashboard.",
+                DASHBOARD_TITLE,
+                exc_info=True,
+            )
+
+    try:
+        collection = _dashboards_collection(hass)
+        if collection is not None:
+            return collection.async_add_listener(_changed)
+    except Exception:
+        _LOGGER.warning(
+            "Apollo mmWave: could not watch the dashboards for the '%s'"
+            " dashboard being deleted.",
+            DASHBOARD_TITLE,
+            exc_info=True,
+        )
+    return lambda: None
 
 
 async def async_restore_saved_copy(

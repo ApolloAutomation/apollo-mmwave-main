@@ -89,6 +89,7 @@ from .frontend import (
     DashboardsUnreadableError,
     async_check_saved_copy,
     async_find_legacy_dashboard,
+    async_forget_deleted_dashboard,
     async_register_frontend_assets,
     async_remove_dashboard,
     async_remove_lovelace_resources,
@@ -1055,6 +1056,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # options change, which is also how a restore from the options flow ends.
     await async_check_saved_copy(hass, entry)
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
+    # Deleting the recorded dashboard forgets it, an options change like any
+    # other, so the next one made on its url path is not judged as ours.
+    entry.async_on_unload(async_forget_deleted_dashboard(hass, entry))
 
     return True
 

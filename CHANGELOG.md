@@ -263,7 +263,9 @@ with Multi Target Tracking.
   dashboard is a saved copy" and the options action **Restore the automatic
   dashboard**, which keep your copy as **Apollo mmWave (saved copy)** and
   put the automatic dashboard back. A saved copy also stays recorded when
-  you save the options, so the restore stays on offer.
+  you save the options, so the restore stays on offer. Deleting the
+  integration's dashboard while it runs makes it forget that dashboard, so
+  one you make on `/apollo-mmwave` later is not taken for a saved copy.
 - **Dashboard text.** The MTR-1 and R PRO-1 Start here steps, the Zone
   presence card's hint and the note under LD2450 Controls now point to
   **Add zone**, **Map settings** and **Hold** under Zones.
