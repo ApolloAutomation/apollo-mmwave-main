@@ -7892,8 +7892,9 @@ export class ZoneMapCard extends HTMLElement {
     // Unsnapped, so the release can tell a tap from a drag.
     this._pressPx = point;
     // The press places the first corner: on a round value, or right where
-    // it is with Alt or Option held. A zoom or a pan mid-drag carries it
-    // across in mm (_setView), so it never snaps again.
+    // it is with Alt or Option held. A zoom, a pan or a resized expanded
+    // map mid-drag carries it across in mm (_keepHeldPoints), so it never
+    // snaps again.
     this.startPoint = this._placedPx(point, !!e.altKey);
     this._cursorPoint = point;
     this._cursorFree = !!e.altKey;
@@ -7984,25 +7985,34 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   /**
-   * Show `next` (a view, or null for the whole map). A rect or ellipse drag
-   * holds its start and the pointer in canvas px (startDrawing), so both are
-   * carried across in mm: the shape keeps its corner where it was put on the
-   * map. A polygon's corners are in mm already.
+   * Run `change`, which moves the map under the canvas's px (a new view, or
+   * a new logical width while expanded). A rect or ellipse drag holds its
+   * start, the press and the pointer in canvas px (startDrawing), so they
+   * are carried across in mm: the shape keeps its corner where it was put
+   * on the map. A polygon's corners are in mm already.
    */
-  _setView(next, { draw = true } = {}) {
+  _keepHeldPoints(change) {
     const toMm = (p) => (p ? { x: this.pixelsToValue(p.x, 'x'), y: this.pixelsToValue(p.y, 'y') } : p);
     const start = toMm(this.startPoint);
     const cursor = toMm(this._cursorPoint);
     const press = toMm(this._pressPx);
-    this._view = next;
-    // The rotation it was set at: another one starts from the whole map
-    // (see _applyRotation).
-    this._viewAngle = this.coneAngleDeg;
-    this._applyView();
+    change();
     const toPx = (m) => (m ? { x: this.valueToPixels(m.x, 'x'), y: this.valueToPixels(m.y, 'y') } : m);
     this.startPoint = toPx(start);
     this._cursorPoint = toPx(cursor);
     this._pressPx = toPx(press);
+  }
+
+  /** Show `next` (a view, or null for the whole map), keeping a held drag's
+   *  corner where it was put (_keepHeldPoints). */
+  _setView(next, { draw = true } = {}) {
+    this._keepHeldPoints(() => {
+      this._view = next;
+      // The rotation it was set at: another one starts from the whole map
+      // (see _applyRotation).
+      this._viewAngle = this.coneAngleDeg;
+      this._applyView();
+    });
     this._renderZoomControls();
     if (draw) this.drawGrid();
   }
@@ -8515,7 +8525,9 @@ export class ZoneMapCard extends HTMLElement {
       redraw = true;
     }
     if (logicalWidth(CANVAS_WIDTH_PX, layout.mapWidth) !== this._mapW) {
-      this._sizeCanvas();
+      // The window was resized mid-drag (a tiling shortcut, Split View):
+      // the held corner stays on the map point it was pressed at.
+      this._keepHeldPoints(() => this._sizeCanvas());
       redraw = true;
     } else if (this._sizeBackingStore()) {
       redraw = true;

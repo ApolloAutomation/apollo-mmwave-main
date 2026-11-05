@@ -13812,6 +13812,48 @@ describe("zone map card expand map", () => {
     expect(mapBox.style.getPropertyValue("--zm-aspect")).toBe(aspect);
   });
 
+  it("keeps a held rectangle's first corner where it was pressed when the window resizes", async () => {
+    const hass = fakeHass();
+    const card = await placedCard(hass, { ...TEN_METER_GRID, start_locked: false });
+    expect(card.selectedZone).toBe(1);
+    card._setDrawMode("rect");
+    const container = containerOf(card);
+    // A large monitor: the square map beside the panel, 1384 px wide.
+    fullBox(container, 2544, 1384);
+    vi.spyOn(card.canvas, "getBoundingClientRect").mockImplementation(() => {
+      const width = card._fullWindow ? card._fullLayout.mapWidth : 400;
+      return box(width, width, 8, 8);
+    });
+    $(card, "btnFullWindow").click();
+    expect(card._mapW).toBe(1384);
+    hass.callService.mockClear();
+    const at = (fx: number, fy: number) => {
+      const r = card.canvas.getBoundingClientRect();
+      return { clientX: r.left + r.width * fx, clientY: r.top + r.height * fy };
+    };
+    const mmAt = (fx: number, fy: number) => card._mmAt(card._getPointFromEvent(at(fx, fy)));
+    // Alt held: the corners go right where they are, in whole mm.
+    const mouse = (type: string, fx: number, fy: number) =>
+      card.canvas.dispatchEvent(new MouseEvent(type, { ...at(fx, fy), altKey: true }));
+    const pressed = mmAt(0.3, 0.3);
+    mouse("mousedown", 0.3, 0.3);
+
+    // A tiling shortcut shrinks the window with the button still held.
+    await reportFull(card, 1700, 1000);
+    expect(card._mapW).toBe(1000);
+    const released = mmAt(0.6, 0.6);
+    mouse("mousemove", 0.6, 0.6);
+    mouse("mouseup", 0.6, 0.6);
+    await settleWrites();
+
+    const [save] = zoneWrites(hass);
+    expect(save.shape).toBe("rect");
+    expect(save.data.x_min).toBeCloseTo(pressed.x, -1);
+    expect(save.data.y_min).toBeCloseTo(pressed.y, -1);
+    expect(save.data.x_max).toBeCloseTo(released.x, -1);
+    expect(save.data.y_max).toBeCloseTo(released.y, -1);
+  });
+
   it("steps back off an expanded map's history entry that a reload left on top", async () => {
     history.pushState({ apolloZoneMapFull: "1730000000000-1" }, "");
     vi.resetModules();
