@@ -24,8 +24,9 @@ update_zone:
       selector:
         number:
           min: 1
-          # TODO(REVIEW_REPORT.md X19): neither the schema nor Add Zone caps ids
-          # at 32. Drop the max (mode: box) or enforce one MAX_ZONE_ID everywhere.
+          # TODO(REVIEW_REPORT.md X19): the schema does not cap ids at 32, while
+          # the card's Add zone stops at MAX_ZONE_ID (32) since 2.4.0. Drop the
+          # max (mode: box) or enforce the cap in the schema too.
           max: 32
     shape:
       name: Shape
