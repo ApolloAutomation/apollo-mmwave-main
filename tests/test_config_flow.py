@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
@@ -13,6 +14,7 @@ from homeassistant.components.lovelace.const import LOVELACE_DATA
 from homeassistant.components.lovelace.dashboard import LovelaceStorage
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers import selector
 
 from custom_components.apollo_mmwave import frontend as apollo_frontend
@@ -29,6 +31,8 @@ from custom_components.apollo_mmwave.const import (
     DASHBOARD_URL_PATH,
     DOMAIN,
     ENTRY_MINOR_VERSION,
+    ISSUE_DASHBOARD_SAVED_COPY,
+    SAVED_COPY_URL_PATH,
 )
 from custom_components.apollo_mmwave.frontend import _dashboards_collection
 
@@ -44,6 +48,9 @@ from .conftest import (
     rows_on_url_path,
     setup_integration,
 )
+
+if TYPE_CHECKING:
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 PROFILES_TS = Path(__file__).parents[1] / "frontend-src" / "src" / "profiles.ts"
 
@@ -217,6 +224,7 @@ async def _submit(hass, result: dict, user_input: dict) -> dict:
 
 OWNS_NONE_MENU = ["add_dashboard", "dashboard_devices"]
 OWNS_ONE_MENU = ["dashboard_devices", "remove_dashboard"]
+SAVED_COPY_MENU = ["restore_dashboard", "dashboard_devices"]
 
 
 async def _submit_devices(
@@ -465,6 +473,124 @@ async def test_a_dashboard_the_user_took_control_of_is_left_alone(hass) -> None:
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert await async_dashboard_config(hass) == mine
     assert entry.options[CONF_DASHBOARD_ID] is None
+
+
+# What "take control" saves from the strategy: views made of our cards.
+SAVED_COPY = {
+    "views": [
+        {
+            "title": "Office",
+            "cards": [{"type": "custom:apollo-radar-setup-card", "device_id": "x"}],
+        }
+    ]
+}
+
+
+async def _saved_copy_entry(hass) -> MockConfigEntry:
+    """Set up an entry whose own dashboard someone took control of."""
+    entry = await async_owned_entry(hass)
+    await hass.data[LOVELACE_DATA].dashboards[DASHBOARD_URL_PATH].async_save(SAVED_COPY)
+    await setup_integration(hass, entry)
+    return entry
+
+
+def _saved_copy_issue(hass) -> ir.IssueEntry | None:
+    return ir.async_get(hass).async_get_issue(DOMAIN, ISSUE_DASHBOARD_SAVED_COPY)
+
+
+async def test_restore_is_offered_for_a_saved_copy_and_writes_on_submit(
+    hass,
+) -> None:
+    """The restore keeps the copy, puts the strategy back and ends the repair."""
+    entry = await _saved_copy_entry(hass)
+    before = dict(entry.options)
+    assert _saved_copy_issue(hass) is not None
+
+    with record_dashboard_writes(hass) as writes:
+        result = await _choose(
+            hass, await _open_options(hass, entry, SAVED_COPY_MENU), "restore_dashboard"
+        )
+    assert writes == []
+    assert result["data_schema"].schema == {}
+
+    with record_dashboard_writes(hass) as writes:
+        result = await _submit(hass, result, {})
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert writes == ["create_item", "save_config", "save_config"]
+    assert await async_dashboard_config(hass, SAVED_COPY_URL_PATH) == SAVED_COPY
+    assert await async_dashboard_config(hass) == OUR_CONFIG
+    assert dict(entry.options) == before
+    assert _saved_copy_issue(hass) is None
+    await _open_options(hass, entry, OWNS_ONE_MENU)
+
+
+async def test_a_failed_restore_shows_an_error_and_changes_nothing(hass) -> None:
+    """Without the copy nothing is restored; the form says so."""
+    entry = await _saved_copy_entry(hass)
+    before = dict(entry.options)
+    result = await _choose(
+        hass, await _open_options(hass, entry, SAVED_COPY_MENU), "restore_dashboard"
+    )
+
+    with patch.object(
+        _dashboards_collection(hass),
+        "async_create_item",
+        side_effect=HomeAssistantError("storage is read-only"),
+    ):
+        result = await _submit(hass, result, {})
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "copy_not_saved"}
+    assert dict(entry.options) == before
+    assert await async_dashboard_config(hass) == SAVED_COPY
+    assert _saved_copy_issue(hass) is not None
+
+
+async def test_restore_aborts_once_the_copy_is_gone(hass) -> None:
+    """Restored some other way after the menu opened: nothing to do."""
+    entry = await _saved_copy_entry(hass)
+    result = await _choose(
+        hass, await _open_options(hass, entry, SAVED_COPY_MENU), "restore_dashboard"
+    )
+    await hass.data[LOVELACE_DATA].dashboards[DASHBOARD_URL_PATH].async_save(OUR_CONFIG)
+
+    with record_dashboard_writes(hass) as writes:
+        result = await _submit(hass, result, {})
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "not_a_saved_copy"
+    assert writes == []
+    assert _saved_copy_issue(hass) is None
+
+
+async def test_device_selection_on_a_saved_copy_keeps_it_recorded(hass) -> None:
+    """
+    The selection is only stored, the copy stays recorded, and a restore uses it.
+
+    Forgetting the copy, the way a dashboard made the user's own is
+    forgotten, would drop the repair and the restore with it.
+    """
+    entry = await _saved_copy_entry(hass)
+    dashboard_id = entry.options[CONF_DASHBOARD_ID]
+
+    with record_dashboard_writes(hass) as writes:
+        result = await _submit_devices(hass, entry, ["devid1"], menu=SAVED_COPY_MENU)
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert writes == []
+    assert entry.options[CONF_DASHBOARD_ID] == dashboard_id
+    assert entry.options[CONF_DASHBOARD_DEVICES] == ["devid1"]
+    assert await async_dashboard_config(hass) == SAVED_COPY
+    assert _saved_copy_issue(hass) is not None
+
+    result = await _choose(
+        hass, await _open_options(hass, entry, SAVED_COPY_MENU), "restore_dashboard"
+    )
+    await _submit(hass, result, {})
+    assert await async_dashboard_config(hass) == {
+        "strategy": {"type": DASHBOARD_STRATEGY_TYPE, "devices": ["devid1"]}
+    }
 
 
 async def test_unreadable_dashboards_still_need_the_write(hass, caplog) -> None:
