@@ -140,6 +140,7 @@ import {
 } from './copy';
 import { ZONE_MAP_EDITOR_TAG, firstLd2450DeviceId } from './editor';
 import { formatHold, formatSize, zoneSize } from './format';
+import { backingStore } from './resolution';
 import { pointInZone, rotateToMap } from './geometry';
 import { decodeMovement, heatCells, positionAt, sparkBuckets, trailAt } from './history';
 import { fallbackPresenceId, presenceLook } from './presence';
@@ -595,6 +596,14 @@ const UNIT_ALIASES = Object.freeze({
   feet: 'ft',
 });
 
+/** Run `callback` on the next animation frame, or in 16 ms where there are
+ *  none. */
+function requestFrame(callback) {
+  return typeof requestAnimationFrame === 'function'
+    ? requestAnimationFrame(callback)
+    : setTimeout(callback, 16);
+}
+
 export class ZoneMapCard extends HTMLElement {
   static get GRID_MIN_SPACING_PX() {
     return 40;
@@ -694,8 +703,16 @@ export class ZoneMapCard extends HTMLElement {
     this._versionShown = undefined;
     // The ignore zones' hatch pattern per theme, made once per context.
     this._hatch = { light: null, dark: null };
-    // Canvas backing px per CSS px, read once at the top of each frame.
+    // Logical canvas px per CSS px, read once at the top of each frame.
     this._frameScale = 1;
+    // The canvas's logical size, what everything is drawn and hit-tested
+    // in (see _sizeCanvas), and the CSS width it was last seen at, which
+    // the backing store follows (see _sizeBackingStore). 0 until a layout.
+    this._mapW = CANVAS_WIDTH_PX;
+    this._mapH = CANVAS_WIDTH_PX;
+    this._cssMapWidth = 0;
+    this._canvasObserver = null;
+    this._resolutionWatch = null;
     // When the canvas was last painted, on the _now() clock.
     this._lastDrawAt = 0;
     // A few seconds of each live target's positions, page memory only: the
@@ -1389,6 +1406,9 @@ export class ZoneMapCard extends HTMLElement {
     // view-only map never had any.
     this._connectZones();
     if (this.canvas && !this._onKeyDown && !this._viewOnly) this._attachGlobalListeners();
+    // The canvas's size and the screen's pixel ratio, which a detach stopped
+    // following.
+    if (this.canvas && !this._canvasObserver) this._observeCanvas();
     // The page's version check, while the card is on the page.
     if (!this._version) {
       const version = watchVersion(() => {
@@ -2390,7 +2410,7 @@ export class ZoneMapCard extends HTMLElement {
     const ctx = this.ctx;
     const pixelX = this.valueToPixels(x, 'x');
     const pixelY = this.valueToPixels(y, 'y');
-    if (pixelX < 0 || pixelX > this.canvas.width || pixelY < 0 || pixelY > this.canvas.height) {
+    if (pixelX < 0 || pixelX > this._mapW || pixelY < 0 || pixelY > this._mapH) {
       return;
     }
     const r = this._dotRadius();
@@ -4359,8 +4379,8 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   _getGridRenderState() {
-    const canvasWidth = this.canvas?.width || 0;
-    const canvasHeight = this.canvas?.height || 0;
+    const canvasWidth = this.canvas ? this._mapW : 0;
+    const canvasHeight = this.canvas ? this._mapH : 0;
     // The labels' clear space is set in CSS px, so a resized card lays them
     // out again. The frame's scale, so a frame reads the layout once.
     const labelGap = LABEL_GAP_CSS_PX * (this._frameScale || 1);
@@ -4438,14 +4458,14 @@ export class ZoneMapCard extends HTMLElement {
     return this._gridCache;
   }
 
-  /** Canvas backing px per CSS px. The backing store is a fixed 800 px that
-   *  the card scales to its width. 1 while the canvas has no layout box.
-   *  `rect` is the canvas's box where the caller has read it already. */
+  /** Logical canvas px per CSS px: the 800 px the card draws in, over the
+   *  width it shows at. 1 while the canvas has no layout box. `rect` is the
+   *  canvas's box where the caller has read it already. */
   _canvasScale(rect = this.canvas?.getBoundingClientRect?.()) {
-    if (!this.canvas || !(this.canvas.width > 0)) return 1;
+    if (!this.canvas || !(this._mapW > 0)) return 1;
     const rendered = rect?.width;
     if (!(rendered > 0)) return 1;
-    return this.canvas.width / rendered;
+    return this._mapW / rendered;
   }
 
   /** Sets `width` on each label: how wide its text draws at the label font,
@@ -4525,8 +4545,8 @@ export class ZoneMapCard extends HTMLElement {
     if (!ringLabels?.length) return { grid, rings: [] };
     const gap = gridState?.labelGap ?? LABEL_GAP_CSS_PX;
     const repeatGap = RING_LABEL_REPEAT_EM * this.unitLabelSize;
-    const width = this.canvas?.width || 0;
-    const height = this.canvas?.height || 0;
+    const width = this.canvas ? this._mapW : 0;
+    const height = this.canvas ? this._mapH : 0;
     const placed = [...grid.x, ...grid.y].map((label) => ({ label, box: this._labelBox(label) }));
     const rings = ringLabels.map((label) => ({ ...label, align: 'center', baseline: 'middle' }));
     this._measureLabels(rings);
@@ -5088,8 +5108,8 @@ export class ZoneMapCard extends HTMLElement {
     const last = this._polyPoints[this._polyPoints.length - 1];
     if (!last || !this.canvas) return false;
     const rect = this.canvas.getBoundingClientRect();
-    const cssPerPxX = this.canvas.width ? rect.width / this.canvas.width : 1;
-    const cssPerPxY = this.canvas.height ? rect.height / this.canvas.height : 1;
+    const cssPerPxX = this._mapW ? rect.width / this._mapW : 1;
+    const cssPerPxY = this._mapH ? rect.height / this._mapH : 1;
     const dx = (p.x - this.valueToPixels(last.x, 'x')) * cssPerPxX;
     const dy = (p.y - this.valueToPixels(last.y, 'y')) * cssPerPxY;
     return Math.hypot(dx, dy) <= POLY_DOUBLE_TAP_SLOP_PX;
@@ -5099,8 +5119,8 @@ export class ZoneMapCard extends HTMLElement {
    *  CSS px. */
   _cssDistance(a, b) {
     const rect = this.canvas?.getBoundingClientRect?.();
-    const cssPerPxX = rect && this.canvas.width ? rect.width / this.canvas.width : 1;
-    const cssPerPxY = rect && this.canvas.height ? rect.height / this.canvas.height : 1;
+    const cssPerPxX = rect && this._mapW ? rect.width / this._mapW : 1;
+    const cssPerPxY = rect && this._mapH ? rect.height / this._mapH : 1;
     return Math.hypot((a.x - b.x) * cssPerPxX, (a.y - b.y) * cssPerPxY);
   }
 
@@ -5140,8 +5160,8 @@ export class ZoneMapCard extends HTMLElement {
     if (!this.canvas) return null;
     const rect = this.canvas.getBoundingClientRect();
     if (!(rect.width > 0 && rect.height > 0)) return null;
-    const scaleX = this.canvas.width / rect.width;
-    const scaleY = this.canvas.height / rect.height;
+    const scaleX = this._mapW / rect.width;
+    const scaleY = this._mapH / rect.height;
     let source = e;
     if (e.touches || e.changedTouches) {
       source = this._touchFor(e, touchId);
@@ -5987,7 +6007,10 @@ export class ZoneMapCard extends HTMLElement {
     // Worked out before anything is drawn: the zones its dots light are
     // drawn before the dots.
     const replay = this._replayShowing() ? this._replayFrame() : null;
-    ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    // Every frame is drawn in logical px, scaled up to the backing store
+    // (_sizeBackingStore), which a resize also resets the transform of.
+    ctx.setTransform(this.canvas.width / this._mapW, 0, 0, this.canvas.height / this._mapH, 0, 0);
+    ctx.clearRect(0, 0, this._mapW, this._mapH);
     // First, so no grid, ring or range label is tinted by the cells, and
     // still under the zones.
     this._drawCellLayer(ctx);
@@ -6397,8 +6420,8 @@ export class ZoneMapCard extends HTMLElement {
       baseline: 'middle',
     };
     this._measureLabels([label]);
-    const width = this.canvas.width;
-    const height = this.canvas.height;
+    const width = this._mapW;
+    const height = this._mapH;
     const halfWidth = label.width / 2;
     const halfHeight = this.unitLabelSize / 2;
     const facing = (this.coneAngleDeg * Math.PI) / 180;
@@ -6489,13 +6512,13 @@ export class ZoneMapCard extends HTMLElement {
     if (xLines && xLines.length) {
       xLines.forEach(({ pixel }) => {
         ctx.moveTo(pixel, 0);
-        ctx.lineTo(pixel, this.canvas.height);
+        ctx.lineTo(pixel, this._mapH);
       });
     }
     if (yLines && yLines.length) {
       yLines.forEach(({ pixel }) => {
         ctx.moveTo(0, pixel);
-        ctx.lineTo(this.canvas.width, pixel);
+        ctx.lineTo(this._mapW, pixel);
       });
     }
     ctx.stroke();
@@ -6509,13 +6532,13 @@ export class ZoneMapCard extends HTMLElement {
     const y0 = this.valueToPixels(0, 'y');
     ctx.beginPath();
     ctx.moveTo(0, y0);
-    ctx.lineTo(this.canvas.width, y0);
+    ctx.lineTo(this._mapW, y0);
     ctx.stroke();
 
     const x0 = this.valueToPixels(0, 'x');
     ctx.beginPath();
     ctx.moveTo(x0, 0);
-    ctx.lineTo(x0, this.canvas.height);
+    ctx.lineTo(x0, this._mapH);
     ctx.stroke();
 
     ctx.fillStyle = originColor;
@@ -6824,22 +6847,26 @@ export class ZoneMapCard extends HTMLElement {
 
   /**
    * The ignore zones' fill: one diagonal grey line on a 12 x 12 px tile,
-   * repeated. Made once per theme and per context (a render brings a new
-   * canvas). null when the context cannot make a pattern (createPattern
+   * repeated. Made once per theme, per context (a render brings a new
+   * canvas) and per backing scale: the tile is drawn at the store's whole
+   * device px per logical px and scaled back down, so a HiDPI map gets a
+   * sharp hatch. null when the context cannot make a pattern (createPattern
    * missing, throwing or returning nothing, as in some browsers), and the
    * zone is then filled flat.
    */
   _hatchPattern(dark) {
     const key = dark ? 'dark' : 'light';
+    const scale = Math.max(1, Math.ceil((this.canvas?.width || this._mapW) / this._mapW - 1e-9));
     const cached = this._hatch[key];
-    if (cached && cached.ctx === this.ctx) return cached.pattern;
+    if (cached && cached.ctx === this.ctx && cached.scale === scale) return cached.pattern;
     let pattern = null;
     try {
       const tile = document.createElement('canvas');
-      tile.width = 12;
-      tile.height = 12;
+      tile.width = 12 * scale;
+      tile.height = 12 * scale;
       const tileCtx = tile.getContext('2d');
       if (tileCtx && typeof this.ctx?.createPattern === 'function') {
+        tileCtx.scale(scale, scale);
         tileCtx.strokeStyle = dark ? COLOR.canvas.ignoreHatchDark : COLOR.canvas.ignoreHatchLight;
         tileCtx.lineWidth = 2;
         tileCtx.beginPath();
@@ -6853,11 +6880,14 @@ export class ZoneMapCard extends HTMLElement {
         tileCtx.lineTo(14, 10);
         tileCtx.stroke();
         pattern = this.ctx.createPattern(tile, 'repeat') || null;
+        if (pattern && scale > 1 && typeof DOMMatrix === 'function') {
+          pattern.setTransform?.(new DOMMatrix().scale(1 / scale));
+        }
       }
     } catch {
       pattern = null;
     }
-    this._hatch[key] = { ctx: this.ctx, pattern };
+    this._hatch[key] = { ctx: this.ctx, scale, pattern };
     return pattern;
   }
 
@@ -7072,7 +7102,7 @@ export class ZoneMapCard extends HTMLElement {
       // A finger's goes beside it on the side with more room, the one side
       // worth trying, and below it where the plate does not fit there.
       const besideOffset = READOUT_BESIDE_TOUCH_PX * scale + plateWidth / 2;
-      const roomRight = this.canvas.width - anchorPx.x;
+      const roomRight = this._mapW - anchorPx.x;
       if (finger && Math.max(roomRight, anchorPx.x) >= besideOffset + plateWidth / 2) {
         x = anchorPx.x + (roomRight >= anchorPx.x ? 1 : -1) * besideOffset;
         y = anchorPx.y;
@@ -7082,8 +7112,8 @@ export class ZoneMapCard extends HTMLElement {
     }
     // A finger keeps reporting after it leaves the canvas, and the shape
     // stops at the map's edge, so the readout stays on the canvas too.
-    y = clampOnto(y, plateHeight / 2, this.canvas.height);
-    x = clampOnto(x, plateWidth / 2, this.canvas.width);
+    y = clampOnto(y, plateHeight / 2, this._mapH);
+    x = clampOnto(x, plateWidth / 2, this._mapW);
     ctx.fillStyle = this.darkMode ? COLOR.ui.darkCanvasBackground : COLOR.ui.lightCanvasBackground;
     ctx.fillRect(x - plateWidth / 2, y - plateHeight / 2, plateWidth, plateHeight);
     ctx.fillStyle = this.darkMode ? COLOR.canvas.axisDark : COLOR.canvas.axisLight;
@@ -7109,7 +7139,8 @@ export class ZoneMapCard extends HTMLElement {
       { x: anchor.x + beside, y: anchor.y },
       { x: anchor.x - beside, y: anchor.y },
     ];
-    const { width: canvasW, height: canvasH } = this.canvas;
+    const canvasW = this._mapW;
+    const canvasH = this._mapH;
     return (
       spots.find(({ x, y }) => {
         const box = {
@@ -7138,8 +7169,8 @@ export class ZoneMapCard extends HTMLElement {
   _overlayBoxes({ notes = true, canvasRect = this.canvas?.getBoundingClientRect?.() } = {}) {
     const root = this.shadowRoot;
     if (!root || !canvasRect || !(canvasRect.width > 0) || !(canvasRect.height > 0)) return [];
-    const scaleX = this.canvas.width / canvasRect.width;
-    const scaleY = this.canvas.height / canvasRect.height;
+    const scaleX = this._mapW / canvasRect.width;
+    const scaleY = this._mapH / canvasRect.height;
     const ids = ['overlayControlsLeft', 'overlayControlsRight', 'zoomControls'];
     if (notes) ids.push('offlineNote');
     return ids.flatMap((id) => {
@@ -7210,7 +7241,8 @@ export class ZoneMapCard extends HTMLElement {
     // A YAML grid smaller than the room can leave a zone off the canvas,
     // and its name, pulled onto the edge, would label whatever is drawn
     // there. A fitted map takes in every zone.
-    const { width: canvasW, height: canvasH } = this.canvas;
+    const canvasW = this._mapW;
+    const canvasH = this._mapH;
     if (bbox.x >= canvasW || bbox.x + bbox.width <= 0) return null;
     if (bbox.y >= canvasH || bbox.y + bbox.height <= 0) return null;
     const text = `${name}${suffix}`;
@@ -7348,8 +7380,8 @@ export class ZoneMapCard extends HTMLElement {
       this._roundKeyValue(this._viewYMin),
       labelUnit,
       stepMm,
-      this.canvas?.width || 0,
-      this.canvas?.height || 0,
+      this.canvas ? this._mapW : 0,
+      this.canvas ? this._mapH : 0,
       mirror ? 1 : 0,
     ];
     const key = keyParts.join('|');
@@ -7459,21 +7491,28 @@ export class ZoneMapCard extends HTMLElement {
     if (!this.canvas) {
       // The error state renders no canvas at all.
       this.ctx = null;
+      this._unobserveCanvas();
       return;
     }
     this.ctx = this.canvas.getContext('2d');
     this._sizeCanvas();
+    this._observeCanvas();
     this.drawGrid();
   }
 
   /**
-   * Size the canvas backing store to the grid and set the px per mm.
+   * Size the canvas to the grid and set the px per mm.
    *
-   * A YAML grid keeps the square 800 px store it always had. A fitted grid
-   * gets a store the grid's own shape (_shapeFit keeps it between
-   * FIT_MIN_ASPECT and square), and the container takes the same aspect
-   * ratio, so a meter is as long across as it is down and the cone is not
-   * stretched.
+   * Everything is drawn in logical px, _mapW by _mapH: 800 px wide, the
+   * width every px size in the card (labels, lines, dots, the grid's 40 px
+   * spacing) was made for. A YAML grid keeps the square 800 px it always
+   * had. A fitted grid gets the grid's own shape (_shapeFit keeps it
+   * between FIT_MIN_ASPECT and square), and the container takes the same
+   * aspect ratio, so a meter is as long across as it is down and the cone
+   * is not stretched. The aspect is the shape at 800 px, never what a
+   * rounded store size makes of it, so it cannot move the layout that sizes
+   * the store. The backing store under it follows the screen
+   * (_sizeBackingStore).
    */
   _sizeCanvas() {
     this._invalidateGridCache();
@@ -7483,27 +7522,119 @@ export class ZoneMapCard extends HTMLElement {
       this._applyView();
       return;
     }
-    // TODO(REVIEW_REPORT.md X39): fixed 800 px store with no devicePixelRatio (blurry on HiDPI);
-    // non-square YAML grids draw stretched. DPR sizing must scale the px constants; document stretch.
+    // TODO(REVIEW_REPORT.md X39): a non-square YAML grid is drawn stretched on its square map.
+    // Document the stretch.
     const safeWidth = Math.max(1, this.xMax - this.xMin);
     const safeHeight = Math.max(1, this.yMax - this.yMin);
+    const heightAt = (width) =>
+      this._gridFromConfig ? width : Math.max(1, Math.round((width * safeHeight) / safeWidth));
     const width = CANVAS_WIDTH_PX;
-    const height = this._gridFromConfig
-      ? CANVAS_WIDTH_PX
-      : Math.max(1, Math.round((CANVAS_WIDTH_PX * safeHeight) / safeWidth));
-    // Assigning a size clears the canvas even when it is the same one.
-    if (this.canvas.width !== width) this.canvas.width = width;
-    if (this.canvas.height !== height) this.canvas.height = height;
+    const height = heightAt(width);
+    this._mapW = width;
+    this._mapH = height;
     this._basePxPerX = width / safeWidth;
     this._basePxPerY = height / safeHeight;
     this._applyView();
+    this._sizeBackingStore();
     const container = this.canvas.parentElement;
     if (container) {
-      container.style.aspectRatio = `${width} / ${height}`;
+      const cardHeight = heightAt(CANVAS_WIDTH_PX);
+      container.style.aspectRatio = `${CANVAS_WIDTH_PX} / ${cardHeight}`;
       // The height cap's width (see the .canvas-container rule) keeps this
       // shape too.
-      container.style.setProperty('--zm-aspect', String(width / height));
+      container.style.setProperty('--zm-aspect', String(CANVAS_WIDTH_PX / cardHeight));
     }
+  }
+
+  /**
+   * Give the canvas one backing px per device px (see backingStore), for
+   * the logical size and the CSS width the canvas was last seen at, so a
+   * HiDPI screen gets a sharp map and drawGrid scales every frame up to it.
+   * Returns whether the store changed size, which clears it.
+   */
+  _sizeBackingStore() {
+    if (!this.canvas) return false;
+    const dpr = typeof window !== 'undefined' ? window.devicePixelRatio : 1;
+    const { width, height } = backingStore(this._mapW, this._mapH, this._cssMapWidth, dpr);
+    let changed = false;
+    // Assigning a size clears the canvas even when it is the same one.
+    if (this.canvas.width !== width) {
+      this.canvas.width = width;
+      changed = true;
+    }
+    if (this.canvas.height !== height) {
+      this.canvas.height = height;
+      changed = true;
+    }
+    return changed;
+  }
+
+  /**
+   * Follow the canvas's CSS width (a ResizeObserver on its container, one
+   * frame at a time) and the screen's pixel ratio (a resolution media
+   * query, which a browser zoom or a move to another screen changes), and
+   * size the backing store again when either does. render() observes each
+   * new canvas; disconnectedCallback stops both and connectedCallback starts
+   * them again.
+   */
+  _observeCanvas() {
+    this._unobserveCanvas();
+    const container = this.canvas?.parentElement;
+    if (!container || typeof ResizeObserver !== 'function') return;
+    const observer = new ResizeObserver((entries) => {
+      const box = entries[entries.length - 1]?.contentRect;
+      if (box) this._pendingCssWidth = box.width;
+      this._onCanvasFrame ??= requestFrame(() => {
+        this._onCanvasFrame = null;
+        if (this._canvasObserver !== observer) return;
+        this._resizeCanvasTo(this._pendingCssWidth);
+      });
+    });
+    observer.observe(container);
+    this._canvasObserver = observer;
+    this._watchResolution();
+  }
+
+  _unobserveCanvas() {
+    this._canvasObserver?.disconnect();
+    this._canvasObserver = null;
+    this._unwatchResolution();
+  }
+
+  /** The canvas is `cssWidth` CSS px wide now: size the store for it, and
+   *  draw again if the store or the CSS width changed, since labels are
+   *  laid out in CSS px. */
+  _resizeCanvasTo(cssWidth) {
+    if (!(cssWidth > 0)) return;
+    const moved = cssWidth !== this._cssMapWidth;
+    this._cssMapWidth = cssWidth;
+    if (this._sizeBackingStore() || moved) this.drawGrid();
+  }
+
+  _watchResolution() {
+    this._unwatchResolution();
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    let query = null;
+    try {
+      query = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
+    } catch {
+      query = null;
+    }
+    if (typeof query?.addEventListener !== 'function') return;
+    // The query is for the old ratio, so a change means a new one: watch
+    // that, and size for it.
+    const onChange = () => {
+      this._watchResolution();
+      if (this._sizeBackingStore()) this.drawGrid();
+    };
+    query.addEventListener('change', onChange);
+    this._resolutionWatch = { query, onChange };
+  }
+
+  _unwatchResolution() {
+    const watch = this._resolutionWatch;
+    this._resolutionWatch = null;
+    watch?.query?.removeEventListener?.('change', watch.onChange);
   }
 
   startDrawing(e) {
@@ -7677,8 +7808,8 @@ export class ZoneMapCard extends HTMLElement {
    *  viewAt takes it: 0 to 1 from the window's xMin and yMin edges, which a
    *  flipped map draws on the right. */
   _windowFrac(p) {
-    const fx = this.canvas?.width ? p.x / this.canvas.width : 0.5;
-    const fy = this.canvas?.height ? p.y / this.canvas.height : 0.5;
+    const fx = this.canvas ? p.x / this._mapW : 0.5;
+    const fy = this.canvas ? p.y / this._mapH : 0.5;
     return { x: this._mirrorX ? 1 - fx : fx, y: fy };
   }
 
@@ -7761,7 +7892,7 @@ export class ZoneMapCard extends HTMLElement {
     // 16 px a line; one that counts in pages, a canvas's height.
     const perLine = 16;
     const unit =
-      event.deltaMode === 1 ? perLine : event.deltaMode === 2 ? this.canvas.height : 1;
+      event.deltaMode === 1 ? perLine : event.deltaMode === 2 ? this._mapH : 1;
     const travel = Math.max(-WHEEL_PX_PER_STEP, Math.min(WHEEL_PX_PER_STEP, event.deltaY * unit));
     if (!travel) return;
     this._zoomBy(Math.pow(ZOOM_STEP, -travel / WHEEL_PX_PER_STEP), this._mmAt(p));
@@ -7947,6 +8078,7 @@ export class ZoneMapCard extends HTMLElement {
 
   disconnectedCallback() {
     this._detachGlobalListeners();
+    this._unobserveCanvas();
     // A pan's window listeners would keep the card alive and moving.
     this._endGesture();
     this._disconnectZones();

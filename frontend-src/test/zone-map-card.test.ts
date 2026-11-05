@@ -8,7 +8,7 @@
  * the old one.
  */
 
-import { afterEach, describe, it, expect, vi } from "vitest";
+import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { ZoneMapCard } from "../src/zone-map/card";
 import {
   CONFIG_ENTRIES_SUBSCRIBE,
@@ -5495,8 +5495,10 @@ describe("zone map card coverage", () => {
     const fills = coverageFills(draws);
     expect(fills.map((d) => [d.fill, d.depth])).toEqual([["rgba(255, 152, 0, 0.5)", 1]]);
     const at = draws.indexOf(fills[0]);
-    // Right after the clear: no grid line, label, cone or zone before it.
+    // Right after the frame's scale to the backing store and the clear: no
+    // grid line, label, cone or zone before it.
     expect([...new Set(draws.slice(0, at).map((d) => d.name))]).toEqual([
+      "setTransform",
       "clearRect",
       "save",
       "beginPath",
@@ -12938,5 +12940,162 @@ describe("zone map card zoom and pan", () => {
       // The container queries the overlay buttons size by still apply.
       expect(card.shadowRoot.querySelector("style").textContent).toContain("container-type: size");
     }
+  });
+});
+
+/**
+ * The canvas's backing store follows the screen's device px, so a HiDPI
+ * screen gets a sharp map, while everything is still drawn, hit-tested and
+ * laid out in the logical canvas. happy-dom has no ResizeObserver that
+ * reports and no layout, so the tests stand in for both.
+ */
+describe("zone map card resolution", () => {
+  type Observed = { callback: (entries: any[]) => void; targets: Element[]; disconnected: boolean };
+  let observers: Observed[] = [];
+
+  class FakeResizeObserver {
+    record: Observed;
+    constructor(callback: (entries: any[]) => void) {
+      this.record = { callback, targets: [], disconnected: false };
+      observers.push(this.record);
+    }
+    observe(target: Element) {
+      this.record.targets.push(target);
+    }
+    unobserve() {}
+    disconnect() {
+      this.record.disconnected = true;
+    }
+  }
+
+  beforeEach(() => {
+    observers = [];
+    vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    (window as any).devicePixelRatio = 1;
+    document.body.replaceChildren();
+  });
+
+  /** A fitted 4:3 map (800 x 600 logical px). */
+  async function fittedCard(config: Record<string, any> = {}) {
+    const hass = fakeHass({ ...ZONE_PAYLOAD, zones: {}, rotation_deg: 0 });
+    hass.config = { unit_system: { length: "km" } };
+    return mountCard(hass, config);
+  }
+
+  /** The observer watching the card's canvas container now. */
+  function canvasObserver(card: any): Observed {
+    const container = card.canvas.parentElement;
+    const live = observers.filter((o) => !o.disconnected && o.targets.includes(container));
+    expect(live).toHaveLength(1);
+    return live[0];
+  }
+
+  /** Report the canvas container `width` CSS px wide, and let its frame run. */
+  async function reportWidth(card: any, width: number) {
+    const container = card.canvas.parentElement;
+    const before = card._cssMapWidth;
+    canvasObserver(card).callback([{ target: container, contentRect: { width, height: width } }]);
+    if (width !== before) await vi.waitFor(() => expect(card._cssMapWidth).toBe(width));
+  }
+
+  it("backs a 4:3 map 800 CSS px wide at DPR 2 with a 1600 x 1200 store, drawn scaled", async () => {
+    (window as any).devicePixelRatio = 2;
+    const card = await fittedCard();
+    const container = card.canvas.parentElement;
+    expect([card.canvas.width, card.canvas.height]).toEqual([800, 600]);
+
+    await reportWidth(card, 800);
+    expect([card.canvas.width, card.canvas.height]).toEqual([1600, 1200]);
+    // The logical canvas, and so the map's shape, stay as they were.
+    expect([card._mapW, card._mapH]).toEqual([800, 600]);
+    expect(container.style.aspectRatio).toBe("800 / 600");
+    expect(container.style.getPropertyValue("--zm-aspect")).toBe(String(800 / 600));
+
+    const { ctx, draws } = drawRecordingContext();
+    card.ctx = ctx;
+    card.drawGrid();
+    expect(draws[0]).toMatchObject({ name: "setTransform", args: [2, 0, 0, 2, 0, 0] });
+    expect(draws[1]).toMatchObject({ name: "clearRect", args: [0, 0, 800, 600] });
+  });
+
+  it("keeps one store px per logical px for a small map, and at most three", async () => {
+    (window as any).devicePixelRatio = 2;
+    const card = await fittedCard();
+    await reportWidth(card, 400);
+    expect([card.canvas.width, card.canvas.height]).toEqual([800, 600]);
+
+    (window as any).devicePixelRatio = 3;
+    await reportWidth(card, 1000);
+    expect([card.canvas.width, card.canvas.height]).toEqual([2400, 1800]);
+  });
+
+  it("lands a press on the same map point whatever the store's size", async () => {
+    const card = await mountCard(fakeHass(), { ...TEN_METER_GRID, start_locked: false });
+    layOut(card, 400);
+    const press = { clientX: 100, clientY: 300 };
+    const at1 = card._mmAt(card._getPointFromEvent(press));
+
+    (window as any).devicePixelRatio = 2;
+    await reportWidth(card, 400);
+    (window as any).devicePixelRatio = 3;
+    await reportWidth(card, 401);
+    expect(card.canvas.width).toBe(1203);
+    expect(card._getPointFromEvent(press)).toEqual({ x: 200, y: 600 });
+    expect(card._mmAt(card._getPointFromEvent(press))).toEqual(at1);
+    // A label 18 logical px tall is still sized for the 400 CSS px it shows at.
+    expect(card._canvasScale()).toBe(2);
+  });
+
+  it("sizes the store again when the screen's pixel ratio changes", async () => {
+    const queries: any[] = [];
+    vi.spyOn(window, "matchMedia").mockImplementation((media: string) => {
+      const query: any = {
+        media,
+        matches: true,
+        listeners: [] as Array<() => void>,
+        addEventListener: vi.fn((_type: string, listener: () => void) => query.listeners.push(listener)),
+        removeEventListener: vi.fn(),
+      };
+      queries.push(query);
+      return query;
+    });
+    const card = await fittedCard();
+    document.body.appendChild(card);
+    await reportWidth(card, 800);
+    expect(card.canvas.width).toBe(800);
+    const watching = queries.filter((q) => q.addEventListener.mock.calls.length);
+    const watched = watching[watching.length - 1];
+    expect(watched.media).toBe("(resolution: 1dppx)");
+
+    // Dragged onto a HiDPI screen.
+    (window as any).devicePixelRatio = 2;
+    watched.listeners.forEach((listener: () => void) => listener());
+    expect([card.canvas.width, card.canvas.height]).toEqual([1600, 1200]);
+    expect(queries[queries.length - 1].media).toBe("(resolution: 2dppx)");
+    expect(watched.removeEventListener).toHaveBeenCalled();
+  });
+
+  it("stops following the canvas while off the page and follows it again on return", async () => {
+    const card = await fittedCard();
+    document.body.appendChild(card);
+    const first = canvasObserver(card);
+
+    card.remove();
+    expect(first.disconnected).toBe(true);
+    expect(observers.filter((o) => !o.disconnected)).toHaveLength(0);
+
+    document.body.appendChild(card);
+    expect(canvasObserver(card)).not.toBe(first);
+
+    // A render observes its new canvas and lets the old one go.
+    const before = canvasObserver(card);
+    card.render();
+    expect(before.disconnected).toBe(true);
+    expect(canvasObserver(card).targets).toEqual([card.canvas.parentElement]);
   });
 });
