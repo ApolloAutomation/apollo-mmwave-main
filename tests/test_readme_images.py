@@ -48,6 +48,9 @@ PUBLISHED_IMAGES = {
     "apollo-mmwave-slider-lock.gif": (
         "08a098efea9a9260eb232f39b7e1fb2449c5d7c100c5367f7b319efbf25e17dc"
     ),
+    "apollo-mmwave-zone-map-expanded-2.4.0.png": (
+        "8665a05a7955f103cd3544005f22aeb71f63e12f254ad3224ddf476c1374b85e"
+    ),
     "apollo-mmwave-zone-map-live-2.4.0.gif": (
         "0783cbaf13cfd0fbd3f7f1d4929a7b0bd2002b00ee5dda0c6f9246f2be3f122b"
     ),
