@@ -105,6 +105,24 @@ SENSOR_UNIT_FACTORS = {
     "mi": 1_609_344.0,
     "nmi": 1_852_000.0,
 }
+# Target X and Y units (target_units.py). An LD2450 target sensor registered
+# at most this many seconds ago is new and shows mm from the start; a deleted
+# entity that comes back keeps its old created_at, so it never counts as new.
+TARGET_UNITS_FRESH_S = 60.0
+# How long after a new target sensor is registered its unit is decided: never
+# inside the registry's create event, which fires before the entity is added
+# and listens for registry updates, so it would keep showing the old unit.
+TARGET_UNITS_DELAY_S = 2.0
+# The one notification the pass over existing sensors raises when it switched
+# any, so a later pass replaces it rather than adding a second.
+TARGET_UNITS_NOTIFICATION_ID = f"{DOMAIN}_target_units"
+# Each target sensor's decision, kept in its own registry options under DOMAIN
+# so it outlives the store, a downgrade, a rename and a delete-and-restore:
+# TARGET_UNITS_MM when Apollo mmWave switched it to mm, TARGET_UNITS_KEPT when
+# it was left as it was. A sensor that has one is never looked at again.
+OPTION_TARGET_UNITS = "target_units"
+TARGET_UNITS_MM = "mm"
+TARGET_UNITS_KEPT = "kept"
 # Zone settings, kept in the zone's own dict beside shape, data and name. A
 # default is never stored: absent means a detect zone with no hold, and
 # update_zone pops the key instead of writing "detect" or 0. Zone dicts load

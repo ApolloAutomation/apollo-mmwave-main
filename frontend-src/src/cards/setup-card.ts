@@ -15,6 +15,12 @@
  * at once. The card never writes on its own: each button names what it
  * changes and makes that one service call.
  *
+ * In LD2450 mode an administrator also gets, apart from the checks, a note
+ * when Home Assistant shows the radar's Target X and Y in another unit than
+ * mm, with one button that switches them (`target_units.py`). It is not a
+ * radar setting: the change goes to Home Assistant's entity registry, so it
+ * never joins "Use recommended settings".
+ *
  * Being on every tab of the dashboard, it also shows the page's version
  * notice (`version-check.ts`) above the checks: a Reload button when this
  * page runs older cards than the Apollo mmWave Home Assistant runs, a line
@@ -30,6 +36,8 @@ import { hasLd2450Device } from "../ld2450";
 import { detectProfileFromEntities } from "../entities";
 import {
   ERR_NOT_FOUND,
+  ERR_NOT_LOADED,
+  NO_DEVICE_MESSAGE,
   callService,
   describeServiceError,
   type CalibrationApiHass,
@@ -51,14 +59,22 @@ import {
   RECOMMENDED_LABEL,
   RECOMMENDED_PROGRESS,
   SETTING_NOT_FOUND,
+  TARGET_UNITS_GET,
+  TARGET_UNITS_SET,
+  UNITS_FAILURE,
+  UNITS_LABEL,
+  UNITS_NOT_LOADED,
+  UNITS_PROGRESS,
   WAITING_LINE,
   ZONE_TYPE_WAITING_LINE,
   recommendedLine,
   setupStatus,
+  targetUnitsNote,
   watchedSetupIds,
   type SettingKey,
   type SetupProblem,
   type SetupStatus,
+  type TargetUnitRow,
 } from "./setup-checks";
 import {
   CHECKING_LINE,
@@ -79,6 +95,15 @@ async function rejectionText(hass: HomeAssistant, error: any): Promise<string> {
   return describeServiceError(hass, error);
 }
 
+/** A rejected Target X and Y units call as one sentence. Its `not_found` is
+ *  the device, and its `not_loaded` the integration, not calibration. */
+async function unitsRejectionText(hass: HomeAssistant, error: any): Promise<string> {
+  const code = error?.code ?? error?.error?.code;
+  if (code === ERR_NOT_LOADED) return UNITS_NOT_LOADED;
+  if (code === ERR_NOT_FOUND) return NO_DEVICE_MESSAGE;
+  return describeServiceError(hass, error);
+}
+
 /** A fix whose effect arrives later, waiting for the problem to clear. */
 interface Settling {
   problems: SetupProblem[];
@@ -96,6 +121,13 @@ export class ApolloRadarSetupCard extends LitElement {
   @state() private _note?: { setting: SettingKey; text: string };
   /** The page's version notice, while this card is the one showing it. */
   @state() private _versionNotice?: VersionNotice;
+  /** LD2450 mode, administrators only: the radar's paired Target X and Y as
+   *  `target_units/get` last answered, or undefined before that. */
+  @state() private _unitRows?: TargetUnitRow[];
+  /** Whether "Show Target X and Y in mm" is running. */
+  @state() private _unitsBusy = false;
+  /** That button's own line for a rejected call. */
+  @state() private _unitsError?: string;
 
   /** Bumped on a device change so a call that settles afterward is dropped. */
   private _serial = 0;
@@ -109,6 +141,12 @@ export class ApolloRadarSetupCard extends LitElement {
   private readonly _jobWatch = new CalibrationJobWatch(() => this.requestUpdate());
   /** The page's version check, while the card is on the page. */
   private _version?: VersionWatch;
+  /** What `_unitRows` was read for: a device and the entity registry then.
+   *  A unit only changes through the registry, which replaces
+   *  `hass.entities`, so state ticks never read it again. */
+  private _unitsReadFor?: { deviceId: string; entities: HomeAssistant["entities"] };
+  /** Bumped on each read, so only the newest answer lands. */
+  private _unitsRead = 0;
 
   public setConfig(config: SetupCardConfig): void {
     this._config = config;
@@ -145,6 +183,8 @@ export class ApolloRadarSetupCard extends LitElement {
     this._version = version;
     version.update(this.hass);
     this._versionNotice = version.notice;
+    this._unitsReadFor = undefined;
+    this._watchUnits();
   }
 
   disconnectedCallback(): void {
@@ -188,6 +228,70 @@ export class ApolloRadarSetupCard extends LitElement {
     );
   }
 
+  /** Read the Target X and Y units for an administrator in LD2450 mode, on
+   *  connect, on a device change and on a registry change. */
+  private _watchUnits(): void {
+    const hass = this.hass;
+    const deviceId = this._config?.device_id;
+    if (
+      !hass ||
+      !deviceId ||
+      this._isGate() ||
+      hass.user?.is_admin !== true ||
+      typeof hass.callWS !== "function"
+    ) {
+      this._unitsReadFor = undefined;
+      this._unitRows = undefined;
+      return;
+    }
+    const read = this._unitsReadFor;
+    if (read && read.deviceId === deviceId && read.entities === hass.entities) return;
+    this._unitsReadFor = { deviceId, entities: hass.entities };
+    void this._readUnits();
+  }
+
+  private async _readUnits(): Promise<void> {
+    const hass = this.hass;
+    const deviceId = this._config?.device_id;
+    if (!hass?.callWS || !deviceId) return;
+    const read = ++this._unitsRead;
+    try {
+      const answer = await hass.callWS<{ targets?: unknown }>({
+        type: TARGET_UNITS_GET,
+        device_id: deviceId,
+      });
+      // Only the newest read, and only while the card still shows its device.
+      if (read !== this._unitsRead || this._config?.device_id !== deviceId) return;
+      this._unitRows = Array.isArray(answer?.targets)
+        ? (answer.targets as TargetUnitRow[])
+        : undefined;
+    } catch {
+      // Not loaded, or a backend older than this card: no note.
+      if (read === this._unitsRead && this._config?.device_id === deviceId) {
+        this._unitRows = undefined;
+      }
+    }
+  }
+
+  /** The button: the backend switches Home Assistant's own pick to mm. */
+  private async _showInMm(): Promise<void> {
+    const hass = this.hass;
+    const deviceId = this._config?.device_id;
+    if (!hass?.callWS || !deviceId || this._unitsBusy) return;
+    const serial = this._serial;
+    this._unitsBusy = true;
+    this._unitsError = undefined;
+    try {
+      await hass.callWS({ type: TARGET_UNITS_SET, device_id: deviceId });
+      if (serial === this._serial) await this._readUnits();
+    } catch (error) {
+      const text = await unitsRejectionText(hass, error);
+      if (serial === this._serial) this._unitsError = `${UNITS_FAILURE}: ${text}`;
+    } finally {
+      if (serial === this._serial) this._unitsBusy = false;
+    }
+  }
+
   private _watchedIds(): string[] {
     const resolved = this._resolve();
     if (resolved) return gateWatchedIds(resolved.map, resolved.profile);
@@ -219,8 +323,12 @@ export class ApolloRadarSetupCard extends LitElement {
         this._busy = undefined;
         this._error = undefined;
         this._note = undefined;
+        this._unitsBusy = false;
+        this._unitsError = undefined;
+        this._unitRows = undefined;
       }
       this._watchJobs();
+      this._watchUnits();
     }
     if (changed.has("hass")) this._version?.update(this.hass);
     if (!this.hass) return;
@@ -307,10 +415,12 @@ export class ApolloRadarSetupCard extends LitElement {
 
   protected render(): TemplateResult | typeof nothing {
     if (!this.hass || !this._config) return nothing;
+    const status = this._status();
     return html`
       <ha-card .header=${this._config.title ?? DEFAULT_TITLE}>
         <div class="wrap">
-          ${this._renderSubtitle()} ${this._renderVersionNotice()} ${this._renderBody()}
+          ${this._renderSubtitle()} ${this._renderVersionNotice()} ${this._renderBody(status)}
+          ${this._renderUnits(status)}
         </div>
       </ha-card>
     `;
@@ -346,8 +456,7 @@ export class ApolloRadarSetupCard extends LitElement {
     return text ? html`<div class="subtitle">${text}</div>` : nothing;
   }
 
-  private _renderBody(): TemplateResult {
-    const status = this._status();
+  private _renderBody(status: SetupStatus): TemplateResult {
     switch (status.kind) {
       case "no_device":
         return html`<p class="hint">${NO_DEVICE_LINE}</p>`;
@@ -366,6 +475,38 @@ export class ApolloRadarSetupCard extends LitElement {
           ? this._renderProblems(status.problems, !!status.zoneTypeUnread)
           : html`<p class="ok">${ALL_GOOD_LINE}</p>`;
     }
+  }
+
+  /** The Target X and Y units note under the checks, whatever they say, for
+   *  an administrator, while Home Assistant shows any of them in another
+   *  unit than mm by its own pick. */
+  private _renderUnits(status: SetupStatus): TemplateResult | typeof nothing {
+    if (this._isGate() || status.kind === "no_device" || status.kind === "nothing_to_check") {
+      return nothing;
+    }
+    if (this.hass?.user?.is_admin !== true) return nothing;
+    const note = targetUnitsNote(this._unitRows);
+    if (!note) return nothing;
+    return html`
+      <div class="units">
+        <p class="note">${note.text}</p>
+        <p class="hint">${note.hint}</p>
+        <div class="buttons">
+          <button
+            type="button"
+            class="primary"
+            ?disabled=${this._unitsBusy}
+            @click=${() => this._showInMm()}
+          >
+            ${UNITS_LABEL}
+          </button>
+        </div>
+        <div class="status" aria-live="polite">
+          ${this._unitsBusy ? html`<p class="hint">${UNITS_PROGRESS}</p>` : nothing}
+          ${this._unitsError ? html`<p class="error">${this._unitsError}</p>` : nothing}
+        </div>
+      </div>
+    `;
   }
 
   private _renderProblems(problems: SetupProblem[], zoneTypeUnread: boolean): TemplateResult {
@@ -444,9 +585,13 @@ export class ApolloRadarSetupCard extends LitElement {
     .version-notice p:last-child {
       margin-bottom: 0;
     }
-    .problem + .problem {
+    .problem + .problem,
+    .units {
       border-top: 1px solid var(--divider-color, #e0e0e0);
       padding-top: 8px;
+    }
+    .units {
+      margin-top: 8px;
     }
     .hint {
       color: var(--secondary-text-color);

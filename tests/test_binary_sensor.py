@@ -1438,8 +1438,11 @@ async def _vanish(hass, pair: dict[str, str]) -> None:
 # The LD2450 of an R PRO-1 on firmware 26.10.21.1, as measured on a real
 # install: each axis is written about once a second (1.0 to 1.15 s), Y
 # usually about 0.45 s after X and sometimes in the same instant, in inches
-# with one decimal where Home Assistant uses US customary units. A lost
-# target turns X and Y unknown at once.
+# where Home Assistant uses US customary units. A lost target turns X and Y
+# unknown at once. Home Assistant does not round the inch state (15
+# significant digits, within about 1e-11 mm of the radar's mm); one decimal
+# is only how its UI shows it. These tests write one decimal, which is
+# coarser than a real install.
 RADAR_PERIOD_S = 1.07
 RADAR_Y_LAG_S = 0.45
 # Where in that once-a-second cycle the radar is when someone starts to walk
@@ -1475,7 +1478,8 @@ async def _report_at_radar_cadence(
     t seconds after the call. X is written every period_s from phase_s and Y
     y_lag_s after each X, each in a loop turn of its own, or in the same turn
     as its X when y_lag_s is 0. Each write carries the position at its own
-    time, in inches with one decimal, and a write due at or after until_s is
+    time, in inches rounded to one decimal (coarser than Home Assistant's own
+    state, see RADAR_PERIOD_S), and a write due at or after until_s is
     not made. A value equal to the state is no write at all: Home Assistant
     writes nothing for it, so it starts no evaluation.
     """
@@ -2077,8 +2081,9 @@ async def test_a_real_x_of_zero_does_not_pulse_a_held_zone(
     await _store_zone(hass, device_id, _hold_zone(BED_RIGHT_ZONE, hold_s=hold_s))
     presence_id = _presence_id(entity_registry, device_id)
     # The sleeper 60 mm right of the line, their partner 340 mm left of it,
-    # 400 mm apart, in inches: one decimal reads anyone within 1.27 mm of
-    # the line as 0.0.
+    # 400 mm apart, in inches rounded to one decimal, which reads anyone
+    # within 1.27 mm of the line as 0.0. Home Assistant's own inch state is
+    # not rounded, so on a real install only someone exactly on it reads 0.
     _set_target(hass, TARGET_1, 2.4, 78.7, ("in", "in"))
     _set_target(hass, TARGET_2, -13.4, 78.7, ("in", "in"))
     await hass.async_block_till_done()

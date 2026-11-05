@@ -1093,6 +1093,9 @@ export class ZoneMapCard extends HTMLElement {
         if (!this._replayShowing()) this.drawGrid();
       }
     }
+    // The help line names the units the target sensors show, which change
+    // only when someone picks another one for a sensor.
+    if (this._targetUnitsText() !== this._infoUnits) this._renderInfo();
     if (firstTime && this._hass) {
       // The store, not the entity registry, is where zones live now, so this
       // does not wait for a canvas or for any entity to exist.
@@ -3396,12 +3399,42 @@ export class ZoneMapCard extends HTMLElement {
     const host = this.shadowRoot?.getElementById('gridInfo');
     if (!host) return;
     const value = (mm) => this._formatGridValue(mm);
+    this._infoUnits = this._targetUnitsText();
     // How to draw is said in the zone editor, for the mode in use.
     host.textContent =
       `Grid units: ${this._unitLabel(this._displayUnit())}` +
       ` (X: ${value(this.xMin)}..${value(this.xMax)}, Y: ${value(this.yMin)}..${value(this.yMax)}).` +
-      ` Input units (sensors without a length unit): ${this._unitLabel(this.inputUnits)}.` +
+      this._infoUnits +
       ` Radar range: ${this._rangeText()}`;
+  }
+
+  /**
+   * The help line's units: the length units the tracked targets' sensors show,
+   * then the input unit only when one of them has no length unit, since only
+   * such a sensor is read in it. With no tracked state, the input unit alone.
+   */
+  _targetUnitsText() {
+    const states = this._hass?.states;
+    const units = new Set();
+    let tracked = false;
+    let unitless = false;
+    this.trackedEntities.forEach((pair) => {
+      [pair.x, pair.y].forEach((id) => {
+        const stateObj = id ? states?.[id] : undefined;
+        if (!stateObj) return;
+        tracked = true;
+        const unit = stateObj.attributes?.unit_of_measurement;
+        if (typeof unit === 'string' && Object.prototype.hasOwnProperty.call(SENSOR_LENGTH_UNITS, unit)) {
+          units.add(unit);
+        } else {
+          unitless = true;
+        }
+      });
+    });
+    const input = ` Input units (sensors without a length unit): ${this._unitLabel(this.inputUnits)}.`;
+    if (!tracked) return input;
+    const shown = Object.keys(SENSOR_LENGTH_UNITS).filter((unit) => units.has(unit));
+    return (shown.length ? ` Target sensors: ${shown.join(' and ')}.` : '') + (unitless ? input : '');
   }
 
   /** Redraw everything that shows the map's unit, after it changed. */
