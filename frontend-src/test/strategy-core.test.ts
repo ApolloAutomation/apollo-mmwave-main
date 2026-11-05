@@ -1210,24 +1210,81 @@ describe("LD2450 cards beside the zone map", () => {
       },
     ]);
     expect(conditional.card.type).toBe("vertical-stack");
-    const [note, rows] = conditional.card.cards;
+    const [note, rows, counts] = conditional.card.cards;
     expect(note).toEqual({
       type: "markdown",
       title: BUILT_IN_ZONES_TITLE,
       content: BUILT_IN_ZONES_NOTE,
     });
     expect(rows.type).toBe("entities");
-    expect(rows.entities.slice(0, 8)).toEqual([
+    expect(rows.entities.slice(0, 6)).toEqual([
       { type: "section", label: "Zone 1" },
       { entity: `number.${RPRO}_ld2450_zone_1_x1`, name: "X1" },
       { entity: `number.${RPRO}_ld2450_zone_1_y1`, name: "Y1" },
       { entity: `number.${RPRO}_ld2450_zone_1_x2`, name: "X2" },
       { entity: `number.${RPRO}_ld2450_zone_1_y2`, name: "Y2" },
-      { entity: `sensor.${RPRO}_ld2450_zone_1_all_target_count`, name: "Target Count" },
-      { entity: `sensor.${RPRO}_ld2450_zone_1_still_target_count`, name: "Still Target Count" },
-      { entity: `sensor.${RPRO}_ld2450_zone_1_moving_target_count`, name: "Moving Target Count" },
+      { type: "section", label: "Zone 2" },
     ]);
-    expect(rows.entities).toHaveLength(24);
+    expect(rows.entities).toHaveLength(15);
+    // As rows the counts would read "0.0", like the radar's Target Count, so
+    // they are one table of whole numbers under the corners.
+    const cell = (zone: number, kind: string) =>
+      `{% set n = states('sensor.${RPRO}_ld2450_zone_${zone}_${kind}_target_count') %}` +
+      "{{ n | int if is_number(n) else n | capitalize }}";
+    const line = (zone: number) =>
+      `| Zone ${zone} | ${cell(zone, "all")} | ${cell(zone, "still")} | ${cell(zone, "moving")} |`;
+    expect(counts).toEqual({
+      type: "markdown",
+      content: [
+        "| Target Count | All | Still | Moving |",
+        "| :-- | --: | --: | --: |",
+        line(1),
+        line(2),
+        line(3),
+      ].join("\n"),
+    });
+    expect(conditional.card.cards).toHaveLength(3);
+    expect(JSON.stringify(rows)).not.toContain("target_count");
+  });
+
+  it("leaves a built-in zone's missing count an empty cell and a zone with none out", () => {
+    const drop = [
+      `sensor.${MTR}_zone_1_still_target_count`,
+      ...["all", "still", "moving"].map((f) => `sensor.${MTR}_zone_3_${f}_target_count`),
+    ];
+    const hass = mtrHass(drop);
+    const conditional = buildDeviceCards(hass, deviceOf(hass)).find(
+      (c) => c.type === "conditional"
+    )!;
+    const [, rows, counts] = conditional.card.cards;
+    // Zone 3 keeps its corners.
+    expect(rows.entities.filter((r: any) => r.type === "section").map((r: any) => r.label)).toEqual(
+      ["Zone 1", "Zone 2", "Zone 3"]
+    );
+    const lines = counts.content.split("\n");
+    expect(lines).toHaveLength(4);
+    expect(lines[2]).toMatch(/^\| Zone 1 \| \{% set n = states\('sensor\.\w+_zone_1_all_target_count'\)/);
+    // Zone 1 has no Still count: its cell is empty.
+    expect(lines[2]).toContain("capitalize }} |  | {% set n");
+    expect(lines[3]).toMatch(/^\| Zone 2 \| /);
+    expect(counts.content).not.toContain("zone_3");
+  });
+
+  it("keeps the built-in zones card for counts alone, and leaves an empty table out", () => {
+    const corners = Object.keys(radarIds(MTR, "")).filter((id) => /_zone_\d_[xy][12]$/.test(id));
+    const countsOnly = mtrHass(corners);
+    const conditional = buildDeviceCards(countsOnly, deviceOf(countsOnly)).find(
+      (c) => c.type === "conditional"
+    )!;
+    expect(conditional.card.cards.map((c: any) => c.type)).toEqual(["markdown", "markdown"]);
+    expect(conditional.card.cards[1].content).toContain("| Zone 3 | ");
+
+    const counts = Object.keys(radarIds(MTR, "")).filter((id) => /_zone_\d_\w+_target_count$/.test(id));
+    const cornersOnly = mtrHass(counts);
+    const plain = buildDeviceCards(cornersOnly, deviceOf(cornersOnly)).find(
+      (c) => c.type === "conditional"
+    )!;
+    expect(plain.card.cards.map((c: any) => c.type)).toEqual(["markdown", "entities"]);
   });
 
   it("lists the zone presence sensors this integration made for the radar", () => {

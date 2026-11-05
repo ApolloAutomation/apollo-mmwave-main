@@ -706,9 +706,11 @@ bottom in this order:
   Zones on the zone map (see
   [Ignore zones and hold time](#ignore-zones-and-hold-time)). The LD2450's
   firmware version is on the [Device card](#device-card).
-- **Radar's built-in zones** shows the radar chip's own zone corners and
-  counts. These are not the zones you draw on the map. The card shows only
-  while Zone Type is not Disabled, and goes away when you set it to Disabled.
+- **Radar's built-in zones** shows the radar chip's own zone corners, and
+  under them a table of each zone's target counts (All, Still and Moving) as
+  whole numbers. These are not the zones you draw on the map. The card shows
+  only while Zone Type is not Disabled, and goes away when you set it to
+  Disabled.
 - The [Device card](#device-card) ends the tab.
 
 ### Radar setup

@@ -15,6 +15,8 @@ import {
   type Ld2450Entities,
 } from "./ld2450-entities";
 import {
+  builtInZoneCountIds,
+  builtInZoneCountsText,
   builtInZoneRows,
   ld2450ControlRows,
   ld2450LiveRows,
@@ -658,15 +660,25 @@ function builtInZonesCard(
 ): Record<string, any> | undefined {
   if (!exists(hass, l.zone_type)) return undefined;
   const entities: Record<string, any>[] = [];
+  const counts: { label: string; ids: (string | undefined)[] }[] = [];
   for (let i = 0; i < LD2450_ZONES; i++) {
+    const label = `Zone ${i + 1}`;
     const rows = presentRows(hass, builtInZoneRows(l, i));
+    const ids = builtInZoneCountIds(l, i).map((id) => (exists(hass, id) ? id : undefined));
+    if (ids.some(Boolean)) counts.push({ label, ids });
     if (rows.length === 0) continue;
     entities.push(
-      { type: "section", label: `Zone ${i + 1}` },
+      { type: "section", label },
       ...rows.map((r) => ({ entity: r.entity, name: r.name }))
     );
   }
-  if (entities.length === 0) return undefined;
+  if (entities.length === 0 && counts.length === 0) return undefined;
+  const cards: Record<string, any>[] = [
+    { type: "markdown", title: BUILT_IN_ZONES_TITLE, content: BUILT_IN_ZONES_NOTE },
+  ];
+  if (entities.length) cards.push({ type: "entities", show_header_toggle: false, entities });
+  // The counts as whole numbers: as entities rows they read "0.0".
+  if (counts.length) cards.push({ type: "markdown", content: builtInZoneCountsText(counts) });
   return {
     type: "conditional",
     conditions: [
@@ -676,13 +688,7 @@ function builtInZonesCard(
         state_not: ["Disabled", "unavailable", "unknown"],
       },
     ],
-    card: {
-      type: "vertical-stack",
-      cards: [
-        { type: "markdown", title: BUILT_IN_ZONES_TITLE, content: BUILT_IN_ZONES_NOTE },
-        { type: "entities", show_header_toggle: false, entities },
-      ],
-    },
+    card: { type: "vertical-stack", cards },
   };
 }
 
