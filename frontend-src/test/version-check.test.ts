@@ -113,6 +113,21 @@ describe("versionNotice", () => {
     // An unreadable first answer changes nothing.
     expect(versionNotice("2.4.0", "2.4.1", "garbage")?.kind).toBe("restart");
   });
+
+  it("reads the update from the last beta to the release the right way round", async () => {
+    const { compareVersions, versionNotice } = await fresh();
+    expect(compareVersions("2.4.0b3", "2.4.0")).toBeLessThan(0);
+    // Home Assistant restarted into 2.4.0 while a tab still runs 2.4.0b3.
+    expect(versionNotice("2.4.0", "2.4.0b3")).toEqual({
+      kind: "reload",
+      lines: [
+        "Apollo mmWave was updated to 2.4.0, but this page still runs 2.4.0b3.",
+        "In the Home Assistant app, if Reload does not help, close the app fully and open it again.",
+      ],
+    });
+    // The 2.4.0 files reached the browser before Home Assistant restarted.
+    expect(versionNotice("2.4.0b3", "2.4.0")?.kind).toBe("restart");
+  });
 });
 
 describe("watchVersion", () => {

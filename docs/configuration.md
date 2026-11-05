@@ -108,13 +108,13 @@ Copy the URLs from the warning exactly and add each one once, as a module:
 lovelace:
   resource_mode: yaml
   resources:
-    - url: /apollo_mmwave/apollo-radar-tuning.js?v=2.4.0b3
+    - url: /apollo_mmwave/apollo-radar-tuning.js?v=2.4.0
       type: module
-    - url: /apollo_mmwave/apollo-radar-zone-map-card.js?v=2.4.0b3
+    - url: /apollo_mmwave/apollo-radar-zone-map-card.js?v=2.4.0
       type: module
 ```
 
-The `?v=` is the integration version, such as `?v=2.4.0b3`, and nothing else,
+The `?v=` is the integration version, such as `?v=2.4.0`, and nothing else,
 so a bundle's URL changes only when the version does. After every upgrade,
 replace each row's URL with the new one from the warning instead of adding a
 second row. An out-of-date row makes the browser run the bundle twice, once
