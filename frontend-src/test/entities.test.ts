@@ -605,4 +605,20 @@ describe("deviceInfoEntities", () => {
   it("is empty for a device with none of them", () => {
     expect(deviceInfoEntities(hassWith([`sensor.${base}_rssi`]), "other")).toEqual({});
   });
+
+  // R PRO-1 firmware after 26.3.2.1 adds Combined Presence. A zone of this
+  // integration's named "Combined" ends the same way and must never be taken.
+  it("finds an R PRO-1's Combined Presence, not a zone that ends the same way", () => {
+    const d = "apollo_r_pro_1_7a711c";
+    const zone = `binary_sensor.${d}_combined_presence`;
+    const hass = hassWith([
+      zone,
+      `sensor.${d}_combined_presence`,
+      `binary_sensor.${d}_combined_presence_2`,
+    ]);
+    hass.entities[zone].platform = "apollo_mmwave";
+    expect(deviceInfoEntities(hass, "dev1")).toEqual({
+      combined_presence: `binary_sensor.${d}_combined_presence_2`,
+    });
+  });
 });

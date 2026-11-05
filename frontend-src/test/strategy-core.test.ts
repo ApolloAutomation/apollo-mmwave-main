@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   detectRadarDevices,
   buildDeviceCards,
+  COMBINED_AUTOMATIONS,
   buildDeviceSections,
   deviceView,
   generateCards,
@@ -1629,6 +1630,55 @@ describe("plain help, labels and the Device card", () => {
     const content = help(hass);
     expect(content).not.toContain("**LD2412 Presence**");
     expect(content).toContain("**LD2450 Presence** for anywhere the radar sees");
+  });
+
+  /** `hass` with the firmware's Combined Presence on the R PRO-1 added, from
+   *  `platform` (a zone of this integration's could end the same way). */
+  function withCombined(hass: HomeAssistant, platform = "esphome"): HomeAssistant {
+    const id = `binary_sensor.${RPRO}_combined_presence`;
+    return {
+      ...hass,
+      states: { ...hass.states, [id]: { entity_id: id, state: "off", attributes: {} } },
+      entities: { ...hass.entities, [id]: { device_id: "rpro", platform } },
+    };
+  }
+
+  // R PRO-1 firmware after 26.3.2.1 adds Combined Presence, on while either
+  // radar sees someone. The firmware adds it for automations, and the wiki's
+  // R PRO-1 sensor definitions recommend it over each radar's own presence.
+  it("points R PRO-1 automations at Combined Presence where the firmware has it", () => {
+    const content = help(withCombined(rproHass()));
+    expect(content).toContain(`\n\n${COMBINED_AUTOMATIONS}\n\n`);
+    expect(COMBINED_AUTOMATIONS).toBe(
+      "**In automations**, use **Combined Presence** for the whole room (on while either" +
+        " radar sees someone), or a zone's presence sensor for one part of it."
+    );
+    expect(content).not.toContain("**LD2412 Presence**");
+    // Firmware 26.3.2.1 and earlier has none: the LD2412's presence stays the
+    // advice, and so it does beside a zone of this integration's of that name.
+    for (const hass of [rproHass(), withCombined(rproHass(), "apollo_mmwave")]) {
+      expect(help(hass)).toContain(
+        "**In automations**, use **LD2412 Presence** (Radar Target on this tab)"
+      );
+      expect(help(hass)).not.toContain("Combined Presence");
+    }
+  });
+
+  it("points automations at Combined Presence on an R PRO-1 built without the LD2412", () => {
+    const hass = hassOf(
+      "rpro",
+      { name: "Office", manufacturer: "ApolloAutomation", model: "R-PRO-1-W" },
+      {
+        [`sensor.${RPRO}_ld2450_target_1_x`]: "0",
+        [`binary_sensor.${RPRO}_ld2450_presence`]: "off",
+      }
+    );
+    const content = help(withCombined(hass));
+    expect(content).toContain(
+      "**In automations**, use a zone's presence sensor, or **Combined Presence** for" +
+        " anywhere the radar sees."
+    );
+    expect(content).not.toContain("**LD2450 Presence**");
   });
 
   it("gives a live MTR-1 three Start here steps, two without a setup card", () => {

@@ -260,13 +260,17 @@ in Home Assistant, where every setting this dashboard leaves out lives.
   LD2450: fix anything its Radar setup card flags, set **Cone rotation**,
   then draw a zone and walk into it. **In automations**, use **LD2412
   Presence** (the Radar Target row on this tab) for the whole room, or a
-  zone's presence sensor for one part of it.
+  zone's presence sensor for one part of it. On R PRO-1 firmware newer than
+  26.3.2.1, which adds **Combined Presence** (on while either radar sees
+  someone), it names Combined Presence for the whole room instead, as the
+  Apollo wiki does.
 - **MTR-1:** fix anything the Radar setup card flags, set **Cone rotation**
   (under Configure on the zone map) to match how the sensor is mounted, then
   draw a zone, reload the page, and walk into the zone to watch it turn on
   under Zone presence. **In automations**, use a zone's presence sensor, or
   **LD2450 Presence** for anywhere the radar sees. An R PRO-1 without the
-  optional LD2412 gets these steps too.
+  optional LD2412 gets these steps too, with **Combined Presence** in place
+  of LD2450 Presence where its firmware has it.
 
 An offline sensor's help card adds an "Offline right now" note. The note is
 written when the page loads, so after the radar comes back it stays until you

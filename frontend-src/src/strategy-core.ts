@@ -321,6 +321,9 @@ interface HelpContext {
    *  built without the optional LD2412 keeps the LD2412 profile from its
    *  registry model, but has only the LD2450. */
   gateRadar: boolean;
+  /** Whether the device has the R PRO-1 firmware's Combined Presence
+   *  (firmware after 26.3.2.1). */
+  combinedPresence: boolean;
 }
 
 function helpCard(dev: RadarDevice, ctx: HelpContext): Record<string, any> {
@@ -354,10 +357,26 @@ function numbered(steps: string[]): string {
   return steps.map((step, i) => `${i + 1}. ${step}`).join("\n");
 }
 
-/** For automations on a tab with an LD2450 and no gate radar presence. */
-const LD2450_AUTOMATIONS =
-  "**In automations**, use a zone's presence sensor, or **LD2450 Presence** for" +
-  " anywhere the radar sees.";
+/** For automations on a tab with an LD2450 and no gate radar presence.
+ *  Where the firmware has Combined Presence it names that instead, as the
+ *  wiki does: with no LD2412 it follows LD2450 Presence. */
+function ld2450Automations(combinedPresence: boolean): string {
+  const presence = combinedPresence ? "Combined Presence" : "LD2450 Presence";
+  return (
+    `**In automations**, use a zone's presence sensor, or **${presence}** for` +
+    " anywhere the radar sees."
+  );
+}
+
+/**
+ * For automations on an R PRO-1 whose firmware has Combined Presence (after
+ * 26.3.2.1): on while the LD2450 or the LD2412 sees someone. The firmware
+ * adds it for automations, and the wiki's R PRO-1 sensor definitions
+ * recommend it over each radar's own presence.
+ */
+export const COMBINED_AUTOMATIONS =
+  "**In automations**, use **Combined Presence** for the whole room (on while either" +
+  " radar sees someone), or a zone's presence sensor for one part of it.";
 
 /**
  * For automations on a tab with a gate radar alone (MSR-1, MSR-2): Radar
@@ -420,7 +439,7 @@ function helpCardBody(dev: RadarDevice, ctx: HelpContext): Record<string, any> {
         `**${name}**, Apollo mmWave (LD2450 tracking radar).\n\n` +
         `Draw occupancy zones over the live target positions below.\n\n` +
         `**Start here**\n${numbered(steps)}\n\n` +
-        `${LD2450_AUTOMATIONS}\n\n` +
+        `${ld2450Automations(ctx.combinedPresence)}\n\n` +
         deviceLink(dev),
     };
   }
@@ -439,10 +458,12 @@ function helpCardBody(dev: RadarDevice, ctx: HelpContext): Record<string, any> {
   // Two radars (R PRO-1): what each one is for, then both radars' steps, and
   // which presence sensor an automation should use.
   const setup = ctx.ld2450Setup ? "fix anything Radar setup flags above the zone map, " : "";
-  const automations = ctx.gatePresence
-    ? `**In automations**, use **${p.label} Presence** (Radar Target on this tab)` +
-      " for the whole room, or a zone's presence sensor for one part of it."
-    : LD2450_AUTOMATIONS;
+  const automations = ctx.combinedPresence
+    ? COMBINED_AUTOMATIONS
+    : ctx.gatePresence
+      ? `**In automations**, use **${p.label} Presence** (Radar Target on this tab)` +
+        " for the whole room, or a zone's presence sensor for one part of it."
+      : ld2450Automations(false);
   return {
     type: "markdown",
     content:
@@ -880,6 +901,7 @@ function cardMap(
     gatePresence,
     anyZone,
     gateRadar,
+    combinedPresence: exists(hass, deviceInfoEntities(hass, dev.deviceId).combined_presence),
   });
   cards.device = deviceCard(hass, dev, gateRadar);
   return cards as DeviceCards;
