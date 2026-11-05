@@ -284,6 +284,16 @@ const DEFAULT_CONE = Object.freeze({
 // always was; a fitted grid sets its height from the grid's own shape.
 const CANVAS_WIDTH_PX = 800;
 
+// The card's own surface, which it draws itself rather than in an ha-card:
+// ha-card's background, edge and corner tokens, so it lines up with the
+// ha-card cards beside it (the Radar setup card, the device card) and takes
+// the theme's border the way they do. The host has no padding of its own,
+// as ha-card has none: the 16 px inside is the only margin.
+const CARD_SURFACE_RULE =
+  '.container { background: var(--ha-card-background, var(--card-background-color, white));' +
+  ' border: var(--ha-card-border-width, 1px) solid var(--ha-card-border-color, var(--divider-color, #e0e0e0));' +
+  ' border-radius: var(--ha-card-border-radius, 12px); box-shadow: var(--ha-card-box-shadow); padding: 16px; }';
+
 // A card whose YAML has no grid shows the radar's field of view as it is
 // currently rotated, instead of the fixed 10 m square DEFAULT_GRID, where the
 // 6 m cone sat in the top half and ran off both sides. The arc gets this share
@@ -1667,8 +1677,8 @@ export class ZoneMapCard extends HTMLElement {
   _errorTemplate() {
     return `
       <style>
-        :host { display: block; padding: 16px; }
-        .container { background: var(--card-background-color); border-radius: var(--ha-card-border-radius, 12px); box-shadow: var(--ha-card-box-shadow); padding: 16px; }
+        :host { display: block; }
+        ${CARD_SURFACE_RULE}
         .container.dark { background: ${COLOR.ui.darkContainerBackground}; color: ${COLOR.ui.darkContainerText}; }
         .device-title { font-size: 1.2em; font-weight: bold; margin-bottom: 8px; }
         .load-error { font-size: 14px; color: var(--error-color, ${COLOR.canvas.defaultTarget}); }
@@ -1707,7 +1717,7 @@ export class ZoneMapCard extends HTMLElement {
     if (this._viewOnly) return this._viewOnlyTemplate();
     return `
       <style>
-        :host { display: block; padding: 16px; }
+        :host { display: block; }
         /* Theme tokens */
         :host {
           --zm-gap: 8px;
@@ -1716,7 +1726,7 @@ export class ZoneMapCard extends HTMLElement {
           --zm-chip-active: var(--primary-color);
           --zm-chip-color: var(--primary-text-color);
         }
-        .container { background: var(--card-background-color); border-radius: var(--ha-card-border-radius, 12px); box-shadow: var(--ha-card-box-shadow); padding: 16px; }
+        ${CARD_SURFACE_RULE}
         /* color-scheme: the native checkboxes, selects and sliders follow the
            card's dark_mode, which can differ from the page's theme. */
         .container.dark { background: ${COLOR.ui.darkContainerBackground}; color: ${COLOR.ui.darkContainerText}; color-scheme: dark; }
@@ -2045,8 +2055,8 @@ export class ZoneMapCard extends HTMLElement {
   _viewOnlyTemplate() {
     return `
       <style>
-        :host { display: block; padding: 16px; --zm-radius: 10px; }
-        .container { background: var(--card-background-color); border-radius: var(--ha-card-border-radius, 12px); box-shadow: var(--ha-card-box-shadow); padding: 16px; }
+        :host { display: block; --zm-radius: 10px; }
+        ${CARD_SURFACE_RULE}
         .container.dark { background: ${COLOR.ui.darkContainerBackground}; color: ${COLOR.ui.darkContainerText}; color-scheme: dark; }
         .container.dark .canvas-container { border-color: ${COLOR.ui.darkCanvasBorder}; background: ${COLOR.ui.darkCanvasBackground}; }
         .canvas-container { position: relative; aspect-ratio: 1; border: 1px solid var(--divider-color); border-radius: var(--zm-radius); overflow: hidden; background: ${COLOR.ui.lightCanvasBackground}; isolation: isolate; container-type: size; }

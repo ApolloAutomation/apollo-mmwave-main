@@ -544,6 +544,32 @@ describe("zone map card theme", () => {
     expect(card.shadowRoot!.querySelector(".container")).toBe(container);
   });
 
+  it("has no host padding and draws its surface with ha-card's tokens, on every screen", async () => {
+    // A host padding of 16 px on top of the container's own 16 px set the
+    // card 16 px in from its ha-card neighbors and cost the map 32 px.
+    const error = { code: "not_found", message: "No Home Assistant device with id dev123" };
+    const cards = [
+      await mountCard(fakeHass()),
+      await mountCard(fakeHass(), { view_only: true }),
+      await mountCard(fakeHass(ZONE_PAYLOAD, error)),
+    ];
+    expect(cards[2].canvas).toBeNull();
+    for (const card of cards) {
+      const style = card.shadowRoot.querySelector("style").textContent;
+      expect(style).not.toMatch(/:host\s*\{[^}]*padding/);
+      const surface = style.match(/\.container \{[^}]*\}/)?.[0] ?? "";
+      expect(surface).toContain(
+        "background: var(--ha-card-background, var(--card-background-color, white))"
+      );
+      expect(surface).toContain(
+        "border: var(--ha-card-border-width, 1px) solid var(--ha-card-border-color, var(--divider-color, #e0e0e0))"
+      );
+      expect(surface).toContain("border-radius: var(--ha-card-border-radius, 12px)");
+      // The 16 px inside stays.
+      expect(surface).toContain("padding: 16px");
+    }
+  });
+
   it("omits dark_mode from the stub config so a manually added card follows the theme", () => {
     // HA's "Add Card" picker seeds a new card from this stub. A hardcoded key
     // here would ship every manually added card as a light-mode override, on
