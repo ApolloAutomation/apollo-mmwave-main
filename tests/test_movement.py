@@ -89,7 +89,8 @@ SPOT_VALUES = {str(abs(value)) for spot in (SPOT_A, SPOT_B, SPOT_C) for value in
 
 CORRUPT_COPY = f"{STORAGE_KEY}.corrupt.2026-01-01T00:00:00.000000+00:00"
 
-# How the R PRO-1 reports on an imperial install: inches, one decimal.
+# How the R PRO-1 reports on an imperial install: inches. The tests write
+# one decimal, as Home Assistant's UI shows it; the state is not rounded.
 INCHES = {ATTR_UNIT_OF_MEASUREMENT: "in"}
 MM_PER_INCH = 25.4
 

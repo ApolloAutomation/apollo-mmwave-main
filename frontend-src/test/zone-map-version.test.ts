@@ -124,9 +124,13 @@ describe("zone map card version notice", () => {
     expect(text(box)).toBe(RELOAD_TEXT);
     // Between the title and the map, outside it: a button over the canvas
     // would sit under the map's own controls.
+    // The title sits in its row with Expand map's X, and the map in its
+    // stage, which the expanded map lays out beside its panel.
     const host = card.shadowRoot.getElementById("versionNotice");
-    expect(host.previousElementSibling.id).toBe("deviceTitle");
-    expect(host.nextElementSibling.classList.contains("canvas-container")).toBe(true);
+    expect(host.previousElementSibling.classList.contains("title-row")).toBe(true);
+    expect(host.previousElementSibling.querySelector("#deviceTitle")).not.toBeNull();
+    expect(host.nextElementSibling.id).toBe("mapStage");
+    expect(host.nextElementSibling.firstElementChild.classList.contains("canvas-container")).toBe(true);
     expect(card.shadowRoot.querySelector(".canvas-container #versionNotice")).toBeNull();
 
     const reload = vi.fn();

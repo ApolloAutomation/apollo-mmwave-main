@@ -391,6 +391,7 @@ describe("zone map card copy module", () => {
     replayBadge: [["10:24:05 AM"]],
     formatAgo: [[0], [120000], [3900000]],
     zoomReadout: [[Math.SQRT2], [2], [8]],
+    fullWindowLabel: [["Office radar"], [""]],
     zonesFullNote: [[32]],
     deleteZoneConfirm: [["Doorway"]],
     drawHint: [

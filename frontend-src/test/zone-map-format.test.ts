@@ -1,6 +1,6 @@
 /**
  * Sizes and hold times as the zone map writes them: the readout while
- * drawing, the Walk preview, the zone list and the Hold select all read
+ * drawing, the Walk preview, the zone editor and the Hold select all read
  * from these, so the exact strings are pinned here.
  */
 

@@ -12,13 +12,16 @@ short trail, and Coverage paints where people have been. Zones are added,
 named and set in a **Zones** panel right under the map, instead of two
 levels down under **Configure → Zones**. A zone can stay on for someone who
 sits still, or ignore a fan or a curtain. The map is twice as wide on a wide
-screen and zooms in up to 8x, and corners snap to round values, so you can
-place them to the centimeter. You can mark a zone's corners by walking them,
+screen, fills the whole window with one press, and zooms in up to 8x, and
+corners snap to round values, so you can place them to the centimeter. You
+can mark a zone's corners by walking them,
 read a zone's size while you draw it, put a view-only map on a phone
 dashboard, and, as an administrator, replay up to 24 hours of movement. On a
 phone, a locked map now scrolls the page. If someone used **Take control**
 on the Apollo mmWave dashboard, so it misses the cards added since, a repair
-offers to restore the automatic dashboard and keeps the copy. Gate radar
+offers to restore the automatic dashboard and keeps the copy. An Apollo
+R PRO-1's or MTR-1's Target X and Y now show mm, the unit the radar reports,
+instead of the inches Home Assistant picks on US customary units. Gate radar
 tabs show the radar's own answer under the Gate Energy chart, and from the
 next update on, every tab says when the page runs other cards than Home
 Assistant. What changed since the last test build is under
@@ -31,7 +34,10 @@ now reads `unavailable`, also after every Home Assistant restart until the
 radar connects, so a `to: "off"` trigger without `from:` fires when the radar
 comes back (see the offline item below). Zone presence also waits for both
 of a target's coordinates now, so a zone can turn on or off up to about half
-a second later than in 2.3.0 (see the presence item below).
+a second later than in 2.3.0 (see the presence item below). Something that
+reads an Apollo radar's Target X or Y in inches and that Apollo mmWave cannot
+see, such as a YAML template sensor, a dashboard card or another tool, reads
+mm after the update (see the Target X and Y item below).
 
 - **Zones under the map.** A **Zones** panel right under the map holds
   **Add zone**, a chip for each zone with a dot in its color, and an editor
@@ -67,6 +73,24 @@ a second later than in 2.3.0 (see the presence item below).
   10 cm or 3 in. A plain scroll still scrolls the page, and a view-only map
   has no zoom. See
   [Zoom and pan](docs/configuration.md#zoom-and-pan).
+- **Expand map.** The button in the map's top right corner (**Expand
+  map**) fills the browser or app window with the map. Walk, Coverage,
+  History, the **Zones** panel and **Map settings** sit beside it, or under
+  it on a phone held upright, so you can draw, pick, rename and delete zones
+  there. Your zoom, the picked zone and an unfinished polygon come along
+  both ways. On a large screen, where the map is drawn wider than the
+  card's 800 px, the grid lines and the snap can get finer. To return,
+  press × before the title, the same corner button, Esc, or Back on
+  Android. Esc first puts back a zone name you were changing, drops an
+  unfinished polygon's corners, or closes a **Delete zone** or **Clear all
+  shapes** question; the next Esc closes the window. A view-only map, the
+  card editor's preview and a map inside a pop-up have no expand button.
+  See [Expand the map](docs/configuration.md#expand-the-map).
+- **A sharper map.** The map is drawn at the screen's own resolution, so it
+  is sharp on phones and other high-resolution screens. The zone map card
+  draws Home Assistant's own card background, border and corner radius, so
+  it lines up with the cards around it, and without the padding it had
+  around it the map is up to 32 px wider.
 - **Corners snap.** Corners you draw land on round values, about a tenth of
   the grid line spacing: every 10 cm at 1 m lines, every 2 in at 2 ft
   lines, and finer as you zoom in. Hold Alt (Option on a Mac) to place one
@@ -149,6 +173,36 @@ a second later than in 2.3.0 (see the presence item below).
   then also skips someone who left while the radar was offline, whose zone
   goes from `on` to `unavailable` to `off`. See
   [Zones in automations](docs/configuration.md#zones-in-automations).
+- **Target X and Y in mm.** The LD2450 reports where each target is in mm,
+  and the radar's built-in zone corners and Apollo's zone guides use mm too,
+  but Home Assistant on US customary units picks inches for the Target X and
+  Y sensors on its own. Apollo mmWave now shows them in mm on Apollo R PRO-1
+  and MTR-1 radars:
+  - A radar you add while Home Assistant runs shows mm about 2 seconds
+    after its sensors appear, with no message.
+  - A radar you already have is switched once, after Home Assistant has
+    started with 2.4.0. A notification, "Apollo mmWave: Target X and Y now
+    in mm", lists the radars and sensors it switched and says "Nothing was
+    written to the radar."
+  - Only the unit Home Assistant picked on its own is switched. A unit you
+    picked in a sensor's settings stays, and so does a sensor that an
+    automation, a script or a helper uses, including a device trigger or a
+    template in an automation. A metric install already shows mm. Each sensor is decided
+    once, so Apollo mmWave never changes it again, and Target Distance,
+    Speed and Resolution keep their units.
+  - To go back, open the sensor's settings (⚙), choose **in** under **Unit
+    of measurement** and select **Update**.
+  - For a radar whose sensors were left alone, the **Radar setup** card
+    above the zone map tells administrators which unit Home Assistant shows
+    and offers **Show Target X and Y in mm**.
+
+  Automations, templates and history graphs read these sensors in mm after
+  the switch, and a history graph that spans it shows a step of 25.4 times.
+  The zone map and zone presence work in either unit, as they have since
+  2.2.7. The zone map's grid line under **Map settings** names the unit the
+  target sensors show, and the support file says for each one whether its
+  unit was picked and whether Apollo mmWave switched it or left it. See
+  [Target X and Y units](docs/configuration.md#target-x-and-y-units).
 - **Movement history.** Off until an administrator ticks **Movement
   history** for a radar under **Map settings**. Home Assistant then keeps up
   to 24 hours of that radar's target positions in
@@ -203,6 +257,16 @@ a second later than in 2.3.0 (see the presence item below).
 - **LD2450 Presence.** The first row of LD2450 Live and the LD2450's line in
   the occupancy history read "LD2450 Presence" on every tab, so it is clear
   that it covers the radar's whole view, not a zone.
+- **Counts as whole numbers.** LD2450 Live showed the radar's Target Count
+  as "0.0", and the **Radar's built-in zones** card showed each zone's
+  counts the same way. The Target Count now sits under LD2450 Live's rows as
+  a whole number, and the built-in zones' counts are a table of whole
+  numbers under their corners. Nothing is written to the sensors.
+- **Combined Presence in Start here.** On R PRO-1 firmware newer than
+  26.3.2.1, which adds **Combined Presence** (on while either radar sees
+  someone), Start here recommends it for whole-room automations, as the
+  Apollo wiki does. With older firmware the advice is unchanged. See
+  [Start here](docs/configuration.md#start-here).
 - **Gate radar tabs.** The Gate Energy chart's legend says "outlined bar =
   above threshold" instead of "(detecting)", gates outside the radar's range
   are faded, and while Radar Engineering Mode is on a line under the chart
@@ -224,6 +288,8 @@ a second later than in 2.3.0 (see the presence item below).
   have no check, so on the update from them, reload the page even when no
   notice shows. See
   [After an update](docs/configuration.md#after-an-update).
+- **README links.** Old links to the README's `#install-with-hacs`, such
+  as the one in the 2.2.6 notes, land on the install heading again.
 - **Going back to 2.3.0.** Before going back to 2.3.0, turn Movement history
   off on every radar. 2.3.0 neither reads nor deletes the movement history
   file, so it would stay on disk and in every later backup. 2.3.0 also
@@ -243,9 +309,10 @@ a second later than in 2.3.0 (see the presence item below).
 ### Changed since 2.4.0b3
 
 2.4.0b3 owners found the zone settings hard to reach, under **Configure →
-Zones** below the map, and a dashboard taken control of under an older
-release showed none of the cards added since, such as **LD2450 Controls**
-with Multi Target Tracking.
+Zones** below the map, and the map cramped. A dashboard taken control of
+under an older release showed none of the cards added since, such as
+**LD2450 Controls** with Multi Target Tracking, and moving Target X and Y
+off inches meant opening six sensors' settings one at a time.
 
 - **Zones panel.** New: **Zones** under the map, with **Add zone**, the
   zone chips and the picked zone's editor (name, size, Type, Hold, Now, how
@@ -269,6 +336,27 @@ with Multi Target Tracking.
 - **Dashboard text.** The MTR-1 and R PRO-1 Start here steps, the Zone
   presence card's hint and the note under LD2450 Controls now point to
   **Add zone**, **Map settings** and **Hold** under Zones.
+- **Expand map.** New: the expand button in the map's top right corner
+  fills the window with the map and its Zones panel. × before the title, the
+  same button, Esc or Back returns to the card with your zoom and picked
+  zone.
+- **Sharper map and card edge.** New: the map is drawn at the screen's own
+  resolution, and the card draws Home Assistant's card background, border
+  and corner radius instead of its own padding, so the map is up to 32 px
+  wider.
+- **Target X and Y in mm.** New: Apollo R PRO-1 and MTR-1 radars show
+  Target X and Y in mm, a new radar at once and an existing one once after
+  the start, with one notification and the safeguards described above. The
+  Radar setup card offers **Show Target X and Y in mm** to administrators
+  for sensors left alone. The zone map's grid line names the units the
+  target sensors show, and the support file says whether each one's unit
+  was picked and who picked it.
+- **Counts as whole numbers.** LD2450 Live's Target Count and the built-in
+  zones' counts read whole numbers instead of "0.0".
+- **Combined Presence in Start here.** On R PRO-1 firmware newer than
+  26.3.2.1, Start here recommends Combined Presence for the whole room.
+- **README links.** Old `#install-with-hacs` links land on the install
+  heading again.
 - **Card size.** The zone map card now gives Home Assistant a card size of
   14 instead of 8, so a masonry view of your own may place the cards around
   it differently.

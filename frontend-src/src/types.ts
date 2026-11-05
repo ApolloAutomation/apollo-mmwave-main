@@ -24,6 +24,8 @@ export interface HomeAssistant {
   >;
   /** Server config; `unit_system.length` is "km" (metric) or "mi" (US). */
   config?: { unit_system?: { length?: string } };
+  /** The viewer. Only an administrator can change the entity registry. */
+  user?: { is_admin?: boolean };
   /** HA's service call. The fifth argument (`notifyOnError`) must be false
    *  when a card renders the rejection itself, or the error toasts twice.
    *  Optional so existing fixtures built from `{states, entities, devices}`

@@ -63,7 +63,12 @@ from .const import (
 from .frontend import async_dashboard_owned
 from .gates import resolve_gate_entities
 from .ld2450 import resolve_target_pairs
+
+# The model table moved to models.py, which target_units.py shares. The table
+# is still read here too, by tests/test_diagnostics.py.
+from .models import APOLLO_MANUFACTURER, MODEL_RADARS, apollo_radars  # noqa: F401
 from .store import device_flag
+from .target_units import decision, unit_picked
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -96,18 +101,6 @@ TO_REDACT = {
     "wifi_ssid",
 }
 
-# The radars each Apollo model carries, by lower-cased model prefix, because
-# hardware variants extend the model string (R-PRO-1-W, MSR-2_BLE). This is
-# `APOLLO_MODELS` in frontend-src/src/profiles.ts, which detects the same
-# hardware the same way; tests/test_diagnostics.py keeps the two equal.
-APOLLO_MANUFACTURER = "apolloautomation"
-MODEL_RADARS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("msr-1", ("ld2410",)),
-    ("msr-2", ("ld2410",)),
-    ("mtr-1", ("ld2450",)),
-    ("r-pro-1", ("ld2412", "ld2450")),
-)
-
 
 def _suffix(name: str) -> re.Pattern[str]:
     """Match an object id ending in ``name``, with HA's ``_2`` dedup tail."""
@@ -127,19 +120,6 @@ _VERSION_SENSORS = {
 _ZONE_TYPE = _suffix("zone_type")
 _MULTI_TARGET_TRACKING = _suffix("multi_target_tracking")
 _RSSI = _suffix("rssi")
-
-
-def apollo_radars(device: dr.DeviceEntry | None) -> list[str] | None:
-    """Return the radars an Apollo model carries, or None for any other device."""
-    if device is None or not device.manufacturer or not device.model:
-        return None
-    if device.manufacturer.lower() != APOLLO_MANUFACTURER:
-        return None
-    model = device.model.lower()
-    return next(
-        (list(radars) for prefix, radars in MODEL_RADARS if model.startswith(prefix)),
-        None,
-    )
 
 
 def _find(
@@ -170,6 +150,11 @@ def _entity(hass: HomeAssistant, entity_id: Any) -> dict[str, Any]:
         "state": _state(hass, entity_id),
         "unit_of_measurement": attributes.get(ATTR_UNIT_OF_MEASUREMENT),
         "device_class": attributes.get(ATTR_DEVICE_CLASS),
+        # Whether the unit shown was picked in the sensor's settings (or by
+        # Apollo mmWave) rather than by Home Assistant on its own, and what
+        # Apollo mmWave decided for a target X or Y ("mm", "kept" or None).
+        "unit_picked": unit_picked(entry),
+        "unit_decision": decision(entry),
         "registered": entry is not None,
         "disabled_by": entry.disabled_by if entry is not None else None,
     }

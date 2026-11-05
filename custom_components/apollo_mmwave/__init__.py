@@ -102,6 +102,7 @@ from .migration import (
 )
 from .movement import MovementHistory, async_remove_movement_store
 from .store import ZoneStore, device_flag, zone_hold_s, zone_type_of
+from .target_units import async_track_target_units
 from .websocket import async_register as async_register_websocket
 
 # Every module setup uses is imported here, at module level. Home Assistant
@@ -997,6 +998,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Before the platforms, so no entity can resolve pairs without the cache in
     # place and then hold a stale answer.
     entry.async_on_unload(async_track_target_pairs(hass))
+    # New Apollo LD2450 radars show Target X and Y in mm, and existing ones are
+    # switched once after Home Assistant has started (target_units.py).
+    entry.async_on_unload(async_track_target_units(hass))
 
     # Recording starts with the pair cache in place. The teardown is a hook,
     # as for the zone store below, so it also runs when a later step raises.

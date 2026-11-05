@@ -24,9 +24,9 @@ update_zone:
       selector:
         number:
           min: 1
-          # TODO(REVIEW_REPORT.md X19): the schema does not cap ids at 32, while
-          # the card's Add zone stops at MAX_ZONE_ID (32) since 2.4.0. Drop the
-          # max (mode: box) or enforce the cap in the schema too.
+          # Where the zone map's Add zone stops (MAX_ZONE_ID in card.ts, X19).
+          # The service schema takes larger ids, so a zone an earlier call
+          # stored above 32 can still be changed or cleared.
           max: 32
     shape:
       name: Shape
