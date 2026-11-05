@@ -78,8 +78,9 @@ mm after the update (see the Target X and Y item below).
   History, the **Zones** panel and **Map settings** sit beside it, or under
   it on a phone held upright, so you can draw, pick, rename and delete zones
   there. Your zoom, the picked zone and an unfinished polygon come along
-  both ways, and the grid lines and the snap are finer on the larger map. To
-  return, press × before the title, the same corner button, Esc, or Back on
+  both ways. On a large screen, where the map is drawn wider than the
+  card's 800 px, the grid lines and the snap can get finer. To return,
+  press × before the title, the same corner button, Esc, or Back on
   Android. Esc first puts back a zone name you were changing, drops an
   unfinished polygon's corners, or closes a **Delete zone** or **Clear all
   shapes** question; the next Esc closes the window. A view-only map, the

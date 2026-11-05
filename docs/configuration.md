@@ -877,17 +877,22 @@ Its tooltip reads "Expand the map to fill the window. Press Esc to return."
   **Coverage** and **History**, the **Zones** panel and **Map settings**. It
   takes 30% of the width, from 300 to 420 px. Where the map would get less
   width that way, such as on a phone held upright, the panel goes under the
-  map instead, and the map is never narrower than it was in the card. The
-  panel scrolls on its own.
+  map instead, and the map is never narrower than it was in the card. Where
+  that would leave the panel too little room, such as on a phone held
+  sideways, the panel stays beside the map, even where the map is then
+  narrower than in the card. The panel scrolls on its own.
 - **Everything works there.** Draw, pick, rename and delete zones, mark
   corners by walking, replay history and open **Map settings** as in the
   card. Your zoom, the picked zone, an unfinished polygon, Walk, a replay
   that is playing, Coverage, whether Map settings is open and text you are
   typing come along when the map expands and when it closes. A rectangle or
   ellipse you are dragging at that moment is dropped.
-- **Finer grid.** The expanded map is drawn up to 1600 px wide, so the grid
-  lines and the snap are finer than in the card (see
-  [Zoom and pan](#zoom-and-pan)), while labels and lines keep their size.
+- **Finer grid on a large screen.** Where the expanded map is wider than
+  the card's 800 px drawing, as on a large monitor, it is drawn as wide as
+  it shows, up to 1600 px, so the grid lines and the snap can get finer
+  (see [Zoom and pan](#zoom-and-pan)), while labels and lines keep their
+  size. On a phone, and in feet on most laptop and 1080p screens, they stay
+  as in the card.
 - **Getting back.** Press × before the title (**Close expanded map**), the
   same corner button, Esc, or Back in a browser, the Android app or Chrome
   for Android. In the iPhone and iPad app, press ×. Esc first undoes what
@@ -1201,8 +1206,10 @@ the Target X and Y of Apollo R PRO-1 and MTR-1 radars in mm:
     notification then adds "Sensors that an automation, a script or a
     helper uses were left as they were. The Radar setup card above the zone
     map can switch them.";
-  - the sensors of a metric install, which show mm already, also after the
-    install moves to US customary units;
+  - the sensors of a metric install, which show mm already. Apollo mmWave
+    does not look at them again, so if the install later moves to US
+    customary units and Home Assistant updates existing sensors, they show
+    inches (see [Troubleshooting](#troubleshooting));
   - DIY radars, other devices, and the radar's other sensors, such as
     Target Distance, Speed and Resolution.
 - **Once only.** Apollo mmWave decides each sensor once and keeps that in
@@ -1227,10 +1234,11 @@ tells an administrator, for example "Home Assistant shows this radar's
 Target X and Y in inches. The zone map reads them either way. In mm they
 match the radar's built-in zone corners and Apollo's zone guides." **Show
 Target X and Y in mm** switches the ones Home Assistant picked on its own,
-never a unit picked in a sensor's settings. The line under the button says
+never a unit picked in a sensor's settings. The line above the button says
 "After the change, automations and templates that use these sensors read
-mm.", and adds "An automation or script uses them: check any number it
-compares them to." when one does. Other users do not see this part.
+mm.", and adds "An automation, a script or a helper uses them: check any
+number it compares them to." when one does. Other users do not see this
+part.
 
 The **m / ft** switch changes only the map, never the sensors. Under **Map
 settings**, the grid line names the unit the target sensors show, such as
@@ -1938,11 +1946,10 @@ the two rows yourself under Settings → Dashboards → ⋮ → **Resources**.
   Cmd and the scroll wheel, or with two fingers on a phone, and press
   **Fit** to show your zones or the whole map again (see
   [Zoom and pan](#zoom-and-pan)), or press the expand button for a map as
-  large as the window, with a finer grid (see
-  [Expand the map](#expand-the-map)). Corners snap to round values; hold Alt
-  (Option on a Mac) to place one freely. On a phone you can also mark a
-  zone's corners by walking them, which uses where the radar sees you
-  instead of where your finger lands (see
+  large as the window (see [Expand the map](#expand-the-map)). Corners snap
+  to round values; hold Alt (Option on a Mac) to place one freely. On a
+  phone you can also mark a zone's corners by walking them, which uses where
+  the radar sees you instead of where your finger lands (see
   [Mark corners by walking](#mark-corners-by-walking)).
 - **A zone stays on after everyone left.** If its label on the map ends in
   "(held)", and its presence sensor's `held` attribute is `true`, the zone's
