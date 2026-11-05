@@ -202,6 +202,18 @@ DASHBOARD_URL_PATH = "apollo-mmwave"
 DASHBOARD_TITLE = "Apollo mmWave"
 DASHBOARD_ICON = "mdi:radar"
 DASHBOARD_STRATEGY_TYPE = "custom:apollo-radar-tuning"
+# Every card and row type the bundles define starts with this. A stored config
+# made of views that names one is a saved copy of our dashboard: "take control"
+# wrote out what the strategy generated then.
+CARD_TYPE_PREFIX = "custom:apollo-"
+
+# The repair raised while the dashboard the entry recorded is such a saved copy,
+# and its translation key. Its fix keeps the copy as a dashboard of its own,
+# out of the sidebar, on the first free url path of SAVED_COPY_URL_PATH,
+# SAVED_COPY_URL_PATH-2, -3 and so on, then puts the strategy back.
+ISSUE_DASHBOARD_SAVED_COPY = "dashboard_saved_copy"
+SAVED_COPY_URL_PATH = "apollo-mmwave-saved"
+SAVED_COPY_TITLE = "Apollo mmWave (saved copy)"
 
 # Frontend assets bundled with the integration and served as Lovelace resources,
 # so users install ONE thing (no separate card downloads). Filenames live in www/.

@@ -40,6 +40,15 @@ This integration ships its own Lovelace frontend so users install ONE thing:
    dashboards: a title on the dashboards settings page, and a working "take
    control" for anyone who wants to customize it.
 
+3. A dashboard someone took control of keeps the cards of the release it was
+   saved under, and nothing on it says so. While the recorded row holds such a
+   saved copy (views naming one of our card types), ``async_check_saved_copy``
+   raises a fixable repair; it only reads, at setup and after every options
+   change. Its fix, also an options flow action, is
+   ``async_restore_saved_copy``: on the administrator's click it first keeps
+   the copy as a dashboard of its own, out of the sidebar, and only once that
+   is saved writes the strategy back onto the recorded row.
+
 Lovelace internals (``hass.data[LOVELACE_DATA]`` and the dashboards collection
 behind the ``lovelace/dashboards`` websocket API) are not a public contract, so
 every runtime touch is wrapped defensively: if the shape ever changes we log
@@ -52,7 +61,9 @@ is needed for the resource registration anyway.
 
 from __future__ import annotations
 
+import copy
 import logging
+from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -71,9 +82,14 @@ from homeassistant.components.lovelace.const import (
 from homeassistant.components.websocket_api.const import (
     DOMAIN as WEBSOCKET_API_DOMAIN,
 )
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.loader import async_get_integration
 
 from .const import (
+    CARD_TYPE_PREFIX,
+    CONF_DASHBOARD_DEVICES,
+    CONF_DASHBOARD_ID,
+    CONF_DASHBOARD_URL_PATH,
     DASHBOARD_ICON,
     DASHBOARD_STRATEGY_TYPE,
     DASHBOARD_TITLE,
@@ -83,13 +99,17 @@ from .const import (
     DATA_RESOURCES_REMOVED,
     DOMAIN,
     FRONTEND_DIR,
+    ISSUE_DASHBOARD_SAVED_COPY,
     JS_BUNDLES,
+    SAVED_COPY_TITLE,
+    SAVED_COPY_URL_PATH,
     STATIC_URL_BASE,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
+    from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
 
 _LOGGER = logging.getLogger(__name__)
@@ -483,6 +503,54 @@ def _is_ours(stored: dict[str, Any] | None) -> bool:
     )
 
 
+def _names_our_card(node: Any) -> bool:
+    """
+    Report whether a Lovelace config tree names one of our card or row types.
+
+    "Take control" writes out what the strategy generated, so our cards turn
+    up in sections, in stacks, and as rows in entities cards. Nothing under a
+    ``strategy`` key counts: a view or section strategy of ours still builds
+    itself on every load, so it cannot go stale.
+    """
+    if isinstance(node, list):
+        return any(_names_our_card(value) for value in node)
+    if not isinstance(node, dict):
+        return False
+    card_type = node.get("type")
+    if isinstance(card_type, str) and card_type.startswith(CARD_TYPE_PREFIX):
+        return True
+    return any(
+        _names_our_card(value) for key, value in node.items() if key != "strategy"
+    )
+
+
+def _is_saved_copy(stored: dict[str, Any] | None) -> bool:
+    """
+    Report whether a stored config is a saved copy of the strategy's dashboard.
+
+    That is what "take control" leaves: no ``strategy`` key, and views that
+    still name our cards. Views without any of our cards are a dashboard the
+    user rebuilt as their own, and another dashboard strategy is theirs too.
+    """
+    return (
+        isinstance(stored, dict)
+        and "strategy" not in stored
+        and isinstance(stored.get("views"), list)
+        and _names_our_card(stored["views"])
+    )
+
+
+class DashboardState(StrEnum):
+    """What the dashboard an entry recorded holds now."""
+
+    # Still our strategy.
+    OURS = "ours"
+    # Taken control of, and still made of our cards.
+    SAVED_COPY = "saved_copy"
+    # Nothing recorded, the row is gone, or it holds the user's own dashboard.
+    NOT_OURS = "not_ours"
+
+
 def _desired_config(
     devices: list[str] | None, stored: dict[str, Any] | None = None
 ) -> dict[str, Any]:
@@ -506,6 +574,26 @@ def _desired_config(
     return {"strategy": strategy}
 
 
+async def _async_recorded_row(
+    hass: HomeAssistant,
+    collection: Any,
+    dashboard_id: str | None,
+    url_path: str | None,
+) -> tuple[dict[str, Any], dict[str, Any] | None] | None:
+    """
+    Return the entry's recorded row and its own stored config, if it is there.
+
+    The row must still exist under the recorded id and url path. Its config is
+    None when it has none, or when another dashboard holds its url path.
+    """
+    if not dashboard_id or not url_path:
+        return None
+    item = _row_by_id(collection, dashboard_id)
+    if item is None or item.get(CONF_URL_PATH) != url_path:
+        return None
+    return item, await _async_stored_config(hass, item)
+
+
 async def _async_our_row(
     hass: HomeAssistant,
     collection: Any,
@@ -521,12 +609,10 @@ async def _async_our_row(
     control of, or one they built on the same path after deleting ours, fails
     the config check and is left alone.
     """
-    if not dashboard_id or not url_path:
+    found = await _async_recorded_row(hass, collection, dashboard_id, url_path)
+    if found is None:
         return None
-    item = _row_by_id(collection, dashboard_id)
-    if item is None or item.get(CONF_URL_PATH) != url_path:
-        return None
-    stored = await _async_stored_config(hass, item)
+    item, stored = found
     if not _is_ours(stored):
         _LOGGER.debug(
             "Apollo mmWave: the dashboard at /%s is no longer ours; leaving it.",
@@ -620,14 +706,15 @@ async def async_create_dashboard(
     return str(created["id"])
 
 
-async def _async_roll_back_created_row(collection: Any, item: dict[str, Any]) -> None:
+async def _async_roll_back_created_row(
+    collection: Any, item: dict[str, Any], title: str = DASHBOARD_TITLE
+) -> None:
     """
-    Delete a row this call created but could not give its strategy config.
+    Delete a row this call created but could not give its config.
 
     Left in place it would have no config, which every later check reads as
-    not ours, so it would stay in the sidebar as an empty dashboard that
-    nothing here could repair or remove. Deleting it lets the administrator
-    try again.
+    not ours, so it would stay as an empty dashboard that nothing here could
+    repair or remove. Deleting it lets the administrator try again.
     """
     try:
         await collection.async_delete_item(item["id"])
@@ -635,7 +722,7 @@ async def _async_roll_back_created_row(collection: Any, item: dict[str, Any]) ->
         _LOGGER.warning(
             "Apollo mmWave: could not remove the half-made '%s' dashboard; you"
             " can delete it in Settings > Dashboards.",
-            DASHBOARD_TITLE,
+            title,
             exc_info=True,
         )
 
@@ -650,15 +737,27 @@ async def async_dashboard_owned(
     nothing is recorded, the row is gone, or it is no longer ours. None when
     the dashboards collection cannot be read, so nothing is known.
     """
+    state = await async_dashboard_state(hass, dashboard_id, url_path)
+    return None if state is None else state is DashboardState.OURS
+
+
+async def async_dashboard_state(
+    hass: HomeAssistant, dashboard_id: str | None, url_path: str | None
+) -> DashboardState | None:
+    """
+    Report what the entry's recorded dashboard holds now. Read only.
+
+    Only the recorded row is looked at, by id and url path, so a dashboard the
+    entry does not own is ``NOT_OURS`` whatever it holds. None when the
+    dashboards collection cannot be read, so nothing is known.
+    """
     if not dashboard_id:
-        return False
+        return DashboardState.NOT_OURS
     try:
         collection = _dashboards_collection(hass)
         if collection is None:
             return None
-        return (
-            await _async_our_row(hass, collection, dashboard_id, url_path) is not None
-        )
+        found = await _async_recorded_row(hass, collection, dashboard_id, url_path)
     except Exception:
         _LOGGER.warning(
             "Apollo mmWave: could not read the dashboards to find the '%s' dashboard.",
@@ -666,6 +765,16 @@ async def async_dashboard_owned(
             exc_info=True,
         )
         return None
+    return DashboardState.NOT_OURS if found is None else _state_of(found[1])
+
+
+def _state_of(stored: dict[str, Any] | None) -> DashboardState:
+    """Classify the recorded row's own stored config."""
+    if _is_ours(stored):
+        return DashboardState.OURS
+    if _is_saved_copy(stored):
+        return DashboardState.SAVED_COPY
+    return DashboardState.NOT_OURS
 
 
 async def async_set_dashboard_devices(
@@ -757,6 +866,196 @@ async def async_remove_dashboard(
         return False
     _LOGGER.info("Apollo mmWave: removed the '%s' dashboard.", DASHBOARD_TITLE)
     return True
+
+
+class RestoreResult(StrEnum):
+    """
+    How a restore of the automatic dashboard ended.
+
+    Each value but ``RESTORED`` is also the abort reason of the repair and the
+    options flow's error, in translations/en.json.
+    """
+
+    RESTORED = "restored"
+    # The recorded row is not a saved copy (any more): nothing to restore.
+    NOT_A_SAVED_COPY = "not_a_saved_copy"
+    # The copy could not be kept, so nothing was changed.
+    COPY_NOT_SAVED = "copy_not_saved"
+    # The copy is kept, but the strategy could not be written back.
+    DASHBOARD_NOT_RESTORED = "dashboard_not_restored"
+
+
+def _free_saved_copy_url_path(hass: HomeAssistant, collection: Any) -> str:
+    """Return the first saved-copy url path no dashboard, row or panel holds."""
+    taken = set(hass.data[LOVELACE_DATA].dashboards)
+    taken.update(str(item.get(CONF_URL_PATH)) for item in collection.async_items())
+    url_path, number = SAVED_COPY_URL_PATH, 1
+    while url_path in taken or frontend.async_panel_exists(hass, url_path):
+        number += 1
+        url_path = f"{SAVED_COPY_URL_PATH}-{number}"
+    return url_path
+
+
+async def _async_keep_saved_copy(
+    hass: HomeAssistant,
+    collection: Any,
+    item: dict[str, Any],
+    stored: dict[str, Any],
+) -> str:
+    """
+    Keep a saved copy as a dashboard of its own and return its url path.
+
+    A new storage dashboard, out of the sidebar and as admin-only as our row,
+    holding the config exactly as it is. A row whose config could not be saved
+    is deleted again before the error is raised, so a failure leaves no empty
+    dashboard behind.
+    """
+    url_path = _free_saved_copy_url_path(hass, collection)
+    created = await collection.async_create_item(
+        {
+            CONF_URL_PATH: url_path,
+            CONF_TITLE: SAVED_COPY_TITLE,
+            CONF_ICON: DASHBOARD_ICON,
+            CONF_SHOW_IN_SIDEBAR: False,
+            CONF_REQUIRE_ADMIN: bool(item.get(CONF_REQUIRE_ADMIN, False)),
+        }
+    )
+    try:
+        # A copy, so the two stores never share one mutable tree.
+        dashboard = hass.data[LOVELACE_DATA].dashboards[url_path]
+        await dashboard.async_save(copy.deepcopy(stored))
+    except Exception:
+        await _async_roll_back_created_row(collection, created, SAVED_COPY_TITLE)
+        raise
+    return url_path
+
+
+async def async_restore_dashboard(
+    hass: HomeAssistant,
+    dashboard_id: str | None,
+    url_path: str | None,
+    devices: list[str] | None,
+) -> RestoreResult:
+    """
+    Put our strategy back on a saved copy, keeping the copy as its own dashboard.
+
+    Runs only when an administrator confirms it, in the repair's fix flow or on
+    the options flow's "restore" step. Only the recorded row is written, and
+    only while it is a saved copy. The copy is kept first, under
+    SAVED_COPY_TITLE; our row is written only once that has been saved, with
+    the entry's device selection. Nothing else on our row (title, icon,
+    sidebar, admin-only) is touched.
+    """
+    try:
+        collection = _dashboards_collection(hass)
+        if collection is None:
+            _LOGGER.warning(
+                "Apollo mmWave: could not reach Lovelace's dashboards collection,"
+                " so the '%s' dashboard was not restored. Nothing was changed.",
+                DASHBOARD_TITLE,
+            )
+            return RestoreResult.COPY_NOT_SAVED
+        found = await _async_recorded_row(hass, collection, dashboard_id, url_path)
+        if found is None or not _is_saved_copy(found[1]):
+            return RestoreResult.NOT_A_SAVED_COPY
+        item, stored = found
+        copy_url_path = await _async_keep_saved_copy(hass, collection, item, stored)  # type: ignore[arg-type]
+    except Exception:
+        _LOGGER.warning(
+            "Apollo mmWave: could not keep a copy of the '%s' dashboard, so it"
+            " was not restored. Nothing was changed. Please report this"
+            " traceback:",
+            DASHBOARD_TITLE,
+            exc_info=True,
+        )
+        return RestoreResult.COPY_NOT_SAVED
+    try:
+        # async_save fires the lovelace_updated event, so open tabs rebuild
+        # from the strategy without a reload.
+        dashboard = hass.data[LOVELACE_DATA].dashboards[item[CONF_URL_PATH]]
+        await dashboard.async_save(_desired_config(devices))
+    except Exception:
+        _LOGGER.warning(
+            "Apollo mmWave: kept a copy of the '%s' dashboard as '%s' at /%s, but"
+            " could not restore the automatic dashboard, which was left as it"
+            " is. Please report this traceback:",
+            DASHBOARD_TITLE,
+            SAVED_COPY_TITLE,
+            copy_url_path,
+            exc_info=True,
+        )
+        return RestoreResult.DASHBOARD_NOT_RESTORED
+    _LOGGER.info(
+        "Apollo mmWave: restored the automatic '%s' dashboard at /%s. The saved"
+        " copy is the '%s' dashboard at /%s, in Settings > Dashboards.",
+        DASHBOARD_TITLE,
+        item[CONF_URL_PATH],
+        SAVED_COPY_TITLE,
+        copy_url_path,
+    )
+    return RestoreResult.RESTORED
+
+
+def recorded_dashboard(entry: ConfigEntry) -> tuple[str | None, str | None]:
+    """Return the dashboard id and url path the entry recorded."""
+    return entry.options.get(CONF_DASHBOARD_ID), entry.options.get(
+        CONF_DASHBOARD_URL_PATH
+    )
+
+
+async def async_check_saved_copy(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """
+    Raise or clear the saved-copy repair for the entry's own dashboard.
+
+    Read only: nothing here writes a dashboard. Runs at setup and after every
+    options change or restore. The repair is raised while the recorded row is
+    a saved copy, and cleared once it is our strategy again, gone, or the
+    user's own. Any other dashboard never raises it. When the dashboards
+    cannot be read nothing is known, so whatever is raised stays. Like
+    everything else here it never fails what called it.
+    """
+    try:
+        state = await async_dashboard_state(hass, *recorded_dashboard(entry))
+        if state is None:
+            return
+        if state is DashboardState.SAVED_COPY:
+            ir.async_create_issue(
+                hass,
+                DOMAIN,
+                ISSUE_DASHBOARD_SAVED_COPY,
+                data={"entry_id": entry.entry_id},
+                is_fixable=True,
+                # Not stored: setup raises it again while it still applies.
+                is_persistent=False,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key=ISSUE_DASHBOARD_SAVED_COPY,
+            )
+        else:
+            ir.async_delete_issue(hass, DOMAIN, ISSUE_DASHBOARD_SAVED_COPY)
+    except Exception:
+        _LOGGER.warning(
+            "Apollo mmWave: could not check whether the '%s' dashboard is a"
+            " saved copy.",
+            DASHBOARD_TITLE,
+            exc_info=True,
+        )
+
+
+async def async_restore_saved_copy(
+    hass: HomeAssistant, entry: ConfigEntry
+) -> RestoreResult:
+    """
+    Restore the entry's own dashboard from a saved copy, then recheck the repair.
+
+    What the repair's fix flow and the options flow's "restore" step share.
+    """
+    result = await async_restore_dashboard(
+        hass,
+        *recorded_dashboard(entry),
+        list(entry.options.get(CONF_DASHBOARD_DEVICES, [])),
+    )
+    await async_check_saved_copy(hass, entry)
+    return result
 
 
 class DashboardsUnreadableError(Exception):
