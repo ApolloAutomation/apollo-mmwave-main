@@ -24,11 +24,13 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 from custom_components.apollo_mmwave import (
     binary_sensor,
     ld2450,
     movement,
+    target_units,
     targets,
     websocket,
 )
@@ -281,3 +283,40 @@ def test_presence_the_recorder_and_the_trails_pair_x_and_y_alike() -> None:
             for name, value in vars(module).items()
             if name.endswith("_PAIR_MS") and value is not targets.TARGET_PAIR_MS
         ]
+
+
+def test_the_radar_setup_card_asks_for_target_units_as_registered() -> None:
+    """setup-checks.ts sends the units commands, and says units, as the backend."""
+    source = _read(FRONTEND_SRC / "cards" / "setup-checks.ts")
+    for name, command in (
+        ("TARGET_UNITS_GET", websocket.TYPE_TARGET_UNITS_GET),
+        ("TARGET_UNITS_SET", websocket.TYPE_TARGET_UNITS_SET),
+    ):
+        assert f'export const {name} = "{command}";' in source
+
+    words = re.search(
+        r"^export const UNIT_WORDS: .*? = Object\.freeze\(\{\n(.*?)^\}\);$",
+        source,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert words is not None
+    entries = re.findall(r'^  (\w+): "([\w ]+)",$', words[1], re.MULTILINE)
+    assert len(entries) == len(words[1].splitlines())
+    assert dict(entries) == target_units.UNIT_WORDS
+    # Every length unit but mm, which the note never names.
+    assert set(target_units.UNIT_WORDS) == set(SENSOR_UNIT_FACTORS) - {"mm"}
+
+
+def test_update_zone_picker_stops_where_add_zone_does() -> None:
+    """The service UI's zone id picker and the card's Add zone stop at one id."""
+    services = yaml.safe_load(
+        _read(REPO_ROOT / "custom_components" / DOMAIN / "services.yaml")
+    )
+    picker = services["update_zone"]["fields"]["zone_id"]["selector"]["number"]
+    card = re.search(
+        r"^const MAX_ZONE_ID = (\d+);$",
+        _read(FRONTEND_SRC / "zone-map" / "card.ts"),
+        re.MULTILINE,
+    )
+    assert card is not None
+    assert picker["max"] == int(card[1])

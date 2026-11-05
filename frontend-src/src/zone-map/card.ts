@@ -39,6 +39,10 @@ import {
   DELETE_ZONE_YES,
   DRAW_HINT_WALKING,
   DRAW_LOCKED_TOAST,
+  FULL_WINDOW_CLOSE_LABEL,
+  FULL_WINDOW_CLOSE_TITLE,
+  FULL_WINDOW_OPEN_LABEL,
+  FULL_WINDOW_OPEN_TITLE,
   HELD_SUFFIX,
   HISTORY_CLEAR,
   HISTORY_CLEARED_TOAST,
@@ -131,6 +135,7 @@ import {
   deleteZoneConfirm,
   drawHint,
   formatAgo,
+  fullWindowLabel,
   historyClearError,
   historyError,
   replayBadge,
@@ -140,9 +145,20 @@ import {
 } from './copy';
 import { ZONE_MAP_EDITOR_TAG, firstLd2450DeviceId } from './editor';
 import { formatHold, formatSize, zoneSize } from './format';
+import {
+  FULL_WINDOW_BACK_MS,
+  FULL_WINDOW_HEADER_PX,
+  ICON_CLOSE,
+  ICON_COLLAPSE,
+  ICON_EXPAND,
+  fullWindowLayout,
+  iconSvg,
+  insideDialog,
+} from './full-window';
 import { pointInZone, rotateToMap } from './geometry';
 import { decodeMovement, heatCells, positionAt, sparkBuckets, trailAt } from './history';
 import { fallbackPresenceId, presenceLook } from './presence';
+import { backingStore, logicalWidth } from './resolution';
 import { snapDecimals, snapMm, snapStepMm } from './snap';
 import { TRAIL_GAP_MS, TRAIL_MS, TrailBuffer } from './trails';
 import {
@@ -283,6 +299,16 @@ const DEFAULT_CONE = Object.freeze({
 // The canvas backing store is this wide. A YAML grid keeps it square, as it
 // always was; a fitted grid sets its height from the grid's own shape.
 const CANVAS_WIDTH_PX = 800;
+
+// The card's own surface, which it draws itself rather than in an ha-card:
+// ha-card's background, edge and corner tokens, so it lines up with the
+// ha-card cards beside it (the Radar setup card, the device card) and takes
+// the theme's border the way they do. The host has no padding of its own,
+// as ha-card has none: the 16 px inside is the only margin.
+const CARD_SURFACE_RULE =
+  '.container { background: var(--ha-card-background, var(--card-background-color, white));' +
+  ' border: var(--ha-card-border-width, 1px) solid var(--ha-card-border-color, var(--divider-color, #e0e0e0));' +
+  ' border-radius: var(--ha-card-border-radius, 12px); box-shadow: var(--ha-card-box-shadow); padding: 16px; }';
 
 // A card whose YAML has no grid shows the radar's field of view as it is
 // currently rotated, instead of the fixed 10 m square DEFAULT_GRID, where the
@@ -585,6 +611,30 @@ const UNIT_ALIASES = Object.freeze({
   feet: 'ft',
 });
 
+// The one card on the page whose map fills the window (Expand map), or
+// null. Every zone map listens for keys on window, and only this one acts
+// on them while it is set.
+let expandedCard = null;
+// Makes each expanded map's history entry its own (see _openFullWindow).
+let fullWindowOpens = 0;
+
+// A reload while a map was expanded leaves its history entry on top, with
+// nothing open to close: step back off it, as Home Assistant does for the
+// entries its own dialogs leave.
+try {
+  if (typeof history !== 'undefined' && history.state?.apolloZoneMapFull !== undefined) history.back();
+} catch {
+  // No session history to tidy.
+}
+
+/** Run `callback` on the next animation frame, or in 16 ms where there are
+ *  none. */
+function requestFrame(callback) {
+  return typeof requestAnimationFrame === 'function'
+    ? requestAnimationFrame(callback)
+    : setTimeout(callback, 16);
+}
+
 export class ZoneMapCard extends HTMLElement {
   static get GRID_MIN_SPACING_PX() {
     return 40;
@@ -684,8 +734,45 @@ export class ZoneMapCard extends HTMLElement {
     this._versionShown = undefined;
     // The ignore zones' hatch pattern per theme, made once per context.
     this._hatch = { light: null, dark: null };
-    // Canvas backing px per CSS px, read once at the top of each frame.
+    // Logical canvas px per CSS px, read once at the top of each frame.
     this._frameScale = 1;
+    // The canvas's logical size, what everything is drawn and hit-tested
+    // in (see _sizeCanvas), and the CSS width it was last seen at, which
+    // the backing store follows (see _sizeBackingStore). 0 until a layout.
+    this._mapW = CANVAS_WIDTH_PX;
+    this._mapH = CANVAS_WIDTH_PX;
+    this._cssMapWidth = 0;
+    this._canvasObserver = null;
+    this._resolutionWatch = null;
+    // Expand map (see _openFullWindow): whether the map fills the window,
+    // the key of the history entry its open pushed, whether a history.back()
+    // of ours is still on its way, and whether the key going down now was
+    // used up (an Esc that put a field back, say). _fullParts holds the
+    // dialog, the container in it and the placeholder left in the card, and
+    // _fullLayout the split of the window it was last laid out to.
+    this._fullWindow = false;
+    this._fullKey = null;
+    this._backPending = false;
+    this._escConsumed = false;
+    this._fullLayout = null;
+    this._fullParts = null;
+    this._fullBox = null;
+    this._cardMapWidth = 0;
+    this._savedScrollY = 0;
+    this._savedHtml = null;
+    // Home Assistant's editor preview and dashboard edit mode set preview;
+    // a card in someone else's dialog (a more-info or popup card) has no
+    // room to expand. Neither shows Expand map.
+    this._preview = false;
+    this._inDialog = false;
+    // The map's width over its height (see _sizeCanvas).
+    this._aspect = 1;
+    // Back, or a history entry another page put on top: the expanded map
+    // closes, and leaves the history as it is.
+    this._onFullWindowPop = () => {
+      if (!this._fullWindow) return;
+      if (history.state?.apolloZoneMapFull !== this._fullKey) this._closeFullWindow({ reason: 'history' });
+    };
     // When the canvas was last painted, on the _now() clock.
     this._lastDrawAt = 0;
     // A few seconds of each live target's positions, page memory only: the
@@ -779,6 +866,20 @@ export class ZoneMapCard extends HTMLElement {
     this._applyView();
   }
 
+  /** Home Assistant sets this on a card in the editor's preview and in
+   *  dashboard edit mode, after setConfig: neither shows Expand map, and
+   *  an expanded map closes. */
+  get preview() {
+    return this._preview;
+  }
+
+  set preview(value) {
+    this._preview = !!value;
+    if (this._preview && this._fullWindow) this._closeFullWindow({ reason: 'user' });
+    if (this.isConnected) this._inDialog = insideDialog(this);
+    this._renderFullWindowButton();
+  }
+
   /** The card's config UI, an `ha-device-picker` and a title field. */
   static getConfigElement() {
     return document.createElement(ZONE_MAP_EDITOR_TAG);
@@ -840,6 +941,8 @@ export class ZoneMapCard extends HTMLElement {
     const previousDeviceId = this.deviceId;
     this.deviceId = String(config.device_id);
     if (previousDeviceId !== this.deviceId) {
+      // The expanded map was the old radar's.
+      if (this._fullWindow) this._closeFullWindow({ reason: 'rebuild' });
       // A live element can be pointed at another radar: a parent that
       // reassigns `config` on the same hui-card, or a wrapper card that calls
       // setConfig directly. (On supported Home Assistant the editor preview
@@ -1093,6 +1196,9 @@ export class ZoneMapCard extends HTMLElement {
         if (!this._replayShowing()) this.drawGrid();
       }
     }
+    // The help line names the units the target sensors show, which change
+    // only when someone picks another one for a sensor.
+    if (this._targetUnitsText() !== this._infoUnits) this._renderInfo();
     if (firstTime && this._hass) {
       // The store, not the entity registry, is where zones live now, so this
       // does not wait for a canvas or for any entity to exist.
@@ -1379,6 +1485,12 @@ export class ZoneMapCard extends HTMLElement {
     // view-only map never had any.
     this._connectZones();
     if (this.canvas && !this._onKeyDown && !this._viewOnly) this._attachGlobalListeners();
+    // The canvas's size and the screen's pixel ratio, which a detach stopped
+    // following.
+    if (this.canvas && !this._canvasObserver) this._observeCanvas();
+    // Whether this card sits in a dialog, where it has no room to expand.
+    this._inDialog = insideDialog(this);
+    this._renderFullWindowButton();
     // The page's version check, while the card is on the page.
     if (!this._version) {
       const version = watchVersion(() => {
@@ -1636,7 +1748,17 @@ export class ZoneMapCard extends HTMLElement {
   _renderTitle() {
     const host = this.shadowRoot.getElementById('deviceTitle');
     if (!host) return;
-    host.textContent = this.cardTitle || this._deviceLabel || '';
+    host.textContent = this._titleText();
+    if (this._fullWindow) {
+      // The expanded map is named after the radar, and its header may wrap.
+      this._fullParts?.dialog?.setAttribute('aria-label', fullWindowLabel(this._titleText()));
+      this._scheduleFullLayout();
+    }
+  }
+
+  /** The title over the map: the card's own, else the radar's name. */
+  _titleText() {
+    return this.cardTitle || this._deviceLabel || '';
   }
 
   /**
@@ -1655,6 +1777,8 @@ export class ZoneMapCard extends HTMLElement {
     if (!host) return;
     this._versionShown = notice;
     host.replaceChildren(...(notice ? [versionNoticeElement(notice)] : []));
+    // A notice above an expanded map takes room from it.
+    if (this._fullWindow) this._scheduleFullLayout();
   }
 
   /**
@@ -1667,8 +1791,8 @@ export class ZoneMapCard extends HTMLElement {
   _errorTemplate() {
     return `
       <style>
-        :host { display: block; padding: 16px; }
-        .container { background: var(--card-background-color); border-radius: var(--ha-card-border-radius, 12px); box-shadow: var(--ha-card-box-shadow); padding: 16px; }
+        :host { display: block; }
+        ${CARD_SURFACE_RULE}
         .container.dark { background: ${COLOR.ui.darkContainerBackground}; color: ${COLOR.ui.darkContainerText}; }
         .device-title { font-size: 1.2em; font-weight: bold; margin-bottom: 8px; }
         .load-error { font-size: 14px; color: var(--error-color, ${COLOR.canvas.defaultTarget}); }
@@ -1707,7 +1831,7 @@ export class ZoneMapCard extends HTMLElement {
     if (this._viewOnly) return this._viewOnlyTemplate();
     return `
       <style>
-        :host { display: block; padding: 16px; }
+        :host { display: block; }
         /* Theme tokens */
         :host {
           --zm-gap: 8px;
@@ -1716,7 +1840,7 @@ export class ZoneMapCard extends HTMLElement {
           --zm-chip-active: var(--primary-color);
           --zm-chip-color: var(--primary-text-color);
         }
-        .container { background: var(--card-background-color); border-radius: var(--ha-card-border-radius, 12px); box-shadow: var(--ha-card-box-shadow); padding: 16px; }
+        ${CARD_SURFACE_RULE}
         /* color-scheme: the native checkboxes, selects and sliders follow the
            card's dark_mode, which can differ from the page's theme. */
         .container.dark { background: ${COLOR.ui.darkContainerBackground}; color: ${COLOR.ui.darkContainerText}; color-scheme: dark; }
@@ -1930,10 +2054,47 @@ export class ZoneMapCard extends HTMLElement {
         .config-content { padding: 4px 0; }
         .config-content[hidden] { display: none; }
         .container :focus-visible { outline: 2px solid var(--primary-color); outline-offset: 2px; }
+        /* Expand map, in the map's top right corner, under the x labels
+           with the notes. A replay's badge moves left of it. */
+        .overlay-controls-top { top: var(--zm-note-top, 4px); bottom: auto; right: 4px; }
+        .overlay-controls-top[hidden], .full-close[hidden] { display: none; }
+        .overlay-controls button.full-toggle { width: 32px; height: 32px; min-width: 32px; padding: 0; }
+        .full-toggle:focus-visible, .full-close:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 2px; }
+        .container.has-expand .map-note.replay-badge { right: 40px; }
+        .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+        /* Where the card was while the map fills the window, so the
+           dashboard behind keeps its place. */
+        .full-placeholder { border-radius: var(--ha-card-border-radius, 12px); background: var(--ha-card-background, var(--card-background-color)); }
+        .map-side { container: map-side / inline-size; }
+        /* The full window: the top layer, opaque, and nothing behind it
+           scrolls or reloads with a pull. */
+        dialog.full-window { position: fixed; inset: 0; width: auto; height: auto; max-width: none; max-height: none; margin: 0; padding: 0; border: 0; background: var(--primary-background-color, Canvas); color: inherit; overflow: hidden; overscroll-behavior: none; }
+        dialog.full-window::backdrop { background: rgba(0, 0, 0, 0.6); }
+        .container.full { box-sizing: border-box; width: 100%; height: 100%; border: 0; border-radius: 0; box-shadow: none; display: grid; gap: 8px 16px;
+          padding: calc(8px + var(--safe-area-inset-top, env(safe-area-inset-top, 0px))) calc(8px + var(--safe-area-inset-right, env(safe-area-inset-right, 0px))) calc(8px + var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px))) calc(8px + var(--safe-area-inset-left, env(safe-area-inset-left, 0px))); }
+        .container.full .title-row { display: flex; align-items: center; gap: 8px; min-height: 40px; min-width: 0; }
+        .container.full .title-row .device-title { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .container.full .full-close { flex: none; width: 40px; height: 40px; padding: 0; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; background: transparent; color: inherit; }
+        .container.full .full-close:hover { background: rgba(127, 127, 127, 0.16); opacity: 1; }
+        .container.full .canvas-container { box-sizing: border-box; width: var(--zm-full-width); margin: 0 auto; flex: none; }
+        .container.full canvas, .container.full canvas.pans { touch-action: none; }
+        .container.full .map-side { min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding-inline-end: 4px; }
+        .container.full[data-layout="stacked"] { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto auto minmax(0, 1fr); }
+        .container.full[data-layout="side"] { grid-template-columns: minmax(0, 1fr) var(--zm-side-width); grid-template-rows: auto auto minmax(0, 1fr); }
+        .container.full[data-layout="side"] .map-stage { grid-column: 1; grid-row: 1 / -1; display: flex; align-items: center; justify-content: center; min-height: 0; }
+        .container.full[data-layout="side"] .title-row { grid-column: 2; grid-row: 1; }
+        .container.full[data-layout="side"] #versionNotice { grid-column: 2; grid-row: 2; }
+        .container.full[data-layout="side"] .map-side { grid-column: 2; grid-row: 3; }
       </style>
       <div class="container ${this.darkMode ? 'dark' : ''}">
-        <div class="device-title" id="deviceTitle"></div>
+        <!-- Expand map moves this container into the dialog at the end and
+             back (_openFullWindow): the X beside the title closes it there. -->
+        <div class="title-row">
+          <button id="btnFullWindowClose" class="full-close" type="button" aria-label="${FULL_WINDOW_CLOSE_LABEL}" title="${FULL_WINDOW_CLOSE_LABEL}" hidden>${iconSvg(ICON_CLOSE)}</button>
+          <div class="device-title" id="deviceTitle"></div>
+        </div>
         <div id="versionNotice"></div>
+        <div class="map-stage" id="mapStage">
         <div class="canvas-container">
           <canvas id="zoneCanvas"></canvas>
           <div class="map-note" id="offlineNote" role="status" ${this._offlineShown ? '' : 'hidden'}>${OFFLINE_NOTE}</div>
@@ -1967,7 +2128,14 @@ export class ZoneMapCard extends HTMLElement {
             <button id="btnZoomIn" title="${ZOOM_IN_TITLE}" aria-label="${ZOOM_IN_LABEL}">+</button>
             <button id="btnZoomFit" title="${ZOOM_FIT_ALL_LABEL}" aria-label="${ZOOM_FIT_ALL_LABEL}">${ZOOM_FIT}</button>
           </div>
+          <!-- _renderFullWindowButton shows it where the map can expand. -->
+          <div class="overlay-controls overlay-controls-top" id="overlayControlsTop" hidden>
+            <button id="btnFullWindow" class="full-toggle" type="button" aria-haspopup="dialog" aria-label="${FULL_WINDOW_OPEN_LABEL}" title="${FULL_WINDOW_OPEN_TITLE}" data-icon="expand">${iconSvg(ICON_EXPAND)}</button>
+          </div>
         </div>
+        </div>
+        <!-- Everything under the map: beside it or under it while expanded. -->
+        <div class="map-side" id="mapSide">
         ${this._walkPanelTemplate()}
         ${this._viewToolsTemplate()}
         ${this._historyPanelTemplate()}
@@ -2031,7 +2199,12 @@ export class ZoneMapCard extends HTMLElement {
           </div>
 
         </div>
+        </div>
+        <!-- The card's toasts, repeated for screen readers while expanded:
+             Home Assistant's own are inert under the modal dialog. -->
+        <div id="fullWindowStatus" class="visually-hidden" role="status" aria-live="polite"></div>
       </div>
+      <dialog class="full-window" id="fullWindow"></dialog>
     `;
   }
 
@@ -2045,8 +2218,8 @@ export class ZoneMapCard extends HTMLElement {
   _viewOnlyTemplate() {
     return `
       <style>
-        :host { display: block; padding: 16px; --zm-radius: 10px; }
-        .container { background: var(--card-background-color); border-radius: var(--ha-card-border-radius, 12px); box-shadow: var(--ha-card-box-shadow); padding: 16px; }
+        :host { display: block; --zm-radius: 10px; }
+        ${CARD_SURFACE_RULE}
         .container.dark { background: ${COLOR.ui.darkContainerBackground}; color: ${COLOR.ui.darkContainerText}; color-scheme: dark; }
         .container.dark .canvas-container { border-color: ${COLOR.ui.darkCanvasBorder}; background: ${COLOR.ui.darkCanvasBackground}; }
         .canvas-container { position: relative; aspect-ratio: 1; border: 1px solid var(--divider-color); border-radius: var(--zm-radius); overflow: hidden; background: ${COLOR.ui.lightCanvasBackground}; isolation: isolate; container-type: size; }
@@ -2167,6 +2340,12 @@ export class ZoneMapCard extends HTMLElement {
   render() {
     // TODO(REVIEW_REPORT.md X47): with a cached payload, chips, manager, status and drawGrid run
     // twice. Skipping the first pass changes selection on a same-device setConfig; decide first.
+    // A theme flip or a same-radar setConfig while the map is expanded
+    // builds the card again. The old dialog goes with the old DOM, which
+    // fires no close, and the new one opens in its place at the end
+    // (_remountFullWindow), with the focus where it was.
+    const reopen = this._fullWindow ? { focusId: this.shadowRoot.activeElement?.id || null } : null;
+    if (reopen) this._unobserveFullWindow();
     // The old template's lock closure would otherwise set a cursor and a
     // slider that are about to go, from _applyAutoLock, on a template that
     // has no Locked button to make a new one.
@@ -2189,6 +2368,8 @@ export class ZoneMapCard extends HTMLElement {
       if (host) host.textContent = this._loadError;
       this.canvas = null;
       this.ctx = null;
+      this._unobserveCanvas();
+      this._remountFullWindow(reopen);
       return;
     }
 
@@ -2215,6 +2396,8 @@ export class ZoneMapCard extends HTMLElement {
     this._updateCanvasTouchMode();
     // A trail fading when the theme flipped keeps fading on the new canvas.
     this._kickTrailTimer();
+    this._renderFullWindowButton();
+    this._remountFullWindow(reopen);
   }
 
   /**
@@ -2380,7 +2563,7 @@ export class ZoneMapCard extends HTMLElement {
     const ctx = this.ctx;
     const pixelX = this.valueToPixels(x, 'x');
     const pixelY = this.valueToPixels(y, 'y');
-    if (pixelX < 0 || pixelX > this.canvas.width || pixelY < 0 || pixelY > this.canvas.height) {
+    if (pixelX < 0 || pixelX > this._mapW || pixelY < 0 || pixelY > this._mapH) {
       return;
     }
     const r = this._dotRadius();
@@ -2439,6 +2622,7 @@ export class ZoneMapCard extends HTMLElement {
     this._attachWalkPanel();
     this._attachViewTools();
     this._attachHistoryPanel();
+    this._attachFullWindow();
   }
 
   _attachViewTools() {
@@ -3396,12 +3580,42 @@ export class ZoneMapCard extends HTMLElement {
     const host = this.shadowRoot?.getElementById('gridInfo');
     if (!host) return;
     const value = (mm) => this._formatGridValue(mm);
+    this._infoUnits = this._targetUnitsText();
     // How to draw is said in the zone editor, for the mode in use.
     host.textContent =
       `Grid units: ${this._unitLabel(this._displayUnit())}` +
       ` (X: ${value(this.xMin)}..${value(this.xMax)}, Y: ${value(this.yMin)}..${value(this.yMax)}).` +
-      ` Input units (sensors without a length unit): ${this._unitLabel(this.inputUnits)}.` +
+      this._infoUnits +
       ` Radar range: ${this._rangeText()}`;
+  }
+
+  /**
+   * The help line's units: the length units the tracked targets' sensors show,
+   * then the input unit only when one of them has no length unit, since only
+   * such a sensor is read in it. With no tracked state, the input unit alone.
+   */
+  _targetUnitsText() {
+    const states = this._hass?.states;
+    const units = new Set();
+    let tracked = false;
+    let unitless = false;
+    this.trackedEntities.forEach((pair) => {
+      [pair.x, pair.y].forEach((id) => {
+        const stateObj = id ? states?.[id] : undefined;
+        if (!stateObj) return;
+        tracked = true;
+        const unit = stateObj.attributes?.unit_of_measurement;
+        if (typeof unit === 'string' && Object.prototype.hasOwnProperty.call(SENSOR_LENGTH_UNITS, unit)) {
+          units.add(unit);
+        } else {
+          unitless = true;
+        }
+      });
+    });
+    const input = ` Input units (sensors without a length unit): ${this._unitLabel(this.inputUnits)}.`;
+    if (!tracked) return input;
+    const shown = Object.keys(SENSOR_LENGTH_UNITS).filter((unit) => units.has(unit));
+    return (shown.length ? ` Target sensors: ${shown.join(' and ')}.` : '') + (unitless ? input : '');
   }
 
   /** Redraw everything that shows the map's unit, after it changed. */
@@ -3491,7 +3705,9 @@ export class ZoneMapCard extends HTMLElement {
     });
     root.getElementById('btnClearAllNo')?.addEventListener('click', closeClearAll);
     root.getElementById('clearAllConfirm')?.addEventListener('keydown', (event) => {
-      if (event.key === 'Escape') closeClearAll();
+      if (event.key !== 'Escape') return;
+      this._consumeEscape(event);
+      closeClearAll();
     });
   }
 
@@ -3619,6 +3835,9 @@ export class ZoneMapCard extends HTMLElement {
     this._detachGlobalListeners();
 
     this._onKeyDown = (event) => {
+      // While one zone map fills the window, the keys are its alone: a
+      // polygon open on another map must not take the Esc that closes it.
+      if (expandedCard && expandedCard !== this) return;
       // Keys typed into a text field belong to that field, not to the
       // drawing: without this, editing a zone name (in this card's manager or
       // anywhere else on the dashboard) popped a vertex per Backspace and
@@ -3642,6 +3861,9 @@ export class ZoneMapCard extends HTMLElement {
       }
       if (this.drawMode !== DRAW_MODES.POLYGON) return;
       if (event.key === 'Escape') {
+        // Dropping corners uses the key up, so an expanded map stays open;
+        // with none placed, Esc closes it.
+        if (this._polyPoints.length > 0) this._consumeEscape(event);
         this._polyPoints = [];
         this.isDrawing = false;
         // A payload or a unit change that came in while the polygon was open
@@ -3655,6 +3877,7 @@ export class ZoneMapCard extends HTMLElement {
     // Alt or Option let go mid-drag snaps the pointer's corner again.
     this._onKeyUp = (event) => {
       if (event.key === 'Alt') this._setCursorFree(false);
+      if (event.key === 'Escape') this._escConsumed = false;
     };
     window.addEventListener('keyup', this._onKeyUp);
 
@@ -3666,9 +3889,12 @@ export class ZoneMapCard extends HTMLElement {
       // nested), which neither the shadow root nor the canvas container
       // contains. The composed path still lists the real nodes, so ask it.
       const path = event.composedPath();
-      // The overlay buttons (Finish, Undo, mode, lock) live in the container
-      // and act on the drawing, so a press on them must not cancel it.
+      // The overlay buttons (Finish, Undo, mode, lock, Expand map) live in
+      // the container and act on the drawing, so a press on them must not
+      // cancel it. Nor does the X that closes the expanded map: a polygon
+      // comes back to the card with its corners.
       if (canvasContainer && path.includes(canvasContainer)) return;
+      if (path.some((node) => node?.id === 'btnFullWindowClose')) return;
       if (!path.includes(this)) return;
       if (this.isDrawing) this.cancelDrawing();
     };
@@ -4303,10 +4529,12 @@ export class ZoneMapCard extends HTMLElement {
     // at different steps when 2 ft came out at exactly 40 px (float error
     // decided each axis), and could pick a step the edges were not rounded
     // to. A YAML grid can scale X and Y apart, so it keeps a step per axis.
-    // Zoomed in, a fitted grid takes the finer step the zoom allows, still
-    // one for both axes and never coarser than the fit's.
+    // Zoomed in or expanded, a fitted grid takes the finer step the px per
+    // mm allow, still one for both axes and never coarser than the fit's.
+    // Expanded, the logical canvas is wider than the 800 px the fit was
+    // stepped for, which refines the grid the same way.
     let fittedStep = this._fittedStep();
-    if (fittedStep !== null && this._zoom() > 1) {
+    if (fittedStep !== null && (this._zoom() > 1 || this._mapW > CANVAS_WIDTH_PX)) {
       fittedStep = Math.min(
         fittedStep,
         this._chooseGridStep(Math.min(pxPerMmX, pxPerMmY), Math.max(spanX, spanY), unit),
@@ -4349,8 +4577,8 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   _getGridRenderState() {
-    const canvasWidth = this.canvas?.width || 0;
-    const canvasHeight = this.canvas?.height || 0;
+    const canvasWidth = this.canvas ? this._mapW : 0;
+    const canvasHeight = this.canvas ? this._mapH : 0;
     // The labels' clear space is set in CSS px, so a resized card lays them
     // out again. The frame's scale, so a frame reads the layout once.
     const labelGap = LABEL_GAP_CSS_PX * (this._frameScale || 1);
@@ -4428,14 +4656,14 @@ export class ZoneMapCard extends HTMLElement {
     return this._gridCache;
   }
 
-  /** Canvas backing px per CSS px. The backing store is a fixed 800 px that
-   *  the card scales to its width. 1 while the canvas has no layout box.
-   *  `rect` is the canvas's box where the caller has read it already. */
+  /** Logical canvas px per CSS px: the 800 px the card draws in, over the
+   *  width it shows at. 1 while the canvas has no layout box. `rect` is the
+   *  canvas's box where the caller has read it already. */
   _canvasScale(rect = this.canvas?.getBoundingClientRect?.()) {
-    if (!this.canvas || !(this.canvas.width > 0)) return 1;
+    if (!this.canvas || !(this._mapW > 0)) return 1;
     const rendered = rect?.width;
     if (!(rendered > 0)) return 1;
-    return this.canvas.width / rendered;
+    return this._mapW / rendered;
   }
 
   /** Sets `width` on each label: how wide its text draws at the label font,
@@ -4515,8 +4743,8 @@ export class ZoneMapCard extends HTMLElement {
     if (!ringLabels?.length) return { grid, rings: [] };
     const gap = gridState?.labelGap ?? LABEL_GAP_CSS_PX;
     const repeatGap = RING_LABEL_REPEAT_EM * this.unitLabelSize;
-    const width = this.canvas?.width || 0;
-    const height = this.canvas?.height || 0;
+    const width = this.canvas ? this._mapW : 0;
+    const height = this.canvas ? this._mapH : 0;
     const placed = [...grid.x, ...grid.y].map((label) => ({ label, box: this._labelBox(label) }));
     const rings = ringLabels.map((label) => ({ ...label, align: 'center', baseline: 'middle' }));
     this._measureLabels(rings);
@@ -5078,8 +5306,8 @@ export class ZoneMapCard extends HTMLElement {
     const last = this._polyPoints[this._polyPoints.length - 1];
     if (!last || !this.canvas) return false;
     const rect = this.canvas.getBoundingClientRect();
-    const cssPerPxX = this.canvas.width ? rect.width / this.canvas.width : 1;
-    const cssPerPxY = this.canvas.height ? rect.height / this.canvas.height : 1;
+    const cssPerPxX = this._mapW ? rect.width / this._mapW : 1;
+    const cssPerPxY = this._mapH ? rect.height / this._mapH : 1;
     const dx = (p.x - this.valueToPixels(last.x, 'x')) * cssPerPxX;
     const dy = (p.y - this.valueToPixels(last.y, 'y')) * cssPerPxY;
     return Math.hypot(dx, dy) <= POLY_DOUBLE_TAP_SLOP_PX;
@@ -5089,8 +5317,8 @@ export class ZoneMapCard extends HTMLElement {
    *  CSS px. */
   _cssDistance(a, b) {
     const rect = this.canvas?.getBoundingClientRect?.();
-    const cssPerPxX = rect && this.canvas.width ? rect.width / this.canvas.width : 1;
-    const cssPerPxY = rect && this.canvas.height ? rect.height / this.canvas.height : 1;
+    const cssPerPxX = rect && this._mapW ? rect.width / this._mapW : 1;
+    const cssPerPxY = rect && this._mapH ? rect.height / this._mapH : 1;
     return Math.hypot((a.x - b.x) * cssPerPxX, (a.y - b.y) * cssPerPxY);
   }
 
@@ -5130,8 +5358,8 @@ export class ZoneMapCard extends HTMLElement {
     if (!this.canvas) return null;
     const rect = this.canvas.getBoundingClientRect();
     if (!(rect.width > 0 && rect.height > 0)) return null;
-    const scaleX = this.canvas.width / rect.width;
-    const scaleY = this.canvas.height / rect.height;
+    const scaleX = this._mapW / rect.width;
+    const scaleY = this._mapH / rect.height;
     let source = e;
     if (e.touches || e.changedTouches) {
       source = this._touchFor(e, touchId);
@@ -5439,7 +5667,9 @@ export class ZoneMapCard extends HTMLElement {
     no.addEventListener('click', keep);
     yes.addEventListener('click', () => this._deleteZone(zoneId));
     confirm.addEventListener('keydown', (event) => {
-      if (event.key === 'Escape') keep();
+      if (event.key !== 'Escape') return;
+      this._consumeEscape(event);
+      keep();
     });
     return editor;
   }
@@ -5646,7 +5876,12 @@ export class ZoneMapCard extends HTMLElement {
         // On a phone, Done also closes the keyboard over the map.
         if (window.matchMedia?.('(pointer: coarse)')?.matches) input.blur();
       } else if (event.key === 'Escape') {
-        input.value = input.dataset.storedName;
+        // Putting the name back uses the key up; an Esc with nothing to put
+        // back closes an expanded map, as in Home Assistant's dialogs.
+        if (input.value !== input.dataset.storedName) {
+          input.value = input.dataset.storedName;
+          this._consumeEscape(event);
+        }
       }
     });
     input.addEventListener('blur', () => {
@@ -5977,7 +6212,10 @@ export class ZoneMapCard extends HTMLElement {
     // Worked out before anything is drawn: the zones its dots light are
     // drawn before the dots.
     const replay = this._replayShowing() ? this._replayFrame() : null;
-    ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    // Every frame is drawn in logical px, scaled up to the backing store
+    // (_sizeBackingStore), which a resize also resets the transform of.
+    ctx.setTransform(this.canvas.width / this._mapW, 0, 0, this.canvas.height / this._mapH, 0, 0);
+    ctx.clearRect(0, 0, this._mapW, this._mapH);
     // First, so no grid, ring or range label is tinted by the cells, and
     // still under the zones.
     this._drawCellLayer(ctx);
@@ -6387,8 +6625,8 @@ export class ZoneMapCard extends HTMLElement {
       baseline: 'middle',
     };
     this._measureLabels([label]);
-    const width = this.canvas.width;
-    const height = this.canvas.height;
+    const width = this._mapW;
+    const height = this._mapH;
     const halfWidth = label.width / 2;
     const halfHeight = this.unitLabelSize / 2;
     const facing = (this.coneAngleDeg * Math.PI) / 180;
@@ -6479,13 +6717,13 @@ export class ZoneMapCard extends HTMLElement {
     if (xLines && xLines.length) {
       xLines.forEach(({ pixel }) => {
         ctx.moveTo(pixel, 0);
-        ctx.lineTo(pixel, this.canvas.height);
+        ctx.lineTo(pixel, this._mapH);
       });
     }
     if (yLines && yLines.length) {
       yLines.forEach(({ pixel }) => {
         ctx.moveTo(0, pixel);
-        ctx.lineTo(this.canvas.width, pixel);
+        ctx.lineTo(this._mapW, pixel);
       });
     }
     ctx.stroke();
@@ -6499,13 +6737,13 @@ export class ZoneMapCard extends HTMLElement {
     const y0 = this.valueToPixels(0, 'y');
     ctx.beginPath();
     ctx.moveTo(0, y0);
-    ctx.lineTo(this.canvas.width, y0);
+    ctx.lineTo(this._mapW, y0);
     ctx.stroke();
 
     const x0 = this.valueToPixels(0, 'x');
     ctx.beginPath();
     ctx.moveTo(x0, 0);
-    ctx.lineTo(x0, this.canvas.height);
+    ctx.lineTo(x0, this._mapH);
     ctx.stroke();
 
     ctx.fillStyle = originColor;
@@ -6814,22 +7052,26 @@ export class ZoneMapCard extends HTMLElement {
 
   /**
    * The ignore zones' fill: one diagonal grey line on a 12 x 12 px tile,
-   * repeated. Made once per theme and per context (a render brings a new
-   * canvas). null when the context cannot make a pattern (createPattern
+   * repeated. Made once per theme, per context (a render brings a new
+   * canvas) and per backing scale: the tile is drawn at the store's whole
+   * device px per logical px and scaled back down, so a HiDPI map gets a
+   * sharp hatch. null when the context cannot make a pattern (createPattern
    * missing, throwing or returning nothing, as in some browsers), and the
    * zone is then filled flat.
    */
   _hatchPattern(dark) {
     const key = dark ? 'dark' : 'light';
+    const scale = Math.max(1, Math.ceil((this.canvas?.width || this._mapW) / this._mapW - 1e-9));
     const cached = this._hatch[key];
-    if (cached && cached.ctx === this.ctx) return cached.pattern;
+    if (cached && cached.ctx === this.ctx && cached.scale === scale) return cached.pattern;
     let pattern = null;
     try {
       const tile = document.createElement('canvas');
-      tile.width = 12;
-      tile.height = 12;
+      tile.width = 12 * scale;
+      tile.height = 12 * scale;
       const tileCtx = tile.getContext('2d');
       if (tileCtx && typeof this.ctx?.createPattern === 'function') {
+        tileCtx.scale(scale, scale);
         tileCtx.strokeStyle = dark ? COLOR.canvas.ignoreHatchDark : COLOR.canvas.ignoreHatchLight;
         tileCtx.lineWidth = 2;
         tileCtx.beginPath();
@@ -6843,11 +7085,14 @@ export class ZoneMapCard extends HTMLElement {
         tileCtx.lineTo(14, 10);
         tileCtx.stroke();
         pattern = this.ctx.createPattern(tile, 'repeat') || null;
+        if (pattern && scale > 1 && typeof DOMMatrix === 'function') {
+          pattern.setTransform?.(new DOMMatrix().scale(1 / scale));
+        }
       }
     } catch {
       pattern = null;
     }
-    this._hatch[key] = { ctx: this.ctx, pattern };
+    this._hatch[key] = { ctx: this.ctx, scale, pattern };
     return pattern;
   }
 
@@ -7062,7 +7307,7 @@ export class ZoneMapCard extends HTMLElement {
       // A finger's goes beside it on the side with more room, the one side
       // worth trying, and below it where the plate does not fit there.
       const besideOffset = READOUT_BESIDE_TOUCH_PX * scale + plateWidth / 2;
-      const roomRight = this.canvas.width - anchorPx.x;
+      const roomRight = this._mapW - anchorPx.x;
       if (finger && Math.max(roomRight, anchorPx.x) >= besideOffset + plateWidth / 2) {
         x = anchorPx.x + (roomRight >= anchorPx.x ? 1 : -1) * besideOffset;
         y = anchorPx.y;
@@ -7072,8 +7317,8 @@ export class ZoneMapCard extends HTMLElement {
     }
     // A finger keeps reporting after it leaves the canvas, and the shape
     // stops at the map's edge, so the readout stays on the canvas too.
-    y = clampOnto(y, plateHeight / 2, this.canvas.height);
-    x = clampOnto(x, plateWidth / 2, this.canvas.width);
+    y = clampOnto(y, plateHeight / 2, this._mapH);
+    x = clampOnto(x, plateWidth / 2, this._mapW);
     ctx.fillStyle = this.darkMode ? COLOR.ui.darkCanvasBackground : COLOR.ui.lightCanvasBackground;
     ctx.fillRect(x - plateWidth / 2, y - plateHeight / 2, plateWidth, plateHeight);
     ctx.fillStyle = this.darkMode ? COLOR.canvas.axisDark : COLOR.canvas.axisLight;
@@ -7099,7 +7344,8 @@ export class ZoneMapCard extends HTMLElement {
       { x: anchor.x + beside, y: anchor.y },
       { x: anchor.x - beside, y: anchor.y },
     ];
-    const { width: canvasW, height: canvasH } = this.canvas;
+    const canvasW = this._mapW;
+    const canvasH = this._mapH;
     return (
       spots.find(({ x, y }) => {
         const box = {
@@ -7119,7 +7365,7 @@ export class ZoneMapCard extends HTMLElement {
   /**
    * The boxes (backing px) of the buttons and notes laid over the canvas
    * that are showing now: the drawing modes, the unit switch, Undo and
-   * Locked, the zoom row and the offline note. Nothing drawn on the canvas
+   * Locked, the zoom row, Expand map and the offline note. Nothing drawn on the canvas
    * under them can be read. None while the canvas has no layout box. With
    * `notes` false, the buttons only: _placeMapNotes puts the offline note
    * under the x labels, so the labels never make room for it. `canvasRect`
@@ -7128,9 +7374,9 @@ export class ZoneMapCard extends HTMLElement {
   _overlayBoxes({ notes = true, canvasRect = this.canvas?.getBoundingClientRect?.() } = {}) {
     const root = this.shadowRoot;
     if (!root || !canvasRect || !(canvasRect.width > 0) || !(canvasRect.height > 0)) return [];
-    const scaleX = this.canvas.width / canvasRect.width;
-    const scaleY = this.canvas.height / canvasRect.height;
-    const ids = ['overlayControlsLeft', 'overlayControlsRight', 'zoomControls'];
+    const scaleX = this._mapW / canvasRect.width;
+    const scaleY = this._mapH / canvasRect.height;
+    const ids = ['overlayControlsLeft', 'overlayControlsRight', 'zoomControls', 'overlayControlsTop'];
     if (notes) ids.push('offlineNote');
     return ids.flatMap((id) => {
       const element = root.getElementById(id);
@@ -7200,7 +7446,8 @@ export class ZoneMapCard extends HTMLElement {
     // A YAML grid smaller than the room can leave a zone off the canvas,
     // and its name, pulled onto the edge, would label whatever is drawn
     // there. A fitted map takes in every zone.
-    const { width: canvasW, height: canvasH } = this.canvas;
+    const canvasW = this._mapW;
+    const canvasH = this._mapH;
     if (bbox.x >= canvasW || bbox.x + bbox.width <= 0) return null;
     if (bbox.y >= canvasH || bbox.y + bbox.height <= 0) return null;
     const text = `${name}${suffix}`;
@@ -7338,8 +7585,8 @@ export class ZoneMapCard extends HTMLElement {
       this._roundKeyValue(this._viewYMin),
       labelUnit,
       stepMm,
-      this.canvas?.width || 0,
-      this.canvas?.height || 0,
+      this.canvas ? this._mapW : 0,
+      this.canvas ? this._mapH : 0,
       mirror ? 1 : 0,
     ];
     const key = keyParts.join('|');
@@ -7449,21 +7696,28 @@ export class ZoneMapCard extends HTMLElement {
     if (!this.canvas) {
       // The error state renders no canvas at all.
       this.ctx = null;
+      this._unobserveCanvas();
       return;
     }
     this.ctx = this.canvas.getContext('2d');
     this._sizeCanvas();
+    this._observeCanvas();
     this.drawGrid();
   }
 
   /**
-   * Size the canvas backing store to the grid and set the px per mm.
+   * Size the canvas to the grid and set the px per mm.
    *
-   * A YAML grid keeps the square 800 px store it always had. A fitted grid
-   * gets a store the grid's own shape (_shapeFit keeps it between
-   * FIT_MIN_ASPECT and square), and the container takes the same aspect
-   * ratio, so a meter is as long across as it is down and the cone is not
-   * stretched.
+   * Everything is drawn in logical px, _mapW by _mapH: 800 px wide, the
+   * width every px size in the card (labels, lines, dots, the grid's 40 px
+   * spacing) was made for. A YAML grid keeps the square 800 px it always
+   * had. A fitted grid gets the grid's own shape (_shapeFit keeps it
+   * between FIT_MIN_ASPECT and square), and the container takes the same
+   * aspect ratio, so a meter is as long across as it is down and the cone
+   * is not stretched. The aspect is the shape at 800 px, never what a
+   * rounded store size makes of it, so it cannot move the layout that sizes
+   * the store. The backing store under it follows the screen
+   * (_sizeBackingStore).
    */
   _sizeCanvas() {
     this._invalidateGridCache();
@@ -7473,27 +7727,130 @@ export class ZoneMapCard extends HTMLElement {
       this._applyView();
       return;
     }
-    // TODO(REVIEW_REPORT.md X39): fixed 800 px store with no devicePixelRatio (blurry on HiDPI);
-    // non-square YAML grids draw stretched. DPR sizing must scale the px constants; document stretch.
+    // TODO(REVIEW_REPORT.md X39): a non-square YAML grid is drawn stretched on its square map.
+    // Document the stretch.
     const safeWidth = Math.max(1, this.xMax - this.xMin);
     const safeHeight = Math.max(1, this.yMax - this.yMin);
-    const width = CANVAS_WIDTH_PX;
-    const height = this._gridFromConfig
-      ? CANVAS_WIDTH_PX
-      : Math.max(1, Math.round((CANVAS_WIDTH_PX * safeHeight) / safeWidth));
-    // Assigning a size clears the canvas even when it is the same one.
-    if (this.canvas.width !== width) this.canvas.width = width;
-    if (this.canvas.height !== height) this.canvas.height = height;
+    const heightAt = (width) =>
+      this._gridFromConfig ? width : Math.max(1, Math.round((width * safeHeight) / safeWidth));
+    // The map's CSS width while expanded, so text and lines keep their size
+    // and the grid gets finer; the card's 800 px otherwise.
+    const width = logicalWidth(
+      CANVAS_WIDTH_PX,
+      this._fullWindow && this._fullLayout ? this._fullLayout.mapWidth : null,
+    );
+    const height = heightAt(width);
+    this._mapW = width;
+    this._mapH = height;
     this._basePxPerX = width / safeWidth;
     this._basePxPerY = height / safeHeight;
     this._applyView();
+    this._sizeBackingStore();
     const container = this.canvas.parentElement;
     if (container) {
-      container.style.aspectRatio = `${width} / ${height}`;
+      const cardHeight = heightAt(CANVAS_WIDTH_PX);
+      container.style.aspectRatio = `${CANVAS_WIDTH_PX} / ${cardHeight}`;
       // The height cap's width (see the .canvas-container rule) keeps this
       // shape too.
-      container.style.setProperty('--zm-aspect', String(width / height));
+      container.style.setProperty('--zm-aspect', String(CANVAS_WIDTH_PX / cardHeight));
     }
+    const aspect = CANVAS_WIDTH_PX / heightAt(CANVAS_WIDTH_PX);
+    const reshaped = aspect !== this._aspect;
+    this._aspect = aspect;
+    // A refit (a new rotation, a zone drawn past the edge) can change the
+    // shape of an expanded map, and so how the window is split.
+    if (reshaped && this._fullWindow) this._scheduleFullLayout();
+  }
+
+  /**
+   * Give the canvas one backing px per device px (see backingStore), for
+   * the logical size and the CSS width the canvas was last seen at, so a
+   * HiDPI screen gets a sharp map and drawGrid scales every frame up to it.
+   * Returns whether the store changed size, which clears it.
+   */
+  _sizeBackingStore() {
+    if (!this.canvas) return false;
+    const dpr = typeof window !== 'undefined' ? window.devicePixelRatio : 1;
+    const { width, height } = backingStore(this._mapW, this._mapH, this._cssMapWidth, dpr);
+    let changed = false;
+    // Assigning a size clears the canvas even when it is the same one.
+    if (this.canvas.width !== width) {
+      this.canvas.width = width;
+      changed = true;
+    }
+    if (this.canvas.height !== height) {
+      this.canvas.height = height;
+      changed = true;
+    }
+    return changed;
+  }
+
+  /**
+   * Follow the canvas's CSS width (a ResizeObserver on its container, one
+   * frame at a time) and the screen's pixel ratio (a resolution media
+   * query, which a browser zoom or a move to another screen changes), and
+   * size the backing store again when either does. render() observes each
+   * new canvas; disconnectedCallback stops both and connectedCallback starts
+   * them again.
+   */
+  _observeCanvas() {
+    this._unobserveCanvas();
+    const container = this.canvas?.parentElement;
+    if (!container || typeof ResizeObserver !== 'function') return;
+    const observer = new ResizeObserver((entries) => {
+      const box = entries[entries.length - 1]?.contentRect;
+      if (box) this._pendingCssWidth = box.width;
+      this._onCanvasFrame ??= requestFrame(() => {
+        this._onCanvasFrame = null;
+        if (this._canvasObserver !== observer) return;
+        this._resizeCanvasTo(this._pendingCssWidth);
+      });
+    });
+    observer.observe(container);
+    this._canvasObserver = observer;
+    this._watchResolution();
+  }
+
+  _unobserveCanvas() {
+    this._canvasObserver?.disconnect();
+    this._canvasObserver = null;
+    this._unwatchResolution();
+  }
+
+  /** The canvas is `cssWidth` CSS px wide now: size the store for it, and
+   *  draw again if the store or the CSS width changed, since labels are
+   *  laid out in CSS px. */
+  _resizeCanvasTo(cssWidth) {
+    if (!(cssWidth > 0)) return;
+    const moved = cssWidth !== this._cssMapWidth;
+    this._cssMapWidth = cssWidth;
+    if (this._sizeBackingStore() || moved) this.drawGrid();
+  }
+
+  _watchResolution() {
+    this._unwatchResolution();
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    let query = null;
+    try {
+      query = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
+    } catch {
+      query = null;
+    }
+    if (typeof query?.addEventListener !== 'function') return;
+    // The query is for the old ratio, so a change means a new one: watch
+    // that, and size for it.
+    const onChange = () => {
+      this._watchResolution();
+      if (this._sizeBackingStore()) this.drawGrid();
+    };
+    query.addEventListener('change', onChange);
+    this._resolutionWatch = { query, onChange };
+  }
+
+  _unwatchResolution() {
+    const watch = this._resolutionWatch;
+    this._resolutionWatch = null;
+    watch?.query?.removeEventListener?.('change', watch.onChange);
   }
 
   startDrawing(e) {
@@ -7535,8 +7892,9 @@ export class ZoneMapCard extends HTMLElement {
     // Unsnapped, so the release can tell a tap from a drag.
     this._pressPx = point;
     // The press places the first corner: on a round value, or right where
-    // it is with Alt or Option held. A zoom or a pan mid-drag carries it
-    // across in mm (_setView), so it never snaps again.
+    // it is with Alt or Option held. A zoom, a pan or a resized expanded
+    // map mid-drag carries it across in mm (_keepHeldPoints), so it never
+    // snaps again.
     this.startPoint = this._placedPx(point, !!e.altKey);
     this._cursorPoint = point;
     this._cursorFree = !!e.altKey;
@@ -7627,25 +7985,34 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   /**
-   * Show `next` (a view, or null for the whole map). A rect or ellipse drag
-   * holds its start and the pointer in canvas px (startDrawing), so both are
-   * carried across in mm: the shape keeps its corner where it was put on the
-   * map. A polygon's corners are in mm already.
+   * Run `change`, which moves the map under the canvas's px (a new view, or
+   * a new logical width while expanded). A rect or ellipse drag holds its
+   * start, the press and the pointer in canvas px (startDrawing), so they
+   * are carried across in mm: the shape keeps its corner where it was put
+   * on the map. A polygon's corners are in mm already.
    */
-  _setView(next, { draw = true } = {}) {
+  _keepHeldPoints(change) {
     const toMm = (p) => (p ? { x: this.pixelsToValue(p.x, 'x'), y: this.pixelsToValue(p.y, 'y') } : p);
     const start = toMm(this.startPoint);
     const cursor = toMm(this._cursorPoint);
     const press = toMm(this._pressPx);
-    this._view = next;
-    // The rotation it was set at: another one starts from the whole map
-    // (see _applyRotation).
-    this._viewAngle = this.coneAngleDeg;
-    this._applyView();
+    change();
     const toPx = (m) => (m ? { x: this.valueToPixels(m.x, 'x'), y: this.valueToPixels(m.y, 'y') } : m);
     this.startPoint = toPx(start);
     this._cursorPoint = toPx(cursor);
     this._pressPx = toPx(press);
+  }
+
+  /** Show `next` (a view, or null for the whole map), keeping a held drag's
+   *  corner where it was put (_keepHeldPoints). */
+  _setView(next, { draw = true } = {}) {
+    this._keepHeldPoints(() => {
+      this._view = next;
+      // The rotation it was set at: another one starts from the whole map
+      // (see _applyRotation).
+      this._viewAngle = this.coneAngleDeg;
+      this._applyView();
+    });
     this._renderZoomControls();
     if (draw) this.drawGrid();
   }
@@ -7667,8 +8034,8 @@ export class ZoneMapCard extends HTMLElement {
    *  viewAt takes it: 0 to 1 from the window's xMin and yMin edges, which a
    *  flipped map draws on the right. */
   _windowFrac(p) {
-    const fx = this.canvas?.width ? p.x / this.canvas.width : 0.5;
-    const fy = this.canvas?.height ? p.y / this.canvas.height : 0.5;
+    const fx = this.canvas ? p.x / this._mapW : 0.5;
+    const fy = this.canvas ? p.y / this._mapH : 0.5;
     return { x: this._mirrorX ? 1 - fx : fx, y: fy };
   }
 
@@ -7751,7 +8118,7 @@ export class ZoneMapCard extends HTMLElement {
     // 16 px a line; one that counts in pages, a canvas's height.
     const perLine = 16;
     const unit =
-      event.deltaMode === 1 ? perLine : event.deltaMode === 2 ? this.canvas.height : 1;
+      event.deltaMode === 1 ? perLine : event.deltaMode === 2 ? this._mapH : 1;
     const travel = Math.max(-WHEEL_PX_PER_STEP, Math.min(WHEEL_PX_PER_STEP, event.deltaY * unit));
     if (!travel) return;
     this._zoomBy(Math.pow(ZOOM_STEP, -travel / WHEEL_PX_PER_STEP), this._mmAt(p));
@@ -7912,6 +8279,463 @@ export class ZoneMapCard extends HTMLElement {
     if (!sameView(next, this._view, map)) this._setView(next, { draw });
   }
 
+  // ---- Expand map ----------------------------------------------------------
+  //
+  // The button in the map's top right corner moves the card's own container
+  // into a modal <dialog> at the end of its shadow root, so the map fills
+  // the window in the top layer, with the chips, the zone editor and Map
+  // settings beside it or under it. The same nodes move, so the zoom, the
+  // selected zone, an open polygon, Walk, a replay, Coverage and what a
+  // field holds come along. A placeholder keeps the card's place on the
+  // dashboard, the page under it is locked, and a history entry lets Back
+  // close it. The X, the button again, Esc and Back close it.
+
+  /** Whether Expand map shows: not on the map alone or the error screen,
+   *  not in an editor preview or dashboard edit mode, not in someone else's
+   *  dialog, and not in a browser with no modal dialogs. */
+  _canExpand() {
+    return (
+      !!this.canvas &&
+      !this._viewOnly &&
+      !this._loadError &&
+      !this._preview &&
+      !this._inDialog &&
+      typeof HTMLDialogElement === 'function' &&
+      typeof HTMLDialogElement.prototype.showModal === 'function'
+    );
+  }
+
+  /** The button over the map and the X beside the title, from the state. */
+  _renderFullWindowButton() {
+    const root = this.shadowRoot;
+    if (!root) return;
+    const group = root.getElementById('overlayControlsTop');
+    const show = !!group && this._canExpand();
+    if (group) group.hidden = !show;
+    // A replay's badge moves left of the button.
+    root.querySelector('.container')?.classList.toggle('has-expand', show);
+    const open = this._fullWindow;
+    const toggle = root.getElementById('btnFullWindow');
+    if (toggle) {
+      const icon = open ? 'collapse' : 'expand';
+      if (toggle.dataset.icon !== icon) {
+        toggle.dataset.icon = icon;
+        toggle.innerHTML = iconSvg(open ? ICON_COLLAPSE : ICON_EXPAND);
+      }
+      toggle.setAttribute('aria-label', open ? FULL_WINDOW_CLOSE_LABEL : FULL_WINDOW_OPEN_LABEL);
+      toggle.title = open ? FULL_WINDOW_CLOSE_TITLE : FULL_WINDOW_OPEN_TITLE;
+      if (open) toggle.removeAttribute('aria-haspopup');
+      else toggle.setAttribute('aria-haspopup', 'dialog');
+    }
+    const close = root.getElementById('btnFullWindowClose');
+    if (close) close.hidden = !open;
+  }
+
+  _attachFullWindow() {
+    const root = this.shadowRoot;
+    root.getElementById('btnFullWindow')?.addEventListener('click', () => {
+      if (this._fullWindow) this._closeFullWindow({ reason: 'user' });
+      else this._openFullWindow();
+    });
+    root.getElementById('btnFullWindowClose')?.addEventListener('click', () => {
+      this._closeFullWindow({ reason: 'user' });
+    });
+    const dialog = root.getElementById('fullWindow');
+    if (!dialog) return;
+    // First for every key inside: a new key has used nothing up yet.
+    dialog.addEventListener(
+      'keydown',
+      () => {
+        this._escConsumed = false;
+      },
+      true,
+    );
+    // An engine that still asks to close after an Esc a field or the
+    // polygon took is told no. Everything else happens on close.
+    dialog.addEventListener('cancel', (event) => {
+      if (this._escConsumed && event.cancelable) event.preventDefault();
+    });
+    // Esc, or Back in Chrome for Android, closed it. Our own close()
+    // lands here too, and so does a dialog a render has replaced: both do
+    // nothing.
+    dialog.addEventListener('close', () => {
+      if (!dialog.open && this._fullParts?.dialog === dialog) this._closeFullWindow({ reason: 'esc' });
+    });
+  }
+
+  /** A key went to something it changed (a field put back, corners
+   *  dropped, a confirm answered): it closes nothing else. */
+  _consumeEscape(event) {
+    event.preventDefault();
+    this._escConsumed = true;
+  }
+
+  /** Fill the window with the map (see the section comment above). */
+  _openFullWindow() {
+    if (!this._canExpand() || this._fullWindow || this._backPending) return;
+    if (expandedCard && expandedCard !== this) return;
+    const root = this.shadowRoot;
+    const container = root.querySelector('.container');
+    const dialog = root.getElementById('fullWindow');
+    const mapBox = this.canvas?.parentElement;
+    if (!container || !dialog || !mapBox) return;
+    // A pan or a pinch ends, and a rect or ellipse drag is dropped: its
+    // release would land on the moved canvas somewhere else. A polygon's
+    // corners are in mm, and come along.
+    this._endGesture();
+    if (this.isDrawing && this.drawMode !== DRAW_MODES.POLYGON) this.cancelDrawing();
+    this._cursorPoint = null;
+    this._cardMapWidth = mapBox.getBoundingClientRect().width || 0;
+    this._savedScrollY = window.scrollY || 0;
+    // A field saves on blur only while it is on the page.
+    this._blurInside(container);
+    this._lockPage();
+    if (!this._mountFullWindow({ container, dialog })) {
+      this._unlockPage();
+      this._renderFullWindowButton();
+      return;
+    }
+    fullWindowOpens += 1;
+    this._fullKey = `${Date.now()}-${fullWindowOpens}`;
+    window.addEventListener('popstate', this._onFullWindowPop);
+    // Back closes it. Not Home Assistant's dialog keys, which its own
+    // history handling would act on. A page with no session history to
+    // write to still expands; only Back cannot close it there.
+    try {
+      history.pushState({ apolloZoneMapFull: this._fullKey }, '');
+    } catch {
+      // The X, the button and Esc still close it.
+    }
+    this._renderFullWindowButton();
+    root.getElementById('btnFullWindowClose')?.focus();
+  }
+
+  /**
+   * Move `container` into `dialog` and show it modal, leaving a placeholder
+   * of its height in its place, then lay it out and follow the window.
+   * Returns false, with everything put back, when the dialog cannot open.
+   */
+  _mountFullWindow({ container, dialog }) {
+    const height = container.getBoundingClientRect().height || 0;
+    const placeholder = document.createElement('div');
+    placeholder.className = 'full-placeholder';
+    placeholder.setAttribute('aria-hidden', 'true');
+    placeholder.style.height = `${height}px`;
+    container.before(placeholder);
+    dialog.append(container);
+    container.classList.add('full');
+    dialog.setAttribute('aria-label', fullWindowLabel(this._titleText()));
+    // Shown before the dialog opens, so its first focus lands on the X and
+    // never on a field (which on a phone would bring up the keyboard).
+    const close = this.shadowRoot.getElementById('btnFullWindowClose');
+    if (close) close.hidden = false;
+    try {
+      dialog.showModal();
+    } catch {
+      container.classList.remove('full');
+      placeholder.replaceWith(container);
+      return false;
+    }
+    this._fullWindow = true;
+    expandedCard = this;
+    this._fullParts = { container, dialog, placeholder };
+    // Laid out now, so no frame shows the card's map stretched.
+    this._layoutFullWindow({ force: true });
+    this._observeFullWindow(container, dialog);
+    return true;
+  }
+
+  /** After a render while expanded: open the new dialog with the new
+   *  container (no new history entry, page lock or key), or close if the
+   *  new card cannot expand (the error screen, the map alone). */
+  _remountFullWindow(reopen) {
+    if (!reopen || !this._fullWindow) return;
+    const root = this.shadowRoot;
+    const container = root.querySelector('.container');
+    const dialog = root.getElementById('fullWindow');
+    if (!this._canExpand() || !container || !dialog || !this._mountFullWindow({ container, dialog })) {
+      this._closeFullWindow({ reason: 'rebuild' });
+      return;
+    }
+    this._renderFullWindowButton();
+    const target =
+      (reopen.focusId && root.getElementById(reopen.focusId)) || root.getElementById('btnFullWindowClose');
+    target?.focus?.();
+  }
+
+  /** The expanded container's content box, inside its safe area padding. */
+  _fullContentBox(container) {
+    const rect = container.getBoundingClientRect();
+    const style = window.getComputedStyle?.(container);
+    const px = (value) => parseFloat(value) || 0;
+    return {
+      width: Math.max(0, rect.width - px(style?.paddingLeft) - px(style?.paddingRight)),
+      height: Math.max(0, rect.height - px(style?.paddingTop) - px(style?.paddingBottom)),
+    };
+  }
+
+  /** Whether a field that brings up an on-screen keyboard has the focus. */
+  _textFieldFocused() {
+    const active = this.shadowRoot?.activeElement;
+    if (!active || !this._fullParts?.container?.contains(active)) return false;
+    if (active instanceof HTMLTextAreaElement || active instanceof HTMLSelectElement) return true;
+    const typed = ['text', 'search', 'email', 'number', 'tel', 'url', 'password'];
+    return active instanceof HTMLInputElement && typed.includes(active.type || 'text');
+  }
+
+  /**
+   * Split the window between the map and its panel (fullWindowLayout), from
+   * the content box `box` (a ResizeObserver's report) or one measured now,
+   * and size the canvas to it: the logical width follows the map's width,
+   * the backing store its device px. `force` redraws even when nothing
+   * changed (a new dialog's canvas).
+   */
+  _layoutFullWindow({ force = false, box = null } = {}) {
+    const parts = this._fullParts;
+    if (!this._fullWindow || !parts) return;
+    const { container } = parts;
+    let size = box ?? this._fullContentBox(container);
+    // An on-screen keyboard shrinks the window under a field being typed
+    // in (the Android app resizes its WebView): the map keeps its size.
+    if (this._fullBox && size.height < this._fullBox.height && this._textFieldFocused()) {
+      size = { width: size.width, height: this._fullBox.height };
+    }
+    this._fullBox = size;
+    const root = this.shadowRoot;
+    const header =
+      (root.querySelector('.title-row')?.getBoundingClientRect().height || 0) +
+      (root.getElementById('versionNotice')?.getBoundingClientRect().height || 0);
+    const layout = fullWindowLayout({
+      width: size.width,
+      height: size.height,
+      aspect: this._aspect,
+      // The title row and the notice, and the grid's three 8 px row gaps.
+      headerPx: header > 0 ? header + 24 : FULL_WINDOW_HEADER_PX,
+      cardMapWidth: this._cardMapWidth,
+    });
+    this._fullLayout = layout;
+    container.dataset.layout = layout.layout;
+    container.style.setProperty('--zm-full-width', `${layout.mapWidth}px`);
+    container.style.setProperty('--zm-side-width', `${layout.sideWidth}px`);
+    // One layout read, after the width is set: the store follows it.
+    const cssWidth = this.canvas?.getBoundingClientRect?.().width;
+    let redraw = force;
+    if (cssWidth > 0 && cssWidth !== this._cssMapWidth) {
+      this._cssMapWidth = cssWidth;
+      redraw = true;
+    }
+    if (logicalWidth(CANVAS_WIDTH_PX, layout.mapWidth) !== this._mapW) {
+      // The window was resized mid-drag (a tiling shortcut, Split View):
+      // the held corner stays on the map point it was pressed at.
+      this._keepHeldPoints(() => this._sizeCanvas());
+      redraw = true;
+    } else if (this._sizeBackingStore()) {
+      redraw = true;
+    }
+    if (redraw) this.drawGrid();
+  }
+
+  /** Lay the expanded map out again on the next frame, once however many
+   *  reports come in before it. A report of no box at all (the card was
+   *  hidden) closes it. */
+  _scheduleFullLayout() {
+    if (!this._fullWindow || this._fullFrame) return;
+    this._fullFrame = requestFrame(() => {
+      this._fullFrame = null;
+      const box = this._pendingFullBox ?? null;
+      this._pendingFullBox = null;
+      if (!this._fullWindow) return;
+      if (box && box.width === 0 && box.height === 0) {
+        this._closeFullWindow({ reason: 'hidden' });
+        return;
+      }
+      this._layoutFullWindow({ box });
+    });
+  }
+
+  /**
+   * While expanded: follow the window's size, and keep a drag that nothing
+   * in the window scrolls from reaching the page, where the Home Assistant
+   * iOS app's pull to refresh would reload it. The canvas, fields and
+   * sliders keep their own touches, and the panel scrolls while it can.
+   */
+  _observeFullWindow(container, dialog) {
+    this._unobserveFullWindow();
+    if (typeof ResizeObserver === 'function') {
+      const observer = new ResizeObserver((entries) => {
+        const rect = entries[entries.length - 1]?.contentRect;
+        if (rect) this._pendingFullBox = { width: rect.width, height: rect.height };
+        this._scheduleFullLayout();
+      });
+      observer.observe(container);
+      this._fullObserver = observer;
+    }
+    const start = (event) => {
+      if (!event.touches || event.touches.length !== 1) {
+        this._touchGuard = null;
+        return;
+      }
+      const path = event.composedPath?.() ?? [];
+      const exempt = path.some(
+        (node) =>
+          node === this.canvas ||
+          node instanceof HTMLInputElement ||
+          node instanceof HTMLSelectElement ||
+          node instanceof HTMLTextAreaElement,
+      );
+      const side = this.shadowRoot?.getElementById('mapSide');
+      this._touchGuard = {
+        y: event.touches[0].clientY,
+        exempt,
+        side: side && path.includes(side) ? side : null,
+      };
+    };
+    const move = (event) => {
+      const guard = this._touchGuard;
+      if (!guard || guard.exempt || !event.touches || event.touches.length !== 1) return;
+      const y = event.touches[0].clientY;
+      const dy = y - guard.y;
+      guard.y = y;
+      const side = guard.side;
+      const scrolls =
+        !!side &&
+        side.scrollHeight > side.clientHeight + 1 &&
+        ((dy > 0 && side.scrollTop > 0) ||
+          (dy < 0 && side.scrollTop + side.clientHeight < side.scrollHeight - 1));
+      if (!scrolls && event.cancelable) event.preventDefault();
+    };
+    dialog.addEventListener('touchstart', start, { passive: true });
+    dialog.addEventListener('touchmove', move, { passive: false });
+    this._fullTouch = { dialog, start, move };
+  }
+
+  _unobserveFullWindow() {
+    this._fullObserver?.disconnect();
+    this._fullObserver = null;
+    this._pendingFullBox = null;
+    const touch = this._fullTouch;
+    this._fullTouch = null;
+    this._touchGuard = null;
+    if (touch) {
+      touch.dialog.removeEventListener('touchstart', touch.start);
+      touch.dialog.removeEventListener('touchmove', touch.move);
+    }
+  }
+
+  /**
+   * Put the map back in the card. `reason` is 'user' (the X, the button,
+   * preview), 'esc' (the dialog closed itself), 'history' (Back), 'hidden'
+   * (the card left the screen), 'rebuild' (a render that cannot expand, or
+   * another radar) or 'disconnect'. Safe to call again: only the first
+   * call after an open acts.
+   */
+  _closeFullWindow({ reason }) {
+    if (!this._fullWindow) return;
+    this._fullWindow = false;
+    if (expandedCard === this) expandedCard = null;
+    const { container = null, dialog = null, placeholder = null } = this._fullParts || {};
+    this._fullParts = null;
+    window.removeEventListener('popstate', this._onFullWindowPop);
+    this._unobserveFullWindow();
+    // A field being typed in saves on blur, while it is still on the page.
+    // A rebuild's fields are gone already.
+    if (reason !== 'rebuild') this._blurInside(container);
+    this._endGesture();
+    if (this.isDrawing && this.drawMode !== DRAW_MODES.POLYGON) this.cancelDrawing();
+    this._cursorPoint = null;
+    if (dialog?.open) {
+      try {
+        dialog.close();
+      } catch {
+        // Closed already.
+      }
+    }
+    // The placeholder is gone after a render, whose new container is in
+    // the card already.
+    if (placeholder?.parentNode && container) placeholder.replaceWith(container);
+    else placeholder?.remove();
+    if (container) {
+      container.classList.remove('full');
+      delete container.dataset.layout;
+      container.style.removeProperty('--zm-full-width');
+      container.style.removeProperty('--zm-side-width');
+    }
+    this._fullLayout = null;
+    this._fullBox = null;
+    const status = this.shadowRoot?.getElementById('fullWindowStatus');
+    if (status) status.textContent = '';
+    this._unlockPage();
+    // Our history entry goes, unless Back took it already, or the page has
+    // moved on to another entry (Home Assistant's quick bar navigating),
+    // whose history stays as it is.
+    if (reason !== 'history' && history.state?.apolloZoneMapFull === this._fullKey) this._historyBack();
+    this._fullKey = null;
+    this._renderFullWindowButton();
+    // The card's 800 px logical width again, and the store for its width.
+    const cssWidth = this.canvas?.getBoundingClientRect?.().width;
+    if (cssWidth > 0) this._cssMapWidth = cssWidth;
+    this._sizeCanvas();
+    this.drawGrid();
+    if (reason !== 'disconnect') {
+      this.shadowRoot?.getElementById('btnFullWindow')?.focus?.({ preventScroll: true });
+    }
+  }
+
+  /** Step back off our history entry, and ignore Expand map until the
+   *  popstate that brings arrives (or FULL_WINDOW_BACK_MS passes). */
+  _historyBack() {
+    this._backPending = true;
+    const done = () => {
+      this._backPending = false;
+      window.removeEventListener('popstate', done);
+      clearTimeout(timer);
+    };
+    const timer = setTimeout(done, FULL_WINDOW_BACK_MS);
+    window.addEventListener('popstate', done);
+    try {
+      history.back();
+    } catch {
+      done();
+    }
+  }
+
+  /** Lock the page under the expanded map: no scroll, and no pull to
+   *  refresh or overscroll glow. A page whose scrollbar shows keeps its
+   *  gutter, so nothing behind moves sideways. */
+  _lockPage() {
+    const html = document.documentElement;
+    this._savedHtml = {
+      overflow: html.style.overflow,
+      overscrollBehavior: html.style.overscrollBehavior,
+      scrollbarGutter: html.style.scrollbarGutter,
+    };
+    const scrollbar = html.clientWidth > 0 && window.innerWidth > html.clientWidth;
+    html.style.overflow = 'hidden';
+    html.style.overscrollBehavior = 'none';
+    if (scrollbar) html.style.scrollbarGutter = 'stable';
+  }
+
+  /** The page as it was, scrolled where it was. */
+  _unlockPage() {
+    const saved = this._savedHtml;
+    if (!saved) return;
+    this._savedHtml = null;
+    const html = document.documentElement;
+    html.style.overflow = saved.overflow;
+    html.style.overscrollBehavior = saved.overscrollBehavior;
+    html.style.scrollbarGutter = saved.scrollbarGutter;
+    if ((window.scrollY || 0) !== this._savedScrollY) {
+      window.scrollTo({ top: this._savedScrollY, behavior: 'instant' });
+    }
+  }
+
+  /** Take the focus off whatever in `container` has it, so a field runs its
+   *  own blur (a name saves) while it is still on the page. */
+  _blurInside(container) {
+    const active = this.shadowRoot?.activeElement;
+    if (active && active.isConnected && container?.contains(active)) active.blur?.();
+  }
+
   getCardSize() {
     // The map alone has no chips, Zones panel or Map settings under it. The
     // full card's Zones panel, open under the map, is about 8 more rows.
@@ -7936,7 +8760,10 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   disconnectedCallback() {
+    // A removed modal dialog would come back as a box over the dashboard.
+    if (this._fullWindow) this._closeFullWindow({ reason: 'disconnect' });
     this._detachGlobalListeners();
+    this._unobserveCanvas();
     // A pan's window listeners would keep the card alive and moving.
     this._endGesture();
     this._disconnectZones();
@@ -8004,6 +8831,18 @@ export class ZoneMapCard extends HTMLElement {
       this.dispatchEvent(ev);
     } catch {
       alert(message);
+    }
+    // Home Assistant's toast is inert under the expanded map's modal
+    // dialog, so a screen reader would hear nothing. Emptied first and set
+    // a frame later, so the same message twice is read twice.
+    if (this._fullWindow) {
+      const region = this.shadowRoot?.getElementById('fullWindowStatus');
+      if (region) {
+        region.textContent = '';
+        requestFrame(() => {
+          if (this._fullWindow) region.textContent = message;
+        });
+      }
     }
   }
 }

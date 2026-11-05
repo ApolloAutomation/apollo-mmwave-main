@@ -14,7 +14,14 @@ import {
   zonePresenceSensors,
   type Ld2450Entities,
 } from "./ld2450-entities";
-import { builtInZoneRows, ld2450ControlRows, ld2450LiveRows } from "./panels/ld2450-rows";
+import {
+  builtInZoneCountIds,
+  builtInZoneCountsText,
+  builtInZoneRows,
+  ld2450ControlRows,
+  ld2450LiveRows,
+  targetCountText,
+} from "./panels/ld2450-rows";
 import { apolloModelInfo, isEsphomeDevice, type RadarProfile } from "./profiles";
 import { parseGateSizeMeters } from "./charts/geometry";
 import {
@@ -316,6 +323,9 @@ interface HelpContext {
    *  built without the optional LD2412 keeps the LD2412 profile from its
    *  registry model, but has only the LD2450. */
   gateRadar: boolean;
+  /** Whether the device has the R PRO-1 firmware's Combined Presence
+   *  (firmware after 26.3.2.1). */
+  combinedPresence: boolean;
 }
 
 function helpCard(dev: RadarDevice, ctx: HelpContext): Record<string, any> {
@@ -349,10 +359,26 @@ function numbered(steps: string[]): string {
   return steps.map((step, i) => `${i + 1}. ${step}`).join("\n");
 }
 
-/** For automations on a tab with an LD2450 and no gate radar presence. */
-const LD2450_AUTOMATIONS =
-  "**In automations**, use a zone's presence sensor, or **LD2450 Presence** for" +
-  " anywhere the radar sees.";
+/** For automations on a tab with an LD2450 and no gate radar presence.
+ *  Where the firmware has Combined Presence it names that instead, as the
+ *  wiki does: with no LD2412 it follows LD2450 Presence. */
+function ld2450Automations(combinedPresence: boolean): string {
+  const presence = combinedPresence ? "Combined Presence" : "LD2450 Presence";
+  return (
+    `**In automations**, use a zone's presence sensor, or **${presence}** for` +
+    " anywhere the radar sees."
+  );
+}
+
+/**
+ * For automations on an R PRO-1 whose firmware has Combined Presence (after
+ * 26.3.2.1): on while the LD2450 or the LD2412 sees someone. The firmware
+ * adds it for automations, and the wiki's R PRO-1 sensor definitions
+ * recommend it over each radar's own presence.
+ */
+export const COMBINED_AUTOMATIONS =
+  "**In automations**, use **Combined Presence** for the whole room (on while either" +
+  " radar sees someone), or a zone's presence sensor for one part of it.";
 
 /**
  * For automations on a tab with a gate radar alone (MSR-1, MSR-2): Radar
@@ -415,7 +441,7 @@ function helpCardBody(dev: RadarDevice, ctx: HelpContext): Record<string, any> {
         `**${name}**, Apollo mmWave (LD2450 tracking radar).\n\n` +
         `Draw occupancy zones over the live target positions below.\n\n` +
         `**Start here**\n${numbered(steps)}\n\n` +
-        `${LD2450_AUTOMATIONS}\n\n` +
+        `${ld2450Automations(ctx.combinedPresence)}\n\n` +
         deviceLink(dev),
     };
   }
@@ -434,10 +460,12 @@ function helpCardBody(dev: RadarDevice, ctx: HelpContext): Record<string, any> {
   // Two radars (R PRO-1): what each one is for, then both radars' steps, and
   // which presence sensor an automation should use.
   const setup = ctx.ld2450Setup ? "fix anything Radar setup flags above the zone map, " : "";
-  const automations = ctx.gatePresence
-    ? `**In automations**, use **${p.label} Presence** (Radar Target on this tab)` +
-      " for the whole room, or a zone's presence sensor for one part of it."
-    : LD2450_AUTOMATIONS;
+  const automations = ctx.combinedPresence
+    ? COMBINED_AUTOMATIONS
+    : ctx.gatePresence
+      ? `**In automations**, use **${p.label} Presence** (Radar Target on this tab)` +
+        " for the whole room, or a zone's presence sensor for one part of it."
+      : ld2450Automations(false);
   return {
     type: "markdown",
     content:
@@ -632,15 +660,25 @@ function builtInZonesCard(
 ): Record<string, any> | undefined {
   if (!exists(hass, l.zone_type)) return undefined;
   const entities: Record<string, any>[] = [];
+  const counts: { label: string; ids: (string | undefined)[] }[] = [];
   for (let i = 0; i < LD2450_ZONES; i++) {
+    const label = `Zone ${i + 1}`;
     const rows = presentRows(hass, builtInZoneRows(l, i));
+    const ids = builtInZoneCountIds(l, i).map((id) => (exists(hass, id) ? id : undefined));
+    if (ids.some(Boolean)) counts.push({ label, ids });
     if (rows.length === 0) continue;
     entities.push(
-      { type: "section", label: `Zone ${i + 1}` },
+      { type: "section", label },
       ...rows.map((r) => ({ entity: r.entity, name: r.name }))
     );
   }
-  if (entities.length === 0) return undefined;
+  if (entities.length === 0 && counts.length === 0) return undefined;
+  const cards: Record<string, any>[] = [
+    { type: "markdown", title: BUILT_IN_ZONES_TITLE, content: BUILT_IN_ZONES_NOTE },
+  ];
+  if (entities.length) cards.push({ type: "entities", show_header_toggle: false, entities });
+  // The counts as whole numbers: as entities rows they read "0.0".
+  if (counts.length) cards.push({ type: "markdown", content: builtInZoneCountsText(counts) });
   return {
     type: "conditional",
     conditions: [
@@ -650,14 +688,22 @@ function builtInZonesCard(
         state_not: ["Disabled", "unavailable", "unknown"],
       },
     ],
-    card: {
-      type: "vertical-stack",
-      cards: [
-        { type: "markdown", title: BUILT_IN_ZONES_TITLE, content: BUILT_IN_ZONES_NOTE },
-        { type: "entities", show_header_toggle: false, entities },
-      ],
-    },
+    card: { type: "vertical-stack", cards },
   };
+}
+
+/** What the LD2450 sees right now: its rows, and under them its target count
+ *  as a whole number (`targetCountText`), stacked like the Device card. */
+function ld2450LiveCard(hass: HomeAssistant, l: Ld2450Entities): Record<string, any> | undefined {
+  const title = "LD2450 Live";
+  const rows = entitiesCard(title, presentRows(hass, ld2450LiveRows(l)), { state_color: true });
+  if (!l.presence_target_count || !exists(hass, l.presence_target_count)) return rows;
+  const count = {
+    type: "markdown",
+    ...(rows ? {} : { title }),
+    content: targetCountText(l.presence_target_count),
+  };
+  return rows ? { type: "vertical-stack", cards: [rows, count] } : count;
 }
 
 interface DeviceCards {
@@ -838,9 +884,7 @@ function cardMap(
         : undefined;
     cards.zoneMap = zoneMapCard(dev.deviceId, dev.name);
     cards.zonePresence = zonePresenceCard(hass, dev.deviceId);
-    cards.ld2450Live = entitiesCard("LD2450 Live", presentRows(hass, ld2450LiveRows(l)), {
-      state_color: true,
-    });
+    cards.ld2450Live = ld2450LiveCard(hass, l);
     cards.ld2450Controls = entitiesCard(
       "LD2450 Controls",
       presentRows(hass, ld2450ControlRows(l))
@@ -863,6 +907,7 @@ function cardMap(
     gatePresence,
     anyZone,
     gateRadar,
+    combinedPresence: exists(hass, deviceInfoEntities(hass, dev.deviceId).combined_presence),
   });
   cards.device = deviceCard(hass, dev, gateRadar);
   return cards as DeviceCards;

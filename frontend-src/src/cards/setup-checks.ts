@@ -227,3 +227,76 @@ export function recommendedLine(fixes: SettingFix[]): string {
   const text = fixes.map((f) => f.clause).join(" and ");
   return `${text.charAt(0).toUpperCase()}${text.slice(1)}.`;
 }
+
+// ---------------------------------------------------------------------------
+// Target X and Y units
+//
+// Not a radar setting and never a SetupProblem: which unit Home Assistant
+// shows the LD2450's Target X and Y in. The card reads it through the
+// integration (`target_units.py`) rather than from state, and the change is
+// an entity registry write, which only an administrator can make, so it never
+// joins "Use recommended settings" either.
+// ---------------------------------------------------------------------------
+
+export const TARGET_UNITS_GET = "apollo_mmwave/target_units/get";
+export const TARGET_UNITS_SET = "apollo_mmwave/target_units/set";
+
+export const UNITS_LABEL = "Show Target X and Y in mm";
+export const UNITS_PROGRESS = "Switching Target X and Y to mm...";
+export const UNITS_FAILURE = "Could not change the Target X and Y units";
+export const UNITS_NOT_LOADED = "Apollo mmWave is not loaded. Reload the page and try again.";
+const UNITS_HINT = "After the change, automations and templates that use these sensors read mm.";
+const UNITS_USED_HINT = "An automation, a script or a helper uses them: check any number it compares them to.";
+
+/** Each length unit in words. `UNIT_WORDS` in target_units.py says them the
+ *  same way; tests/test_contracts.py keeps the two equal. */
+export const UNIT_WORDS: Readonly<Record<string, string>> = Object.freeze({
+  in: "inches",
+  cm: "centimeters",
+  m: "meters",
+  ft: "feet",
+  yd: "yards",
+  km: "kilometers",
+  mi: "miles",
+  nmi: "nautical miles",
+});
+
+/** One paired Target X or Y as `target_units/get` answers it. */
+export interface TargetUnitRow {
+  entity_id: string;
+  /** The unit the sensor shows; null without one. */
+  unit: string | null;
+  /** Whether a unit was picked in the sensor's settings. */
+  picked: boolean;
+  /** A distance sensor in a length unit, which can show mm. */
+  convertible: boolean;
+  /** The automations, scripts and helpers that name it, as the backend's
+   *  automatic pass finds them. */
+  used_by: string[];
+}
+
+/** The rows the button switches: Home Assistant's own pick, not in mm. The
+ *  backend works the same rows out again before it writes anything. */
+export function rowsToSwitch(rows: TargetUnitRow[] | undefined): TargetUnitRow[] {
+  return (rows ?? []).filter((r) => r.convertible && !r.picked && r.unit !== "mm");
+}
+
+/** The note above the button, or undefined when there is nothing to switch. */
+export function targetUnitsNote(
+  rows: TargetUnitRow[] | undefined
+): { text: string; hint: string } | undefined {
+  const switching = rowsToSwitch(rows);
+  if (switching.length === 0) return undefined;
+  const units = [...new Set(switching.map((r) => String(r.unit)))];
+  const words = units
+    .map((u) => (Object.prototype.hasOwnProperty.call(UNIT_WORDS, u) ? UNIT_WORDS[u] : u))
+    .join(" and ");
+  const used = switching.some((r) => Array.isArray(r.used_by) && r.used_by.length > 0);
+  return {
+    text:
+      `Home Assistant shows this radar's Target X and Y in ${words}.` +
+      " The zone map reads them either way." +
+      " In mm they match the radar's built-in zone corners and Apollo's zone guides.",
+    hint: used ? `${UNITS_HINT} ${UNITS_USED_HINT}` : UNITS_HINT,
+  };
+}

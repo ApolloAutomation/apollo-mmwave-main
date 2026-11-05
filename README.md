@@ -38,9 +38,10 @@ draw presence zones.
 - **Zone maps** on the R PRO-1 and MTR-1. Draw zones over the people the
   radar sees, and each zone gets a presence sensor for your automations.
   Each zone's name, type and hold time are right under the map. The map is
-  in feet or meters to match Home Assistant, zooms in up to 8x and snaps
-  corners to round values. A **Radar setup** card above it checks the
-  radar's settings and fixes them with one tap.
+  in feet or meters to match Home Assistant, zooms in up to 8x, fills the
+  window with one press and snaps corners to round values. A **Radar
+  setup** card above it checks the radar's settings and fixes them with one
+  tap.
 - **Zones you can watch.** Zones light up while someone is in them, a zone
   can stay on for someone sitting still or ignore a fan, and administrators
   can turn on movement history to replay up to 24 hours on the map.
@@ -75,7 +76,7 @@ charts, thresholds, detection range and occupancy.
 
 ![The Gate Energy chart turning on: dimmed until Radar Engineering Mode is on, then a move bar and a still bar for each gate with a triangle marking each threshold, bars above their threshold outlined, the gates past Max Move Gate and Max Still Gate faded, and the radar's answer under the chart as someone walks in and sits down](https://raw.githubusercontent.com/ApolloAutomation/apollo-mmwave-main/main/docs/images/apollo-mmwave-gate-energy-2.4.0.gif)
 
-## Install with HACS or the Marketplace
+## <a id="install-with-hacs"></a>Install with HACS or the Marketplace
 
 You need:
 
@@ -229,13 +230,17 @@ including what each HACS box says.
 7. Below it is the zone map: the grid that shows where the radar sees
    people, sized to what the radar can see (120 degrees, about 6 m or 20 ft).
    It is in feet or meters to match Home Assistant; the **m / ft** switch on
-   the map changes it. On a wide screen the map's column is twice as wide as
-   the others. A new radar has no zones yet: press **Add zone** in the
-   **Zones** panel under the map, then drag on the map to draw the zone as
-   a rectangle (✎ on the map offers an ellipse or a polygon). Corners snap
-   to round values, such as every 10 cm at 1 m grid lines; hold Alt (Option
-   on a Mac) to place one freely. Each zone gets a presence sensor, listed
-   on the **Zone presence** card next to the map.
+   the map changes the map, never the sensors. Apollo mmWave shows the
+   radar's Target X and Y sensors in mm, the unit the radar reports, also
+   where Home Assistant picked inches for them (see
+   [Target X and Y units](docs/configuration.md#target-x-and-y-units)). On
+   a wide screen the map's column is twice as wide as the others. A new
+   radar has no zones yet: press **Add zone** in the **Zones** panel under
+   the map, then drag on the map to draw the zone as a rectangle (✎ on the
+   map offers an ellipse or a polygon). Corners snap to round values, such
+   as every 10 cm at 1 m grid lines; hold Alt (Option on a Mac) to place one
+   freely. Each zone gets a presence sensor, listed on the **Zone presence**
+   card next to the map.
 
    To pick a zone, tap its chip under **Zones** or tap it on the map. The
    box under the chips is that zone's editor: its **Name** (saved when you
@@ -259,6 +264,16 @@ including what each HACS box says.
    **Corner here**. See
    [Zoom and pan](docs/configuration.md#zoom-and-pan) and
    [Mark corners by walking](docs/configuration.md#mark-corners-by-walking).
+
+   To give the map the whole window, press the expand button in its top
+   right corner. The map fills the browser or app window, with Walk, the
+   **Zones** panel and **Map settings** beside it, or under it on a phone
+   held upright, so you can draw, pick and rename zones there. Your zoom,
+   picked zone and an unfinished polygon come along. To return, press ×
+   beside the title, the same corner button, Esc, or Back on Android. See
+   [Expand the map](docs/configuration.md#expand-the-map).
+
+   ![The zone map card on a laptop's dashboard tab, in feet, expanding to fill the window: the mouse pointer clicks the expand button in the map's top-right corner, and the map takes the left of the window, with ×, the title R PRO-1 Living Room, Coverage, the Zones panel and the picked zone's editor on the right. Locked is clicked to unlock the map and Add zone adds Zone 5. A rectangle dragged around dot 3 becomes the Zone 5 zone, filled in because dot 3 is inside it, with the message Zone 5 saved. Zone 5 is renamed Armchair in the editor's Name box, a click on the Couch zone on the map picks it, and Esc puts the card back on the tab with the Armchair zone on its map](https://raw.githubusercontent.com/ApolloAutomation/apollo-mmwave-main/main/docs/images/apollo-mmwave-zone-map-expand-2.4.0.gif)
 
    ![The zone map on an R PRO-1 in feet, fitted to the radar's view with the caption Radar range 20 ft (6 m), 120°: a rectangle, a circle and a polygon drawn as zones, pale and dashed while nobody is in them, the m / ft switch and the Locked button in the corner, with the minus, + and Fit zoom buttons above them. Under the map: a Coverage button, then Zones with an Add zone button and a chip with a color dot for each zone, Zone 1 picked, and Zone 1's editor with its Name, Size 6 ft 7 in × 3 ft 3 in, Type Detect, Hold Off, Now Nobody is in this zone, a note that the map is locked with an Unlock button, and Delete zone, above Map settings](https://raw.githubusercontent.com/ApolloAutomation/apollo-mmwave-main/main/docs/images/apollo-mmwave-zone-map-zones-2.4.0.png)
 
