@@ -10,6 +10,7 @@ from unittest.mock import patch
 import pytest
 import voluptuous as vol
 from homeassistant.config_entries import SOURCE_USER, ConfigEntryState
+from homeassistant.const import MAJOR_VERSION, MINOR_VERSION
 from homeassistant.core import Context, callback
 from homeassistant.exceptions import Unauthorized
 from homeassistant.helpers import entity_registry as er
@@ -78,6 +79,7 @@ from custom_components.apollo_mmwave.const import (
 from custom_components.apollo_mmwave.frontend import _dashboards_collection
 
 from .conftest import (
+    RADAR_NAME,
     apollo_warnings,
     async_dashboard_config,
     async_owned_entry,
@@ -2714,10 +2716,15 @@ async def test_name_on_the_creating_call_reaches_the_registry(
     sensor_id, presence_id = _zone_entity_ids(hass, device_id)
     assert registry.async_get(sensor_id).name == "Zone 1 - Couch"
     assert registry.async_get(presence_id).name == "Zone 1 presence - Couch"
-    assert hass.states.get(sensor_id).attributes["friendly_name"] == "Zone 1 - Couch"
+    # HA 2026.11 puts the device name in front of a registry name too.
+    prefix = "" if (MAJOR_VERSION, MINOR_VERSION) < (2026, 11) else f"{RADAR_NAME} "
+    assert (
+        hass.states.get(sensor_id).attributes["friendly_name"]
+        == f"{prefix}Zone 1 - Couch"
+    )
     assert (
         hass.states.get(presence_id).attributes["friendly_name"]
-        == "Zone 1 presence - Couch"
+        == f"{prefix}Zone 1 presence - Couch"
     )
 
 
