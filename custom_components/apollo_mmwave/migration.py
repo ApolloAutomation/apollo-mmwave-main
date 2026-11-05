@@ -90,7 +90,12 @@ def _derive_location_name(entry: er.RegistryEntry, fallback_slug: str) -> str:
 
 
 def _restored_attributes(hass: HomeAssistant, entity_id: str) -> dict[str, Any] | None:
-    stored = restore_state.async_get(hass).last_states.get(entity_id)
+    data = restore_state.async_get(hass)
+    # HA 2026.11 replaced last_states with async_get_stored_state.
+    if (get_stored := getattr(data, "async_get_stored_state", None)) is not None:
+        stored = get_stored(entity_id)
+    else:
+        stored = data.last_states.get(entity_id)
     if stored is None:
         return None
     attributes = stored.state.attributes
