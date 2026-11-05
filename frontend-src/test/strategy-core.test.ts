@@ -1228,6 +1228,10 @@ describe("LD2450 cards beside the zone map", () => {
   it("explains how to get zone presence sensors before any zone is drawn", () => {
     const card = byTitle(buildDeviceCards(rproHass(), deviceOf(rproHass())), ZONE_PRESENCE_TITLE);
     expect(card).toEqual({ type: "markdown", title: ZONE_PRESENCE_TITLE, content: ZONE_PRESENCE_HINT });
+    // Add zone, under the map, is what makes a zone and its sensor.
+    expect(ZONE_PRESENCE_HINT).toBe(
+      "Press **Add zone** under the zone map to get a presence sensor for a zone. Reload this page to see it here."
+    );
   });
 
   it("lays an MTR-1 out as help, setup and map, then status, then settings", () => {
@@ -1590,7 +1594,11 @@ describe("plain help, labels and the Device card", () => {
     expect(content).toContain("Apollo mmWave with two radars");
     expect(content).toContain("The **LD2450** tracks where people are");
     expect(content).toContain("1. Fix anything the LD2412's Radar setup card flags.");
-    expect(content).toContain("6. For the LD2450, fix anything Radar setup flags above the zone map");
+    expect(content).toContain(
+      "6. For the LD2450, fix anything Radar setup flags above the zone map, set **Cone rotation**" +
+        " (under Map settings on the zone map) to match how the sensor is mounted, then press" +
+        " **Add zone**, draw the zone and walk into it."
+    );
     expect(content).toContain("**In automations**, use **LD2412 Presence**");
     expect(content).toContain(`[Full tuning guide →](${LD2412_PROFILE.wikiUrl})`);
   });
@@ -1619,9 +1627,9 @@ describe("plain help, labels and the Device card", () => {
     const steps = (content: string) => content.split("\n").filter((l) => /^\d\. /.test(l));
     expect(steps(help(hassOf("mtr", device, ids)))).toEqual([
       "1. Fix anything the Radar setup card flags.",
-      "2. Set **Cone rotation** (under Configure on the zone map) to match how the sensor is mounted.",
-      "3. Draw a zone on the map, reload this page, then walk into the zone and watch it" +
-        " turn on under Zone presence.",
+      "2. Set **Cone rotation** (under Map settings on the zone map) to match how the sensor is mounted.",
+      "3. Press **Add zone** under the zone map and drag on the map to draw the zone. Reload this" +
+        " page, then walk into the zone and watch it turn on under Zone presence.",
     ]);
     const noSetup = hassOf("mtr", device, { [`sensor.${mtr}_target_1_x`]: "0" });
     expect(steps(help(noSetup))).toHaveLength(2);
@@ -1778,7 +1786,7 @@ describe("plain help, labels and the Device card", () => {
     expect(LD2450_TIMEOUT_NOTE).toBe(
       "💡 **Radar Timeout** is how long LD2450 Presence stays on after the radar last" +
         " sees someone. It does not hold the zones you draw: a zone turns off as soon as" +
-        " nobody is in it, unless you give it a hold time in the zone list under Configure."
+        " nobody is in it, unless you give it a **Hold** time under Zones on the zone map."
     );
   });
 });

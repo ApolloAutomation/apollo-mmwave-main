@@ -13,26 +13,99 @@ export const IGNORED_SUFFIX = " (ignored)";
 export const HELD_SUFFIX = " (held)";
 export const LOCK_ON_TOAST = "Drawing and cone rotation locked. Unlock the map to change them.";
 export const LOCK_OFF_TOAST = "Drawing and cone rotation unlocked. You can edit zones now.";
+// The Locked button's tooltip, which says what a press does.
+export const LOCK_TITLE = "Lock drawing and cone rotation";
+export const UNLOCK_TITLE = "Unlock drawing and cone rotation";
 export const DRAW_LOCKED_TOAST = "Unlock the map to draw zones.";
 export const CLEAR_LOCKED_TOAST = "Unlock the map to clear zones.";
 export const SELECT_ZONE_TOAST = "Select a zone first.";
 export const POLY_TOO_FEW_TOAST = "A polygon needs at least 3 different points.";
-export const NO_SHAPE_TEXT = "No shape yet. Select the zone and draw it on the map.";
+export const NO_SHAPE_TEXT = "Not drawn yet";
 export const SIZE_PREFIX = "Size";
-export const ZONE_SETTINGS_HINT =
-  "Ignore drops targets inside that zone, such as a fan or a curtain, before the other zones are checked. Hold keeps a zone on for a while after the radar loses someone who sat still.";
 export const ADMIN_ONLY_NOTE = "Only an administrator can change these.";
 export const TYPE_LABEL = "Type";
-export const TYPE_TITLE =
-  "Detect turns this zone's presence sensor on. Ignore hides the targets inside it from the other zones.";
 export const TYPE_OPTIONS = [{ value: "detect", label: "Detect" }, { value: "ignore", label: "Ignore" }];
 export const HOLD_LABEL = "Hold";
 // Labels come from formatHold: Off, 15 s, 30 s, 1 min, 2 min, 5 min, 10 min, 30 min.
 export const HOLD_OPTIONS = [0, 15, 30, 60, 120, 300, 600, 1800];
-export const HOLD_TITLE =
-  "How long the zone stays on after someone inside goes still and the radar loses them";
-export const HOLD_IGNORE_TITLE = "Ignore zones never hold";
 export const ADMIN_ONLY_TITLE = "Only an administrator can change this";
+
+// The Zones panel under the map: its heading and Add zone, the chips, and
+// the selected zone's editor. What Type and Hold do is said in the text under
+// them, which follows the zone's type: a title never reaches touch users.
+export const ZONES_TITLE = "Zones";
+export const ADD_ZONE_LABEL = "Add zone";
+export const ZONES_EMPTY = "No zones yet. Press Add zone, then drag on the map to draw it.";
+export const ZONES_EMPTY_ROTATION =
+  "Is the sensor turned, or mounted in a corner? Set Cone rotation under Map settings first.";
+export const ZONES_EMPTY_VIEWER = "No zones yet. An administrator can add them.";
+// A press on the map of a radar with no zones, where nothing can be drawn.
+export const ADD_ZONE_FIRST_TOAST = "Press Add zone under the map first.";
+
+/** Under Add zone once every zone id the map gives out is taken. */
+export function zonesFullNote(max: number): string {
+  return `The map holds up to ${max} zones. Delete one to add another.`;
+}
+
+export const ZONE_NAME_LABEL = "Name";
+export const TYPE_DETECT_HINT = "Detect: its presence sensor turns on while someone is inside.";
+export const TYPE_IGNORE_HINT =
+  "Ignore: targets inside, such as a fan or a curtain, are dropped before the other zones are checked.";
+export const HOLD_HINT =
+  "Hold keeps it on for a while after someone inside goes still and the radar loses them.";
+export const HOLD_IGNORE_HINT = "Ignore zones never hold.";
+// A name, a Type or a Hold saves on its own, and says so beside the zone's
+// heading. A shape still toasts "<name> saved".
+export const ZONE_SAVING = "Saving...";
+export const ZONE_SAVED = "Saved";
+export const ZONE_NOT_SAVED = "Not saved";
+// The selected zone's presence sensor, live.
+export const PRESENCE_LABEL = "Now";
+export const PRESENCE_ON = "Someone is in this zone";
+export const PRESENCE_HELD = "On, held for someone who went still";
+export const PRESENCE_OFF = "Nobody is in this zone";
+export const PRESENCE_IGNORED = "Never turns on, since it ignores targets";
+export const PRESENCE_NOT_DRAWN = "Turns on once the zone is drawn";
+export const PRESENCE_NO_SENSOR = "No presence sensor yet";
+export const DELETE_ZONE_LABEL = "Delete zone";
+
+/** The question Delete zone asks first, in place of the button. */
+export function deleteZoneConfirm(name: string): string {
+  return `Delete ${name}? Its sensors leave Home Assistant, so automations that use them stop working. This cannot be undone.`;
+}
+
+export const DELETE_ZONE_YES = "Delete";
+export const DELETE_ZONE_NO = "Keep it";
+// Under Map settings: one press clears every zone's shape, so it asks first.
+export const CLEAR_ALL_LABEL = "Clear all shapes";
+export const CLEAR_ALL_CONFIRM =
+  "Clear every zone's shape? The zones keep their names, types and hold times, and ↶ on the map brings the shapes back.";
+export const CLEAR_ALL_YES = "Clear shapes";
+export const CLEAR_ALL_NO = "Keep them";
+export const ALL_CLEARED_TOAST = "All shapes cleared";
+export const MAP_SETTINGS_LABEL = "Map settings";
+// Where the editor says how to draw: the lock stops drawing, not editing.
+export const ZONES_LOCKED_HINT =
+  "The map is locked, so drawing is off. Unlock it to draw this zone or change its shape.";
+export const UNLOCK_LABEL = "Unlock";
+export const DRAW_HINT_WALKING =
+  "Marking this zone's corners by walking. Follow the steps under the map.";
+
+/**
+ * How to draw the selected zone in drawing mode `mode` (rect, ellipse or
+ * polygon), up to `maxCorners` corners for a polygon. `drawn` says the zone
+ * has a shape, which a new one replaces.
+ */
+export function drawHint(mode: string, drawn: boolean, maxCorners: number): string {
+  if (mode === "polygon") {
+    const lead = drawn ? "To change its shape, tap" : "Tap";
+    return `${lead} each corner of this zone on the map, up to ${maxCorners}, then double-tap the last one or press ✓.`;
+  }
+  const shape = mode === "ellipse" ? "an ellipse" : "a rectangle";
+  const others = mode === "ellipse" ? "a rectangle or a polygon" : "an ellipse or a polygon";
+  const lead = drawn ? "To change its shape, drag" : "Drag";
+  return `${lead} on the map to draw this zone as ${shape}. ✎ on the map offers ${others}. A tap on another zone picks it.`;
+}
 export const WALK_BUTTON_TITLE = "Mark corners by walking";
 export const WALK_CORNER = "Corner here";
 export const WALK_UNDO = "Undo corner";
