@@ -630,11 +630,11 @@ bottom in this order:
   page; a zone you delete leaves the list at once. While the radar is
   offline the rows hide, because zone presence then reads `unavailable`.
 - **LD2450 Live** shows what the radar reports right now: LD2450 Presence,
-  Moving Target, Still Target, Target Count, and each target's distance and
-  direction. LD2450 Presence covers the radar's whole view, not a room or a
-  zone you drew. If the map shows no dot, check LD2450 Presence here: off
-  with you in the room means the radar reports nobody (see
-  [Troubleshooting](#troubleshooting)).
+  Moving Target, Still Target, and each target's distance and direction,
+  with the Target Count under them as a whole number. LD2450 Presence covers
+  the radar's whole view, not a room or a zone you drew. If the map shows no
+  dot, check LD2450 Presence here: off with you in the room means the radar
+  reports nobody (see [Troubleshooting](#troubleshooting)).
 - **Occupancy History** (MTR-1, beside LD2450 Live) shows the last 24 hours
   of LD2450 Presence and each zone you drew. On an R PRO-1 the same lines
   join the LD2412's in one history in the tab's last column, above Still

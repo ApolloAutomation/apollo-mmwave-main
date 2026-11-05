@@ -14,7 +14,12 @@ import {
   zonePresenceSensors,
   type Ld2450Entities,
 } from "./ld2450-entities";
-import { builtInZoneRows, ld2450ControlRows, ld2450LiveRows } from "./panels/ld2450-rows";
+import {
+  builtInZoneRows,
+  ld2450ControlRows,
+  ld2450LiveRows,
+  targetCountText,
+} from "./panels/ld2450-rows";
 import { apolloModelInfo, isEsphomeDevice, type RadarProfile } from "./profiles";
 import { parseGateSizeMeters } from "./charts/geometry";
 import {
@@ -660,6 +665,20 @@ function builtInZonesCard(
   };
 }
 
+/** What the LD2450 sees right now: its rows, and under them its target count
+ *  as a whole number (`targetCountText`), stacked like the Device card. */
+function ld2450LiveCard(hass: HomeAssistant, l: Ld2450Entities): Record<string, any> | undefined {
+  const title = "LD2450 Live";
+  const rows = entitiesCard(title, presentRows(hass, ld2450LiveRows(l)), { state_color: true });
+  if (!l.presence_target_count || !exists(hass, l.presence_target_count)) return rows;
+  const count = {
+    type: "markdown",
+    ...(rows ? {} : { title }),
+    content: targetCountText(l.presence_target_count),
+  };
+  return rows ? { type: "vertical-stack", cards: [rows, count] } : count;
+}
+
 interface DeviceCards {
   help: Record<string, any>;
   /** The gate radar's "Radar setup" card, under the help card on every
@@ -838,9 +857,7 @@ function cardMap(
         : undefined;
     cards.zoneMap = zoneMapCard(dev.deviceId, dev.name);
     cards.zonePresence = zonePresenceCard(hass, dev.deviceId);
-    cards.ld2450Live = entitiesCard("LD2450 Live", presentRows(hass, ld2450LiveRows(l)), {
-      state_color: true,
-    });
+    cards.ld2450Live = ld2450LiveCard(hass, l);
     cards.ld2450Controls = entitiesCard(
       "LD2450 Controls",
       presentRows(hass, ld2450ControlRows(l))

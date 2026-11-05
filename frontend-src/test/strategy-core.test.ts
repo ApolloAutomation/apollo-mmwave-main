@@ -998,7 +998,7 @@ describe("LD2450 cards beside the zone map", () => {
       grid_options: { columns: "full" },
     });
     expect(layout([sections[2]])).toEqual([
-      [ZONE_PRESENCE_TITLE, "LD2450 Live", "LD2450 Controls", "markdown", "conditional"],
+      [ZONE_PRESENCE_TITLE, "vertical-stack", "LD2450 Controls", "markdown", "conditional"],
     ]);
     expect(sections[2].cards[3]).toEqual({ type: "markdown", content: LD2450_TIMEOUT_NOTE });
   });
@@ -1050,9 +1050,10 @@ describe("LD2450 cards beside the zone map", () => {
     const hass = rproHass({ [LD2412_PROFILE.entityMap(RPRO).still_threshold[0]]: "30" });
     const order = buildDeviceSections(hass, deviceOf(hass))
       .flatMap((s) => s.cards)
-      .map((c: any) => c.title ?? c.type);
+      .map((c: any) => c.title ?? c.cards?.[0].title ?? c.type);
     const at = (title: string) => order.indexOf(title);
     expect(at(ZONE_MAP)).toBeLessThan(at("LD2412 Move Thresholds"));
+    expect(at("LD2450 Live")).toBeGreaterThan(-1);
     expect(at("LD2450 Live")).toBeLessThan(at("LD2412 Move Thresholds"));
     expect(at("LD2412 Still Thresholds")).toBeGreaterThan(at("LD2412 Move Thresholds"));
     // The Device card ends the tab. This fixture has none of its entities,
@@ -1129,21 +1130,42 @@ describe("LD2450 cards beside the zone map", () => {
 
   it("shows what the radar sees in the LD2450 Live card", () => {
     const cards = buildDeviceCards(rproHass(), deviceOf(rproHass()));
-    const live = byTitle(cards, "LD2450 Live");
+    const stack = cards.find((c) => c.cards?.[0].title === "LD2450 Live")!;
+    expect(stack.type).toBe("vertical-stack");
+    const [live, count] = stack.cards;
     expect(live.state_color).toBe(true);
-    expect(live.entities.slice(0, 6)).toEqual([
+    expect(live.entities.slice(0, 5)).toEqual([
       { entity: `binary_sensor.${RPRO}_ld2450_presence`, name: "LD2450 Presence" },
       { entity: `binary_sensor.${RPRO}_ld2450_moving_target`, name: "Moving Target" },
       { entity: `binary_sensor.${RPRO}_ld2450_still_target`, name: "Still Target" },
-      { entity: `sensor.${RPRO}_ld2450_presence_target_count`, name: "Target Count" },
       { entity: `sensor.${RPRO}_ld2450_target_1_distance`, name: "Target 1 Distance" },
       { entity: `sensor.${RPRO}_ld2450_target_1_direction`, name: "Target 1 Direction" },
     ]);
-    expect(live.entities.map((r: any) => r.name).slice(6)).toEqual([
+    expect(live.entities.map((r: any) => r.name).slice(5)).toEqual([
       "Target 2 Distance",
       "Target 2 Direction",
       "Target 3 Distance",
       "Target 3 Direction",
+    ]);
+    // A row would show the count's raw float state, "0.0". The template under
+    // the rows prints the whole number, and Unavailable or Unknown as a row
+    // would, and writes nothing to the entity's settings.
+    expect(count).toEqual({
+      type: "markdown",
+      content:
+        `{% set n = states('sensor.${RPRO}_ld2450_presence_target_count') %}` +
+        "Target Count: **{{ n | int if is_number(n) else n | capitalize }}**",
+    });
+  });
+
+  it("keeps LD2450 Live a plain entities card on a radar without a target count", () => {
+    const hass = mtrHass([`sensor.${MTR}_presence_target_count`]);
+    const live = byTitle(buildDeviceCards(hass, deviceOf(hass)), "LD2450 Live");
+    expect(live.type).toBe("entities");
+    expect(live.entities.map((r: any) => r.name).slice(0, 3)).toEqual([
+      "LD2450 Presence",
+      "Moving Target",
+      "Still Target",
     ]);
   });
 
@@ -1237,7 +1259,7 @@ describe("LD2450 cards beside the zone map", () => {
     const sections = buildDeviceSections(hass, dev);
     expect(sections.map((s) => s.cards.map((c: any) => c.title ?? c.type))).toEqual([
       ["markdown", SETUP, "Hall MTR-1"],
-      [ZONE_PRESENCE_TITLE, "LD2450 Live", "Occupancy History"],
+      [ZONE_PRESENCE_TITLE, "vertical-stack", "Occupancy History"],
       ["LD2450 Controls", "markdown", "conditional", "vertical-stack"],
     ]);
     expect(sections[0].cards[0].content).toContain("**Start here**");
@@ -1254,7 +1276,7 @@ describe("LD2450 cards beside the zone map", () => {
       SETUP,
       "Hall MTR-1",
       ZONE_PRESENCE_TITLE,
-      "LD2450 Live",
+      "vertical-stack",
       "Occupancy History",
       "LD2450 Controls",
       "markdown",
