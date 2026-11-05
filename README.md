@@ -71,7 +71,7 @@ charts, thresholds, detection range and occupancy.
 
 ![The Gate Energy chart turning on: dimmed until Radar Engineering Mode is on, then a move bar and a still bar for each gate with a triangle marking each threshold, bars above their threshold outlined, the gates past Max Move Gate and Max Still Gate faded, and the radar's answer under the chart as someone walks in and sits down](https://raw.githubusercontent.com/ApolloAutomation/apollo-mmwave-main/main/docs/images/apollo-mmwave-gate-energy-2.4.0.gif)
 
-## Install with HACS or the Marketplace
+## <a id="install-with-hacs"></a>Install with HACS or the Marketplace
 
 You need:
 
