@@ -178,11 +178,13 @@ class _Users:
     Who reads a sensor: automations, scripts and other integrations' entries.
 
     ``referenced_entities`` alone misses a template, which names an entity
-    only inside a string, so each automation's and script's config is also
-    searched as text, and so are the data and options of every other config
-    entry, where a template helper keeps its template. Gathered once, when
-    first asked. Still invisible: YAML template entities, dashboards and
-    tools outside Home Assistant.
+    only inside a string, and a device trigger or condition, which names it
+    by its registry id (what the automation editor writes when a trigger is
+    picked on the device page). So each automation's and script's config is
+    also searched as text for either id, and so are the data and options of
+    every other config entry, where a template helper keeps its template.
+    Gathered once, when first asked. Still invisible: YAML template entities,
+    dashboards and tools outside Home Assistant.
     """
 
     def __init__(self, hass: HomeAssistant) -> None:
@@ -213,22 +215,33 @@ class _Users:
             ]
         return self._scripted, self._entries
 
+    def _names(self, entity_id: str) -> tuple[str, ...]:
+        """Return the ids a config can name a sensor by: entity id, registry id."""
+        entry = er.async_get(self._hass).async_get(entity_id)
+        return (entity_id,) if entry is None else (entity_id, entry.id)
+
     def scripted(self, entity_id: str) -> list[str]:
         """Return the automations and scripts that name a sensor."""
         scripted, _ = self._load()
+        names = self._names(entity_id)
         found = {
             *automations_with_entity(self._hass, entity_id),
             *scripts_with_entity(self._hass, entity_id),
         }
-        found.update(who for who, text in scripted if entity_id in text)
+        found.update(
+            who for who, text in scripted if any(name in text for name in names)
+        )
         return sorted(found)
 
     def of(self, entity_id: str) -> list[str]:
         """Return everything that names a sensor, automations and scripts first."""
         _, entries = self._load()
+        names = self._names(entity_id)
         return [
             *self.scripted(entity_id),
-            *sorted(who for who, text in entries if entity_id in text),
+            *sorted(
+                who for who, text in entries if any(name in text for name in names)
+            ),
         ]
 
 

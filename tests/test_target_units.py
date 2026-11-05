@@ -44,7 +44,10 @@ from custom_components.apollo_mmwave.const import (
 from custom_components.apollo_mmwave.diagnostics import (
     async_get_config_entry_diagnostics,
 )
-from custom_components.apollo_mmwave.target_units import async_show_in_mm
+from custom_components.apollo_mmwave.target_units import (
+    async_show_in_mm,
+    target_unit_rows,
+)
 
 from .conftest import RECT_ZONE, make_entry, setup_integration
 
@@ -629,6 +632,80 @@ async def test_existing_sensors_something_names_are_left_and_recorded(
         "Sensors that an automation, a script or a helper uses were left as they"
         " were. The Radar setup card above the zone map can switch them."
     ) in message
+
+
+async def test_existing_sensors_a_device_trigger_or_condition_names_are_left(
+    hass, entity_registry, device_registry, booting
+) -> None:
+    """The automation editor names a sensor on its device page by registry id."""
+    rpro = _radar(hass, device_registry)
+    targets = _targets(entity_registry, rpro, RPRO_SERIAL)
+    x1, y1, *_ = targets
+
+    def _by_registry_id(entity_id: str) -> dict[str, str]:
+        return {
+            "device_id": rpro.id,
+            "domain": "sensor",
+            "entity_id": entity_registry.async_get(entity_id).id,
+        }
+
+    assert await async_setup_component(
+        hass,
+        "automation",
+        {
+            "automation": [
+                {
+                    "id": "device_trigger",
+                    "alias": "Device trigger",
+                    "triggers": [
+                        {
+                            "trigger": "device",
+                            **_by_registry_id(x1),
+                            "type": "distance",
+                            "above": 20,
+                        }
+                    ],
+                    "actions": [],
+                },
+                {
+                    "id": "device_condition",
+                    "alias": "Device condition",
+                    "triggers": [{"trigger": "event", "event_type": "test"}],
+                    "conditions": [
+                        {
+                            "condition": "device",
+                            **_by_registry_id(y1),
+                            "type": "is_distance",
+                            "below": 20,
+                        }
+                    ],
+                    "actions": [],
+                },
+            ]
+        },
+    )
+    await setup_integration(hass, make_entry())
+
+    await booting()
+
+    assert [_unit(entity_registry, entity_id) for entity_id in targets] == [
+        None,
+        None,
+        "mm",
+        "mm",
+        "mm",
+        "mm",
+    ]
+    assert [_decision(entity_registry, entity_id) for entity_id in targets[:2]] == [
+        "kept",
+        "kept",
+    ]
+    # The Radar setup card's warning names them too.
+    used_by = {
+        row["entity_id"]: row["used_by"] for row in target_unit_rows(hass, rpro.id)
+    }
+    assert used_by[x1] == ["automation.device_trigger"]
+    assert used_by[y1] == ["automation.device_condition"]
 
 
 async def test_a_metric_install_that_moves_to_us_customary_keeps_its_inches(
