@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   detectRadarDevices,
   buildDeviceCards,
+  COMBINED_AUTOMATIONS,
   buildDeviceSections,
   deviceView,
   generateCards,
@@ -998,7 +999,7 @@ describe("LD2450 cards beside the zone map", () => {
       grid_options: { columns: "full" },
     });
     expect(layout([sections[2]])).toEqual([
-      [ZONE_PRESENCE_TITLE, "LD2450 Live", "LD2450 Controls", "markdown", "conditional"],
+      [ZONE_PRESENCE_TITLE, "vertical-stack", "LD2450 Controls", "markdown", "conditional"],
     ]);
     expect(sections[2].cards[3]).toEqual({ type: "markdown", content: LD2450_TIMEOUT_NOTE });
   });
@@ -1050,9 +1051,10 @@ describe("LD2450 cards beside the zone map", () => {
     const hass = rproHass({ [LD2412_PROFILE.entityMap(RPRO).still_threshold[0]]: "30" });
     const order = buildDeviceSections(hass, deviceOf(hass))
       .flatMap((s) => s.cards)
-      .map((c: any) => c.title ?? c.type);
+      .map((c: any) => c.title ?? c.cards?.[0].title ?? c.type);
     const at = (title: string) => order.indexOf(title);
     expect(at(ZONE_MAP)).toBeLessThan(at("LD2412 Move Thresholds"));
+    expect(at("LD2450 Live")).toBeGreaterThan(-1);
     expect(at("LD2450 Live")).toBeLessThan(at("LD2412 Move Thresholds"));
     expect(at("LD2412 Still Thresholds")).toBeGreaterThan(at("LD2412 Move Thresholds"));
     // The Device card ends the tab. This fixture has none of its entities,
@@ -1129,22 +1131,72 @@ describe("LD2450 cards beside the zone map", () => {
 
   it("shows what the radar sees in the LD2450 Live card", () => {
     const cards = buildDeviceCards(rproHass(), deviceOf(rproHass()));
-    const live = byTitle(cards, "LD2450 Live");
+    const stack = cards.find((c) => c.cards?.[0].title === "LD2450 Live")!;
+    expect(stack.type).toBe("vertical-stack");
+    const [live, count] = stack.cards;
     expect(live.state_color).toBe(true);
-    expect(live.entities.slice(0, 6)).toEqual([
+    expect(live.entities.slice(0, 5)).toEqual([
       { entity: `binary_sensor.${RPRO}_ld2450_presence`, name: "LD2450 Presence" },
       { entity: `binary_sensor.${RPRO}_ld2450_moving_target`, name: "Moving Target" },
       { entity: `binary_sensor.${RPRO}_ld2450_still_target`, name: "Still Target" },
-      { entity: `sensor.${RPRO}_ld2450_presence_target_count`, name: "Target Count" },
       { entity: `sensor.${RPRO}_ld2450_target_1_distance`, name: "Target 1 Distance" },
       { entity: `sensor.${RPRO}_ld2450_target_1_direction`, name: "Target 1 Direction" },
     ]);
-    expect(live.entities.map((r: any) => r.name).slice(6)).toEqual([
+    expect(live.entities.map((r: any) => r.name).slice(5)).toEqual([
       "Target 2 Distance",
       "Target 2 Direction",
       "Target 3 Distance",
       "Target 3 Direction",
     ]);
+    // A row would show the count's raw float state, "0.0". The template under
+    // the rows prints the whole number, and Unavailable or Unknown as a row
+    // would, and writes nothing to the entity's settings.
+    expect(count).toEqual({
+      type: "markdown",
+      content:
+        `{% set n = states('sensor.${RPRO}_ld2450_presence_target_count') %}` +
+        "Target Count: **{{ n | int if is_number(n) else n | capitalize }}**",
+    });
+  });
+
+  it("keeps LD2450 Live a plain entities card on a radar without a target count", () => {
+    const hass = mtrHass([`sensor.${MTR}_presence_target_count`]);
+    const live = byTitle(buildDeviceCards(hass, deviceOf(hass)), "LD2450 Live");
+    expect(live.type).toBe("entities");
+    expect(live.entities.map((r: any) => r.name).slice(0, 3)).toEqual([
+      "LD2450 Presence",
+      "Moving Target",
+      "Still Target",
+    ]);
+  });
+
+  // A count in the registry with no state yet, such as while its platform
+  // loads, would read Unknown under rows that say nothing is missing.
+  it("leaves the Target Count out of LD2450 Live while the count has no state", () => {
+    const hass = mtrHass();
+    delete hass.states[`sensor.${MTR}_presence_target_count`];
+    const cards = buildDeviceCards(hass, deviceOf(hass));
+    expect(byTitle(cards, "LD2450 Live").type).toBe("entities");
+    expect(JSON.stringify(cards)).not.toContain(`${MTR}_presence_target_count`);
+  });
+
+  it("titles the Target Count LD2450 Live when none of the card's rows exist", () => {
+    const rows = ["presence", "moving_target", "still_target"].map(
+      (r) => `binary_sensor.${MTR}_ld2450_${r}`
+    );
+    for (let n = 1; n <= 3; n++) {
+      rows.push(`sensor.${MTR}_target_${n}_distance`, `sensor.${MTR}_target_${n}_direction`);
+    }
+    const hass = mtrHass(rows);
+    const cards = buildDeviceCards(hass, deviceOf(hass));
+    expect(byTitle(cards, "LD2450 Live")).toEqual({
+      type: "markdown",
+      title: "LD2450 Live",
+      content:
+        `{% set n = states('sensor.${MTR}_presence_target_count') %}` +
+        "Target Count: **{{ n | int if is_number(n) else n | capitalize }}**",
+    });
+    expect(cards.some((c) => c.cards?.some((s: any) => s.title === "LD2450 Live"))).toBe(false);
   });
 
   it("shows the built-in zones only while Zone Type is not Disabled", () => {
@@ -1241,7 +1293,7 @@ describe("LD2450 cards beside the zone map", () => {
     const sections = buildDeviceSections(hass, dev);
     expect(sections.map((s) => s.cards.map((c: any) => c.title ?? c.type))).toEqual([
       ["markdown", SETUP, "Hall MTR-1"],
-      [ZONE_PRESENCE_TITLE, "LD2450 Live", "Occupancy History"],
+      [ZONE_PRESENCE_TITLE, "vertical-stack", "Occupancy History"],
       ["LD2450 Controls", "markdown", "conditional", "vertical-stack"],
     ]);
     expect(sections[0].cards[0].content).toContain("**Start here**");
@@ -1258,7 +1310,7 @@ describe("LD2450 cards beside the zone map", () => {
       SETUP,
       "Hall MTR-1",
       ZONE_PRESENCE_TITLE,
-      "LD2450 Live",
+      "vertical-stack",
       "Occupancy History",
       "LD2450 Controls",
       "markdown",
@@ -1615,6 +1667,66 @@ describe("plain help, labels and the Device card", () => {
     const content = help(hass);
     expect(content).not.toContain("**LD2412 Presence**");
     expect(content).toContain("**LD2450 Presence** for anywhere the radar sees");
+  });
+
+  /** `hass` with the firmware's Combined Presence on the R PRO-1 added, from
+   *  `platform` (a zone of this integration's could end the same way). */
+  function withCombined(hass: HomeAssistant, platform = "esphome"): HomeAssistant {
+    const id = `binary_sensor.${RPRO}_combined_presence`;
+    return {
+      ...hass,
+      states: { ...hass.states, [id]: { entity_id: id, state: "off", attributes: {} } },
+      entities: { ...hass.entities, [id]: { device_id: "rpro", platform } },
+    };
+  }
+
+  // R PRO-1 firmware after 26.3.2.1 adds Combined Presence, on while either
+  // radar sees someone. The firmware adds it for automations, and the wiki's
+  // R PRO-1 sensor definitions recommend it over each radar's own presence.
+  it("points R PRO-1 automations at Combined Presence where the firmware has it", () => {
+    const content = help(withCombined(rproHass()));
+    expect(content).toContain(`\n\n${COMBINED_AUTOMATIONS}\n\n`);
+    expect(COMBINED_AUTOMATIONS).toBe(
+      "**In automations**, use **Combined Presence** for the whole room (on while either" +
+        " radar sees someone), or a zone's presence sensor for one part of it."
+    );
+    expect(content).not.toContain("**LD2412 Presence**");
+    // Firmware 26.3.2.1 and earlier has none: the LD2412's presence stays the
+    // advice, and so it does beside a zone of this integration's of that name.
+    for (const hass of [rproHass(), withCombined(rproHass(), "apollo_mmwave")]) {
+      expect(help(hass)).toContain(
+        "**In automations**, use **LD2412 Presence** (Radar Target on this tab)"
+      );
+      expect(help(hass)).not.toContain("Combined Presence");
+    }
+  });
+
+  // An entity the registry lists before its platform has loaded has no state:
+  // the help names only a Combined Presence the user can pick.
+  it("keeps the LD2412 advice while Combined Presence has no state", () => {
+    const hass = withCombined(rproHass());
+    delete hass.states[`binary_sensor.${RPRO}_combined_presence`];
+    expect(help(hass)).toContain(
+      "**In automations**, use **LD2412 Presence** (Radar Target on this tab)"
+    );
+    expect(help(hass)).not.toContain("Combined Presence");
+  });
+
+  it("points automations at Combined Presence on an R PRO-1 built without the LD2412", () => {
+    const hass = hassOf(
+      "rpro",
+      { name: "Office", manufacturer: "ApolloAutomation", model: "R-PRO-1-W" },
+      {
+        [`sensor.${RPRO}_ld2450_target_1_x`]: "0",
+        [`binary_sensor.${RPRO}_ld2450_presence`]: "off",
+      }
+    );
+    const content = help(withCombined(hass));
+    expect(content).toContain(
+      "**In automations**, use a zone's presence sensor, or **Combined Presence** for" +
+        " anywhere the radar sees."
+    );
+    expect(content).not.toContain("**LD2450 Presence**");
   });
 
   it("gives a live MTR-1 three Start here steps, two without a setup card", () => {

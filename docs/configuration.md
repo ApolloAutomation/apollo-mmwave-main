@@ -306,14 +306,18 @@ in Home Assistant, where every setting this dashboard leaves out lives.
   (under Map settings on the zone map), then press **Add zone**, draw the
   zone and walk into it. **In automations**, use **LD2412
   Presence** (the Radar Target row on this tab) for the whole room, or a
-  zone's presence sensor for one part of it.
+  zone's presence sensor for one part of it. On R PRO-1 firmware newer than
+  26.3.2.1, which adds **Combined Presence** (on while either radar sees
+  someone), it names Combined Presence for the whole room instead, as the
+  Apollo wiki does.
 - **MTR-1:** fix anything the Radar setup card flags, set **Cone rotation**
   (under Map settings on the zone map) to match how the sensor is mounted,
   then press **Add zone** under the zone map and drag on the map to draw the
   zone, reload the page, and walk into the zone to watch it turn on under
   Zone presence. **In automations**, use a zone's presence sensor, or
   **LD2450 Presence** for anywhere the radar sees. An R PRO-1 without the
-  optional LD2412 gets these steps too.
+  optional LD2412 gets these steps too, with **Combined Presence** in place
+  of LD2450 Presence where its firmware has it.
 
 An offline sensor's help card adds an "Offline right now" note. The note is
 written when the page loads, so after the radar comes back it stays until you
@@ -680,11 +684,11 @@ bottom in this order:
   Reload this page to see it here." While the radar is offline the rows
   hide, because zone presence then reads `unavailable`.
 - **LD2450 Live** shows what the radar reports right now: LD2450 Presence,
-  Moving Target, Still Target, Target Count, and each target's distance and
-  direction. LD2450 Presence covers the radar's whole view, not a room or a
-  zone you drew. If the map shows no dot, check LD2450 Presence here: off
-  with you in the room means the radar reports nobody (see
-  [Troubleshooting](#troubleshooting)).
+  Moving Target, Still Target, and each target's distance and direction,
+  with the Target Count under them as a whole number. LD2450 Presence covers
+  the radar's whole view, not a room or a zone you drew. If the map shows no
+  dot, check LD2450 Presence here: off with you in the room means the radar
+  reports nobody (see [Troubleshooting](#troubleshooting)).
 - **Occupancy History** (MTR-1, beside LD2450 Live) shows the last 24 hours
   of LD2450 Presence and each zone you drew. On an R PRO-1 the same lines
   join the LD2412's in one history in the tab's last column, above Still

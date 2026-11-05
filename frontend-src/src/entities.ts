@@ -375,9 +375,10 @@ export function exists(hass: HomeAssistant, id?: string): boolean {
 
 // ---------------------------------------------------------------------------
 // Whole-device entities for the Device card: versions, the update entity, the
-// Wi-Fi signal and the restart button. Every Apollo radar firmware spells these
-// the same way, apart from the chip firmware sensors, so each slot is matched
-// by suffix within the device's own entities.
+// Wi-Fi signal and the restart button, and for the help card the R PRO-1's
+// Combined Presence. Every Apollo radar firmware spells these the same way,
+// apart from the chip firmware sensors, so each slot is matched by suffix
+// within the device's own entities.
 // ---------------------------------------------------------------------------
 
 /** The device-wide entity ids found on one device. Any field may be missing. */
@@ -393,6 +394,9 @@ export interface DeviceInfoEntities {
   update?: string;
   rssi?: string;
   esp_reboot?: string;
+  /** R PRO-1 "Combined Presence", from firmware after 26.3.2.1: on while
+   *  either radar sees someone. The help card recommends it for automations. */
+  combined_presence?: string;
 }
 
 /** The platform this integration's own entities carry. Kept local rather than
@@ -413,6 +417,11 @@ const DEVICE_INFO_PATTERNS: {
   { slot: "update", domain: "update", re: new RegExp(`_firmware_update${DEDUP}`) },
   { slot: "rssi", domain: "sensor", re: new RegExp(`_rssi${DEDUP}`) },
   { slot: "esp_reboot", domain: "button", re: new RegExp(`_esp_reboot${DEDUP}`) },
+  {
+    slot: "combined_presence",
+    domain: "binary_sensor",
+    re: new RegExp(`_combined_presence${DEDUP}`),
+  },
 ];
 
 /** The device-wide entities of one device, first match per slot in registry
