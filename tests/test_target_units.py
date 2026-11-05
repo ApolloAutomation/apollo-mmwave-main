@@ -190,15 +190,21 @@ async def loaded(hass) -> MockConfigEntry:
 
 
 @pytest.fixture
-def booting(hass):
-    """Set Apollo mmWave up during boot; return a function that ends the boot."""
+def booting(hass, request):
+    """
+    Set Apollo mmWave up during boot; return a function that ends the boot.
+
+    Integrations are set up before Home Assistant starts (``not_running``);
+    a test can ask for ``starting`` instead, through indirect
+    parametrization, where ``hass.is_running`` is already True.
+    """
 
     async def _started() -> None:
         hass.set_state(CoreState.running)
         hass.bus.async_fire(EVENT_HOMEASSISTANT_STARTED)
         await hass.async_block_till_done()
 
-    hass.set_state(CoreState.not_running)
+    hass.set_state(getattr(request, "param", CoreState.not_running))
     return _started
 
 
@@ -510,10 +516,21 @@ async def test_existing_sensors_switch_once_started_with_one_notification(
     assert "48.3" not in caplog.text
 
 
+@pytest.mark.parametrize(
+    "booting",
+    [CoreState.not_running, CoreState.starting],
+    ids=["not-running", "starting"],
+    indirect=True,
+)
 async def test_a_sensor_created_while_starting_waits_for_the_start(
     hass, advance, entity_registry, device_registry, booting
 ) -> None:
-    """Automations may not be loaded yet, so the pass after the start decides."""
+    """
+    Automations may not be loaded yet, so the pass after the start decides.
+
+    A radar that connects late adds its sensors while Home Assistant is
+    starting, when ``hass.is_running`` is already True.
+    """
     await setup_integration(hass, make_entry())
     rpro = _radar(hass, device_registry)
     targets = _targets(entity_registry, rpro, RPRO_SERIAL)
