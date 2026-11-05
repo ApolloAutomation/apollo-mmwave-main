@@ -31,6 +31,7 @@ custom_components/apollo_mmwave/   Python integration (domain apollo_mmwave)
   hold.py            pure hold-time rules (HoldTracker, Occupant, edge distances); no Home Assistant import
   movement.py        MovementHistory: opt-in recorder, .storage/apollo_mmwave.movement, retention, removal
   ld2450.py          LD2450 X/Y target pair discovery and cache
+  models.py          which radars each Apollo model carries (MODEL_RADARS, apollo_radars)
   gates.py           LD2410/LD2412 gate and scalar entity discovery (twin of entities.ts)
   calibration.py     CalibrationJob, the three calibration services, websocket payload
   calibration_math.py  pure threshold arithmetic (compute_channel)
@@ -188,6 +189,10 @@ At that cadence the tests hold a still person with about 40 mm of jitter until `
 ### `ld2450.py`
 
 `resolve_target_pairs`, `effective_target_pairs` and `async_track_target_pairs` as described above, including the `SIGNAL_ZONES_PAYLOAD` re-push for a renamed entity of this integration. `effective_target_pairs` is the only answer both platforms and the movement recorder use, so the sensor's `entities` attribute matches what presence tracks and what history records. The `entities` store key is three-valued: absent means auto-detect, `[]` means track nothing, a list means exactly those pairs. Only the two regexes are shared with `ld2450.ts`: the X/Y pairing rule (same target number) and the disabled-entity filter live only in `resolve_target_pairs`, which is authoritative because the presence and geometry sensors and the websocket `suggested_entities` field read it. The frontend never pairs from the registry, and the `hass.entities` it reads already leaves disabled entries out.
+
+### `models.py`
+
+`APOLLO_MANUFACTURER`, `MODEL_RADARS` and `apollo_radars(device)`: the radars an Apollo model carries, by lower-cased model prefix, or None for any other device. Moved here from `diagnostics.py` in 2.4.0, which re-exports them, so `target_units.py` can share them without importing the support file.
 
 ### `movement.py`
 
@@ -523,7 +528,7 @@ The 2.4.0 features live inside the card, which still registers exactly two eleme
 | `WEAK_WIFI_DBM` | `strategy-core.ts` | -75 | RSSI below which the Device card shows the weak Wi-Fi note (copied as text into `WEAK_WIFI_NOTE`) | Project choice: a common rule of thumb for a weak Wi-Fi link |
 | `DEFAULT_GATE_SIZE_M` (strategy) | `strategy-core.ts`, `gate-setup-checks.ts` | 0.75 | Gate depth for the help text, the threshold row labels and the LD2410 zone reach when the gate size select is disabled (its default) | The chips' stock gate depth, the distance chart's `DEFAULT_GATE_SIZE_M` |
 | `READ_SETTINGS_WAIT_MS` | `calibration/model.ts` | 3000 | Wait after a query-params press before the calibrate card retries, or the setup card says the radar has not answered | UART round trip plus the 1 s throttle, like `VERIFY_SETTLE_S` |
-| `MODEL_RADARS` | `diagnostics.py` | msr-1, msr-2 (ld2410); mtr-1 (ld2450); r-pro-1 (ld2412, ld2450) | Which devices get a support file section, and their expected radars | Mirrors `APOLLO_MODELS`; `test_model_radars_match_the_frontend` |
+| `MODEL_RADARS` | `models.py` (re-exported by `diagnostics.py`) | msr-1, msr-2 (ld2410); mtr-1 (ld2450); r-pro-1 (ld2412, ld2450) | Which devices get a support file section, and their expected radars | Mirrors `APOLLO_MODELS`; `test_model_radars_match_the_frontend` |
 | `TO_REDACT` | `diagnostics.py` | access_token, bssid, bt_mac, configuration_url, connections, host, ip, ip_address, mac, mac_address, password, refresh_token, ssid, token, user_id, wifi_ssid | Keys `async_redact_data` replaces anywhere in the support file | Privacy: network identifiers and secrets; device names stay by owner decision |
 | Lock storage key | `card.ts` | `apollo-mmwave.zone-map.lock.<device_id>` | Per-radar remembered lock | UI choice |
 | Coverage storage key | `card.ts` | `apollo-mmwave.zone-map.coverage.<device_id>` (`'1'` or `'0'`) | Per-radar remembered Coverage toggle; the cells themselves live in the page | UI choice |

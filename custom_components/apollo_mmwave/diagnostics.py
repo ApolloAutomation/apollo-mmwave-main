@@ -63,6 +63,10 @@ from .const import (
 from .frontend import async_dashboard_owned
 from .gates import resolve_gate_entities
 from .ld2450 import resolve_target_pairs
+
+# The model table moved to models.py, which target_units.py shares. The table
+# is still read here too, by tests/test_diagnostics.py.
+from .models import APOLLO_MANUFACTURER, MODEL_RADARS, apollo_radars  # noqa: F401
 from .store import device_flag
 
 if TYPE_CHECKING:
@@ -96,18 +100,6 @@ TO_REDACT = {
     "wifi_ssid",
 }
 
-# The radars each Apollo model carries, by lower-cased model prefix, because
-# hardware variants extend the model string (R-PRO-1-W, MSR-2_BLE). This is
-# `APOLLO_MODELS` in frontend-src/src/profiles.ts, which detects the same
-# hardware the same way; tests/test_diagnostics.py keeps the two equal.
-APOLLO_MANUFACTURER = "apolloautomation"
-MODEL_RADARS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("msr-1", ("ld2410",)),
-    ("msr-2", ("ld2410",)),
-    ("mtr-1", ("ld2450",)),
-    ("r-pro-1", ("ld2412", "ld2450")),
-)
-
 
 def _suffix(name: str) -> re.Pattern[str]:
     """Match an object id ending in ``name``, with HA's ``_2`` dedup tail."""
@@ -127,19 +119,6 @@ _VERSION_SENSORS = {
 _ZONE_TYPE = _suffix("zone_type")
 _MULTI_TARGET_TRACKING = _suffix("multi_target_tracking")
 _RSSI = _suffix("rssi")
-
-
-def apollo_radars(device: dr.DeviceEntry | None) -> list[str] | None:
-    """Return the radars an Apollo model carries, or None for any other device."""
-    if device is None or not device.manufacturer or not device.model:
-        return None
-    if device.manufacturer.lower() != APOLLO_MANUFACTURER:
-        return None
-    model = device.model.lower()
-    return next(
-        (list(radars) for prefix, radars in MODEL_RADARS if model.startswith(prefix)),
-        None,
-    )
 
 
 def _find(
