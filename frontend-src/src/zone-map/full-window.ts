@@ -20,6 +20,9 @@ export const FULL_WINDOW_SIDE_MAX_PX = 420;
 export const FULL_WINDOW_GAP_PX = 16;
 /** The least height the panel under the map keeps, where it can. */
 export const FULL_WINDOW_ROOM_PX = 160;
+/** Under this, a stacked map leaves its panel too little room to use, so the
+ *  panel goes beside the map instead, however narrow that makes the map. */
+export const FULL_WINDOW_PANEL_MIN_PX = 120;
 /** The title row, the version notice and the row gaps above a stacked map,
  *  when the card has not measured them. */
 export const FULL_WINDOW_HEADER_PX = 64;
@@ -62,7 +65,10 @@ function clamp(value: number, min: number, max: number): number {
  * map takes the width, leaving FULL_WINDOW_ROOM_PX under it for the panel,
  * but never less than FULL_WINDOW_MAP_MIN_PX tall nor narrower than it was
  * in the card. Whichever gives the wider map wins, and beside each other
- * wins a tie.
+ * wins a tie. On a short window, such as a phone held sideways, those two
+ * floors can leave a stacked panel under FULL_WINDOW_PANEL_MIN_PX, where
+ * the zone chips, the zone editor and Map settings cannot be reached: then
+ * the panel goes beside the map whenever there is any width left for it.
  */
 export function fullWindowLayout({
   width,
@@ -87,7 +93,8 @@ export function fullWindowLayout({
       (height - headerPx - FULL_WINDOW_ROOM_PX) * shape,
     ),
   );
-  if (room >= FULL_WINDOW_MAP_MIN_PX && sideW >= stackW) {
+  const cramped = height - headerPx - stackW / shape < FULL_WINDOW_PANEL_MIN_PX;
+  if ((room >= FULL_WINDOW_MAP_MIN_PX || (cramped && room > 0)) && (sideW >= stackW || cramped)) {
     return { layout: 'side', mapWidth: Math.max(0, Math.floor(sideW)), sideWidth: side };
   }
   return {

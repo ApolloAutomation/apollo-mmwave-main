@@ -45,12 +45,44 @@ describe("fullWindowLayout", () => {
   });
 
   it("never shows a stacked map narrower than the card did, nor under 240 px tall", () => {
-    // Room for 76 px of map over the panel, but the card's map was 600.
-    expect(fullWindowLayout({ width: 640, height: 300, aspect: 1, cardMapWidth: 600 })).toMatchObject({
+    // Room for 576 px of map over the panel, but the card's map was 600:
+    // that leaves the panel 136 px.
+    expect(fullWindowLayout({ width: 640, height: 800, aspect: 1, cardMapWidth: 600 })).toMatchObject({
       layout: "stacked",
       mapWidth: 600,
     });
-    expect(fullWindowLayout({ width: 520, height: 300, aspect: 1 })).toMatchObject({
+    // Room for 226 px, and no room beside it for a 240 px map: 146 px left.
+    expect(fullWindowLayout({ width: 520, height: 450, aspect: 1 })).toMatchObject({
+      layout: "stacked",
+      mapWidth: 240,
+    });
+  });
+
+  // The zone map's fitted shape, the measured header and the card's map, in
+  // content boxes inside the full window's 8 px padding.
+  const PHONE_MAP = { aspect: 800 / 622, headerPx: 64, cardMapWidth: 310.7 };
+  /** How tall the panel is: the window's height beside the map, what the
+   *  map and the header leave under it. */
+  const panelHeight = (box: { width: number; height: number; aspect: number; headerPx: number }) => {
+    const { layout, mapWidth } = fullWindowLayout(box);
+    return layout === "side" ? box.height : box.height - box.headerPx - mapWidth / box.aspect;
+  };
+
+  it.each([
+    ["an iPhone SE sideways", 552, 304, 236],
+    ["a 360 dp Android phone sideways", 624, 344, 308],
+    ["a 720p laptop at 200% zoom", 624, 289, 308],
+  ])("puts the panel beside the map on %s, where under it would leave it no room", (_name, width, height, mapWidth) => {
+    const box = { width, height, ...PHONE_MAP };
+    expect(fullWindowLayout(box)).toMatchObject({ layout: "side", mapWidth, sideWidth: 300 });
+    expect(panelHeight(box)).toBeGreaterThanOrEqual(120);
+  });
+
+  it("keeps the panel under the map where it has 120 px, or nothing beside it has any width", () => {
+    // The 800 px pane, square: 884 - 64 - 700 leaves the panel 120 px.
+    expect(fullWindowLayout({ width: 784, height: 884, aspect: 1, cardMapWidth: 700 }).layout).toBe("stacked");
+    // 316 px wide: a 300 px panel and the gap leave the map nothing.
+    expect(fullWindowLayout({ width: 316, height: 300, aspect: 1 })).toMatchObject({
       layout: "stacked",
       mapWidth: 240,
     });
