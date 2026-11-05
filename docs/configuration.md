@@ -22,10 +22,12 @@ install the integration and run your first calibration.
   - [Radar setup](#radar-setup)
   - [What the map shows](#what-the-map-shows)
   - [Zoom and pan](#zoom-and-pan)
+  - [Expand the map](#expand-the-map)
 - [Drawing zones](#drawing-zones)
   - [The Zones panel](#the-zones-panel)
   - [Mark corners by walking](#mark-corners-by-walking)
   - [Map units and size](#map-units-and-size)
+  - [Target X and Y units](#target-x-and-y-units)
   - [Ignore zones and hold time](#ignore-zones-and-hold-time)
   - [Zones in automations](#zones-in-automations)
 - [Movement history](#movement-history)
@@ -722,7 +724,10 @@ firmware never sets these two, so they are whatever the radar chip holds. On
 an R PRO-1 a second Radar setup card, near the top of the tab, checks the
 LD2412; see [Gate radar setup checks](#gate-radar-setup-checks). On an MTR-1
 this card also shows the notice for a page that runs other cards than Home
-Assistant does (see [After an update](#after-an-update)).
+Assistant does (see [After an update](#after-an-update)). For an
+administrator it also says when Home Assistant shows the radar's Target X
+and Y in another unit than mm, and offers **Show Target X and Y in mm**
+(see [Target X and Y units](#target-x-and-y-units)).
 
 - **Zone Type** should be **Disabled**. The radar chip has its own built-in
   zones, separate from the zones you draw, and the zone map replaces them.
@@ -856,10 +861,46 @@ presence sensors and other viewers' maps stay as they are.
   nears an edge, and zooms out only if it must. **History** replays at the
   zoom you set.
 - **When it resets.** The zoom stays through live updates, the **m / ft**
-  switch and the map refitting to new zones. It goes back to the whole map
+  switch and the map refitting to new zones. Expanding or closing the map
+  keeps the zoom. It goes back to the whole map
   when the page loads, when the card shows another radar, and when **Cone
   rotation** changes. A view-only map (see [Card options](#card-options))
   has no zoom.
+
+### Expand the map
+
+Press the expand button (**Expand map**) in the map's top right corner,
+under the distance labels, to give the map the whole browser or app window.
+Its tooltip reads "Expand the map to fill the window. Press Esc to return."
+
+- **Layout.** On a wide window, a panel beside the map holds Walk,
+  **Coverage** and **History**, the **Zones** panel and **Map settings**. It
+  takes 30% of the width, from 300 to 420 px. Where the map would get less
+  width that way, such as on a phone held upright, the panel goes under the
+  map instead, and the map is never narrower than it was in the card. The
+  panel scrolls on its own.
+- **Everything works there.** Draw, pick, rename and delete zones, mark
+  corners by walking, replay history and open **Map settings** as in the
+  card. Your zoom, the picked zone, an unfinished polygon, Walk, a replay
+  that is playing, Coverage, whether Map settings is open and text you are
+  typing come along when the map expands and when it closes. A rectangle or
+  ellipse you are dragging at that moment is dropped.
+- **Finer grid.** The expanded map is drawn up to 1600 px wide, so the grid
+  lines and the snap are finer than in the card (see
+  [Zoom and pan](#zoom-and-pan)), while labels and lines keep their size.
+- **Getting back.** Press × before the title (**Close expanded map**), the
+  same corner button, Esc, or Back in a browser, the Android app or Chrome
+  for Android. In the iPhone and iPad app, press ×. Esc first undoes what
+  you are in the middle of: it puts back a zone name you were changing,
+  drops an unfinished polygon's corners, or closes a **Delete zone** or
+  **Clear all shapes** question. The next Esc closes the window.
+- **The page stays put.** The page behind the map does not scroll while it
+  is expanded, and closing it puts you back where you were. Screen readers
+  hear the card's messages there too.
+- **Where it is not.** A view-only map, the card's error screen, the card
+  editor's preview, a dashboard in edit mode and a map shown inside a
+  pop-up have no expand button. Showing another radar, switching the card
+  to view only, or the card leaving the page closes the expanded map.
 
 ## Drawing zones
 
@@ -1013,7 +1054,9 @@ kept when the card receives an update from elsewhere.
 the map left to right (display only)** (see
 [What the map shows](#what-the-map-shows)), **Movement history** (see
 [Movement history](#movement-history)), a line that says which target
-sensors the map reads, **Clear all shapes** and the grid's units and range.
+sensors the map reads, **Clear all shapes**, and the grid's units and range
+with the unit the target sensors show (see
+[Target X and Y units](#target-x-and-y-units)).
 **Clear all shapes** shows while any zone has a shape, and asks first:
 "Clear every zone's shape? The zones keep their names, types and hold
 times, and ↶ on the map brings the shapes back." On a card whose YAML hides
@@ -1112,7 +1155,12 @@ at the card's width, the map gets narrower and sits in the middle of the
 card, so a meter stays as long across as down. That limit never makes it
 shorter than 240 px, so a phone on its side still gets a map. On a narrow
 phone held upright, the card's width sets the map's height, which can be
-less. To see more detail, zoom in (see [Zoom and pan](#zoom-and-pan)).
+less. To see more detail, zoom in (see [Zoom and pan](#zoom-and-pan)), or
+press the expand button for a map as large as the window (see
+[Expand the map](#expand-the-map)). The map is drawn at the screen's own
+resolution, so it is sharp on phones and other high-resolution screens, and
+the card draws Home Assistant's card background, border and corner radius,
+so it lines up with the cards around it.
 
 A card with its own `grid` in YAML keeps that grid, on a square map. A card
 with `grid_units` in YAML uses that unit until an administrator saves one
@@ -1126,6 +1174,69 @@ The unit only changes what the card shows. Zones are stored in millimeters,
 and the presence sensors work the same either way. The saved unit is kept
 with the radar's zones (`display_units` in `.storage/apollo_mmwave.zones`),
 and `apollo_mmwave.update_zone` can set it too (see below).
+
+### Target X and Y units
+
+An Apollo R PRO-1 or MTR-1 has six Target X and Target Y sensors, an X and
+a Y for each of the LD2450's three targets. The radar reports them in mm.
+Home Assistant picks the unit a distance sensor shows on its own, and on US
+customary units (Settings → System → General) it picks inches.
+
+Apollo mmWave reads these sensors in any length unit, so the zone map and
+zone presence work either way. The radar's built-in zone corners and
+Apollo's zone guides are in mm, though, so since 2.4.0 Apollo mmWave shows
+the Target X and Y of Apollo R PRO-1 and MTR-1 radars in mm:
+
+- **A new radar** that you add while Home Assistant runs shows mm about 2
+  seconds after its sensors appear, with no message.
+- **A radar you already had** is switched once, after Home Assistant has
+  started with 2.4.0, or when the integration is reloaded. A notification,
+  "Apollo mmWave: Target X and Y now in mm", names each radar and the
+  sensors it switched, and says "Nothing was written to the radar."
+- **Left as they are.** Only the unit Home Assistant picked on its own is
+  switched. These keep their unit:
+  - a sensor whose unit you picked in its settings;
+  - a sensor that an automation, a script or a helper uses, also through a
+    device trigger or condition or a template in an automation. The
+    notification then adds "Sensors that an automation, a script or a
+    helper uses were left as they were. The Radar setup card above the zone
+    map can switch them.";
+  - the sensors of a metric install, which show mm already, also after the
+    install moves to US customary units;
+  - DIY radars, other devices, and the radar's other sensors, such as
+    Target Distance, Speed and Resolution.
+- **Once only.** Apollo mmWave decides each sensor once and keeps that in
+  the sensor's own settings, so it never changes a sensor again, also one
+  it left alone because an automation used it. A disabled sensor is decided
+  after you enable it, at the next start or reload.
+
+To go back to inches, open the sensor on the radar's device page, open its
+settings (⚙), choose **in** under **Unit of measurement** and select
+**Update**. Apollo mmWave leaves it that way.
+
+After the switch, automations, templates and history graphs read these
+sensors in mm. A number an automation compares X or Y to in inches needs to
+be in mm, 25.4 times as large, and a history graph that spans the switch
+shows a step of 25.4 times. Anything Apollo mmWave cannot see, such as a
+YAML template sensor, a dashboard card or a tool such as Node-RED, also
+reads mm from then on.
+
+**In the Radar setup card.** When some of a radar's Target X and Y are not
+in mm because they were left alone, the Radar setup card above the zone map
+tells an administrator, for example "Home Assistant shows this radar's
+Target X and Y in inches. The zone map reads them either way. In mm they
+match the radar's built-in zone corners and Apollo's zone guides." **Show
+Target X and Y in mm** switches the ones Home Assistant picked on its own,
+never a unit picked in a sensor's settings. The line under the button says
+"After the change, automations and templates that use these sensors read
+mm.", and adds "An automation or script uses them: check any number it
+compares them to." when one does. Other users do not see this part.
+
+The **m / ft** switch changes only the map, never the sensors. Under **Map
+settings**, the grid line names the unit the target sensors show, such as
+"Target sensors: mm.". The card's `input_units` applies only to a target
+sensor without a length unit, such as a DIY template sensor, and the line
+names it then.
 
 ### Ignore zones and hold time
 
@@ -1578,8 +1689,8 @@ card `grid_options: {columns: full}`, or put the card on a Panel view.
 **View only (the map without drawing tools)** in its card editor, for a map
 with nothing to press: the title and the map with its lit zones, numbered
 dots, trails, the "Radar offline" note and the flip. It has no drawing tools,
-lock, undo, unit switch, zoom, Zones panel, Coverage, History, Walk or Map
-settings, and a finger on it scrolls the page, which suits a phone dashboard.
+lock, undo, unit switch, zoom, expand button, Zones panel, Coverage,
+History, Walk or Map settings, and a finger on it scrolls the page, which suits a phone dashboard.
 The card editor hides the lock setting while View only is ticked, since a
 view-only map has no lock. The Apollo mmWave dashboard keeps the full map.
 
@@ -1636,7 +1747,9 @@ versions. Apollo mmWave adds:
     signal;
   - the gate radar's thresholds by gate;
   - the LD2450's Zone Type, Multi Target Tracking and the target X/Y sensors
-    the zones track, with their readings and units;
+    the zones track, with their readings and units, whether each unit was
+    picked in the sensor's settings, and whether Apollo mmWave switched it
+    to mm or left it as it was;
   - its zones as stored, with each zone's type and hold time, the radar's
     rotation, units, flip and movement history setting, and this
     integration's zone entities;
@@ -1784,7 +1897,26 @@ the two rows yourself under Settings → Dashboards → ⋮ → **Resources**.
   **Unit of measurement** to **mm** and select **Update**. Either way, check
   zones you drew while the dots were in the wrong place. From 2.2.7, the
   card's `input_units` only applies to target sensors without a length unit,
-  such as DIY template sensors.
+  such as DIY template sensors. From 2.4.0, Apollo mmWave shows an Apollo
+  radar's Target X and Y in mm itself (see
+  [Target X and Y units](#target-x-and-y-units)).
+- **An automation or a history graph shows Target X or Y 25.4 times
+  larger.** Since 2.4.0, Apollo mmWave shows an Apollo radar's Target X and
+  Y in mm instead of the inches Home Assistant picked, and the notification
+  "Apollo mmWave: Target X and Y now in mm" names the sensors it switched.
+  Change the automation's numbers to mm. Or, to keep inches, open the
+  sensor's settings (⚙), choose **in** under **Unit of measurement** and
+  select **Update**; Apollo mmWave does not change it again. A history graph
+  shows the step only where it spans the switch. See
+  [Target X and Y units](#target-x-and-y-units).
+- **Target X and Y still show inches.** Apollo mmWave left them as they
+  were: their unit was picked in their settings, an automation, a script or
+  a helper uses them, the install was metric when they were decided, or a
+  sensor was disabled then. As an administrator, press **Show Target X and Y
+  in mm** on the Radar setup card above the zone map, which switches the
+  ones Home Assistant picked on its own. A unit picked in a sensor's
+  settings changes only there. The zone map and zone presence work in
+  either unit.
 - **Zone presence reads unavailable.** The radar is offline: every target
   sensor the zone tracks reads `unavailable`, and the map says "Radar
   offline". Presence also reads `unavailable` after every Home Assistant
@@ -1805,7 +1937,9 @@ the two rows yourself under Settings → Dashboards → ⋮ → **Resources**.
 - **Zones are hard to place precisely.** Zoom in with **+**, with Ctrl or
   Cmd and the scroll wheel, or with two fingers on a phone, and press
   **Fit** to show your zones or the whole map again (see
-  [Zoom and pan](#zoom-and-pan)). Corners snap to round values; hold Alt
+  [Zoom and pan](#zoom-and-pan)), or press the expand button for a map as
+  large as the window, with a finer grid (see
+  [Expand the map](#expand-the-map)). Corners snap to round values; hold Alt
   (Option on a Mac) to place one freely. On a phone you can also mark a
   zone's corners by walking them, which uses where the radar sees you
   instead of where your finger lands (see
