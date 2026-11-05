@@ -41,6 +41,9 @@ from custom_components.apollo_mmwave.const import (
     TARGET_UNITS_DELAY_S,
     TARGET_UNITS_NOTIFICATION_ID,
 )
+from custom_components.apollo_mmwave.diagnostics import (
+    async_get_config_entry_diagnostics,
+)
 from custom_components.apollo_mmwave.target_units import async_show_in_mm
 
 from .conftest import RECT_ZONE, make_entry, setup_integration
@@ -892,3 +895,37 @@ async def test_target_units_set_switches_only_home_assistants_pick(
     assert (await admin.receive_json())["result"] == {"changed": []}
     await admin.send_json_auto_id({"type": SET, "device_id": "no-such-device"})
     assert (await admin.receive_json())["error"]["code"] == "not_found"
+
+
+# ---------------------------------------------------------------------------
+# Diagnostics
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.usefixtures("booting")
+async def test_diagnostics_say_whether_a_unit_was_picked_and_by_whom(
+    hass, entity_registry, device_registry
+) -> None:
+    """Support can tell Home Assistant's pick from a picked one and from ours."""
+    device_id, targets = _rows_radar(hass, entity_registry, device_registry)
+    entry = make_entry()
+    await setup_integration(hass, entry)
+    async_show_in_mm(hass, [targets[0]])
+
+    result = await async_get_config_entry_diagnostics(hass, entry)
+
+    section = next(item for item in result["devices"] if item["device_id"] == device_id)
+    detected = section["ld2450"]["target_pairs"]["detected"]
+    readings = [
+        (pair[axis]["unit_picked"], pair[axis]["unit_decision"])
+        for pair in detected
+        for axis in ("x", "y")
+    ]
+    assert readings == [
+        (True, "mm"),
+        (False, None),
+        (True, None),
+        (False, None),
+        (False, None),
+        (False, None),
+    ]

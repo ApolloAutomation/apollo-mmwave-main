@@ -68,6 +68,7 @@ from .ld2450 import resolve_target_pairs
 # is still read here too, by tests/test_diagnostics.py.
 from .models import APOLLO_MANUFACTURER, MODEL_RADARS, apollo_radars  # noqa: F401
 from .store import device_flag
+from .target_units import decision, unit_picked
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -149,6 +150,11 @@ def _entity(hass: HomeAssistant, entity_id: Any) -> dict[str, Any]:
         "state": _state(hass, entity_id),
         "unit_of_measurement": attributes.get(ATTR_UNIT_OF_MEASUREMENT),
         "device_class": attributes.get(ATTR_DEVICE_CLASS),
+        # Whether the unit shown was picked in the sensor's settings (or by
+        # Apollo mmWave) rather than by Home Assistant on its own, and what
+        # Apollo mmWave decided for a target X or Y ("mm", "kept" or None).
+        "unit_picked": unit_picked(entry),
+        "unit_decision": decision(entry),
         "registered": entry is not None,
         "disabled_by": entry.disabled_by if entry is not None else None,
     }
