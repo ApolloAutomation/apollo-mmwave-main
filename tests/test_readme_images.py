@@ -48,11 +48,11 @@ PUBLISHED_IMAGES = {
     "apollo-mmwave-slider-lock.gif": (
         "08a098efea9a9260eb232f39b7e1fb2449c5d7c100c5367f7b319efbf25e17dc"
     ),
-    "apollo-mmwave-zone-map-2.4.0.png": (
-        "d5e4a57b8f1697ff37dd306a39d2e63aa09cef87722066f127e2c867b9cb77f4"
+    "apollo-mmwave-zone-map-live-2.4.0.gif": (
+        "0783cbaf13cfd0fbd3f7f1d4929a7b0bd2002b00ee5dda0c6f9246f2be3f122b"
     ),
-    "apollo-mmwave-zone-map-live.gif": (
-        "0475a3b87c067efc0ad1618607ce3faa94eac4cb1edeb62ebc30acd9dbc561f1"
+    "apollo-mmwave-zone-map-zones-2.4.0.png": (
+        "d281837e4ef329de72d6966b87027b7741bc142c3e288d52e2d79eb249b799fe"
     ),
 }
 

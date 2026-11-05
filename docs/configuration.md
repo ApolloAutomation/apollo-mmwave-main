@@ -963,11 +963,12 @@ three parts:
   "The map holds up to 32 zones. Delete one to add another."
 - **The chips** name each zone, with a dot in its color on the map: hollow
   and dashed while the zone is not drawn yet, and gray and hatched for an
-  ignore zone. Press a chip to pick its zone. You can also tap the zone on
-  the map: on a locked map, and in Rectangle or Ellipse mode on an unlocked
-  one, a tap picks the zone under it, the smallest one where zones overlap.
-  While the map is unlocked, the picked zone is outlined thicker. When the
-  card opens, the first zone is picked.
+  ignore zone. The picked zone's chip has a colored ring around it. Press a
+  chip to pick its zone. You can also tap the zone on the map: on a locked
+  map, and in Rectangle or Ellipse mode on an unlocked one, a tap picks the
+  zone under it, the smallest one where zones overlap. While the map is
+  unlocked, the picked zone is outlined thicker. When the card opens, the
+  first zone is picked.
 - **The editor** under the chips belongs to the picked zone, with its
   number as the heading:
   - **Name.** Type a name and press Enter, leave the field, or pick
