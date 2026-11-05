@@ -25,6 +25,7 @@ import {
   ADMIN_ONLY_TITLE,
   ALL_CLEARED_TOAST,
   CLEAR_ALL_CONFIRM,
+  CLEAR_ALL_CONFIRM_NO_UNDO,
   CLEAR_ALL_LABEL,
   CLEAR_ALL_NO,
   CLEAR_ALL_YES,
@@ -2004,7 +2005,7 @@ export class ZoneMapCard extends HTMLElement {
             <div class="clear-all" id="clearAll" hidden>
               <button id="clearBtn" class="zone-btn clear-all-btn">${CLEAR_ALL_LABEL}</button>
               <div class="clear-all-confirm" id="clearAllConfirm" hidden>
-                <div>${CLEAR_ALL_CONFIRM}</div>
+                <div>${this.showUndo ? CLEAR_ALL_CONFIRM : CLEAR_ALL_CONFIRM_NO_UNDO}</div>
                 <div class="confirm-row">
                   <button id="btnClearAllYes">${CLEAR_ALL_YES}</button>
                   <button id="btnClearAllNo" class="zone-btn">${CLEAR_ALL_NO}</button>

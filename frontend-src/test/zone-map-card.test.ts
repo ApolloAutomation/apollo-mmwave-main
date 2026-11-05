@@ -11337,6 +11337,17 @@ describe("zone map card clearing zones", () => {
     document.body.replaceChildren();
   });
 
+  it("promises no undo on a card whose YAML hides ↶", async () => {
+    const card = await mountCard(adminHass(TWO_ZONES), { start_locked: false, show_undo: false });
+    expect($(card, "btnUndo").style.display).toBe("none");
+
+    $(card, "clearBtn").click();
+
+    expect($(card, "clearAllConfirm").firstElementChild.textContent).toBe(
+      "Clear every zone's shape? The zones keep their names, types and hold times. This cannot be undone."
+    );
+  });
+
   it("clears every zone with a write each and one toast, and Undo restores them", async () => {
     const { card, hass, toasts } = await clearingCard();
 

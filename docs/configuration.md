@@ -1009,10 +1009,11 @@ the map left to right (display only)** (see
 sensors the map reads, **Clear all shapes** and the grid's units and range.
 **Clear all shapes** shows while any zone has a shape, and asks first:
 "Clear every zone's shape? The zones keep their names, types and hold
-times, and ↶ on the map brings the shapes back." **Clear shapes** clears
-them and says "All shapes cleared", and **Keep them** keeps them. No button
-clears a single zone's shape: draw a new one over it, delete the zone, or
-send `shape: none` with `apollo_mmwave.update_zone`.
+times, and ↶ on the map brings the shapes back." On a card whose YAML hides
+↶ (`show_undo: false`) it ends "This cannot be undone." instead. **Clear
+shapes** clears them and says "All shapes cleared", and **Keep them** keeps
+them. No button clears a single zone's shape: draw a new one over it,
+delete the zone, or send `shape: none` with `apollo_mmwave.update_zone`.
 
 Other users see the zones and the editor, with its fields grayed out under
 "Only an administrator can change these.", and no **Add zone**, **Delete

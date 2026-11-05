@@ -80,6 +80,9 @@ export const DELETE_ZONE_NO = "Keep it";
 export const CLEAR_ALL_LABEL = "Clear all shapes";
 export const CLEAR_ALL_CONFIRM =
   "Clear every zone's shape? The zones keep their names, types and hold times, and ↶ on the map brings the shapes back.";
+// The same question on a card whose YAML hides ↶ (show_undo: false).
+export const CLEAR_ALL_CONFIRM_NO_UNDO =
+  "Clear every zone's shape? The zones keep their names, types and hold times. This cannot be undone.";
 export const CLEAR_ALL_YES = "Clear shapes";
 export const CLEAR_ALL_NO = "Keep them";
 export const ALL_CLEARED_TOAST = "All shapes cleared";
