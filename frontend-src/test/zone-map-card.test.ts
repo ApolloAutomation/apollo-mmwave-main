@@ -10871,6 +10871,24 @@ describe("zone map card zones panel", () => {
     expect(editorOf(card).style.getPropertyValue("--zone-color")).toBe("rgba(244, 67, 54, 1)");
   });
 
+  it("keeps a pressed zone chip on the plain chip fill, so a blue zone's dot stays filled", async () => {
+    // On the blue pressed fill, Zone 2's blue dot looked as hollow as a zone
+    // not drawn yet.
+    const card = await mountCard(adminHass());
+    const css = card.shadowRoot.querySelector("style").textContent.replace(/\s+/g, " ");
+
+    expect(css).toContain(
+      "button.zone-btn[data-zone-id].active { background: var(--zm-chip-bg); color: var(--zm-chip-color); border-color: var(--zm-chip-active); box-shadow: inset 0 0 0 1px var(--zm-chip-active); }"
+    );
+    expect(css).toContain(
+      ".container.dark button.zone-btn[data-zone-id].active { background: #2a2c31; color: #e5e9f0; border-color: #2d7dd2; box-shadow: inset 0 0 0 1px #2d7dd2; }"
+    );
+    // The ring that kept the dot apart from the blue fill is gone with it.
+    expect(css).not.toContain("button.zone-btn.active .zone-dot");
+    // Coverage and the history buttons keep the filled look.
+    expect(css).toContain("button.zone-btn.active { background: var(--zm-chip-active);");
+  });
+
   it("clears nothing on a chip double-click", async () => {
     const hass = adminHass();
     const card = await mountCard(hass, { start_locked: false });

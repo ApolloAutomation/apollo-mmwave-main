@@ -1814,6 +1814,21 @@ export class ZoneMapCard extends HTMLElement {
           color: ${COLOR.ui.overlayButtonText};
           border-color: ${COLOR.ui.darkZoneButtonActiveBorder};
         }
+        /* A pressed zone chip keeps the plain chip fill and gets a ring
+           instead: on a blue fill, a blue zone's dot (Zone 2, 7, ...) would
+           look as hollow as a zone that is not drawn yet. */
+        button.zone-btn[data-zone-id].active {
+          background: var(--zm-chip-bg);
+          color: var(--zm-chip-color);
+          border-color: var(--zm-chip-active);
+          box-shadow: inset 0 0 0 1px var(--zm-chip-active);
+        }
+        .container.dark button.zone-btn[data-zone-id].active {
+          background: ${COLOR.ui.darkZoneButtonBg};
+          color: ${COLOR.ui.darkZoneButtonText};
+          border-color: ${COLOR.ui.darkZoneButtonActiveBorder};
+          box-shadow: inset 0 0 0 1px ${COLOR.ui.darkZoneButtonActiveBorder};
+        }
         /* Dimmed, not disabled, while the map is locked: a disabled button
            takes no tap, so a phone user would get no word of why. */
         button.locked-action { opacity: 0.5; cursor: not-allowed; }
@@ -1873,8 +1888,6 @@ export class ZoneMapCard extends HTMLElement {
         button.zone-btn[data-zone-id] { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .zone-dot { display: inline-block; width: 10px; height: 10px; margin-right: 6px; border-radius: 50%; vertical-align: -1px; background: var(--zone-color); box-sizing: border-box; }
         .zone-dot.undrawn { background: transparent; border: 2px dashed var(--zone-color); }
-        /* On the pressed chip's fill a ring keeps the dot apart from it. */
-        button.zone-btn.active .zone-dot { box-shadow: 0 0 0 2px ${COLOR.ui.overlayButtonText}; }
         .zone-dot.ignore { background: repeating-linear-gradient(45deg, ${COLOR.canvas.ignoreStrokeLight} 0 2px, transparent 2px 4px); border: 1px solid ${COLOR.canvas.ignoreStrokeLight}; }
         .container.dark .zone-dot.ignore { background: repeating-linear-gradient(45deg, ${COLOR.canvas.ignoreStrokeDark} 0 2px, transparent 2px 4px); border-color: ${COLOR.canvas.ignoreStrokeDark}; }
         .zone-empty { display: flex; flex-direction: column; gap: 4px; }
