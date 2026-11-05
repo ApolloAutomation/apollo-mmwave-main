@@ -2107,40 +2107,75 @@ describe("zone map card writes", () => {
   });
 });
 
+/** A fakeHass whose viewer is an administrator: only one can edit zones. */
+function adminHass(payload: any = ZONE_PAYLOAD) {
+  const hass = fakeHass(payload);
+  hass.user = { is_admin: true };
+  return hass;
+}
+
+/** The update_zone payloads a hass was sent, in order. */
+function zoneWrites(hass: any): any[] {
+  return hass.callService.mock.calls
+    .filter((call: any[]) => call[1] === "update_zone")
+    .map((call: any[]) => call[2]);
+}
+
+/** Let resolved callService promises run on to what follows them. */
+async function settleWrites() {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+/** Zone `zoneId`'s chip in the Zones panel. */
+function chipOf(card: any, zoneId: number): any {
+  return card.shadowRoot.querySelector(`#zone-buttons .zone-btn[data-zone-id="${zoneId}"]`);
+}
+
+/** The selected zone's editor under the chips, or null. */
+function editorOf(card: any): any {
+  return card.shadowRoot.querySelector("#zoneManager .zone-editor");
+}
+
+/** Press zone `zoneId`'s chip, and return the editor it opens. */
+function openZone(card: any, zoneId: number): any {
+  chipOf(card, zoneId).click();
+  const editor = editorOf(card);
+  expect(editor?.dataset.editorZone).toBe(String(zoneId));
+  return editor;
+}
+
+/** The editor's name field. */
+function nameFieldOf(card: any): any {
+  return card.shadowRoot.getElementById("zoneName");
+}
+
+/** A keydown on `target`, as typed there. */
+function pressKey(target: EventTarget, key: string) {
+  target.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, composed: true, cancelable: true }));
+}
+
 describe("zone map card renaming a zone only the YAML names", () => {
   // The backend renames only zones the store holds. A name-only save for a
   // zone seeded from the card YAML was dropped, the card still said it was
   // saved, and the next payload put the YAML name back.
   const YAML_ZONES = { zones: [{ id: 7, name: "Desk" }] };
 
-  /** Type a name into a zone manager row and press its Save button. */
+  /** Select a zone, type a name into its editor and press Enter. */
   function rename(card: any, zoneId: number, name: string) {
-    const rows = Array.from(card.shadowRoot.querySelectorAll("#zoneManager .entity-row"));
-    const row: any = rows.find(
-      (r: any) => r.querySelector("label")?.textContent === `Zone ${zoneId}`
-    );
-    expect(row).toBeTruthy();
-    row.querySelector("input").value = name;
-    const save: any = Array.from(row.querySelectorAll("button")).find(
-      (b: any) => b.textContent === "Save"
-    );
-    save.click();
-  }
-
-  function zoneSaves(hass: any): any[] {
-    return hass.callService.mock.calls
-      .filter((call: any[]) => call[1] === "update_zone")
-      .map((call: any[]) => call[2]);
+    openZone(card, zoneId);
+    const input = nameFieldOf(card);
+    input.value = name;
+    pressKey(input, "Enter");
   }
 
   it("creates the zone with its name when the store has never seen it", async () => {
-    const hass = fakeHass();
+    const hass = adminHass();
     const card = await mountCard(hass, YAML_ZONES);
     hass.callService.mockClear();
 
     rename(card, 7, "Desk 2");
 
-    expect(zoneSaves(hass)).toEqual([
+    expect(zoneWrites(hass)).toEqual([
       {
         device_id: "dev123",
         zone_id: 7,
@@ -2153,13 +2188,13 @@ describe("zone map card renaming a zone only the YAML names", () => {
   });
 
   it("renames a stored zone without touching its shape", async () => {
-    const hass = fakeHass();
+    const hass = adminHass();
     const card = await mountCard(hass, YAML_ZONES);
     hass.callService.mockClear();
 
     rename(card, 1, "Front door");
 
-    const saves = zoneSaves(hass);
+    const saves = zoneWrites(hass);
     expect(saves).toEqual([
       { device_id: "dev123", zone_id: 1, name: "Front door", input_units: "mm" },
     ]);
@@ -2168,7 +2203,7 @@ describe("zone map card renaming a zone only the YAML names", () => {
   });
 
   it("only renames before the first payload, when the store's zones are unknown", async () => {
-    const hass = fakeHass();
+    const hass = adminHass();
     // The read never answers, so the card has no payload to check against.
     hass.callWS = vi.fn(() => new Promise(() => {}));
     const card: any = new ZoneMapCard();
@@ -2178,13 +2213,30 @@ describe("zone map card renaming a zone only the YAML names", () => {
 
     rename(card, 7, "Desk 2");
 
-    const saves = zoneSaves(hass);
+    const saves = zoneWrites(hass);
     expect(saves).toHaveLength(1);
     expect(saves[0]).toEqual({ device_id: "dev123", zone_id: 7, name: "Desk 2", input_units: "mm" });
   });
 
+  it("leaves the card YAML's own zone entries as they were", async () => {
+    // Before the first payload the zone list holds the YAML's objects, and a
+    // dashboard's config can be frozen.
+    const hass = adminHass();
+    hass.callWS = vi.fn(() => new Promise(() => {}));
+    const seeded = Object.freeze({ id: 7, name: "Desk" });
+    const card: any = new ZoneMapCard();
+    card.setConfig({ device_id: "dev123", zones: [seeded] } as any);
+    card.hass = hass;
+
+    rename(card, 7, "Desk 2");
+
+    expect(seeded.name).toBe("Desk");
+    expect(card._zoneLabel(7)).toBe("Desk 2");
+    expect(zoneWrites(hass).map((save) => save.name)).toEqual(["Desk 2"]);
+  });
+
   it("only renames a zone drawn here whose shape has not reached the store yet", async () => {
-    const hass = fakeHass();
+    const hass = adminHass();
     const card = await mountCard(hass, YAML_ZONES);
     // What a finished drag does before its save is echoed back.
     card._upsertZone(7, "rect", { x_min: 0, x_max: 10, y_min: 0, y_max: 10 });
@@ -2192,17 +2244,274 @@ describe("zone map card renaming a zone only the YAML names", () => {
 
     rename(card, 7, "Desk 2");
 
-    const saves = zoneSaves(hass);
+    const saves = zoneWrites(hass);
     expect(saves).toHaveLength(1);
     expect(saves[0]).not.toHaveProperty("shape");
     expect(saves[0].name).toBe("Desk 2");
   });
 });
 
+/**
+ * A zone's name saves from its field on its own: on Enter, or when the field
+ * loses focus to the page, as a press on another zone's chip. There is no
+ * Save button. The save says so beside the editor's heading, Saving... then
+ * Saved, or Not saved with the reason in a toast, and the chip and the map
+ * take the name at once.
+ */
+describe("zone map card renaming a zone in its editor", () => {
+  const TWO_ZONES = {
+    ...ZONE_PAYLOAD,
+    zones: { ...ZONE_PAYLOAD.zones, "2": { shape: "none", data: null, name: "Couch" } },
+  };
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    document.body.replaceChildren();
+  });
+
+  async function renameCard(payload: any = TWO_ZONES) {
+    const hass = adminHass(payload);
+    const card = await mountCard(hass);
+    document.body.appendChild(card);
+    hass.callService.mockClear();
+    const toasts = notifications(card);
+    return { card, hass, toasts };
+  }
+
+  const status = (card: any) => card.shadowRoot.getElementById("zoneSaveStatus");
+
+  it("saves on Enter, with no toast, and says Saving... then Saved", async () => {
+    const { card, hass, toasts } = await renameCard();
+    const input = nameFieldOf(card);
+    expect(input.value).toBe("Doorway");
+    input.focus();
+    input.value = "Front door";
+
+    pressKey(input, "Enter");
+
+    expect(zoneWrites(hass)).toEqual([
+      { device_id: "dev123", zone_id: 1, name: "Front door", input_units: "mm" },
+    ]);
+    // The chip and the map's label take it at once, the chip in place.
+    expect(chipOf(card, 1).textContent).toBe("Front door");
+    expect(card._zoneLabel(1)).toBe("Front door");
+    expect(status(card).textContent).toBe("Saving...");
+    expect(status(card).getAttribute("role")).toBe("status");
+
+    await settleWrites();
+
+    expect(status(card).textContent).toBe("Saved");
+    expect(toasts).toEqual([]);
+    // Still in the field, so a second Enter has nothing new to save.
+    expect(card.shadowRoot.activeElement).toBe(input);
+    pressKey(input, "Enter");
+    expect(zoneWrites(hass)).toHaveLength(1);
+  });
+
+  it("saves when the field loses focus to the page", async () => {
+    const { card, hass } = await renameCard();
+    const input = nameFieldOf(card);
+    input.focus();
+    input.value = "Kitchen";
+
+    input.blur();
+
+    expect(zoneWrites(hass)).toEqual([
+      { device_id: "dev123", zone_id: 1, name: "Kitchen", input_units: "mm" },
+    ]);
+  });
+
+  it("saves nothing when another window or tab takes the focus", async () => {
+    const { card, hass } = await renameCard();
+    const input = nameFieldOf(card);
+    input.focus();
+    input.value = "Kitch";
+    vi.spyOn(document, "hasFocus").mockReturnValue(false);
+
+    input.blur();
+
+    expect(hass.callService).not.toHaveBeenCalled();
+    expect(input.value).toBe("Kitch");
+  });
+
+  it("saves the old zone's name when a press on another chip takes the focus", async () => {
+    const { card, hass } = await renameCard();
+    const input = nameFieldOf(card);
+    input.focus();
+    input.value = "Kitchen";
+    const couch = chipOf(card, 2);
+
+    // A press: the field loses focus on the way down, the click lands on
+    // the way up.
+    couch.focus();
+    couch.click();
+
+    expect(zoneWrites(hass)).toEqual([
+      { device_id: "dev123", zone_id: 1, name: "Kitchen", input_units: "mm" },
+    ]);
+    expect(card.selectedZone).toBe(2);
+    expect(nameFieldOf(card).value).toBe("Couch");
+    expect(chipOf(card, 1).textContent).toBe("Kitchen");
+  });
+
+  it("keeps the pressed chip through the echo of the name save", async () => {
+    // A chip made again between the press and the release never gets the
+    // click, so the selection would be lost.
+    const { card, hass } = await renameCard();
+    const couch = chipOf(card, 2);
+    const doorway = chipOf(card, 1);
+
+    hass.handlers[ZONES_SUBSCRIBE][0]({
+      ...TWO_ZONES,
+      zones: { ...TWO_ZONES.zones, "1": { ...TWO_ZONES.zones["1"], name: "Kitchen" } },
+    });
+
+    expect(chipOf(card, 2)).toBe(couch);
+    expect(chipOf(card, 1)).toBe(doorway);
+    expect(doorway.textContent).toBe("Kitchen");
+    couch.click();
+    expect(card.selectedZone).toBe(2);
+  });
+
+  it("saves nothing for a name the zone already has, and trims spaces", async () => {
+    const { card, hass } = await renameCard();
+    const input = nameFieldOf(card);
+    input.focus();
+    input.value = "  Doorway ";
+
+    pressKey(input, "Enter");
+    input.blur();
+
+    expect(hass.callService).not.toHaveBeenCalled();
+    expect(input.value).toBe("Doorway");
+  });
+
+  it("saves Zone N for an emptied field", async () => {
+    const { card, hass } = await renameCard();
+    const input = nameFieldOf(card);
+    input.focus();
+    input.value = "   ";
+
+    pressKey(input, "Enter");
+
+    expect(zoneWrites(hass)).toEqual([
+      { device_id: "dev123", zone_id: 1, name: "Zone 1", input_units: "mm" },
+    ]);
+    expect(input.value).toBe("Zone 1");
+  });
+
+  it("puts the name back on Escape and saves nothing", async () => {
+    const { card, hass } = await renameCard();
+    const input = nameFieldOf(card);
+    input.focus();
+    input.value = "Kit";
+
+    pressKey(input, "Escape");
+    input.blur();
+
+    expect(input.value).toBe("Doorway");
+    expect(hass.callService).not.toHaveBeenCalled();
+  });
+
+  it("says Not saved when refused, puts the old name back and keeps the typed one", async () => {
+    const { card, hass, toasts } = await renameCard();
+    hass.callService.mockRejectedValue(new Error("Home Assistant is restarting"));
+    const input = nameFieldOf(card);
+    input.focus();
+    input.value = "Kitchen";
+
+    pressKey(input, "Enter");
+    await settleWrites();
+
+    expect(status(card).textContent).toBe("Not saved");
+    expect(status(card).classList.contains("failed")).toBe(true);
+    expect(toasts).toEqual(["Could not save: Home Assistant is restarting"]);
+    expect(chipOf(card, 1).textContent).toBe("Doorway");
+    expect(card._zoneLabel(1)).toBe("Doorway");
+    // The typed name stays, for Enter to try again.
+    expect(input.value).toBe("Kitchen");
+    hass.callService.mockReset();
+    pressKey(input, "Enter");
+    expect(zoneWrites(hass).map((save) => save.name)).toEqual(["Kitchen"]);
+    await settleWrites();
+    expect(status(card).textContent).toBe("Saved");
+  });
+
+  it("a newer save settles the status, not an older one", async () => {
+    const { card, hass } = await renameCard();
+    const answers: Array<() => void> = [];
+    hass.callService.mockImplementation(() => new Promise<void>((resolve) => answers.push(resolve)));
+    const input = nameFieldOf(card);
+    input.focus();
+    input.value = "Kit";
+    pressKey(input, "Enter");
+    input.value = "Kitchen";
+    pressKey(input, "Enter");
+
+    answers[0]();
+    await settleWrites();
+    expect(status(card).textContent).toBe("Saving...");
+    answers[1]();
+    await settleWrites();
+    expect(status(card).textContent).toBe("Saved");
+  });
+
+  it("clears the status for another zone", async () => {
+    const { card } = await renameCard();
+    const input = nameFieldOf(card);
+    input.value = "Kitchen";
+    pressKey(input, "Enter");
+    await settleWrites();
+    expect(status(card).textContent).toBe("Saved");
+
+    openZone(card, 2);
+
+    expect(status(card).textContent).toBe("");
+  });
+
+  it("gives a viewer the name read only", async () => {
+    const hass = fakeHass(TWO_ZONES);
+    const card = await mountCard(hass);
+    hass.callService.mockClear();
+    const input = nameFieldOf(card);
+
+    expect(input.disabled).toBe(true);
+    input.value = "Kitchen";
+    pressKey(input, "Enter");
+
+    expect(hass.callService).not.toHaveBeenCalled();
+  });
+
+  it("closes a phone keyboard on Enter", async () => {
+    const { card } = await renameCard();
+    vi.spyOn(window, "matchMedia").mockImplementation(
+      (query: string) => ({ matches: query === "(pointer: coarse)" }) as MediaQueryList
+    );
+    const input = nameFieldOf(card);
+    input.focus();
+    input.value = "Kitchen";
+
+    pressKey(input, "Enter");
+
+    expect(card.shadowRoot.activeElement).not.toBe(input);
+  });
+
+  it("labels the field Name, at a size iOS does not zoom in on", async () => {
+    const { card } = await renameCard();
+    const input = nameFieldOf(card);
+    expect(card.shadowRoot.querySelector('label[for="zoneName"]').textContent).toBe("Name");
+    expect(input.getAttribute("enterkeyhint")).toBe("done");
+    expect(input.autocomplete).toBe("off");
+    const css = card.shadowRoot.querySelector("style").textContent;
+    expect(css).toContain(".zone-panel input, .zone-panel select { font-size: 16px; }");
+  });
+});
+
 describe("zone map card zone names across payloads", () => {
-  // Every payload rebuilds the zone manager rows, and the card's own Add Zone
-  // and rotation writes echo back as payloads. A rebuild used to put the
-  // stored name back over whatever was being typed and drop the focus.
+  // Every payload reaches the editor, and the card's own Add zone and
+  // rotation writes echo back as payloads. A rebuild used to put the stored
+  // name back over whatever was being typed and drop the focus; the editor
+  // is now kept and only its values are brought up to date.
   const TWO_ZONES = {
     ...ZONE_PAYLOAD,
     zones: {
@@ -2216,7 +2525,7 @@ describe("zone map card zone names across payloads", () => {
   });
 
   async function attachedCard(payload: any = TWO_ZONES) {
-    const hass = fakeHass(payload);
+    const hass = adminHass(payload);
     const card = await mountCard(hass);
     document.body.appendChild(card);
     return { card, hass };
@@ -2226,26 +2535,9 @@ describe("zone map card zone names across payloads", () => {
     hass.handlers[ZONES_SUBSCRIBE][0](payload);
   }
 
-  function nameInput(card: any, zoneId: number): any {
-    return card.shadowRoot.querySelector(`#zoneManager input[data-zone-id="${zoneId}"]`);
-  }
-
-  function saveButton(card: any, zoneId: number): any {
-    const row = nameInput(card, zoneId).closest(".entity-row");
-    return Array.from(row.querySelectorAll("button")).find(
-      (b: any) => b.textContent === "Save"
-    );
-  }
-
-  function zoneSaves(hass: any): any[] {
-    return hass.callService.mock.calls
-      .filter((call: any[]) => call[1] === "update_zone")
-      .map((call: any[]) => call[2]);
-  }
-
   it("keeps a name being typed, and its focus and caret, when a payload lands", async () => {
     const { card, hass } = await attachedCard();
-    const input = nameInput(card, 1);
+    const input = nameFieldOf(card);
     input.focus();
     input.value = "Kit";
     input.setSelectionRange(1, 2);
@@ -2254,61 +2546,78 @@ describe("zone map card zone names across payloads", () => {
     push(hass, { ...TWO_ZONES, rotation_deg: 20 });
 
     expect(card.coneAngleDeg).toBe(20);
-    const after = nameInput(card, 1);
-    expect(after.value).toBe("Kit");
-    expect(card.shadowRoot.activeElement).toBe(after);
-    expect(after.selectionStart).toBe(1);
-    expect(after.selectionEnd).toBe(2);
+    // The same field, as it was.
+    expect(nameFieldOf(card)).toBe(input);
+    expect(input.value).toBe("Kit");
+    expect(card.shadowRoot.activeElement).toBe(input);
+    expect(input.selectionStart).toBe(1);
+    expect(input.selectionEnd).toBe(2);
   });
 
-  it("gives a row nobody edited the name the payload carries", async () => {
+  it("keeps an edit over a rename from elsewhere, and Escape gives the new name", async () => {
     const { card, hass } = await attachedCard();
-    // Typed into and then left, without saving.
-    nameInput(card, 1).value = "Kit";
+    const input = nameFieldOf(card);
+    input.value = "Kit";
+
+    push(hass, {
+      ...TWO_ZONES,
+      zones: { ...TWO_ZONES.zones, "1": { ...TWO_ZONES.zones["1"], name: "Hall" } },
+    });
+
+    expect(input.value).toBe("Kit");
+    expect(chipOf(card, 1).textContent).toBe("Hall");
+    pressKey(input, "Escape");
+    expect(input.value).toBe("Hall");
+  });
+
+  it("gives a field nobody edited the name the payload carries", async () => {
+    const { card, hass } = await attachedCard();
+    openZone(card, 2);
 
     push(hass, {
       ...TWO_ZONES,
       zones: { ...TWO_ZONES.zones, "2": { shape: "none", data: null, name: "Sofa" } },
     });
 
-    expect(nameInput(card, 1).value).toBe("Kit");
-    expect(nameInput(card, 2).value).toBe("Sofa");
+    expect(nameFieldOf(card).value).toBe("Sofa");
   });
 
-  it("gives a focused row nobody edited a rename and keeps its focus", async () => {
+  it("gives a focused field nobody edited a rename and keeps its focus", async () => {
     const { card, hass } = await attachedCard();
-    nameInput(card, 2).focus();
+    openZone(card, 2);
+    nameFieldOf(card).focus();
 
     push(hass, {
       ...TWO_ZONES,
       zones: { ...TWO_ZONES.zones, "2": { shape: "none", data: null, name: "Sofa" } },
     });
 
-    const after = nameInput(card, 2);
+    const after = nameFieldOf(card);
     expect(after.value).toBe("Sofa");
     expect(card.shadowRoot.activeElement).toBe(after);
   });
 
-  it("saves the kept draft after the push", async () => {
+  it("saves the kept edit after the push", async () => {
     const { card, hass } = await attachedCard();
-    const input = nameInput(card, 1);
+    const input = nameFieldOf(card);
     input.focus();
     input.value = "Kit";
     push(hass, { ...TWO_ZONES, rotation_deg: 20 });
     hass.callService.mockClear();
 
-    saveButton(card, 1).click();
+    pressKey(nameFieldOf(card), "Enter");
 
-    expect(zoneSaves(hass)).toEqual([
+    expect(zoneWrites(hass)).toEqual([
       { device_id: "dev123", zone_id: 1, name: "Kit", input_units: "mm" },
     ]);
     expect(card.zoneConfig.find((z: any) => z.id === 1).name).toBe("Kit");
   });
 
-  it("keeps a name typed into a new zone across its own Add Zone echo", async () => {
+  it("keeps a name typed into a new zone across its own Add zone echo", async () => {
     const { card, hass } = await attachedCard(ZONE_PAYLOAD);
     card._handleAddZone();
-    const input = nameInput(card, 2);
+    const input = nameFieldOf(card);
+    expect(input.dataset.zoneId).toBe("2");
     expect(input.value).toBe("Zone 2");
     input.focus();
     input.value = "Sofa";
@@ -2318,18 +2627,25 @@ describe("zone map card zone names across payloads", () => {
       zones: { ...ZONE_PAYLOAD.zones, "2": { shape: "none", data: null, name: "Zone 2" } },
     });
 
-    expect(nameInput(card, 2).value).toBe("Sofa");
-    expect(card.shadowRoot.activeElement).toBe(nameInput(card, 2));
+    expect(nameFieldOf(card).value).toBe("Sofa");
+    expect(card.shadowRoot.activeElement).toBe(nameFieldOf(card));
   });
 
-  it("drops the draft of a zone the payload removed", async () => {
+  it("drops the edit of a zone the payload removed, and saves nothing for it", async () => {
     const { card, hass } = await attachedCard();
-    nameInput(card, 2).value = "Sofa";
+    openZone(card, 2);
+    const input = nameFieldOf(card);
+    input.focus();
+    input.value = "Sofa";
+    hass.callService.mockClear();
 
     push(hass, ZONE_PAYLOAD);
 
-    expect(nameInput(card, 2)).toBeNull();
-    expect(nameInput(card, 1).value).toBe("Doorway");
+    expect(card.selectedZone).toBe(1);
+    expect(nameFieldOf(card).value).toBe("Doorway");
+    // The field went with its editor, and its focus with it: nothing that
+    // left made a zone 2 again.
+    expect(hass.callService).not.toHaveBeenCalled();
   });
 
   // A zone written into the card YAML has no store entry until it is drawn,
@@ -2340,18 +2656,10 @@ describe("zone map card zone names across payloads", () => {
   const RECT = { x_min: 0, x_max: 1000, y_min: 0, y_max: 1000 };
 
   async function seededCard() {
-    const hass = fakeHass({ ...ZONE_PAYLOAD, zones: {} });
+    const hass = adminHass({ ...ZONE_PAYLOAD, zones: {} });
     const card = await mountCard(hass, SEEDED);
     document.body.appendChild(card);
     return { card, hass };
-  }
-
-  function chipText(card: any, zoneId: number): string | undefined {
-    const chips = Array.from(
-      card.shadowRoot.querySelectorAll("#zone-buttons .zone-btn[data-zone-id]")
-    );
-    const chip: any = chips.find((b: any) => b.dataset.zoneId === String(zoneId));
-    return chip?.textContent;
   }
 
   it("keeps a seeded name for a store zone with geometry but no name", async () => {
@@ -2363,8 +2671,8 @@ describe("zone map card zone names across payloads", () => {
     expect(card.zones).toEqual([{ id: 1, shape: "rect", data: RECT }]);
     expect(card.zoneConfig).toEqual([{ id: 1, name: "Kitchen" }]);
     expect(card._zoneLabel(1)).toBe("Kitchen");
-    expect(nameInput(card, 1).value).toBe("Kitchen");
-    expect(chipText(card, 1)).toBe("Kitchen");
+    expect(nameFieldOf(card).value).toBe("Kitchen");
+    expect(chipOf(card, 1).textContent).toBe("Kitchen");
   });
 
   it("a stored name wins over the seed", async () => {
@@ -2377,7 +2685,7 @@ describe("zone map card zone names across payloads", () => {
 
     expect(card.zoneConfig).toEqual([{ id: 1, name: "Hall" }]);
     expect(card._zoneLabel(1)).toBe("Hall");
-    expect(nameInput(card, 1).value).toBe("Hall");
+    expect(nameFieldOf(card).value).toBe("Hall");
   });
 
   it("still falls back to Zone N for a nameless store zone the YAML does not name", async () => {
@@ -2393,17 +2701,17 @@ describe("zone map card zone names across payloads", () => {
 });
 
 /**
- * The second line of each zone list row: the zone's size, its Type and its
- * Hold.
+ * The selected zone's editor under the chips: its size, its Type and its
+ * Hold, with what they do said in the text under them.
  *
- * The first line stays the label, name, Save and Delete that the other zone
- * list tests find rows by. Under it, the size follows the map's unit and
- * every shape change without rebuilding the rows. Type (Detect or Ignore)
- * and Hold save on change through update_zone, without input_units, and an
- * ignore zone never holds. Only an administrator can save them, and a viewer
- * is told so in plain text above the rows as well as in the titles.
+ * The size follows the map's unit and every shape change without making the
+ * editor again. Type (Detect or Ignore) and Hold save on change through
+ * update_zone, without input_units, and an ignore zone never holds. A save
+ * says so beside the editor's heading instead of in a toast. Only an
+ * administrator can save them, and a viewer is told so in plain text as
+ * well as in the titles.
  */
-describe("zone map card zone list settings", () => {
+describe("zone map card zone editor settings", () => {
   afterEach(() => {
     // happy-dom hands out a proxy for a <select>, which its removal check
     // does not match, so a select that had focus stays the document's
@@ -2446,24 +2754,21 @@ describe("zone map card zone list settings", () => {
     return { card, hass, toasts };
   }
 
-  function rows(card: any): any[] {
-    return Array.from(card.shadowRoot.querySelectorAll("#zoneManager .entity-row"));
-  }
-
-  function row(card: any, zoneId: number): any {
-    const found = rows(card).find(
-      (r) => r.querySelector("label")?.textContent === `Zone ${zoneId}`
-    );
-    expect(found).toBeTruthy();
-    return found;
+  /** Zone `zoneId`'s editor, selecting it first. */
+  function editor(card: any, zoneId: number): any {
+    if (card.selectedZone !== zoneId) openZone(card, zoneId);
+    return editorOf(card);
   }
 
   const sizeText = (card: any, zoneId: number) =>
-    row(card, zoneId).querySelector(".zone-size").textContent;
+    editor(card, zoneId).querySelector(".zone-size").textContent;
   const typeSelect = (card: any, zoneId: number) =>
-    row(card, zoneId).querySelector("select.zone-type");
+    editor(card, zoneId).querySelector("select.zone-type");
   const holdSelect = (card: any, zoneId: number) =>
-    row(card, zoneId).querySelector("select.zone-hold");
+    editor(card, zoneId).querySelector("select.zone-hold");
+  const hintText = (card: any, zoneId: number) =>
+    editor(card, zoneId).querySelector("#zoneSettingsHint").textContent;
+  const status = (card: any) => card.shadowRoot.getElementById("zoneSaveStatus").textContent;
 
   function options(select: any): string[][] {
     return Array.from(select.options).map((o: any) => [o.value, o.textContent]);
@@ -2474,65 +2779,46 @@ describe("zone map card zone list settings", () => {
     select.dispatchEvent(new Event("change"));
   }
 
-  function zoneSaves(hass: any): any[] {
-    return hass.callService.mock.calls
-      .filter((call: any[]) => call[1] === "update_zone")
-      .map((call: any[]) => call[2]);
-  }
-
-  async function settle() {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  }
-
   function push(hass: any, payload: any) {
     hass.handlers[ZONES_SUBSCRIBE][0](payload);
   }
 
-  it("lists each zone's size, and 'No shape yet' without geometry", async () => {
+  it("shows each zone's size, and Not drawn yet without geometry", async () => {
     const { card } = await listCard(FOUR_ZONES, { config: { zones: [{ id: 7, name: "Hall" }] } });
 
-    const listed = rows(card).map((r) => [
-      r.querySelector("label").textContent,
-      r.querySelector(".zone-size").textContent,
+    const listed = [1, 2, 3, 4, 7].map((id) => [
+      editor(card, id).querySelector(".zone-editor-title").textContent,
+      sizeText(card, id),
     ]);
     expect(listed).toEqual([
       ["Zone 1", "Size 1.0 m × 1.0 m"],
       // An ellipse is 2 rx by 2 ry; a polygon is the box around its points.
       ["Zone 2", "Size 2.4 m × 0.9 m"],
       ["Zone 3", "Size 1.5 m × 2.1 m"],
-      ["Zone 4", "No shape yet. Select the zone and draw it on the map."],
+      ["Zone 4", "Not drawn yet"],
       // Only the card YAML names this one.
-      ["Zone 7", "No shape yet. Select the zone and draw it on the map."],
+      ["Zone 7", "Not drawn yet"],
     ]);
-    // On the row's second line, under the name, Save and Delete.
-    const meta = row(card, 1).children[4];
-    expect(meta.classList.contains("zone-meta")).toBe(true);
-    expect(meta.firstElementChild.classList.contains("zone-size")).toBe(true);
-    expect(Array.from(row(card, 1).children).slice(0, 4).map((el: any) => el.tagName)).toEqual([
-      "LABEL",
-      "INPUT",
-      "BUTTON",
-      "BUTTON",
-    ]);
+    // One editor at a time, for the selected zone.
+    expect(card.shadowRoot.querySelectorAll("#zoneManager .zone-editor")).toHaveLength(1);
   });
 
-  it("updates the sizes on a unit switch without rebuilding the rows", async () => {
-    const { card } = await listCard(FOUR_ZONES, { isAdmin: false });
+  it("updates the size on a unit switch without making the editor again", async () => {
+    const { card } = await listCard(FOUR_ZONES);
     document.body.appendChild(card);
-    const before = rows(card);
-    const name = row(card, 1).querySelector("input");
+    const before = editor(card, 2);
+    const name = nameFieldOf(card);
     name.focus();
     name.value = "Kit";
 
     card.shadowRoot.getElementById("btnUnitFt").click();
 
-    expect(sizeText(card, 1)).toBe("Size 3 ft 3 in × 3 ft 3 in");
+    expect(editorOf(card)).toBe(before);
     expect(sizeText(card, 2)).toBe("Size 7 ft 10 in × 2 ft 11 in");
-    expect(sizeText(card, 4)).toBe("No shape yet. Select the zone and draw it on the map.");
-    // The same rows, with what was being typed and the focus left alone.
-    rows(card).forEach((r, i) => expect(r).toBe(before[i]));
-    expect(row(card, 1).querySelector("input").value).toBe("Kit");
+    // What was being typed and the focus are left alone.
+    expect(nameFieldOf(card).value).toBe("Kit");
     expect(card.shadowRoot.activeElement).toBe(name);
+    expect(sizeText(card, 1)).toBe("Size 3 ft 3 in × 3 ft 3 in");
   });
 
   it("updates a polygon zone's size after Finish", async () => {
@@ -2559,7 +2845,7 @@ describe("zone map card zone list settings", () => {
     expect(sizeText(card, 1)).toBe("Size 2.5 m × 2.5 m");
   });
 
-  it("keeps each zone's size current through a drag, a clear and Undo", async () => {
+  it("keeps the size current through a drag, Clear all shapes and Undo", async () => {
     const two = { ...ZONE_PAYLOAD, zones: { ...ZONE_PAYLOAD.zones, "2": COUCH } };
     const { card } = await listCard(two, { config: { ...TEN_METER_GRID, start_locked: false } });
     layOut(card, 800);
@@ -2575,19 +2861,9 @@ describe("zone map card zone list settings", () => {
     card.shadowRoot.getElementById("btnUndo").click();
     expect(sizeText(card, 1)).toBe("Size 1.0 m × 1.0 m");
 
-    // A double-click on Couch's chip clears it.
-    card.shadowRoot
-      .querySelector('#zone-buttons .zone-btn[data-zone-id="2"]')
-      .dispatchEvent(new MouseEvent("dblclick"));
-    expect(sizeText(card, 2)).toBe("No shape yet. Select the zone and draw it on the map.");
-    card.shadowRoot.getElementById("btnUndo").click();
-    expect(sizeText(card, 2)).toBe("Size 2.4 m × 0.9 m");
-
     card.shadowRoot.getElementById("clearBtn").click();
-    expect([sizeText(card, 1), sizeText(card, 2)]).toEqual([
-      "No shape yet. Select the zone and draw it on the map.",
-      "No shape yet. Select the zone and draw it on the map.",
-    ]);
+    card.shadowRoot.getElementById("btnClearAllYes").click();
+    expect([sizeText(card, 1), sizeText(card, 2)]).toEqual(["Not drawn yet", "Not drawn yet"]);
     card.shadowRoot.getElementById("btnUndo").click();
     expect([sizeText(card, 1), sizeText(card, 2)]).toEqual([
       "Size 1.0 m × 1.0 m",
@@ -2595,7 +2871,7 @@ describe("zone map card zone list settings", () => {
     ]);
   });
 
-  it("offers Detect and Ignore and saves a change", async () => {
+  it("offers Detect and Ignore and saves a change, saying so beside the heading", async () => {
     const { card, hass, toasts } = await listCard();
     const type = typeSelect(card, 1);
     expect(options(type)).toEqual([
@@ -2604,15 +2880,19 @@ describe("zone map card zone list settings", () => {
     ]);
     expect(type.value).toBe("detect");
     expect(type.disabled).toBe(false);
-    expect(type.title).toBe(
-      "Detect turns this zone's presence sensor on. Ignore hides the targets inside it from the other zones."
-    );
     // Labeled for assistive tech by the "Type" label beside it.
     const label = card.shadowRoot.querySelector(`label[for="${type.id}"]`);
     expect(label.textContent).toBe("Type");
 
     choose(type, "ignore");
-    await settle();
+    // An ignore zone never holds, and the hint says what Ignore does, at once.
+    expect(holdSelect(card, 1).disabled).toBe(true);
+    expect(hintText(card, 1)).toBe(
+      "Ignore: targets inside, such as a fan or a curtain, are dropped before the other zones are checked. Ignore zones never hold."
+    );
+    expect(chipOf(card, 1).querySelector(".zone-dot").classList.contains("ignore")).toBe(true);
+    expect(status(card)).toBe("Saving...");
+    await settleWrites();
 
     // A zone setting says nothing about how readings scale: no input_units.
     expect(hass.callService.mock.calls).toEqual([
@@ -2624,9 +2904,10 @@ describe("zone map card zone list settings", () => {
         false,
       ],
     ]);
-    expect(toasts).toEqual(["Doorway saved"]);
+    expect(status(card)).toBe("Saved");
+    expect(toasts).toEqual([]);
 
-    // The save's echo rebuilds the row as an ignore zone, which never holds.
+    // The save's echo keeps the editor as an ignore zone's.
     push(hass, {
       ...ZONE_PAYLOAD,
       zones: { "1": { ...ZONE_PAYLOAD.zones["1"], zone_type: "ignore" } },
@@ -2636,7 +2917,7 @@ describe("zone map card zone list settings", () => {
 
     hass.callService.mockClear();
     choose(typeSelect(card, 1), "detect");
-    expect(zoneSaves(hass)).toEqual([{ device_id: "dev123", zone_id: 1, zone_type: "detect" }]);
+    expect(zoneWrites(hass)).toEqual([{ device_id: "dev123", zone_id: 1, zone_type: "detect" }]);
   });
 
   it("offers the hold options and saves a change", async () => {
@@ -2654,17 +2935,23 @@ describe("zone map card zone list settings", () => {
     ]);
     expect(hold.value).toBe("0");
     expect(hold.disabled).toBe(false);
-    expect(hold.title).toBe(
-      "How long the zone stays on after someone inside goes still and the radar loses them"
-    );
     expect(card.shadowRoot.querySelector(`label[for="${hold.id}"]`).textContent).toBe("Hold");
 
     choose(hold, "120");
-    await settle();
+    await settleWrites();
 
     // A number of seconds, not the option's string.
-    expect(zoneSaves(hass)).toEqual([{ device_id: "dev123", zone_id: 1, hold_s: 120 }]);
-    expect(toasts).toEqual(["Doorway saved"]);
+    expect(zoneWrites(hass)).toEqual([{ device_id: "dev123", zone_id: 1, hold_s: 120 }]);
+    expect(toasts).toEqual([]);
+    expect(status(card)).toBe("Saved");
+  });
+
+  it("says what Detect and Hold do under them", async () => {
+    const { card } = await listCard();
+
+    expect(hintText(card, 1)).toBe(
+      "Detect: its presence sensor turns on while someone is inside. Hold keeps it on for a while after someone inside goes still and the radar loses them."
+    );
   });
 
   it("shows a custom hold value it does not list", async () => {
@@ -2711,7 +2998,7 @@ describe("zone map card zone list settings", () => {
     expect(typeSelect(card, 2).value).toBe("ignore");
     expect(typeSelect(card, 2).disabled).toBe(false);
     expect(holdSelect(card, 2).disabled).toBe(true);
-    expect(holdSelect(card, 2).title).toBe("Ignore zones never hold");
+    expect(hintText(card, 2)).toContain("Ignore zones never hold.");
     // A detect zone's Hold stays free.
     expect(holdSelect(card, 1).disabled).toBe(false);
   });
@@ -2726,11 +3013,12 @@ describe("zone map card zone list settings", () => {
     choose(holdSelect(card, 1), "300");
     choose(typeSelect(card, 1), "ignore");
     expect(holdSelect(card, 1).value).toBe("300");
-    await settle();
+    await settleWrites();
 
     // Back to what the store holds.
     expect(holdSelect(card, 1).value).toBe("30");
     expect(typeSelect(card, 1).value).toBe("detect");
+    expect(status(card)).toBe("Not saved");
     expect(toasts).toEqual([
       "Could not save: Home Assistant is restarting",
       "Could not save: Home Assistant is restarting",
@@ -2753,9 +3041,9 @@ describe("zone map card zone list settings", () => {
 
   it("keeps a select's newest choice through the echo of an earlier save", async () => {
     // Each arrow key on a focused select saves. The echo of the first save
-    // rebuilt the rows from the store while the second was on its way, so
-    // the select jumped back and the next key stepped from there: the saves
-    // went out as 15, 30, 30.
+    // put the select back to the store's value while the second was on its
+    // way, and the next key stepped from there: the saves went out as 15,
+    // 30, 30.
     const { card, hass, toasts } = await listCard();
     document.body.appendChild(card);
     const answers = heldSaves(hass);
@@ -2771,24 +3059,26 @@ describe("zone map card zone list settings", () => {
     // So the next key steps on from 30.
     const hold = holdSelect(card, 1);
     choose(hold, hold.options[hold.selectedIndex + 1].value);
-    expect(zoneSaves(hass).map((save) => save.hold_s)).toEqual([15, 30, 60]);
+    expect(zoneWrites(hass).map((save) => save.hold_s)).toEqual([15, 30, 60]);
 
     answers[0].resolve();
-    await settle();
+    await settleWrites();
     expect(holdSelect(card, 1).value).toBe("60");
     answers[1].resolve();
     push(hass, withHold(30));
-    await settle();
+    await settleWrites();
     expect(holdSelect(card, 1).value).toBe("60");
+    expect(status(card)).toBe("Saving...");
     answers[2].resolve();
     push(hass, withHold(60));
-    await settle();
+    await settleWrites();
     // Settled, the select shows the store again.
     expect(card._zoneSettingPending.size).toBe(0);
     expect(holdSelect(card, 1).value).toBe("60");
     push(hass, withHold(120));
     expect(holdSelect(card, 1).value).toBe("120");
-    expect(toasts).toEqual(["Doorway saved", "Doorway saved", "Doorway saved"]);
+    expect(status(card)).toBe("Saved");
+    expect(toasts).toEqual([]);
   });
 
   it("a refused older save leaves a newer choice alone", async () => {
@@ -2799,19 +3089,20 @@ describe("zone map card zone list settings", () => {
 
     // The older save is refused while the newer one is on its way.
     answers[0].reject(new Error("Home Assistant is restarting"));
-    await settle();
+    await settleWrites();
 
     expect(holdSelect(card, 1).value).toBe("30");
+    expect(status(card)).toBe("Saving...");
     expect(toasts).toEqual(["Could not save: Home Assistant is restarting"]);
     answers[1].resolve();
     push(hass, withHold(30));
-    await settle();
+    await settleWrites();
     expect(holdSelect(card, 1).value).toBe("30");
 
     // Refused, the newest goes back to what the store holds.
     choose(holdSelect(card, 1), "60");
     answers[2].reject(new Error("Home Assistant is restarting"));
-    await settle();
+    await settleWrites();
     expect(holdSelect(card, 1).value).toBe("30");
   });
 
@@ -2820,18 +3111,19 @@ describe("zone map card zone list settings", () => {
     const answers = heldSaves(hass);
     choose(typeSelect(card, 1), "ignore");
 
-    // A payload rebuilds the rows while the save is on its way: the row
-    // shows Ignore, and an ignore zone never holds.
+    // A payload lands while the save is on its way: the editor shows
+    // Ignore, and an ignore zone never holds.
     push(hass, { ...withHold(30), rotation_deg: 20 });
     expect(typeSelect(card, 1).value).toBe("ignore");
     expect(holdSelect(card, 1).disabled).toBe(true);
 
     answers[0].reject(new Error("Home Assistant is restarting"));
-    await settle();
+    await settleWrites();
 
     expect(typeSelect(card, 1).value).toBe("detect");
     expect(holdSelect(card, 1).disabled).toBe(false);
     expect(holdSelect(card, 1).value).toBe("30");
+    expect(chipOf(card, 1).querySelector(".zone-dot").classList.contains("ignore")).toBe(false);
   });
 
   it("creates a YAML-only zone when its type is saved", async () => {
@@ -2846,109 +3138,91 @@ describe("zone map card zone list settings", () => {
     // A stored zone keeps its shape.
     choose(holdSelect(card, 1), "15");
 
-    expect(zoneSaves(hass)).toEqual([
+    expect(zoneWrites(hass)).toEqual([
       { device_id: "dev123", zone_id: 7, zone_type: "ignore", shape: "none", data: null },
       { device_id: "dev123", zone_id: 7, hold_s: 60, shape: "none", data: null },
       { device_id: "dev123", zone_id: 1, hold_s: 15 },
     ]);
   });
 
-  it("keeps the name input the only input[data-zone-id]", async () => {
-    // The drafts a rebuild keeps are found by input[data-zone-id], so the
-    // selects are marked with data-zone instead.
+  it("keeps the name field the only element marked data-zone-id", async () => {
+    // The name field saves for the zone in its data-zone-id, so the selects
+    // are marked with data-zone instead.
     const { card } = await listCard(FOUR_ZONES);
 
-    rows(card).forEach((r) => {
-      const marked = Array.from(r.querySelectorAll("[data-zone-id]"));
-      expect(marked).toHaveLength(1);
-      expect(marked[0]).toBe(r.querySelector("input"));
-    });
-    const selects = Array.from(card.shadowRoot.querySelectorAll("#zoneManager select")) as any[];
-    expect(selects.map((s) => [s.dataset.zone, s.dataset.zoneSetting])).toEqual([
-      ["1", "zone_type"],
-      ["1", "hold_s"],
-      ["2", "zone_type"],
-      ["2", "hold_s"],
-      ["3", "zone_type"],
-      ["3", "hold_s"],
-      ["4", "zone_type"],
-      ["4", "hold_s"],
-    ]);
-    expect(card.shadowRoot.querySelectorAll("#zoneManager input[data-zone-id]")).toHaveLength(4);
+    for (const id of [1, 2, 3, 4]) {
+      const marked = Array.from(editor(card, id).querySelectorAll("[data-zone-id]"));
+      expect(marked).toEqual([nameFieldOf(card)]);
+      const selects = Array.from(editorOf(card).querySelectorAll("select")) as any[];
+      expect(selects.map((s) => [s.dataset.zone, s.dataset.zoneSetting])).toEqual([
+        [String(id), "zone_type"],
+        [String(id), "hold_s"],
+      ]);
+    }
   });
 
-  it("keeps a focused select focused when a payload rebuilds the rows", async () => {
+  it("keeps a focused select, the same one, when a payload lands", async () => {
     const { card, hass } = await listCard();
     document.body.appendChild(card);
-    holdSelect(card, 1).focus();
-    expect(card.shadowRoot.activeElement).toBe(holdSelect(card, 1));
+    const hold = holdSelect(card, 1);
+    hold.focus();
+    expect(card.shadowRoot.activeElement).toBe(hold);
 
     push(hass, { ...ZONE_PAYLOAD, rotation_deg: 20 });
 
-    // A new select, focused again.
     expect(card.coneAngleDeg).toBe(20);
-    expect(card.shadowRoot.activeElement).toBe(holdSelect(card, 1));
+    expect(holdSelect(card, 1)).toBe(hold);
+    expect(card.shadowRoot.activeElement).toBe(hold);
   });
 
-  it("explains Ignore and Hold above the zone rows", async () => {
-    const { card } = await listCard();
-    const host = card.shadowRoot.getElementById("zoneManager");
-
-    const hint = host.firstElementChild;
-    expect(hint.textContent).toBe(
-      "Ignore drops targets inside that zone, such as a fan or a curtain, before the other zones are checked. Hold keeps a zone on for a while after the radar loses someone who sat still."
-    );
-    expect(hint.classList.contains("entity-row")).toBe(false);
-    expect(hint.nextElementSibling).toBe(rows(card)[0]);
-    // An administrator needs no note.
-    expect(host.textContent).not.toContain("Only an administrator can change these.");
-
-    // With no zones there is nothing to explain.
-    const empty = await listCard({ ...ZONE_PAYLOAD, zones: {} });
-    expect(empty.card.shadowRoot.getElementById("zoneManager").textContent).toBe("");
-  });
-
-  it("tells a non-administrator why the selects are disabled", async () => {
+  it("tells a non-administrator why the fields are disabled, with no Delete zone", async () => {
     const { card, hass } = await listCard(ZONE_PAYLOAD, { isAdmin: false });
-    const host = card.shadowRoot.getElementById("zoneManager");
+    const note = editorOf(card).querySelector(".zone-settings-note");
 
-    const note = host.children[1];
     expect(note.textContent).toBe("Only an administrator can change these.");
-    expect(note.nextElementSibling).toBe(rows(card)[0]);
+    expect(card.shadowRoot.getElementById("btnDeleteZone")).toBeNull();
+    expect(card.shadowRoot.getElementById("zoneDraw").hidden).toBe(true);
 
-    // An administrator on the same card sees no note and can save.
+    // An administrator on the same card gets the editor made for them.
     card.hass = { ...hass, user: { is_admin: true } };
-    expect(card.shadowRoot.getElementById("zoneManager").textContent).not.toContain(
-      "Only an administrator can change these."
-    );
+    expect(editorOf(card).querySelector(".zone-settings-note")).toBeNull();
+    expect(card.shadowRoot.getElementById("btnDeleteZone")).not.toBeNull();
     expect(typeSelect(card, 1).disabled).toBe(false);
+    expect(nameFieldOf(card).disabled).toBe(false);
   });
 
-  it("disables the selects for non-administrators", async () => {
+  it("disables the fields for non-administrators", async () => {
     const { card, hass } = await listCard(
       { ...ZONE_PAYLOAD, zones: { ...ZONE_PAYLOAD.zones, "2": { ...COUCH, zone_type: "ignore" } } },
       { isAdmin: false }
     );
 
-    const selects = [1, 2].flatMap((id) => [typeSelect(card, id), holdSelect(card, id)]);
-    for (const select of selects) {
-      expect(select.disabled).toBe(true);
-      expect(select.title).toBe("Only an administrator can change this");
+    for (const id of [1, 2]) {
+      for (const select of [typeSelect(card, id), holdSelect(card, id)]) {
+        expect(select.disabled).toBe(true);
+        expect(select.title).toBe("Only an administrator can change this");
+      }
+      expect(nameFieldOf(card).disabled).toBe(true);
     }
 
     // Nothing that still reaches a disabled select saves.
     choose(holdSelect(card, 1), "60");
-    await settle();
+    await settleWrites();
     expect(hass.callService).not.toHaveBeenCalled();
     expect(holdSelect(card, 1).value).toBe("0");
   });
 });
 
-describe("zone map card undo after a zone manager Delete", () => {
-  // Undo writes every snapshot entry back with update_zone, and the backend
-  // stores any zone id it is given and re-creates that zone's entities. A
-  // snapshot entry that outlived a Delete brought the deleted zone back, or
-  // overwrote a zone added later under the freed id, under an "Undid" toast.
+/**
+ * Delete zone, at the foot of the editor, asks first in its place: the zone's
+ * sensors leave Home Assistant, and Undo cannot bring them back.
+ *
+ * Undo writes every snapshot entry back with update_zone, and the backend
+ * stores any zone id it is given and re-creates that zone's entities. A
+ * snapshot entry that outlived a Delete brought the deleted zone back, or
+ * overwrote a zone added later under the freed id, under an "Undid" toast.
+ */
+describe("zone map card Delete zone", () => {
   const TWO_ZONES = {
     ...ZONE_PAYLOAD,
     zones: {
@@ -2961,59 +3235,137 @@ describe("zone map card undo after a zone manager Delete", () => {
     },
   };
 
-  /** Press the Delete button in a zone manager row. */
-  function deleteZone(card: any, zoneId: number) {
-    const rows = Array.from(card.shadowRoot.querySelectorAll("#zoneManager .entity-row"));
-    const row: any = rows.find(
-      (r: any) => r.querySelector("label")?.textContent === `Zone ${zoneId}`
-    );
-    expect(row).toBeTruthy();
-    const del: any = Array.from(row.querySelectorAll("button")).find(
-      (b: any) => b.textContent === "Delete"
-    );
-    del.click();
+  afterEach(() => {
+    document.body.replaceChildren();
+  });
+
+  async function deleteCard(payload: any = TWO_ZONES) {
+    const hass = adminHass(payload);
+    const card = await mountCard(hass);
+    document.body.appendChild(card);
+    hass.callService.mockClear();
+    const toasts = notifications(card);
+    return { card, hass, toasts };
   }
 
-  function zoneSaves(hass: any): any[] {
-    return hass.callService.mock.calls
-      .filter((call: any[]) => call[1] === "update_zone")
-      .map((call: any[]) => call[2]);
+  const $ = (card: any, id: string) => card.shadowRoot.getElementById(id);
+
+  /** Press Delete zone in zone `zoneId`'s editor, then Delete. */
+  function deleteZone(card: any, zoneId: number) {
+    openZone(card, zoneId);
+    $(card, "btnDeleteZone").click();
+    $(card, "btnDeleteZoneYes").click();
   }
+
+  it("asks first, and Keep it sends nothing", async () => {
+    const { card, hass } = await deleteCard();
+    openZone(card, 2);
+
+    $(card, "btnDeleteZone").click();
+
+    expect($(card, "zoneDeleteConfirm").hidden).toBe(false);
+    expect($(card, "btnDeleteZone").closest(".zone-delete-row").hidden).toBe(true);
+    expect($(card, "zoneDeleteText").textContent).toBe(
+      "Delete Window? Its sensors leave Home Assistant, so automations that use them stop working. This cannot be undone."
+    );
+    expect(card.shadowRoot.activeElement).toBe($(card, "btnDeleteZoneNo"));
+
+    $(card, "btnDeleteZoneNo").click();
+
+    expect($(card, "zoneDeleteConfirm").hidden).toBe(true);
+    expect(card.shadowRoot.activeElement).toBe($(card, "btnDeleteZone"));
+    expect(hass.callService).not.toHaveBeenCalled();
+    expect(card.zoneConfig.map((z: any) => z.id)).toEqual([1, 2]);
+  });
+
+  it("takes Escape for Keep it", async () => {
+    const { card, hass } = await deleteCard();
+    $(card, "btnDeleteZone").click();
+
+    pressKey($(card, "btnDeleteZoneNo"), "Escape");
+
+    expect($(card, "zoneDeleteConfirm").hidden).toBe(true);
+    expect(hass.callService).not.toHaveBeenCalled();
+  });
+
+  it("keeps asking through a payload, and stops for another zone", async () => {
+    const { card, hass } = await deleteCard();
+    $(card, "btnDeleteZone").click();
+
+    hass.handlers[ZONES_SUBSCRIBE][0]({ ...TWO_ZONES, rotation_deg: 20 });
+    expect($(card, "zoneDeleteConfirm").hidden).toBe(false);
+
+    openZone(card, 2);
+    expect($(card, "zoneDeleteConfirm").hidden).toBe(true);
+  });
+
+  it("deletes on Delete, says so, and selects the next zone", async () => {
+    const { card, hass, toasts } = await deleteCard();
+
+    deleteZone(card, 1);
+    await settleWrites();
+
+    expect(zoneWrites(hass)).toEqual([
+      { device_id: "dev123", zone_id: 1, delete: true, input_units: "mm" },
+    ]);
+    expect(toasts).toEqual(["Doorway deleted"]);
+    expect(card.zoneConfig.map((z: any) => z.id)).toEqual([2]);
+    expect(chipOf(card, 1)).toBeNull();
+    expect(card.selectedZone).toBe(2);
+    expect(card.shadowRoot.activeElement).toBe(chipOf(card, 2));
+  });
+
+  it("puts the focus on Add zone once the last zone is deleted", async () => {
+    const { card } = await deleteCard(ZONE_PAYLOAD);
+
+    deleteZone(card, 1);
+
+    expect(card.selectedZone).toBeNull();
+    expect(editorOf(card)).toBeNull();
+    expect($(card, "zoneEmpty").hidden).toBe(false);
+    expect(card.shadowRoot.activeElement).toBe($(card, "btnAddZone"));
+  });
 
   it("drops the deleted zone's snapshot, so Undo cannot re-create it", async () => {
-    const hass = fakeHass(TWO_ZONES);
-    const card = await mountCard(hass);
+    const { card, hass } = await deleteCard();
     card._setUndoSnapshot(card._snapshotZones([2]));
-    expect(card.shadowRoot.getElementById("btnUndo").disabled).toBe(false);
-    hass.callService.mockClear();
+    expect($(card, "btnUndo").disabled).toBe(false);
 
     deleteZone(card, 2);
 
-    expect(zoneSaves(hass)).toEqual([
+    expect(zoneWrites(hass)).toEqual([
       { device_id: "dev123", zone_id: 2, delete: true, input_units: "mm" },
     ]);
     expect(card._undoSnapshot).toBeNull();
-    expect(card.shadowRoot.getElementById("btnUndo").disabled).toBe(true);
+    expect($(card, "btnUndo").disabled).toBe(true);
 
     hass.callService.mockClear();
-    card.shadowRoot.getElementById("btnUndo").click();
+    $(card, "btnUndo").click();
     expect(hass.callService).not.toHaveBeenCalled();
     expect(card.zones.map((z: any) => z.id)).toEqual([1]);
   });
 
   it("still undoes the other zones a snapshot holds", async () => {
-    const hass = fakeHass(TWO_ZONES);
-    const card = await mountCard(hass);
+    const { card, hass } = await deleteCard();
     card._setUndoSnapshot(card._snapshotZones([1, 2]));
 
     deleteZone(card, 2);
 
     expect(card._undoSnapshot.map((s: any) => s.zoneId)).toEqual([1]);
-    expect(card.shadowRoot.getElementById("btnUndo").disabled).toBe(false);
+    expect($(card, "btnUndo").disabled).toBe(false);
 
     hass.callService.mockClear();
-    card.shadowRoot.getElementById("btnUndo").click();
-    expect(zoneSaves(hass).map((p: any) => p.zone_id)).toEqual([1]);
+    $(card, "btnUndo").click();
+    expect(zoneWrites(hass).map((p: any) => p.zone_id)).toEqual([1]);
+  });
+
+  it("deletes on a locked map too, which locks drawing only", async () => {
+    const { card, hass } = await deleteCard();
+    expect(card.isLocked).toBe(true);
+
+    deleteZone(card, 2);
+
+    expect(zoneWrites(hass).map((p: any) => p.delete)).toEqual([true]);
   });
 });
 
@@ -6440,8 +6792,9 @@ describe("zone map card view only", () => {
     const card = await mountCard(fakeHass(), VIEW_ONLY);
     expect(card.getCardSize()).toBe(6);
 
+    // The full card, with the Zones panel open under the map.
     card.setConfig({ device_id: "dev123", ...TEN_METER_GRID });
-    expect(card.getCardSize()).toBe(8);
+    expect(card.getCardSize()).toBe(14);
   });
 });
 
@@ -10348,14 +10701,520 @@ describe("zone map card flipped map", () => {
 });
 
 /**
- * Clearing zones from the chips, and undoing it.
+ * The Zones panel under the map.
  *
- * A double-click on a zone chip clears that zone and Clear All Zones clears
- * every listed one, with one update_zone of shape none per zone. Both leave an
- * undo snapshot, and Undo writes each zone back. Clear All and Undo toast once
- * for the whole batch, and only when every write landed; a refused write says
- * so itself. Unlocked throughout, so nothing here depends on whether the lock
- * should guard these controls.
+ * Adding a zone, renaming it, its Type, its Hold and Delete used to sit two
+ * collapsed sections deep, under Configure and then Zones, and the chips
+ * above them led nowhere. Now the panel is always open under the map: the
+ * Zones heading with Add zone, the chips, and the selected zone's editor.
+ * Map settings keeps what is set once for the map. A new radar says how to
+ * start instead of a map that silently takes no drawing.
+ */
+describe("zone map card zones panel", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    document.body.replaceChildren();
+  });
+
+  const EMPTY = { ...ZONE_PAYLOAD, zones: {} };
+  const $ = (card: any, id: string) => card.shadowRoot.getElementById(id);
+
+  it("sits outside Map settings, open while Map settings is shut", async () => {
+    const card = await mountCard(adminHass());
+    const settings = $(card, "configContent");
+
+    expect(settings.hidden).toBe(true);
+    for (const id of ["zonePanel", "btnAddZone", "zone-buttons", "zoneManager"]) {
+      expect(settings.contains($(card, id))).toBe(false);
+      expect($(card, id).closest("[hidden]")).toBeNull();
+    }
+    expect($(card, "zonePanelTitle").textContent).toBe("Zones");
+    expect($(card, "btnAddZone").textContent).toBe("Add zone");
+    expect(editorOf(card).dataset.editorZone).toBe("1");
+    // Under the map's own chips (Coverage, History) and the History panel,
+    // above Map settings.
+    const order = ["viewTools", "historyPanel", "zonePanel", "btnConfigToggle"].map((id) => $(card, id));
+    for (let i = 1; i < order.length; i += 1) {
+      expect(order[i - 1].compareDocumentPosition(order[i]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
+    // The nested Zones section is gone.
+    expect($(card, "toggleZones")).toBeNull();
+    expect($(card, "sectionZones")).toBeNull();
+  });
+
+  it("opens and shuts Map settings as a real disclosure button", async () => {
+    const card = await mountCard(adminHass());
+    const toggle = $(card, "btnConfigToggle");
+
+    expect(toggle.tagName).toBe("BUTTON");
+    expect(toggle.querySelector(".config-title").textContent).toBe("Map settings");
+    expect(toggle.getAttribute("aria-controls")).toBe("configContent");
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+
+    toggle.click();
+    expect($(card, "configContent").hidden).toBe(false);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(toggle.querySelector(".config-caret").textContent).toBe("▾");
+
+    // Open it stays across a render, as page memory.
+    card.render();
+    expect($(card, "configContent").hidden).toBe(false);
+    $(card, "btnConfigToggle").click();
+    expect($(card, "configContent").hidden).toBe(true);
+    expect($(card, "btnConfigToggle").getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("says how to start on a radar with no zones", async () => {
+    const card = await mountCard(adminHass(EMPTY));
+
+    expect($(card, "zoneEmpty").hidden).toBe(false);
+    expect($(card, "zoneEmptyText").textContent).toBe(
+      "No zones yet. Press Add zone, then drag on the map to draw it."
+    );
+    expect($(card, "zoneEmptyRotation").hidden).toBe(false);
+    expect($(card, "zoneEmptyRotation").textContent).toBe(
+      "Is the sensor turned, or mounted in a corner? Set Cone rotation under Map settings first."
+    );
+    expect($(card, "btnAddZone").hidden).toBe(false);
+    expect(card.shadowRoot.querySelectorAll("#zone-buttons .zone-btn")).toHaveLength(0);
+    expect(editorOf(card)).toBeNull();
+
+    $(card, "btnAddZone").click();
+
+    expect($(card, "zoneEmpty").hidden).toBe(true);
+    expect(chipOf(card, 1).textContent).toBe("Zone 1");
+    expect(editorOf(card).dataset.editorZone).toBe("1");
+    // The focus stays on Add zone, so no phone keyboard opens over the map.
+    expect(card.shadowRoot.activeElement).not.toBe(nameFieldOf(card));
+  });
+
+  it("tells a viewer an administrator adds zones, with no Add zone", async () => {
+    const card = await mountCard(fakeHass(EMPTY));
+
+    expect($(card, "zoneEmptyText").textContent).toBe("No zones yet. An administrator can add them.");
+    expect($(card, "zoneEmptyRotation").hidden).toBe(true);
+    expect($(card, "btnAddZone").hidden).toBe(true);
+  });
+
+  it("says to press Add zone at a press on the map of a radar with no zones", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const card = await mountCard(adminHass(EMPTY), TEN_METER_GRID);
+      layOut(card, 800);
+      const toasts = notifications(card);
+      const press = () =>
+        card.canvas.dispatchEvent(new MouseEvent("mousedown", { clientX: 400, clientY: 400 }));
+
+      press();
+      press();
+      expect(toasts).toEqual(["Press Add zone under the map first."]);
+      vi.advanceTimersByTime(1600);
+      press();
+      expect(toasts).toHaveLength(2);
+      expect(card.isDrawing).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("says nothing at a viewer's press on a map with no zones", async () => {
+    const card = await mountCard(fakeHass(EMPTY), TEN_METER_GRID);
+    layOut(card, 800);
+    const toasts = notifications(card);
+
+    card.canvas.dispatchEvent(new MouseEvent("mousedown", { clientX: 400, clientY: 400 }));
+
+    expect(toasts).toEqual([]);
+  });
+
+  it("selects a zone from its chip, pressed, with its editor", async () => {
+    const two = { ...ZONE_PAYLOAD, zones: { ...ZONE_PAYLOAD.zones, "2": { shape: "none", data: null, name: "Couch" } } };
+    const card = await mountCard(adminHass(two));
+    expect(chipOf(card, 1).getAttribute("aria-pressed")).toBe("true");
+    expect(chipOf(card, 2).getAttribute("aria-pressed")).toBe("false");
+    expect(chipOf(card, 2).getAttribute("aria-controls")).toBe("zoneManager");
+    expect($(card, "zone-buttons").getAttribute("role")).toBe("group");
+
+    chipOf(card, 2).click();
+
+    expect(card.selectedZone).toBe(2);
+    expect(chipOf(card, 2).getAttribute("aria-pressed")).toBe("true");
+    expect(chipOf(card, 2).classList.contains("active")).toBe(true);
+    expect(chipOf(card, 1).getAttribute("aria-pressed")).toBe("false");
+    expect($(card, "zoneEditorTitle").textContent).toBe("Zone 2");
+    expect(nameFieldOf(card).value).toBe("Couch");
+    expect(editorOf(card).getAttribute("aria-labelledby")).toBe("zoneEditorTitle");
+  });
+
+  it("gives each chip its zone's color, hollow until drawn and hatched when ignored", async () => {
+    const card = await mountCard(
+      adminHass({
+        ...ZONE_PAYLOAD,
+        zones: {
+          ...ZONE_PAYLOAD.zones,
+          "2": { shape: "none", data: null, name: "Couch" },
+          "3": { ...ZONE_PAYLOAD.zones["1"], name: "Fan", zone_type: "ignore" },
+        },
+      })
+    );
+    const dot = (id: number) => chipOf(card, id).querySelector(".zone-dot");
+
+    expect(dot(1).style.getPropertyValue("--zone-color")).toBe("rgba(244, 67, 54, 1)");
+    expect(dot(1).className).toBe("zone-dot");
+    expect(dot(2).style.getPropertyValue("--zone-color")).toBe("rgba(33, 150, 243, 1)");
+    expect(dot(2).className).toBe("zone-dot undrawn");
+    expect(dot(3).className).toBe("zone-dot ignore");
+    expect(dot(1).getAttribute("aria-hidden")).toBe("true");
+    // The chip's text is the name alone.
+    expect(chipOf(card, 3).textContent).toBe("Fan");
+    // The editor is edged in the zone's color.
+    expect(editorOf(card).style.getPropertyValue("--zone-color")).toBe("rgba(244, 67, 54, 1)");
+  });
+
+  it("clears nothing on a chip double-click", async () => {
+    const hass = adminHass();
+    const card = await mountCard(hass, { start_locked: false });
+    hass.callService.mockClear();
+    const toasts = notifications(card);
+
+    chipOf(card, 1).dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
+
+    expect(hass.callService).not.toHaveBeenCalled();
+    expect(card.zones.map((z: any) => z.id)).toEqual([1]);
+    expect(toasts).toEqual([]);
+  });
+
+  it("stops adding at zone 32, and says why", async () => {
+    const zones: Record<string, any> = {};
+    for (let id = 1; id <= 32; id += 1) zones[String(id)] = { shape: "none", data: null };
+    const hass = adminHass({ ...ZONE_PAYLOAD, zones });
+    const card = await mountCard(hass);
+    hass.callService.mockClear();
+
+    expect($(card, "btnAddZone").disabled).toBe(true);
+    expect($(card, "zonesFull").hidden).toBe(false);
+    expect($(card, "zonesFull").textContent).toBe(
+      "The map holds up to 32 zones. Delete one to add another."
+    );
+    card._handleAddZone();
+    expect(hass.callService).not.toHaveBeenCalled();
+    expect(card.zoneConfig).toHaveLength(32);
+
+    // A free id below 32 is given out again.
+    delete zones["7"];
+    hass.handlers[ZONES_SUBSCRIBE][0]({ ...ZONE_PAYLOAD, zones });
+    expect($(card, "btnAddZone").disabled).toBe(false);
+    expect($(card, "zonesFull").hidden).toBe(true);
+    $(card, "btnAddZone").click();
+    expect(zoneWrites(hass).map((save) => save.zone_id)).toEqual([7]);
+  });
+
+  it("adds a zone on a locked map, whose editor says how to unlock it to draw", async () => {
+    const hass = adminHass();
+    const card = await mountCard(hass);
+    expect(card.isLocked).toBe(true);
+    const toasts = notifications(card);
+
+    $(card, "btnAddZone").click();
+
+    expect(card.selectedZone).toBe(2);
+    expect(zoneWrites(hass).slice(-1)[0]).toMatchObject({ zone_id: 2, shape: "none" });
+    expect($(card, "zoneDrawText").textContent).toBe(
+      "The map is locked, so drawing is off. Unlock it to draw this zone or change its shape."
+    );
+    // A zone with no shape yet gets it at the top, as a callout.
+    expect($(card, "zoneDraw").classList.contains("callout")).toBe(true);
+    expect(editorOf(card).querySelector(".zone-editor-head").nextElementSibling).toBe($(card, "zoneDraw"));
+    expect($(card, "btnZoneUnlock").hidden).toBe(false);
+    expect($(card, "btnZoneUnlock").textContent).toBe("Unlock");
+
+    $(card, "btnZoneUnlock").click();
+
+    expect(card.isLocked).toBe(false);
+    expect(window.localStorage.getItem("apollo-mmwave.zone-map.lock.dev123")).toBe("0");
+    expect(toasts).toEqual(["Drawing and cone rotation unlocked. You can edit zones now."]);
+    expect($(card, "btnLock").title).toBe("Lock drawing and cone rotation");
+    expect($(card, "btnZoneUnlock").hidden).toBe(true);
+    expect($(card, "zoneDrawText").textContent).toBe(
+      "Drag on the map to draw this zone as a rectangle. ✎ on the map offers an ellipse or a polygon. A tap on another zone picks it."
+    );
+  });
+
+  it("says how to draw in each mode, and how to change a drawn zone's shape", async () => {
+    const card = await mountCard(adminHass(), { start_locked: false });
+    const draw = () => $(card, "zoneDrawText").textContent;
+
+    expect(draw()).toBe(
+      "To change its shape, drag on the map to draw this zone as a rectangle. ✎ on the map offers an ellipse or a polygon. A tap on another zone picks it."
+    );
+    // A drawn zone's hint sits under its settings, not at the top.
+    expect($(card, "zoneDraw").classList.contains("callout")).toBe(false);
+    expect($(card, "zoneDraw").nextElementSibling.classList.contains("zone-delete-row")).toBe(true);
+
+    $(card, "btnModeEllipse").click();
+    expect(draw()).toBe(
+      "To change its shape, drag on the map to draw this zone as an ellipse. ✎ on the map offers a rectangle or a polygon. A tap on another zone picks it."
+    );
+    $(card, "btnModePolygon").click();
+    expect(draw()).toBe(
+      "To change its shape, tap each corner of this zone on the map, up to 32, then double-tap the last one or press ✓."
+    );
+
+    // Cleared, the zone has no shape, and the hint moves up as a callout.
+    $(card, "configContent").hidden = false;
+    $(card, "clearBtn").click();
+    $(card, "btnClearAllYes").click();
+    expect(draw()).toBe(
+      "Tap each corner of this zone on the map, up to 32, then double-tap the last one or press ✓."
+    );
+    expect($(card, "zoneDraw").classList.contains("callout")).toBe(true);
+  });
+
+  it("says Walk is marking the zone while it does", async () => {
+    const card = await mountCard(adminHass(), { start_locked: false });
+
+    card._enterWalk();
+
+    expect($(card, "zoneDrawText").textContent).toBe(
+      "Marking this zone's corners by walking. Follow the steps under the map."
+    );
+    expect($(card, "btnZoneUnlock").hidden).toBe(true);
+    card._exitWalk();
+    expect($(card, "zoneDrawText").textContent).toContain("as a rectangle");
+  });
+
+  it("says what the selected zone's presence sensor says now", async () => {
+    const PRESENCE = "binary_sensor.office_zone_1_presence";
+    const payload = {
+      ...ZONE_PAYLOAD,
+      zones: {
+        "1": { ...ZONE_PAYLOAD.zones["1"], presence_entity_id: PRESENCE },
+        "2": { shape: "none", data: null, name: "Couch" },
+        "3": { ...ZONE_PAYLOAD.zones["1"], name: "Fan", zone_type: "ignore" },
+        "4": { ...ZONE_PAYLOAD.zones["1"], name: "Desk" },
+      },
+    };
+    const hass = adminHass(payload);
+    const card = await mountCard(hass);
+    const now = () => $(card, "zonePresence").textContent;
+    const states = (state: string, held = false) => {
+      card.hass = { ...hass, states: { [PRESENCE]: { state, attributes: { held } } } };
+    };
+
+    states("off");
+    expect(now()).toBe("NowNobody is in this zone");
+    expect($(card, "zonePresence").querySelector(".zone-presence-label").textContent).toBe("Now");
+    states("on");
+    expect($(card, "zonePresenceText").textContent).toBe("Someone is in this zone");
+    states("on", true);
+    expect($(card, "zonePresenceText").textContent).toBe("On, held for someone who went still");
+    states("unavailable");
+    expect($(card, "zonePresenceText").textContent).toBe("Radar offline");
+
+    openZone(card, 2);
+    expect($(card, "zonePresenceText").textContent).toBe("Turns on once the zone is drawn");
+    openZone(card, 3);
+    expect($(card, "zonePresenceText").textContent).toBe("Never turns on, since it ignores targets");
+    openZone(card, 4);
+    expect($(card, "zonePresenceText").textContent).toBe("No presence sensor yet");
+  });
+
+  it("makes every control in the panel finger sized, and its fields 16 px", async () => {
+    const card = await mountCard(adminHass());
+    const css = card.shadowRoot.querySelector("style").textContent;
+
+    expect(css).toContain(
+      ".zone-panel button, .zone-panel input, .zone-panel select, button.config-header, .clear-all button { min-height: 44px; box-sizing: border-box; }"
+    );
+    expect(css).toContain(".zone-panel input, .zone-panel select { font-size: 16px; }");
+    // At 320 px the rows wrap rather than run off the card.
+    expect(css).toContain(".zone-settings { display: flex; flex-wrap: wrap;");
+    expect(css).toContain(".zone-panel-head { display: flex; flex-wrap: wrap;");
+    expect(css).toContain("button.zone-btn[data-zone-id] { max-width: 100%; overflow: hidden; text-overflow: ellipsis;");
+    expect(css).toContain(".zone-editor input { width: 100%; max-width: 420px; min-width: 0; }");
+    // A keyboard user sees where the focus is.
+    expect(css).toContain(".container :focus-visible { outline: 2px solid var(--primary-color);");
+  });
+
+  it("drops the drawing sentence from the grid line under Map settings", async () => {
+    const card = await mountCard(adminHass());
+
+    expect($(card, "gridInfo").textContent.startsWith("Grid units: ")).toBe(true);
+  });
+});
+
+/**
+ * A tap on the map picks the zone under it, the way a press on its chip
+ * does.
+ *
+ * On TEN_METER_GRID laid out 800 CSS px square, a CSS px is 12.5 mm: x is
+ * -5000 + 12.5 px and y is 12.5 px. Doorway (0..1000 by 0..1000 mm) is px
+ * x 400..480, y 0..80; Couch here (2000..3000 by 2000..3000) is x 560..640,
+ * y 160..240. A tap draws nothing, so Ellipse no longer saves a 1 mm one,
+ * and a press on a zone on a locked map picks it without the lock's toast.
+ */
+describe("zone map card picking a zone on the map", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const COUCH = { x_min: 2000, x_max: 3000, y_min: 2000, y_max: 3000 };
+  const TWO = {
+    ...ZONE_PAYLOAD,
+    zones: { ...ZONE_PAYLOAD.zones, "2": { shape: "rect", data: COUCH, name: "Couch" } },
+  };
+
+  async function mapCard(config: Record<string, any> = {}, payload: any = TWO) {
+    const hass = adminHass(payload);
+    const card = await mountCard(hass, { ...TEN_METER_GRID, ...config });
+    layOut(card, 800);
+    hass.callService.mockClear();
+    const toasts = notifications(card);
+    return { card, hass, toasts };
+  }
+
+  function mouse(card: any, type: string, x: number, y: number) {
+    card.canvas.dispatchEvent(new MouseEvent(type, { clientX: x, clientY: y }));
+  }
+
+  function tap(card: any, x: number, y: number) {
+    mouse(card, "mousedown", x, y);
+    mouse(card, "mouseup", x, y);
+  }
+
+  function touch(card: any, type: string, x: number, y: number) {
+    const point = { clientX: x, clientY: y };
+    const event = Object.assign(new Event(type, { cancelable: true }), {
+      touches: type === "touchend" ? [] : [point],
+      changedTouches: [point],
+    });
+    card.canvas.dispatchEvent(event);
+  }
+
+  it("picks a zone with a press on a locked map, with no toast", async () => {
+    const { card, hass, toasts } = await mapCard();
+    expect(card.isLocked).toBe(true);
+    expect(card.selectedZone).toBe(1);
+
+    mouse(card, "mousedown", 600, 200);
+
+    expect(card.selectedZone).toBe(2);
+    expect(editorOf(card).dataset.editorZone).toBe("2");
+    expect(toasts).toEqual([]);
+    expect(hass.callService).not.toHaveBeenCalled();
+    expect(card.isDrawing).toBe(false);
+
+    // Off every zone, it is still a try at drawing.
+    mouse(card, "mousedown", 100, 600);
+    expect(toasts).toEqual(["Unlock the map to draw zones."]);
+    expect(card.selectedZone).toBe(2);
+  });
+
+  it.each(["rect", "ellipse"])("picks a zone with a tap in %s mode and saves nothing", async (mode) => {
+    const { card, hass, toasts } = await mapCard({ start_locked: false });
+    card._setDrawMode(mode);
+    const zonesBefore = structuredClone(card.zones);
+
+    // A few px of finger jitter is still a tap.
+    mouse(card, "mousedown", 600, 200);
+    mouse(card, "mouseup", 604, 203);
+    await settleWrites();
+
+    expect(card.selectedZone).toBe(2);
+    expect(hass.callService).not.toHaveBeenCalled();
+    expect(card.zones).toEqual(zonesBefore);
+    expect(toasts).toEqual([]);
+    expect(card.isDrawing).toBe(false);
+    expect(card._undoSnapshot).toBeNull();
+  });
+
+  it("saves nothing for a tap in Ellipse mode off every zone", async () => {
+    const { card, hass } = await mapCard({ start_locked: false });
+    card._setDrawMode("ellipse");
+
+    tap(card, 100, 600);
+    await settleWrites();
+
+    expect(card.selectedZone).toBe(1);
+    expect(hass.callService).not.toHaveBeenCalled();
+  });
+
+  it("still draws the selected zone with a drag", async () => {
+    const { card, hass } = await mapCard({ start_locked: false });
+    openZone(card, 2);
+
+    // From inside Doorway: a drag draws, it does not pick.
+    mouse(card, "mousedown", 420, 20);
+    mouse(card, "mousemove", 500, 100);
+    mouse(card, "mouseup", 500, 100);
+
+    expect(card.selectedZone).toBe(2);
+    expect(zoneWrites(hass).map((save) => [save.zone_id, save.shape])).toEqual([[2, "rect"]]);
+  });
+
+  it("picks a zone with a touch tap", async () => {
+    const { card, hass } = await mapCard({ start_locked: false });
+
+    touch(card, "touchstart", 600, 200);
+    touch(card, "touchend", 600, 200);
+
+    expect(card.selectedZone).toBe(2);
+    expect(hass.callService).not.toHaveBeenCalled();
+  });
+
+  it("places a corner, not a pick, with a tap in Polygon mode", async () => {
+    const { card } = await mapCard({ start_locked: false });
+    card._setDrawMode("polygon");
+
+    tap(card, 600, 200);
+
+    expect(card.selectedZone).toBe(1);
+    expect(card._polyPoints).toHaveLength(1);
+  });
+
+  it("picks the smallest of overlapping zones, so a zone inside another can be picked", async () => {
+    const INNER = { x_min: 200, x_max: 600, y_min: 200, y_max: 600 };
+    const { card } = await mapCard({}, {
+      ...ZONE_PAYLOAD,
+      zones: { ...ZONE_PAYLOAD.zones, "2": { shape: "rect", data: INNER, name: "Rug" } },
+    });
+
+    // (300, 400) mm, inside both.
+    mouse(card, "mousedown", 424, 32);
+    expect(card.selectedZone).toBe(2);
+    // (800, 800) mm, inside Doorway only.
+    mouse(card, "mousedown", 464, 64);
+    expect(card.selectedZone).toBe(1);
+  });
+
+  it("draws the selected zone thicker while the map can be drawn on", async () => {
+    const { card } = await mapCard({ start_locked: false });
+    const strokes = () => {
+      const { ctx, draws } = drawRecordingContext();
+      card.ctx = ctx;
+      card.drawZones();
+      return draws.filter((d) => d.name === "strokeRect").map((d) => d.lineWidth);
+    };
+
+    expect(strokes()).toEqual([4, 2]);
+    openZone(card, 2);
+    expect(strokes()).toEqual([2, 4]);
+    // Locked, nothing is about to be drawn over.
+    card._toggleLock();
+    expect(strokes()).toEqual([2, 2]);
+  });
+});
+
+/**
+ * Clear all shapes, under Map settings, and undoing it.
+ *
+ * It clears every listed zone's shape with one update_zone of shape none per
+ * zone, once its question was answered, and leaves an undo snapshot; Undo
+ * writes each zone back. Both toast once for the whole batch, and only when
+ * every write landed; a refused write says so itself. The zones keep their
+ * names, types and hold times. It used to sit in the row of zone chips, one
+ * stray press from wiping every zone, and a chip's double-click cleared one
+ * zone; that is gone.
  */
 describe("zone map card clearing zones", () => {
   const DOORWAY = ZONE_PAYLOAD.zones["1"].data;
@@ -10364,9 +11223,10 @@ describe("zone map card clearing zones", () => {
     ...ZONE_PAYLOAD,
     zones: { ...ZONE_PAYLOAD.zones, "2": { shape: "rect", data: WINDOW, name: "Window" } },
   };
+  const $ = (card: any, id: string) => card.shadowRoot.getElementById(id);
 
   async function clearingCard() {
-    const hass = fakeHass(TWO_ZONES);
+    const hass = adminHass(TWO_ZONES);
     const card = await mountCard(hass, { start_locked: false });
     hass.callService.mockClear();
     const toasts = notifications(card);
@@ -10374,22 +11234,12 @@ describe("zone map card clearing zones", () => {
   }
 
   function clearAll(card: any) {
-    card.shadowRoot.getElementById("clearBtn").click();
+    $(card, "clearBtn").click();
+    $(card, "btnClearAllYes").click();
   }
 
   function undo(card: any) {
-    card.shadowRoot.getElementById("btnUndo").click();
-  }
-
-  /** Let the resolved callService calls run on to their toasts. */
-  async function settle() {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  }
-
-  function zoneSaves(hass: any): any[] {
-    return hass.callService.mock.calls
-      .filter((call: any[]) => call[1] === "update_zone")
-      .map((call: any[]) => call[2]);
+    $(card, "btnUndo").click();
   }
 
   /** Refuse the update_zone call for `zoneId` and let every other one land. */
@@ -10407,91 +11257,116 @@ describe("zone map card clearing zones", () => {
     return { device_id: "dev123", zone_id: zoneId, shape: "rect", data, input_units: "mm" };
   }
 
-  it("clears one zone on a chip double-click, and Undo puts it back", async () => {
-    const { card, hass, toasts } = await clearingCard();
-    const chip = card.shadowRoot.querySelector('#zone-buttons .zone-btn[data-zone-id="1"]');
+  it("sits under Map settings, not among the zone chips", async () => {
+    const { card } = await clearingCard();
 
-    chip.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
-    await settle();
+    expect($(card, "configContent").contains($(card, "clearBtn"))).toBe(true);
+    expect($(card, "zone-buttons").contains($(card, "clearBtn"))).toBe(false);
+    expect($(card, "clearBtn").textContent).toBe("Clear all shapes");
+    expect($(card, "clearAll").hidden).toBe(false);
+  });
 
-    expect(zoneSaves(hass)).toEqual([cleared(1)]);
-    expect(card.zones).toEqual([{ id: 2, shape: "rect", data: WINDOW }]);
-    expect(toasts).toEqual(["Doorway cleared"]);
-    expect(card._undoSnapshot).toEqual([{ zoneId: 1, shape: "rect", data: DOORWAY }]);
+  it("asks first, and Keep them clears nothing", async () => {
+    const { card, hass } = await clearingCard();
+    document.body.appendChild(card);
 
-    hass.callService.mockClear();
-    undo(card);
-    await settle();
+    $(card, "clearBtn").click();
 
-    expect(zoneSaves(hass)).toEqual([restored(1, DOORWAY)]);
-    expect(card.zones).toContainEqual({ id: 1, shape: "rect", data: DOORWAY });
-    expect(toasts).toEqual(["Doorway cleared", "Undid last zone change"]);
+    expect($(card, "clearAllConfirm").hidden).toBe(false);
+    expect($(card, "clearBtn").hidden).toBe(true);
+    expect($(card, "clearAllConfirm").firstElementChild.textContent).toBe(
+      "Clear every zone's shape? The zones keep their names, types and hold times, and ↶ on the map brings the shapes back."
+    );
+    expect(card.shadowRoot.activeElement).toBe($(card, "btnClearAllNo"));
+
+    $(card, "btnClearAllNo").click();
+
+    expect($(card, "clearAllConfirm").hidden).toBe(true);
+    expect($(card, "clearBtn").hidden).toBe(false);
+    expect(hass.callService).not.toHaveBeenCalled();
+    expect(card.zones).toHaveLength(2);
+
+    // Escape answers it the same way.
+    $(card, "clearBtn").click();
+    pressKey($(card, "btnClearAllNo"), "Escape");
+    expect($(card, "clearAllConfirm").hidden).toBe(true);
+    document.body.replaceChildren();
   });
 
   it("clears every zone with a write each and one toast, and Undo restores them", async () => {
     const { card, hass, toasts } = await clearingCard();
 
     clearAll(card);
-    await settle();
+    await settleWrites();
 
-    expect(zoneSaves(hass)).toEqual([cleared(1), cleared(2)]);
+    expect(zoneWrites(hass)).toEqual([cleared(1), cleared(2)]);
     expect(card.zones).toEqual([]);
-    expect(toasts).toEqual(["All zones cleared"]);
+    expect(toasts).toEqual(["All shapes cleared"]);
     expect(card._undoSnapshot).toEqual([
       { zoneId: 1, shape: "rect", data: DOORWAY },
       { zoneId: 2, shape: "rect", data: WINDOW },
     ]);
+    // The zones stay, and with nothing left to clear the button goes.
+    expect(card.zoneConfig.map((z: any) => z.id)).toEqual([1, 2]);
+    expect($(card, "clearAll").hidden).toBe(true);
 
     hass.callService.mockClear();
     undo(card);
-    await settle();
+    await settleWrites();
 
-    expect(zoneSaves(hass)).toEqual([restored(1, DOORWAY), restored(2, WINDOW)]);
+    expect(zoneWrites(hass)).toEqual([restored(1, DOORWAY), restored(2, WINDOW)]);
     expect(card.zones).toEqual([
       { id: 1, shape: "rect", data: DOORWAY },
       { id: 2, shape: "rect", data: WINDOW },
     ]);
-    expect(toasts).toEqual(["All zones cleared", "Undid last zone change"]);
+    expect(toasts).toEqual(["All shapes cleared", "Undid last zone change"]);
+    expect($(card, "clearAll").hidden).toBe(false);
   });
 
-  it("does not say all zones were cleared when one of them was refused", async () => {
+  it("does not say all shapes were cleared when one of them was refused", async () => {
     const { card, hass, toasts } = await clearingCard();
     refuse(hass, 2);
 
     clearAll(card);
-    await settle();
+    await settleWrites();
 
-    expect(zoneSaves(hass)).toEqual([cleared(1), cleared(2)]);
+    expect(zoneWrites(hass)).toEqual([cleared(1), cleared(2)]);
     expect(toasts).toEqual(["Could not save: zone 2 is busy"]);
   });
 
   it("does not say the undo happened when one of its writes was refused", async () => {
     const { card, hass, toasts } = await clearingCard();
     clearAll(card);
-    await settle();
+    await settleWrites();
     hass.callService.mockClear();
     refuse(hass, 1);
 
     undo(card);
-    await settle();
+    await settleWrites();
 
-    expect(zoneSaves(hass)).toEqual([restored(1, DOORWAY), restored(2, WINDOW)]);
-    expect(toasts).toEqual(["All zones cleared", "Could not save: zone 1 is busy"]);
+    expect(zoneWrites(hass)).toEqual([restored(1, DOORWAY), restored(2, WINDOW)]);
+    expect(toasts).toEqual(["All shapes cleared", "Could not save: zone 1 is busy"]);
+  });
+
+  it("is an administrator's only", async () => {
+    const card = await mountCard(fakeHass(TWO_ZONES), { start_locked: false });
+
+    expect($(card, "clearAll").hidden).toBe(true);
   });
 });
 
 /**
- * The one-gesture clears on a locked map.
+ * Clear all shapes on a locked map.
  *
- * The lock used to guard drawing only, so a stray double tap on a zone chip,
- * or a press on Clear All Zones, still wiped zones on a map the user had
- * locked against exactly that. Both now refuse with a toast and ring the
- * Locked button. Clear All stays enabled: a disabled button takes no tap, and
- * a phone user would see a dim chip that does nothing and never learn why.
+ * The lock used to guard drawing only, so a press on Clear All Zones still
+ * wiped zones on a map the user had locked against exactly that. It now
+ * refuses with a toast and rings the Locked button, without asking. It
+ * stays enabled: a disabled button takes no tap, and a phone user would see
+ * a dim button that does nothing and never learn why.
  */
 describe("zone map card clearing zones on a locked map", () => {
   async function lockedCard() {
-    const hass = fakeHass();
+    const hass = adminHass();
     const card = await mountCard(hass);
     expect(card.isLocked).toBe(true);
     hass.callService.mockClear();
@@ -10499,45 +11374,49 @@ describe("zone map card clearing zones on a locked map", () => {
     return { card, hass, toasts };
   }
 
-  it("a locked map refuses a chip double-click clear with a toast", async () => {
+  it("Clear all shapes on a locked map toasts and clears nothing", async () => {
     const { card, hass, toasts } = await lockedCard();
     const zonesBefore = structuredClone(card.zones);
-    const chip = card.shadowRoot.querySelector('#zone-buttons .zone-btn[data-zone-id="1"]');
+    const $ = (id: string) => card.shadowRoot.getElementById(id);
+    expect($("clearBtn").disabled).toBe(false);
+    expect($("clearBtn").classList.contains("locked-action")).toBe(true);
+    expect($("clearBtn").getAttribute("aria-disabled")).toBe("true");
 
-    chip.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
+    $("clearBtn").click();
 
+    expect($("clearAllConfirm").hidden).toBe(true);
     expect(hass.callService).not.toHaveBeenCalled();
     expect(card.zones).toEqual(zonesBefore);
     expect(card._undoSnapshot).toBeNull();
     expect(toasts).toEqual(["Unlock the map to clear zones."]);
-    expect(card.shadowRoot.getElementById("btnLock").classList.contains("nudge")).toBe(true);
-  });
+    expect($("btnLock").classList.contains("nudge")).toBe(true);
 
-  it("Clear All on a locked map toasts and clears nothing", async () => {
-    const { card, hass, toasts } = await lockedCard();
-    const zonesBefore = structuredClone(card.zones);
-    const clearBtn = () => card.shadowRoot.getElementById("clearBtn");
-    expect(clearBtn().disabled).toBe(false);
-    expect(clearBtn().classList.contains("locked-action")).toBe(true);
-    expect(clearBtn().getAttribute("aria-disabled")).toBe("true");
-
-    clearBtn().click();
-
-    expect(hass.callService).not.toHaveBeenCalled();
-    expect(card.zones).toEqual(zonesBefore);
-    expect(card._undoSnapshot).toBeNull();
-    expect(toasts).toEqual(["Unlock the map to clear zones."]);
-
-    // Unlocked, it looks and acts as it always did.
-    card.shadowRoot.getElementById("btnLock").click();
-    expect(clearBtn().classList.contains("locked-action")).toBe(false);
-    expect(clearBtn().hasAttribute("aria-disabled")).toBe(false);
-    clearBtn().click();
+    // Unlocked, it looks as it always did, and asks first.
+    $("btnLock").click();
+    expect($("clearBtn").classList.contains("locked-action")).toBe(false);
+    expect($("clearBtn").hasAttribute("aria-disabled")).toBe(false);
+    $("clearBtn").click();
+    $("btnClearAllYes").click();
     expect(card.zones).toEqual([]);
     expect(hass.callService.mock.calls.map((call: any[]) => call[2].shape)).toEqual(["none"]);
   });
 
-  it("dims Clear All again when a payload rebuilds the chips on a locked map", async () => {
+  it("locking the map answers an open question with no", async () => {
+    const { card, hass } = await lockedCard();
+    const $ = (id: string) => card.shadowRoot.getElementById(id);
+    $("btnLock").click();
+    $("clearBtn").click();
+    expect($("clearAllConfirm").hidden).toBe(false);
+
+    $("btnLock").click();
+
+    expect($("clearAllConfirm").hidden).toBe(true);
+    hass.callService.mockClear();
+    $("btnClearAllYes").click();
+    expect(hass.callService).not.toHaveBeenCalled();
+  });
+
+  it("dims Clear all shapes again when a payload lands on a locked map", async () => {
     const { card, hass } = await lockedCard();
 
     hass.handlers[ZONES_SUBSCRIBE][0]({ ...ZONE_PAYLOAD, label: "Renamed radar" });

@@ -1,13 +1,13 @@
 /**
  * Text for the zone map's sizes and hold times.
  *
- * The size readout while drawing, the Walk preview and the zone list all go
+ * The size readout while drawing, the Walk preview and the zone editor all go
  * through `formatSize`, so the three always agree. Sizes follow the map's
  * m / ft switch (the card's `_unitFamily`), and a size is width (x) by depth
  * (y) in millimeters, the units zone geometry is stored in. In meters the
  * readout while drawing takes a second decimal while corners snap finer
  * than 10 cm (see ./snap), so it shows the snapped size exactly; the zone
- * list reads to 0.1 m.
+ * editor reads to 0.1 m.
  */
 
 export type UnitFamily = "m" | "ft";
