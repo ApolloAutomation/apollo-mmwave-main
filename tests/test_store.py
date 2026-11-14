@@ -28,6 +28,8 @@ from custom_components.apollo_mmwave.store import (
     SAVE_DELAY_SECONDS,
     ZoneStore,
     device_flag,
+    previous_shape_of,
+    shape_of,
     zone_hold_s,
     zone_type_of,
 )
@@ -804,6 +806,148 @@ def test_zone_hold_s_without_a_stored_hold_is_zero(zone_def) -> None:
 def test_device_flag_is_on_only_for_true(entry, expected) -> None:
     """A flag reads on only when the radar's entry holds exactly True."""
     assert device_flag(entry, "mirror_x") is expected
+
+
+async def test_previous_shape_round_trips_and_keeps_the_store_version(
+    hass, hass_storage
+) -> None:
+    """A zone's previous shape loads and saves back as it is, still version 2.1."""
+    # A new major version would fail 2.4.0's setup.
+    data = {
+        "devices": {
+            "dev": {
+                "zones": {
+                    "1": {
+                        "shape": "rect",
+                        "data": {"x_min": 0, "x_max": 500, "y_min": 0, "y_max": 500},
+                        "name": "Couch",
+                        "hold_s": 30,
+                        "previous_shape": {
+                            "shape": "rect",
+                            "data": {
+                                "x_min": 0,
+                                "x_max": 1000,
+                                "y_min": 0,
+                                "y_max": 1000,
+                            },
+                            "replaced_at": "2026-11-13T15:04:05+00:00",
+                        },
+                    },
+                    "2": {
+                        "shape": "polygon",
+                        "data": {"points": [{"x": 0, "y": 0}, {"x": 9, "y": 0}]},
+                        "previous_shape": {
+                            "shape": "none",
+                            "data": None,
+                            "replaced_at": "2026-11-12T08:00:00+00:00",
+                        },
+                    },
+                }
+            }
+        },
+        "orphans": {},
+    }
+    hass_storage[ZONE_STORAGE_KEY] = {
+        "version": 2,
+        "minor_version": 1,
+        "key": ZONE_STORAGE_KEY,
+        "data": copy.deepcopy(data),
+    }
+
+    store = ZoneStore(hass)
+    assert await store.async_load() is True
+    assert (
+        store.zone("dev", 1)["previous_shape"]
+        == (data["devices"]["dev"]["zones"]["1"]["previous_shape"])
+    )
+    await store.async_save()
+
+    on_disk = hass_storage[ZONE_STORAGE_KEY]
+    assert (on_disk["version"], on_disk["minor_version"]) == (2, 1)
+    assert on_disk["data"] == data
+
+
+@pytest.mark.parametrize(
+    ("zone_def", "expected"),
+    [
+        ({"shape": "rect", "data": {"x_min": 0}}, ("rect", {"x_min": 0})),
+        ({"shape": "ellipse", "data": {"cx": 0}}, ("ellipse", {"cx": 0})),
+        ({"shape": "polygon", "data": {"points": []}}, ("polygon", {"points": []})),
+        ({"shape": "none", "data": None}, ("none", None)),
+        # A rejected geometry and the legacy placeholder have no shape.
+        ({"shape": "rect", "data": None}, ("none", None)),
+        ({}, ("none", None)),
+        # Hand edits, read as no shape.
+        ({"shape": "none", "data": {"x_min": 0}}, ("none", None)),
+        ({"shape": "circle", "data": {"r": 5}}, ("none", None)),
+        ({"shape": ["rect"], "data": {"x_min": 0}}, ("none", None)),
+        ({"shape": "rect", "data": [0, 1, 0, 1]}, ("none", None)),
+        ({"shape": "rect"}, ("none", None)),
+        (None, ("none", None)),
+        ("rect", ("none", None)),
+    ],
+)
+def test_shape_of_reads_only_a_drawn_shape(zone_def, expected) -> None:
+    """A zone has geometry only as a drawable shape with an object for data."""
+    assert shape_of(zone_def) == expected
+
+
+PREVIOUS_RECT = {
+    "shape": "rect",
+    "data": {"x_min": 0, "x_max": 9, "y_min": 0, "y_max": 9},
+    "replaced_at": "2026-11-13T15:04:05+00:00",
+}
+
+
+@pytest.mark.parametrize(
+    ("previous", "expected"),
+    [
+        (PREVIOUS_RECT, PREVIOUS_RECT),
+        (
+            {"shape": "none", "data": None, "replaced_at": "2026-11-13T15:04:05+00:00"},
+            {"shape": "none", "data": None, "replaced_at": "2026-11-13T15:04:05+00:00"},
+        ),
+        # A drawable shape with no data reads as none.
+        (
+            {"shape": "rect", "data": None, "replaced_at": "2026-11-13T15:04:05+00:00"},
+            {"shape": "none", "data": None, "replaced_at": "2026-11-13T15:04:05+00:00"},
+        ),
+        (
+            {"shape": "rect", "replaced_at": "2026-11-13T15:04:05+00:00"},
+            {"shape": "none", "data": None, "replaced_at": "2026-11-13T15:04:05+00:00"},
+        ),
+    ],
+)
+def test_previous_shape_of_reads_what_update_zone_writes(previous, expected) -> None:
+    """It comes back with its time, and its geometry as shape_of reads it."""
+    assert previous_shape_of({"shape": "none", "previous_shape": previous}) == expected
+
+
+@pytest.mark.parametrize(
+    "previous",
+    [
+        None,
+        "rect",
+        ["rect", {"x_min": 0}],
+        {k: v for k, v in PREVIOUS_RECT.items() if k != "replaced_at"},
+        {**PREVIOUS_RECT, "replaced_at": None},
+        {**PREVIOUS_RECT, "replaced_at": 1763046245},
+        {**PREVIOUS_RECT, "shape": "circle"},
+        {**PREVIOUS_RECT, "shape": ["rect"]},
+        {**PREVIOUS_RECT, "shape": None},
+        {**PREVIOUS_RECT, "data": [0, 9, 0, 9]},
+        {**PREVIOUS_RECT, "data": "x_min=0"},
+    ],
+)
+def test_previous_shape_of_ignores_hand_edits(previous) -> None:
+    """A previous shape update_zone could not have written reads as none at all."""
+    assert previous_shape_of({"shape": "rect", "previous_shape": previous}) is None
+
+
+@pytest.mark.parametrize("zone_def", [None, "rect", [], {}, {"shape": "rect"}])
+def test_previous_shape_of_a_zone_without_one_is_none(zone_def) -> None:
+    """No zone, or a zone with no previous shape, has none."""
+    assert previous_shape_of(zone_def) is None
 
 
 async def test_delayed_save_writes_after_the_delay(hass, hass_storage) -> None:
