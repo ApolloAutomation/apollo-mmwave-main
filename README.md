@@ -242,9 +242,10 @@ including what each HACS box says.
    freely. Each zone gets a presence sensor, listed on the **Zone presence**
    card next to the map.
 
-   To pick a zone, tap its chip under **Zones** or tap it on the map; the
-   picked zone is drawn bright with a dot on each corner, and the others
-   fade. The box under the chips is that zone's editor: its **Name** (saved
+   To pick a zone, tap its chip under **Zones** or tap it on the map. While
+   you edit on an unlocked map, a picked zone that has a shape is drawn
+   bright with a dot on each corner, and the others fade. The box under the
+   chips is that zone's editor: its **Name** (saved
    when you press Enter or leave the field), **Type** and **Hold**, whether
    someone is in it **Now**, and **Delete zone**, which asks first. Once a
    radar has zones the map starts locked, so a scroll cannot draw on it or
@@ -259,7 +260,7 @@ including what each HACS box says.
    A drag on the map draws only after you say which zone it draws. To give
    a zone a new shape, pick it and press **Redraw shape** in its editor
    (**Draw shape** for a zone with no shape yet), or ✎ beside its chip. A
-   banner at the top of the map names the zone, such as "Drawing Couch";
+   banner in the map's top left corner names the zone, such as "Drawing Couch";
    **Cancel** or Esc stops without a change. **Add zone** does this for you,
    so a new zone is one press and one drag. After each shape saves, the
    message, such as "Couch redrawn", offers **Undo**, and the zone's editor
@@ -267,7 +268,7 @@ including what each HACS box says.
    reloads or from another device. See
    [Undo a shape change](docs/configuration.md#undo-a-shape-change).
 
-   ![The zone map on an R PRO-1 in feet, unlocked, redrawing the Couch zone: Desk is picked first, drawn bright with a dot on each corner while the other zones are faint. The mouse pointer clicks the Couch chip, so Couch turns bright and Desk fades, then clicks the ✎ joined to the chip: the banner Drawing Couch with a Cancel button shows at the top of the map, and ✎ turns into ✕. A rectangle dragged around dot 1, with its size 4 ft 2 in × 7 ft 10 in above the pointer, becomes the Couch zone, filled in because dot 1 is inside it, the banner goes away, and the message Couch redrawn offers Undo. Undo is clicked: the Couch zone goes back where it was, pale and dashed, and the message reads Undid the change to Couch](https://raw.githubusercontent.com/ApolloAutomation/apollo-mmwave-main/main/docs/images/apollo-mmwave-zone-map-redraw-2.4.1.gif)
+   ![The zone map on an R PRO-1 in feet, unlocked, redrawing the Couch zone: Desk is picked first, drawn bright with a dot on each corner while the other zones are faint. The mouse pointer clicks the Couch chip, so Couch turns bright and Desk fades, then clicks the ✎ joined to the chip: the banner Drawing Couch, with a Cancel button at its left end, shows in the map's top-left corner, and ✎ turns into ✕. A rectangle dragged around dot 1, with its size 4 ft 2 in × 7 ft 10 in above the pointer, becomes the Couch zone, filled in because dot 1 is inside it, the banner goes away, and the message Couch redrawn offers Undo. Undo is clicked: the Couch zone goes back where it was, pale and dashed, and the message reads Undid the change to Couch](https://raw.githubusercontent.com/ApolloAutomation/apollo-mmwave-main/main/docs/images/apollo-mmwave-zone-map-redraw-2.4.1.gif)
 
    To draw more precisely, zoom in with **+** over the map's lower right
    corner, with Ctrl or Cmd and the scroll wheel, or with two fingers on a
@@ -290,7 +291,7 @@ including what each HACS box says.
    on Android. See
    [Expand the map](docs/configuration.md#expand-the-map).
 
-   ![The zone map card on a laptop's dashboard tab, in feet, expanding to fill the window: the mouse pointer clicks the expand button in the map's top-right corner, and the map takes the left of the window, with ×, the title R PRO-1 Living Room, Coverage, the Zones panel and the picked zone's editor on the right. Locked is clicked to unlock the map and Add zone adds Zone 5. A rectangle dragged around dot 3 becomes the Zone 5 zone, filled in because dot 3 is inside it, with the message Zone 5 saved. Zone 5 is renamed Armchair in the editor's Name box, a click on the Couch zone on the map picks it, and Esc puts the card back on the tab with the Armchair zone on its map](https://raw.githubusercontent.com/ApolloAutomation/apollo-mmwave-main/main/docs/images/apollo-mmwave-zone-map-expand-2.4.0.gif)
+   ![The zone map card on a laptop's dashboard tab, in feet and locked, expanding to fill the window: the mouse pointer clicks Expand in the map's top-right corner, and the map takes the left of the window, with ×, the title R PRO-1 Living Room, Coverage, the Zones panel and the picked zone's editor on the right. Locked is clicked to unlock the map, and the message Drawing and cone rotation unlocked. You can edit zones now. shows at the bottom right of the window. Add zone adds Zone 5 and the banner Drawing Zone 5, with a Cancel button at its left end, shows in the map's top-left corner. A rectangle dragged around dot 3 becomes the Zone 5 zone, bright with a dot on each corner while the other zones fade, and the message Zone 5 drawn offers Undo. Zone 5 is renamed Armchair in the editor's Name box, a click on the Couch zone on the map picks it, and Esc puts the card back on the tab with the Armchair zone on its map](https://raw.githubusercontent.com/ApolloAutomation/apollo-mmwave-main/main/docs/images/apollo-mmwave-zone-map-expand-2.4.1.gif)
 
    ![The zone map card on an R PRO-1 in feet, unlocked, with zones inside other zones and Couch picked: the Couch zone is bright with a dot on each corner and its name at its top, clear of Couch, middle seat, which is centered on the seat inside it. The other zones are faint, with Living room's name along its top edge and Rug's name above Coffee table, so no two names overlap. Expand sits in the map's top-right corner. Under the map: a Coverage button, then Zones with an Add zone button, a chip with a color dot for each zone with ✎ joined to Couch, and Couch's editor with its Name, Size 4 ft 3 in × 7 ft 10 in, Restore previous shape with Replaced 5 min ago beside it, Type Detect, Hold 5 min, Now Nobody is in this zone, the hint that starts Press Redraw shape, then drag on the map to give this zone a new rectangle., a Redraw shape button and Delete zone, above Map settings](https://raw.githubusercontent.com/ApolloAutomation/apollo-mmwave-main/main/docs/images/apollo-mmwave-zone-map-zones-2.4.1.png)
 

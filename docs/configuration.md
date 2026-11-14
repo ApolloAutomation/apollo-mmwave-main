@@ -788,20 +788,23 @@ The zone map draws what the radar sees right now over the zones you drew:
   to their label. A target inside one is a hollow gray ring with a gray
   number, and its trail is gray: no zone counts it.
 - **The picked zone stands out.** While an administrator edits on an
-  unlocked map, the zone picked under **Zones** is drawn bright, with a
-  thicker outline and a dot on each corner, and the other zones fade to
-  faint outlines with paler names, so you can see which zone a drag would
-  draw. A locked map, a view-only map, a replay and other users' maps draw
-  every zone alike.
+  unlocked map, a zone picked under **Zones** that has a shape is drawn
+  bright, with a thicker outline and a dot on each corner, and the other
+  zones fade to faint outlines with paler names, so you can see which zone
+  a drag would redraw. A picked zone with no shape yet, such as a new one
+  from **Add zone**, leaves the others as they are until you draw it.
+  A locked map, a view-only map, a replay and other users' maps draw every
+  zone alike.
 - **Names stay apart.** Each zone's name sits in the middle of its zone
   where it fits. Where zones overlap, or one sits inside another, the
   smaller zone's name is placed first, and a name that would cover another
   moves to the top or bottom inside its zone, then right above or below it,
-  a size smaller if it must, then out beside the zone with a short line to
-  it. As a last resort it is drawn on a backing so it stays readable. No
-  name is hidden to make room, and names keep clear of the buttons, the
-  banner and the notes over the map. A zone drawn smaller than about 20 by
-  14 px still shows no name; zoom in to see it.
+  a size smaller if it must, then out beside the zone, as close as there is
+  room, with a line to it. Only if the whole map is too crowded for that is
+  it drawn on a backing so it stays readable. No name is hidden to make
+  room, and names keep clear of the buttons, the banner and the notes over
+  the map ("Radar offline" and a replay's time). A zone drawn smaller than
+  about 20 by 14 px still shows no name; zoom in to see it.
 - **Radar offline.** While every target sensor the map tracks is
   unavailable, the map shows "Radar offline" in its top-left corner and the
   zones turn gray, because their presence sensors read `unavailable`.
@@ -915,8 +918,9 @@ right, fills the window with the map."
   switch the zone, and start drawing it, without scrolling down to the
   **Zones** panel. The chips in the panel hide meanwhile.
 - **Messages.** Home Assistant's own messages would sit behind the
-  expanded map, so the card shows them in a bar at the bottom of the map,
-  with **Undo** after a shape saves (see
+  expanded map, so the card shows them in a bar at the bottom of the
+  window, under the panel where the panel sits beside the map, with
+  **Undo** after a shape saves (see
   [Undo a shape change](#undo-a-shape-change)).
 - **Finer grid on a large screen.** Where the expanded map is wider than
   the card's 800 px drawing, as on a large monitor, it is drawn as wide as
@@ -953,7 +957,7 @@ press on the map says "Press Add zone under the map first." If the sensor is
 turned or mounted in a corner, set **Cone rotation** under **Map settings**
 first (see [Map units and size](#map-units-and-size)). Then press **Add
 zone**: it adds "Zone 1", picks it and gets the map ready to draw it, with
-the banner "Drawing Zone 1" at the top of the map. Drag on the map to draw
+the banner "Drawing Zone 1" in the map's top left corner. Drag on the map to draw
 it as a rectangle, or first choose Ellipse or Polygon from the drawing-mode
 menu (✎) on the map, or walk the zone's corners with 🚶 (see
 [Mark corners by walking](#mark-corners-by-walking)). The zone's editor
@@ -969,9 +973,9 @@ then press **Draw shape** in its editor (**Redraw shape** once it has a
 shape), or ✎ beside its chip (**Draw Couch** or **Redraw Couch**). **Add
 zone** does this for its new zone, and so does the editor's **Unlock** for
 a zone with no shape yet. If the map was partly off the screen it scrolls
-into view, the pointer turns to a crosshair, and a banner at the top of the
-map names the zone, with a dot in its color, such as "Drawing Couch", and
-**Cancel**. **Draw shape** becomes **Cancel drawing** and ✎ becomes ✕.
+into view, the pointer turns to a crosshair, and a banner in the map's top
+left corner, clear of the radar's cone, names the zone, with **Cancel** at
+its left end and a dot in its color, such as "Drawing Couch". **Draw shape** becomes **Cancel drawing** and ✎ becomes ✕.
 The shape you finish replaces the zone's shape, saves and ends drawing, so
 the next drag draws nothing until you press **Redraw shape** again.
 **Cancel**, **Cancel drawing**, ✕ and Esc end drawing without a change, and
@@ -1087,8 +1091,9 @@ three parts:
   can also tap the zone on the map: on a locked map, on an unlocked one
   while drawing is not on, and in Rectangle or Ellipse mode while it is, a
   tap picks the zone under it, the smallest one where zones overlap. While
-  you edit on an unlocked map, the picked zone is drawn bright and the
-  others fade (see [What the map shows](#what-the-map-shows)). When the
+  you edit on an unlocked map, a picked zone that has a shape is drawn
+  bright and the others fade (see
+  [What the map shows](#what-the-map-shows)). When the
   card opens, the first zone is picked.
 - **The editor** under the chips belongs to the picked zone, with its
   number as the heading:
@@ -1187,7 +1192,9 @@ A shape change can be put back, also after the page reloads:
   **Clear all shapes**, each zone's editor offers its old shape back.
 
 A zone whose shape changed somewhere else in the meantime, in another
-browser or by an automation, is left as it is, and the card says "Couch was
+browser or by an automation, is left as it is. So is a zone whose kept
+shape is no longer the one this card would bring back, for example after
+another device redrew it and then undid that. The card says "Couch was
 changed in the meantime, so it was not undone." or "Couch was changed in
 the meantime, so nothing was restored." An Undo of **Clear all shapes**
 still puts back the other zones. If Home Assistant cannot be reached, the
@@ -1217,7 +1224,7 @@ must be the only person the radar sees.
    (✎) and press 🚶 (**Mark corners by walking**). On a phone or tablet you
    can press the **🚶 Mark corners by walking** chip beside **Coverage**
    under the map instead. A panel opens under the map, the chip hides
-   until you leave Walk, and a banner at the top of the map reads "Marking
+   until you leave Walk, and a banner in the map's top left corner reads "Marking
    Couch by walking", with **Cancel**.
 2. Stand still in one corner of the area for about 3 seconds and press
    **Corner here**.

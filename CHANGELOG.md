@@ -31,14 +31,16 @@ first. **Add zone** still goes straight to drawing its new zone.
   [Undo a shape change](docs/configuration.md#undo-a-shape-change).
 - **Draw shape and the highlighted zone.** A drag draws only after you
   press **Draw shape** (**Redraw shape** once the zone has a shape) in the
-  picked zone's editor, or ✎ beside its chip. A banner at the top of the
-  map then names the zone, such as "Drawing Couch", with **Cancel**. Esc,
+  picked zone's editor, or ✎ beside its chip. A banner in the map's top
+  left corner, clear of the radar's cone, then names the zone, such as
+  "Drawing Couch", with **Cancel**. Esc,
   picking another zone or locking the map cancels too, and finishing the
   shape ends it. Until then a drag on the map draws nothing: one finger
   scrolls the page, a press on another zone picks it, and anywhere else the
   card says "To redraw Couch, press Redraw shape first." While you edit on
-  an unlocked map, the other zones fade to faint outlines and the picked
-  one is drawn bright, with a dot on each corner. In the expanded map on a
+  an unlocked map, a picked zone that has a shape is drawn bright, with a
+  dot on each corner, and the other zones fade to faint outlines. In the
+  expanded map on a
   phone held upright, a strip of zone chips under the map shows and
   switches the zone without scrolling down to the panel. Marking corners by
   walking shows a banner too. See
@@ -46,15 +48,15 @@ first. **Add zone** still goes straight to drawing its new zone.
 - **Labels that move apart.** Where zones overlap, or one sits inside
   another, their names no longer pile up in the middle. A name that would
   cover another moves to the top or bottom inside its zone, then right above
-  or below it, then out beside it with a short line to its zone, and no
-  name is hidden to make room. Names also keep clear of the buttons over
-  the map. See
+  or below it, then out beside it with a line to its zone, and no
+  name is hidden to make room. Names also keep clear of the buttons, the
+  banner and the notes over the map. See
   [What the map shows](docs/configuration.md#what-the-map-shows).
 - **The Expand label.** The expand button in the map's top right corner
   reads **Expand** beside its icon where the map is at least 480 px wide,
   and the help line in **Map settings** and the zone's drawing hint say
   where it is. In the expanded map the card's messages, with their
-  **Undo**, show in a bar at the bottom of the map. See
+  **Undo**, show in a bar at the bottom of the window. See
   [Expand the map](docs/configuration.md#expand-the-map).
 - **Smaller changes.** **Undo last zone change** (↶) is dimmed on a locked
   map and says "Unlock the map to undo a shape change." A shape Home
