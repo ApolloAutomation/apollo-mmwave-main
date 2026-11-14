@@ -41,6 +41,7 @@ from custom_components.apollo_mmwave.const import (
     DOMAIN,
     FRONTEND_DIR,
     HOLD_S_MAX,
+    RESTORE_SHAPE_MAX_ZONES,
     SENSOR_UNIT_FACTORS,
     STORE_HOLD_S,
     STORE_MOVEMENT_HISTORY,
@@ -231,6 +232,33 @@ async def test_restore_shape_reply_is_what_api_ts_declares(
     )
     assert "restored: Array<{ zone_id: number } & ShapeGeometry>;" in source
     assert "skipped: number[];" in source
+
+
+async def test_restore_shape_takes_as_many_zones_as_api_ts_sends(
+    hass, hass_ws_client, init_integration, device_id
+) -> None:
+    """The card offers no Undo past the zone count one restore takes."""
+    _ = init_integration
+    client = await hass_ws_client(hass)
+
+    def ask(count: int) -> dict[str, Any]:
+        return {
+            "type": websocket.TYPE_RESTORE_SHAPE,
+            "device_id": device_id,
+            "zones": [
+                {"zone_id": zone_id, "current": {"shape": "none", "data": None}}
+                for zone_id in range(1, count + 1)
+            ],
+        }
+
+    await client.send_json_auto_id(ask(RESTORE_SHAPE_MAX_ZONES))
+    assert (await client.receive_json())["success"] is True
+    await client.send_json_auto_id(ask(RESTORE_SHAPE_MAX_ZONES + 1))
+    assert (await client.receive_json())["error"]["code"] == "invalid_format"
+    assert (
+        f"export const RESTORE_SHAPE_MAX_ZONES = {RESTORE_SHAPE_MAX_ZONES};"
+        in _read(API_TS)
+    )
 
 
 @pytest.fixture

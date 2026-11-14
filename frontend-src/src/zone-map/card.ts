@@ -22,6 +22,7 @@ import {
   fetchMovement,
   isMovementPayload,
   isRestoreShapeReply,
+  RESTORE_SHAPE_MAX_ZONES,
   restoreShapes,
 } from './api';
 import { CELL_MM, CellGrid, bucketCells } from './cells';
@@ -2699,6 +2700,11 @@ export class ZoneMapCard extends HTMLElement {
     if (clearBtn) clearBtn.hidden = this._clearAllConfirm;
     const confirm = root.getElementById('clearAllConfirm');
     if (confirm) confirm.hidden = !this._clearAllConfirm;
+    // Past one restore's limit, only Restore previous shape undoes.
+    const undoable = this.showUndo && (this.zones || []).length <= RESTORE_SHAPE_MAX_ZONES;
+    const question = confirm?.firstElementChild;
+    const text = undoable ? CLEAR_ALL_CONFIRM : CLEAR_ALL_CONFIRM_NO_UNDO;
+    if (question && question.textContent !== text) question.textContent = text;
   }
 
   /** A target dot's radius in backing px: it follows the card's width,
@@ -5833,11 +5839,13 @@ export class ZoneMapCard extends HTMLElement {
   // Undoable only where the store keeps a previous shape.
   _newUndo(kind, zones) {
     const stored = this._zoneConfigPayload?.zones;
-    const undoable = zones.every(
-      ({ zoneId }) =>
-        (!!stored && typeof stored === 'object' && String(zoneId) in stored) ||
-        this._addedZones.has(zoneId),
-    );
+    const undoable =
+      zones.length <= RESTORE_SHAPE_MAX_ZONES &&
+      zones.every(
+        ({ zoneId }) =>
+          (!!stored && typeof stored === 'object' && String(zoneId) in stored) ||
+          this._addedZones.has(zoneId),
+      );
     const record = { deviceId: this.deviceId, kind, zones, undoable, ready: false, used: false };
     this._undo = record;
     this._refreshUndoButton();

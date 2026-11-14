@@ -53,6 +53,7 @@ from .const import (
     KEY_PREVIOUS_SHAPE_DRAWN,
     MAX_SAFE_INT,
     PREVIOUS_REPLACED_AT,
+    RESTORE_SHAPE_MAX_ZONES,
     SHAPE_NONE,
     SIGNAL_CALIBRATION_UPDATED,
     SIGNAL_ZONES_PAYLOAD,
@@ -388,7 +389,7 @@ def _requested_shape(
                     }
                 )
             ],
-            vol.Length(min=1, max=64),
+            vol.Length(min=1, max=RESTORE_SHAPE_MAX_ZONES),
         ),
     }
 )

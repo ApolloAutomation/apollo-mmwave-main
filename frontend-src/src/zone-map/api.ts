@@ -16,6 +16,8 @@ export const ZONES_GET = `${DOMAIN}/zones/get`;
 export const ZONES_SUBSCRIBE = `${DOMAIN}/zones/subscribe`;
 /** Put back zones' previous shapes. Administrators only. */
 export const ZONES_RESTORE_SHAPE = `${DOMAIN}/zones/restore_shape`;
+/** Most zones one restore request takes. */
+export const RESTORE_SHAPE_MAX_ZONES = 64;
 /** Movement history. Administrators only: anyone else gets `unauthorized`. */
 export const MOVEMENT_GET = `${DOMAIN}/movement/get`;
 export const MOVEMENT_CLEAR = `${DOMAIN}/movement/clear`;

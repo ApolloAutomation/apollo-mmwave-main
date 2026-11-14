@@ -188,6 +188,8 @@ POLYGON_MAX_POINTS = 32
 POLYGON_MIN_POINTS = 3
 # JavaScript's Number.MAX_SAFE_INTEGER: the largest zone coordinate or id.
 MAX_SAFE_INT = 2**53 - 1
+# Most zones one zones/restore_shape request takes.
+RESTORE_SHAPE_MAX_ZONES = 64
 
 # The zone-drawing card this integration bundles (forked from zone-mapper-card).
 # The name is ours alone: the standalone card keeps `zone-mapper-card`, and a

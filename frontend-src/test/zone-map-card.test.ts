@@ -14,6 +14,7 @@ import {
   CONFIG_ENTRIES_SUBSCRIBE,
   MOVEMENT_CLEAR,
   MOVEMENT_GET,
+  RESTORE_SHAPE_MAX_ZONES,
   ZONES_GET,
   ZONES_RESTORE_SHAPE,
   ZONES_SUBSCRIBE,
@@ -11738,6 +11739,35 @@ describe("zone map card clearing zones", () => {
     expect(card._undo.zones.map((zone: any) => zone.zoneId)).toEqual([1, 2]);
   });
 
+  it("offers no Undo for more shapes than one restore takes", async () => {
+    const count = RESTORE_SHAPE_MAX_ZONES + 1;
+    const zones = Object.fromEntries(
+      Array.from({ length: count }, (_, i) => [
+        String(i + 1),
+        { shape: "rect", data: { x_min: 0, x_max: 100, y_min: 0, y_max: 100 }, name: `Spot ${i + 1}` },
+      ])
+    );
+    const hass = adminHass({ ...ZONE_PAYLOAD, zones });
+    const card = await mountCard(hass, { start_locked: false });
+    hass.callService.mockClear();
+    const details = toastDetails(card);
+
+    $(card, "clearBtn").click();
+    // Only each zone's Restore previous shape can bring them back.
+    expect($(card, "clearAllConfirm").firstElementChild.textContent).toBe(
+      "Clear every zone's shape? The zones keep their names, types and hold times, and Restore previous shape in each zone brings its shape back."
+    );
+    $(card, "btnClearAllYes").click();
+    await settleWrites();
+
+    expect(zoneWrites(hass)).toHaveLength(count);
+    expect(details).toEqual([{ message: "All shapes cleared" }]);
+    expect($(card, "btnUndo").disabled).toBe(true);
+    undo(card);
+    await settleWrites();
+    expect(restoreCalls(hass)).toEqual([]);
+  });
+
   it("does not say all shapes were cleared when one of them was refused", async () => {
     const { card, hass, toasts } = await clearingCard();
     refuse(hass, 2);
@@ -14827,6 +14857,36 @@ describe("zone map card undoing a shape change", () => {
     details[0].action.action();
     await settleWrites();
     expect(restoreCalls(hass)).toHaveLength(1);
+  });
+
+  it("takes the store's push that arrives ahead of the restore's answer", async () => {
+    const { card, hass, details } = await undoCard();
+    hass.restoreReply = () => {
+      // Home Assistant pushes the zones before it answers.
+      hass.handlers[ZONES_SUBSCRIBE][0]({
+        ...ZONE_PAYLOAD,
+        zones: {
+          "1": {
+            ...ZONE_PAYLOAD.zones["1"],
+            previous_shape_at: "2026-01-01T00:00:00+00:00",
+            previous_shape_drawn: true,
+          },
+        },
+      });
+      return { restored: [{ zone_id: 1, shape: "rect", data: DOORWAY }], skipped: [] };
+    };
+    card._armDrawing(1);
+    drag(card, [100, 600], [300, 700]);
+    await settleWrites();
+
+    details[0].action.action();
+    await settleWrites();
+
+    expect(card.zones).toEqual([{ id: 1, shape: "rect", data: DOORWAY }]);
+    expect(details.map((d) => d.message)).toEqual(["Doorway redrawn", "Undid the change to Doorway"]);
+    expect(card._undo).toBeNull();
+    expect($(card, "btnUndo").disabled).toBe(true);
+    expect(card._zoneMeta.get(1).previousDrawn).toBe(true);
   });
 
   it("puts the old shape back and offers no Undo when the save is refused", async () => {
