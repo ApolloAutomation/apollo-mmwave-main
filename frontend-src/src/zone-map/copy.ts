@@ -79,10 +79,10 @@ export const DELETE_ZONE_NO = "Keep it";
 // Under Map settings: one press clears every zone's shape, so it asks first.
 export const CLEAR_ALL_LABEL = "Clear all shapes";
 export const CLEAR_ALL_CONFIRM =
-  "Clear every zone's shape? The zones keep their names, types and hold times, and ↶ on the map brings the shapes back.";
+  "Clear every zone's shape? The zones keep their names, types and hold times, and ↶ on the map or Restore previous shape in each zone brings the shapes back.";
 // The same question on a card whose YAML hides ↶ (show_undo: false).
 export const CLEAR_ALL_CONFIRM_NO_UNDO =
-  "Clear every zone's shape? The zones keep their names, types and hold times. This cannot be undone.";
+  "Clear every zone's shape? The zones keep their names, types and hold times, and Restore previous shape in each zone brings its shape back.";
 export const CLEAR_ALL_YES = "Clear shapes";
 export const CLEAR_ALL_NO = "Keep them";
 export const ALL_CLEARED_TOAST = "All shapes cleared";
@@ -94,20 +94,130 @@ export const UNLOCK_LABEL = "Unlock";
 export const DRAW_HINT_WALKING =
   "Marking this zone's corners by walking. Follow the steps under the map.";
 
+// A drag draws only once armed for one zone.
+export const DRAW_SHAPE_LABEL = "Draw shape";
+export const REDRAW_SHAPE_LABEL = "Redraw shape";
+export const CANCEL_DRAWING_LABEL = "Cancel drawing";
+export const BANNER_CANCEL = "Cancel";
+
+// The chip's ✎ label.
+export function drawChipLabel(name: string, drawn: boolean): string {
+  return `${drawn ? "Redraw" : "Draw"} ${name}`;
+}
+
+// Banner on the map while armed.
+export function drawingBanner(name: string): string {
+  return `Drawing ${name}`;
+}
+
+// The same banner during Walk.
+export function walkingBanner(name: string): string {
+  return name ? `Marking ${name} by walking` : "Marking corners by walking";
+}
+
+// A press on a map not armed.
+export function armFirstToast(name: string, drawn: boolean): string {
+  return drawn
+    ? `To redraw ${name}, press Redraw shape first.`
+    : `To draw ${name}, press Draw shape first.`;
+}
+
 /**
  * How to draw the selected zone in drawing mode `mode` (rect, ellipse or
  * polygon), up to `maxCorners` corners for a polygon. `drawn` says the zone
  * has a shape, which a new one replaces.
  */
-export function drawHint(mode: string, drawn: boolean, maxCorners: number): string {
+export function drawHint(
+  mode: string,
+  drawn: boolean,
+  maxCorners: number,
+  { armed = false, canExpand = false }: { armed?: boolean; canExpand?: boolean } = {}
+): string {
+  const press = drawn ? "Press Redraw shape" : "Press Draw shape";
+  const stop = " Cancel drawing or Esc stops without a change.";
+  const tail = canExpand && !armed ? ` ${EXPAND_HINT}` : "";
   if (mode === "polygon") {
-    const lead = drawn ? "To change its shape, tap" : "Tap";
-    return `${lead} each corner of this zone on the map, up to ${maxCorners}, then double-tap the last one or press ✓.`;
+    if (armed) {
+      return `Tap each corner of this zone on the map, up to ${maxCorners}, then double-tap the last one or press ✓.${stop}`;
+    }
+    const corners = drawn ? "each corner of the new shape" : "each corner of this zone";
+    return `${press}, then tap ${corners} on the map, up to ${maxCorners}, and double-tap the last one or press ✓.${tail}`;
   }
   const shape = mode === "ellipse" ? "an ellipse" : "a rectangle";
+  if (armed) return `Drag on the map to draw this zone as ${shape}.${stop}`;
   const others = mode === "ellipse" ? "a rectangle or a polygon" : "an ellipse or a polygon";
-  const lead = drawn ? "To change its shape, drag" : "Drag";
-  return `${lead} on the map to draw this zone as ${shape}. ✎ on the map offers ${others}. A tap on another zone picks it.`;
+  const lead = drawn
+    ? `${press}, then drag on the map to give this zone a new ${mode === "ellipse" ? "ellipse" : "rectangle"}.`
+    : `${press}, then drag on the map to draw this zone as ${shape}.`;
+  return `${lead} ✎ on the map offers ${others}. A tap on a zone on the map picks it.${tail}`;
+}
+
+// Undo: toast, ↶ and Restore previous shape.
+export const UNDO_ACTION = "Undo";
+export const UNDO_TITLE = "Undo last zone change";
+export const UNDONE_CLEAR_TOAST = "Undid Clear all shapes";
+export const RESTORE_SHAPE_LABEL = "Restore previous shape";
+export const RESTORE_LOCKED_TOAST = "Unlock the map to restore a shape.";
+export const UNDO_LOCKED_TOAST = "Unlock the map to undo a shape change.";
+
+// After a zone's first shape saved.
+export function zoneDrawnToast(name: string): string {
+  return `${name} drawn`;
+}
+
+// After a new shape replaced the old.
+export function zoneRedrawnToast(name: string): string {
+  return `${name} redrawn`;
+}
+
+export function shapeRestoredToast(name: string): string {
+  return `Previous shape of ${name} restored`;
+}
+
+export function undoneToast(name: string): string {
+  return `Undid the change to ${name}`;
+}
+
+// "A", "A and B", "A, B, and C".
+function nameList(names: string[]): string {
+  if (names.length <= 1) return names[0] ?? "";
+  if (names.length === 2) return `${names[0]} and ${names[1]}`;
+  return `${names.slice(0, -1).join(", ")}, and ${names[names.length - 1]}`;
+}
+
+// Zones changed since, which Undo skipped.
+export function undoSkippedToast(names: string[]): string {
+  return names.length === 1
+    ? `${names[0]} was changed in the meantime, so it was not undone.`
+    : `${nameList(names)} were changed in the meantime, so they were not undone.`;
+}
+
+export function restoreSkippedToast(name: string): string {
+  return `${name} was changed in the meantime, so nothing was restored.`;
+}
+
+export function couldNotUndo(reason: string): string {
+  return `Could not undo: ${reason}`;
+}
+
+export function couldNotRestore(reason: string): string {
+  return `Could not restore: ${reason}`;
+}
+
+// Under Restore previous shape.
+export function restoreShapeHint(ago: string): string {
+  return `Replaced ${ago}`;
+}
+
+// A negative or unknown age reads as under a minute.
+export function formatReplacedAgo(ms: number): string {
+  if (!(ms >= 60000)) return "under a minute ago";
+  const minutes = Math.floor(ms / 60000);
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `${hours} h ago`;
+  const days = Math.floor(hours / 24);
+  return days === 1 ? "1 day ago" : `${days} days ago`;
 }
 export const WALK_BUTTON_TITLE = "Mark corners by walking";
 export const WALK_CORNER = "Corner here";
@@ -171,6 +281,9 @@ export function zoomReadout(zoom: number): string {
 // fills the window, the same button (now closing it) and the X beside the
 // title. The X's label is also its tooltip.
 export const FULL_WINDOW_OPEN_LABEL = "Expand map";
+// Beside the icon where the map has room.
+export const FULL_WINDOW_OPEN_TEXT = "Expand";
+export const EXPAND_HINT = "Expand, at the map's top right, fills the window with the map.";
 export const FULL_WINDOW_OPEN_TITLE = "Expand the map to fill the window. Press Esc to return.";
 export const FULL_WINDOW_CLOSE_LABEL = "Close expanded map";
 export const FULL_WINDOW_CLOSE_TITLE = "Close expanded map. You can also press Esc.";

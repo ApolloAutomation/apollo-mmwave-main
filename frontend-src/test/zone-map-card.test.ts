@@ -15,6 +15,7 @@ import {
   MOVEMENT_CLEAR,
   MOVEMENT_GET,
   ZONES_GET,
+  ZONES_RESTORE_SHAPE,
   ZONES_SUBSCRIBE,
 } from "../src/zone-map/api";
 import type { ZoneConfig } from "../src/zone-map/api";
@@ -69,6 +70,7 @@ function fakeHass(payload: any = ZONE_PAYLOAD, error?: any) {
         if (hass.error) throw hass.error;
         return hass.payload;
       }
+      if (msg.type === ZONES_RESTORE_SHAPE && hass.restoreReply) return hass.restoreReply(msg);
       return [];
     }),
     connection: {
@@ -104,6 +106,37 @@ function notifications(card: any): string[] {
     seen.push(event.detail?.message);
   });
   return seen;
+}
+
+/** Answer restore_shape from the shapes `previous` keeps. */
+function answerRestores(hass: any, previous: Record<number, { shape: string; data: any }>) {
+  hass.restoreReply = (msg: any) => ({
+    restored: msg.zones
+      .filter((zone: any) => zone.zone_id in previous)
+      .map((zone: any) => ({ zone_id: zone.zone_id, ...previous[zone.zone_id] })),
+    skipped: msg.zones
+      .filter((zone: any) => !(zone.zone_id in previous))
+      .map((zone: any) => zone.zone_id),
+  });
+}
+
+/** The restore_shape messages the card sent. */
+function restoreCalls(hass: any): any[] {
+  return hass.callWS.mock.calls
+    .map(([msg]: any[]) => msg)
+    .filter((msg: any) => msg.type === ZONES_RESTORE_SHAPE);
+}
+
+/** Arm drawing as an administrator, as Draw shape does. */
+function armDraw(card: any, zoneId: number = card.selectedZone) {
+  card._hass.user = { is_admin: true };
+  // List a zone the test only selected.
+  if (!card.zoneConfig.some((zone: any) => Number(zone.id) === Number(zoneId))) {
+    card.zoneConfig = [...card.zoneConfig, { id: zoneId, name: `Zone ${zoneId}` }];
+  }
+  card._renderZoneManager();
+  card._armDrawing(zoneId);
+  return card;
 }
 
 /** Attach a configured card to a hass and wait for the first payload. */
@@ -1443,22 +1476,30 @@ describe("zone map card zone loading", () => {
   });
 
   it("drops undo, rotation and lock state when pointed at another radar", async () => {
-    // The undo snapshot holds the OLD radar's geometry and _performUndo writes
-    // it with whatever deviceId the card holds when the button is clicked, so a
-    // snapshot that survives a retarget is the cross-device overwrite again,
-    // reached through Undo instead of a drag.
+    // An old radar's undo must not reach the new one.
     const hass = fakeHass();
     const card = await mountCard(hass);
-    card._setUndoSnapshot([
-      { zoneId: 1, shape: "rect", data: { x_min: 0, x_max: 1, y_min: 0, y_max: 1 } },
+    card.shadowRoot.getElementById("btnLock").click();
+    armDraw(card, 1);
+    const record = card._newUndo("shape", [
+      {
+        zoneId: 1,
+        before: { shape: "none", data: null },
+        after: { shape: "rect", data: { x_min: 0, x_max: 1, y_min: 0, y_max: 1 } },
+      },
     ]);
-    card.isLocked = true;
+    record.ready = true;
+    card._refreshUndoButton();
+    card._addedZones.add(1);
+    expect(card._armedZone).toBe(1);
     expect(card.shadowRoot.getElementById("btnUndo").disabled).toBe(false);
     expect(card.coneAngleDeg).toBe(12);
 
     card.setConfig({ type: "custom:apollo-radar-zone-map-card", device_id: "devB" });
 
-    expect(card._undoSnapshot).toBeNull();
+    expect(card._undo).toBeNull();
+    expect(card._armedZone).toBeNull();
+    expect(card._addedZones.size).toBe(0);
     expect(card.shadowRoot.getElementById("btnUndo").disabled).toBe(true);
     // Not the previous radar's angle or lock for the round trip it takes the
     // new one to answer.
@@ -1467,8 +1508,11 @@ describe("zone map card zone loading", () => {
     expect(card._autoLockApplied).toBeFalsy();
 
     hass.callService.mockClear();
+    hass.callWS.mockClear();
     card.shadowRoot.getElementById("btnUndo").click();
+    await card._undoChange(record);
     expect(hass.callService).not.toHaveBeenCalled();
+    expect(hass.callWS.mock.calls.filter(([msg]: any[]) => msg.type === ZONES_RESTORE_SHAPE)).toEqual([]);
   });
 
   it("keeps its subscription when the config changes but the radar does not", async () => {
@@ -2861,6 +2905,7 @@ describe("zone map card zone editor settings", () => {
     });
     expect(card.selectedZone).toBe(1);
     card._setDrawMode("polygon");
+    armDraw(card);
     layOut(card, 800);
     const click = (x: number, y: number) => {
       card._lastPolyTap = 0;
@@ -2881,23 +2926,28 @@ describe("zone map card zone editor settings", () => {
 
   it("keeps the size current through a drag, Clear all shapes and Undo", async () => {
     const two = { ...ZONE_PAYLOAD, zones: { ...ZONE_PAYLOAD.zones, "2": COUCH } };
-    const { card } = await listCard(two, { config: { ...TEN_METER_GRID, start_locked: false } });
+    const { card, hass } = await listCard(two, { config: { ...TEN_METER_GRID, start_locked: false } });
+    answerRestores(hass, { 1: ZONE_PAYLOAD.zones["1"], 2: COUCH });
     layOut(card, 800);
     const mouse = (type: string, x: number, y: number) =>
       card.canvas.dispatchEvent(new MouseEvent(type, { clientX: x, clientY: y }));
 
     // A rect drag on Doorway: (-3750, 1250) to (-1250, 3125) mm.
+    armDraw(card);
     mouse("mousedown", 100, 100);
     mouse("mousemove", 300, 250);
     mouse("mouseup", 300, 250);
     expect(sizeText(card, 1)).toBe("Size 2.5 m × 1.9 m");
+    await settleWrites();
 
     card.shadowRoot.getElementById("btnUndo").click();
     expect(sizeText(card, 1)).toBe("Size 1.0 m × 1.0 m");
+    await settleWrites();
 
     card.shadowRoot.getElementById("clearBtn").click();
     card.shadowRoot.getElementById("btnClearAllYes").click();
     expect([sizeText(card, 1), sizeText(card, 2)]).toEqual(["Not drawn yet", "Not drawn yet"]);
+    await settleWrites();
     card.shadowRoot.getElementById("btnUndo").click();
     expect([sizeText(card, 1), sizeText(card, 2)]).toEqual([
       "Size 1.0 m × 1.0 m",
@@ -3360,9 +3410,25 @@ describe("zone map card Delete zone", () => {
     expect(card.shadowRoot.activeElement).toBe($(card, "btnAddZone"));
   });
 
-  it("drops the deleted zone's snapshot, so Undo cannot re-create it", async () => {
+  // A ready undo, as Clear all shapes makes.
+  function readyUndo(card: any, zoneIds: number[]) {
+    const record = card._newUndo(
+      "clear",
+      zoneIds.map((zoneId) => ({
+        zoneId,
+        before: card._shapeOf(zoneId),
+        after: { shape: "none", data: null },
+      }))
+    );
+    record.ready = true;
+    card._refreshUndoButton();
+    return record;
+  }
+
+  it("drops the deleted zone from Undo, so Undo cannot reach it", async () => {
     const { card, hass } = await deleteCard();
-    card._setUndoSnapshot(card._snapshotZones([2]));
+    $(card, "btnLock").click();
+    const record = readyUndo(card, [2]);
     expect($(card, "btnUndo").disabled).toBe(false);
 
     deleteZone(card, 2);
@@ -3370,27 +3436,41 @@ describe("zone map card Delete zone", () => {
     expect(zoneWrites(hass)).toEqual([
       { device_id: "dev123", zone_id: 2, delete: true, input_units: "mm" },
     ]);
-    expect(card._undoSnapshot).toBeNull();
+    expect(card._undo).toBeNull();
     expect($(card, "btnUndo").disabled).toBe(true);
 
     hass.callService.mockClear();
     $(card, "btnUndo").click();
+    await card._undoChange(record);
     expect(hass.callService).not.toHaveBeenCalled();
+    expect(restoreCalls(hass)).toEqual([]);
     expect(card.zones.map((z: any) => z.id)).toEqual([1]);
   });
 
-  it("still undoes the other zones a snapshot holds", async () => {
+  it("still undoes the other zones an undo holds", async () => {
     const { card, hass } = await deleteCard();
-    card._setUndoSnapshot(card._snapshotZones([1, 2]));
+    $(card, "btnLock").click();
+    readyUndo(card, [1, 2]);
 
     deleteZone(card, 2);
 
-    expect(card._undoSnapshot.map((s: any) => s.zoneId)).toEqual([1]);
+    expect(card._undo.zones.map((zone: any) => zone.zoneId)).toEqual([1]);
     expect($(card, "btnUndo").disabled).toBe(false);
 
-    hass.callService.mockClear();
     $(card, "btnUndo").click();
-    expect(zoneWrites(hass).map((p: any) => p.zone_id)).toEqual([1]);
+    expect(restoreCalls(hass).map((msg) => msg.zones.map((zone: any) => zone.zone_id))).toEqual([[1]]);
+  });
+
+  it("disarms drawing for a zone it deletes", async () => {
+    const { card } = await deleteCard();
+    $(card, "btnLock").click();
+    armDraw(card, 2);
+    expect(card._armedZone).toBe(2);
+
+    deleteZone(card, 2);
+
+    expect(card._armedZone).toBeNull();
+    expect($(card, "drawBanner").hidden).toBe(true);
   });
 
   it("deletes on a locked map too, which locks drawing only", async () => {
@@ -3721,6 +3801,7 @@ describe("zone map card polygon double-tap", () => {
     card.isLocked = false;
     card.selectedZone = 1;
     card._setDrawMode("polygon");
+    armDraw(card, 1);
     vi.spyOn(card.canvas, "getBoundingClientRect").mockReturnValue({
       left: 0,
       top: 0,
@@ -3901,7 +3982,11 @@ describe("zone map card polygon double-tap", () => {
     expect(card._polyPoints).toHaveLength(0);
     expect(card.isDrawing).toBe(false);
 
-    // The next click starts a fresh polygon rather than landing on a full one.
+    // The save disarmed: the next click places nothing.
+    click(card, 700, 700, 1000);
+    expect(card._polyPoints).toEqual([]);
+    // Armed again, it starts a fresh polygon.
+    armDraw(card, 1);
     click(card, 700, 700, 1000);
     expect(card._polyPoints).toEqual([{ x: 3750, y: 8750 }]);
     expect(polygonSaves(hass)).toHaveLength(1);
@@ -3962,7 +4047,7 @@ describe("zone map card polygon double-tap", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(polygonSaves(hass)).toEqual([SQUARE]);
-    expect(toasts).toEqual(["Zone 1 saved"]);
+    expect(toasts).toEqual(["Zone 1 drawn"]);
   });
 
   it("a tap with no zone selected says nothing", async () => {
@@ -3999,6 +4084,7 @@ describe("zone map card pointer leaving the canvas", () => {
     const card = await mountCard(hass, { ...TEN_METER_GRID, start_locked: false });
     card._setSelectedZone(1);
     card._setDrawMode(mode);
+    armDraw(card);
     vi.spyOn(card.canvas, "getBoundingClientRect").mockReturnValue({
       left: 0,
       top: 0,
@@ -4108,6 +4194,7 @@ describe("zone map card drawing across mode changes and re-renders", () => {
     const card = await mountCard(hass, { ...TEN_METER_GRID, start_locked: false });
     expect(card.selectedZone).toBe(1);
     card.shadowRoot.getElementById("btnModePolygon").click();
+    armDraw(card);
     stubLayout(card);
     click(card, 100, 100);
     click(card, 300, 100);
@@ -4223,10 +4310,14 @@ describe("zone map card drawing across mode changes and re-renders", () => {
     expect(card.isDrawing).toBe(false);
     expect(card.startPoint).toBeNull();
 
+    expect(card._armedZone).toBeNull();
     // Once devB answers, its first zone is selected, so a commit would land
     // there. One click starts a fresh polygon instead of extending dev123's.
     await vi.waitFor(() => expect(card.selectedZone).toBe(7));
     stubLayout(card);
+    click(card, 300, 300);
+    expect(card._polyPoints).toEqual([]);
+    armDraw(card);
     click(card, 300, 300);
     expect(card._polyPoints).toEqual([{ x: -1250, y: 3750 }]);
     card.finishPolygon();
@@ -4246,6 +4337,7 @@ describe("zone map card drawing across mode changes and re-renders", () => {
 
     expect(card.isDrawing).toBe(true);
     expect(card._polyPoints).toEqual(TWO_CORNERS);
+    expect(card._armedZone).toBe(1);
   });
 });
 
@@ -4315,6 +4407,7 @@ describe("zone map card rect and ellipse preview across repaints", () => {
     const card = await mountCard(hass, { ...TEN_METER_GRID, start_locked: false });
     card._setSelectedZone(1);
     card._setDrawMode(mode);
+    armDraw(card);
     vi.spyOn(card.canvas, "getBoundingClientRect").mockReturnValue({
       left: 0,
       top: 0,
@@ -5815,6 +5908,7 @@ describe("zone map card gestures without a shape", () => {
     card.isLocked = false;
     expect(card.selectedZone).toBe(1);
     card._setDrawMode(mode);
+    armDraw(card);
     const layout = vi
       .spyOn(card.canvas, "getBoundingClientRect")
       .mockReturnValue(box(width, height));
@@ -5846,13 +5940,13 @@ describe("zone map card gestures without a shape", () => {
   }
 
   function savedToasts(toasts: string[]): string[] {
-    return toasts.filter((message) => /saved/i.test(message));
+    return toasts.filter((message) => /saved|drawn/i.test(message));
   }
 
   it("saves nothing for a click without a drag in rect mode, and still saves a real drag", async () => {
     const { card, hass, toasts } = await drawingCard("rect");
     const zonesBefore = structuredClone(card.zones);
-    const undoBefore = card._undoSnapshot;
+    const undoBefore = card._undo;
 
     mouse(card, "mousedown", 400, 400);
     mouse(card, "mouseup", 400, 400);
@@ -5860,7 +5954,7 @@ describe("zone map card gestures without a shape", () => {
 
     expect(hass.callService).not.toHaveBeenCalled();
     expect(card.zones).toEqual(zonesBefore);
-    expect(card._undoSnapshot).toBe(undoBefore);
+    expect(card._undo).toBe(undoBefore);
     expect(savedToasts(toasts)).toEqual([]);
     expect(card.isDrawing).toBe(false);
     expect(card.startPoint).toBeNull();
@@ -5877,7 +5971,7 @@ describe("zone map card gestures without a shape", () => {
     const data = saves[0][2].data;
     expect(data.x_min).toBeLessThan(data.x_max);
     expect(data.y_min).toBeLessThan(data.y_max);
-    expect(savedToasts(toasts)).toEqual(["Doorway saved"]);
+    expect(savedToasts(toasts)).toEqual(["Doorway redrawn"]);
   });
 
   it("saves nothing for a touch tap in rect mode", async () => {
@@ -6009,15 +6103,17 @@ describe("zone map card gestures without a shape", () => {
 
       mouse(card, "mousedown", 100, 100);
       mouse(card, "mousemove", 300, 300);
+      // The zone going away disarms at once.
       pushNoZones(card, hass);
-      expect(card.isDrawing).toBe(true);
+      expect(card._armedZone).toBeNull();
+      expect(card.isDrawing).toBe(false);
       mouse(card, "mouseup", 300, 300);
       await settle();
 
       expect(zoneSaves(hass)).toEqual([]);
       expect(zoneIds(card)).not.toContain(0);
       expect(card.zones).toEqual([]);
-      expect(card._undoSnapshot).toBeNull();
+      expect(card._undo).toBeNull();
       expect(savedToasts(toasts)).toEqual([]);
       expect(card.isDrawing).toBe(false);
       expect(card.startPoint).toBeNull();
@@ -6088,6 +6184,7 @@ describe("zone map card ellipse drag past the grid", () => {
     const card = await mountCard(hass, { ...TEN_METER_GRID, start_locked: false });
     card._setSelectedZone(1);
     card._setDrawMode(mode);
+    armDraw(card);
     vi.spyOn(card.canvas, "getBoundingClientRect").mockReturnValue({
       left: 0,
       top: 0,
@@ -6165,6 +6262,7 @@ describe("zone map card ellipse drag past the grid", () => {
 
       // The same gesture in rect mode saves the box the ellipse is drawn in.
       card._setDrawMode("rect");
+      armDraw(card);
       hass.callService.mockClear();
       touchDrag(card, from as number[], to as number[]);
       expect(savedData(hass)).toEqual([rect]);
@@ -6177,6 +6275,7 @@ describe("zone map card ellipse drag past the grid", () => {
     mouse(card, "mousedown", 100, 100);
     mouse(card, "mousemove", 300, 500);
     mouse(card, "mouseup", 300, 500);
+    armDraw(card);
     touchDrag(card, [100, 100], [500, 400]);
 
     expect(savedData(hass)).toEqual([
@@ -6209,6 +6308,7 @@ describe("zone map card multi-touch and touchcancel", () => {
     const card = await mountCard(hass, { ...TEN_METER_GRID, start_locked: false });
     card._setSelectedZone(1);
     card._setDrawMode(mode);
+    armDraw(card);
     vi.spyOn(card.canvas, "getBoundingClientRect").mockReturnValue({
       left: 0,
       top: 0,
@@ -6292,7 +6392,7 @@ describe("zone map card multi-touch and touchcancel", () => {
     expect(zoneSaves(hass)).toEqual([
       expect.objectContaining({ device_id: "dev123", zone_id: 1, shape: mode, data }),
     ]);
-    expect(toasts.filter((message) => /saved/i.test(message))).toEqual(["Doorway saved"]);
+    expect(toasts.filter((message) => /saved|drawn/i.test(message))).toEqual(["Doorway redrawn"]);
     expect(card.isDrawing).toBe(false);
     expect(card.startPoint).toBeNull();
     expect(card._activeInput).toBeNull();
@@ -6510,16 +6610,27 @@ describe("zone map card touches on a map nothing can be drawn on", () => {
     expect(card.isDrawing).toBe(false);
   });
 
-  it("an unlocked canvas with a selected zone does", async () => {
-    const { card } = await touchCard({ start_locked: false });
+  it("an unlocked canvas lets a touch scroll until drawing is armed", async () => {
+    const { card, toasts } = await touchCard({ start_locked: false });
     expect(card.selectedZone).toBe(1);
+    expect(card._armedZone).toBeNull();
 
+    // Not armed: one finger scrolls the page.
+    expect(swipe(card)).toEqual([false, false, false]);
+    expect(card.canvas.classList.contains("pans")).toBe(true);
+    expect(card.isDrawing).toBe(false);
+    expect(toasts).toEqual([]);
+
+    armDraw(card);
+    expect(card.canvas.classList.contains("pans")).toBe(false);
     expect(touch(card, "touchstart", 100, 100)).toBe(true);
     expect(card.isDrawing).toBe(true);
     expect(touch(card, "touchmove", 300, 300)).toBe(true);
     expect(touch(card, "touchend", 300, 300)).toBe(true);
     expect(card.isDrawing).toBe(false);
-    expect(card.canvas.classList.contains("pans")).toBe(false);
+    // The save disarms, and the page scrolls again.
+    expect(card._armedZone).toBeNull();
+    expect(card.canvas.classList.contains("pans")).toBe(true);
   });
 
   it("a canvas in Walk does not preventDefault touches", async () => {
@@ -6540,8 +6651,10 @@ describe("zone map card touches on a map nothing can be drawn on", () => {
     expect(toasts).toEqual([]);
 
     // Add Zone selects the new zone, and the map takes touches for drawing.
+    card._hass.user = { is_admin: true };
     card.shadowRoot.getElementById("btnAddZone").click();
     expect(card.selectedZone).toBe(1);
+    expect(card._armedZone).toBe(1);
     expect(card.canvas.classList.contains("pans")).toBe(false);
     expect(touch(card, "touchstart", 100, 100)).toBe(true);
   });
@@ -6550,10 +6663,14 @@ describe("zone map card touches on a map nothing can be drawn on", () => {
     const { card } = await touchCard();
     expect(card.canvas.classList.contains("pans")).toBe(true);
 
+    // Unlocked, the map still pans until drawing is armed.
     card.shadowRoot.getElementById("btnLock").click();
+    expect(card.canvas.classList.contains("pans")).toBe(true);
+    armDraw(card);
     expect(card.canvas.classList.contains("pans")).toBe(false);
 
     card.shadowRoot.getElementById("btnLock").click();
+    expect(card._armedZone).toBeNull();
     expect(card.canvas.classList.contains("pans")).toBe(true);
     // A render rebuilds the canvas with the class it needs.
     card.render();
@@ -6562,6 +6679,7 @@ describe("zone map card touches on a map nothing can be drawn on", () => {
 
   it("finishes a drag that was under way when the map stopped taking touches", async () => {
     const { card, hass } = await touchCard({ start_locked: false });
+    armDraw(card);
     touch(card, "touchstart", 100, 100);
     touch(card, "touchmove", 300, 300);
     // The selection goes mid-drag (Delete on another device's echo, say).
@@ -6705,6 +6823,7 @@ describe("zone map card view only", () => {
     // The full card takes the same touch for drawing.
     card.setConfig({ device_id: "dev123", ...TEN_METER_GRID, start_locked: false });
     layOut(card, 800);
+    armDraw(card);
     expect(touch(card, "touchstart", 100, 100)).toBe(true);
     expect(card.isDrawing).toBe(true);
   });
@@ -6783,6 +6902,7 @@ describe("zone map card view only", () => {
     expect(card.selectedZone).toBe(1);
     layOut(card, 800);
     hass.callService.mockClear();
+    armDraw(card);
     mouse(card, "mousedown", 100, 100);
     mouse(card, "mousemove", 300, 250);
     expect(card.isDrawing).toBe(true);
@@ -6790,6 +6910,7 @@ describe("zone map card view only", () => {
     card.setConfig({ device_id: "dev123", ...VIEW_ONLY, start_locked: false });
 
     expect(card.isDrawing).toBe(false);
+    expect(card._armedZone).toBeNull();
     expect([card.startPoint, card._cursorPoint, card._activeInput]).toEqual([null, null, null]);
     // No rubber band and no size readout on the map.
     const draws = frame(card);
@@ -6858,6 +6979,7 @@ describe("zone map card undoing polygon vertices", () => {
     document.body.appendChild(card);
     card._setSelectedZone(1);
     card._setDrawMode("polygon");
+    armDraw(card);
     vi.spyOn(card.canvas, "getBoundingClientRect").mockReturnValue({
       left: 0,
       top: 0,
@@ -6960,6 +7082,7 @@ describe("zone map card non-primary mouse buttons", () => {
     card.isLocked = false;
     expect(card.selectedZone).toBe(1);
     card._setDrawMode(mode);
+    armDraw(card);
     vi.spyOn(card.canvas, "getBoundingClientRect").mockReturnValue({
       left: 0,
       top: 0,
@@ -7654,6 +7777,7 @@ describe("zone map card drawing", () => {
     const card = await mountCard(hass, { ...TEN_METER_GRID, start_locked: false });
     expect(card.selectedZone).toBe(1);
     card._setDrawMode(mode);
+    armDraw(card);
     vi.spyOn(card.canvas, "getBoundingClientRect").mockReturnValue(layout);
     hass.callService.mockClear();
     const toasts = notifications(card);
@@ -7726,20 +7850,34 @@ describe("zone map card drawing", () => {
       { device_id: "dev123", zone_id: 1, shape: "rect", data: rect, input_units: "mm" },
     ]);
     expect(card.zones).toEqual([{ id: 1, shape: "rect", data: rect }]);
-    expect(toasts).toEqual(["Doorway saved"]);
-    expect(card._undoSnapshot).toEqual([{ zoneId: 1, shape: "rect", data: DOORWAY }]);
+    expect(toasts).toEqual(["Doorway redrawn"]);
+    expect(card._undo.zones).toEqual([
+      {
+        zoneId: 1,
+        before: { shape: "rect", data: DOORWAY },
+        after: { shape: "rect", data: rect },
+      },
+    ]);
     expect(card.isDrawing).toBe(false);
+    expect(card._armedZone).toBeNull();
 
+    // ↶ asks the store for the shape it kept.
+    answerRestores(hass, { 1: { shape: "rect", data: DOORWAY } });
     hass.callService.mockClear();
     card.shadowRoot.getElementById("btnUndo").click();
     await settle();
 
-    expect(zoneSaves(hass)).toEqual([
-      { device_id: "dev123", zone_id: 1, shape: "rect", data: DOORWAY, input_units: "mm" },
+    expect(zoneSaves(hass)).toEqual([]);
+    expect(restoreCalls(hass)).toEqual([
+      {
+        type: ZONES_RESTORE_SHAPE,
+        device_id: "dev123",
+        zones: [{ zone_id: 1, current: { shape: "rect", data: rect } }],
+      },
     ]);
     expect(card.zones).toEqual([{ id: 1, shape: "rect", data: DOORWAY }]);
-    expect(toasts).toEqual(["Doorway saved", "Undid last zone change"]);
-    expect(card._undoSnapshot).toBeNull();
+    expect(toasts).toEqual(["Doorway redrawn", "Undid the change to Doorway"]);
+    expect(card._undo).toBeNull();
     expect(card.shadowRoot.getElementById("btnUndo").disabled).toBe(true);
   });
 
@@ -7791,8 +7929,8 @@ describe("zone map card drawing", () => {
       expect(x >= card.xMin && x <= card.xMax && y >= card.yMin && y <= card.yMax).toBe(true);
     }
     expect(card.zones).toEqual([{ id: 1, shape: "polygon", data: { points } }]);
-    expect(toasts).toEqual(["Doorway saved"]);
-    expect(card._undoSnapshot).toEqual([{ zoneId: 1, shape: "rect", data: DOORWAY }]);
+    expect(toasts).toEqual(["Doorway redrawn"]);
+    expect(card._undo.zones[0].before).toEqual({ shape: "rect", data: DOORWAY });
     expect(card._polyPoints).toEqual([]);
     expect(card.isDrawing).toBe(false);
   });
@@ -7822,6 +7960,7 @@ describe("zone map card size readout", () => {
     const card = await mountCard(hass, { ...TEN_METER_GRID, start_locked: false });
     expect(card.selectedZone).toBe(1);
     card._setDrawMode(mode);
+    armDraw(card);
     layOut(card, cssWidth);
     hass.callService.mockClear();
     return { card, hass };
@@ -7950,6 +8089,7 @@ describe("zone map card size readout", () => {
     touch(card, "touchmove", 300, 400);
     expect(readouts(card).map((r) => [r.x, r.y])).toEqual([[300, 336]]);
     touch(card, "touchend", 300, 400);
+    armDraw(card);
 
     // A mouse pointer covers less, so the readout sits closer.
     mouse(card, "mousedown", 100, 100);
@@ -7961,6 +8101,7 @@ describe("zone map card size readout", () => {
     mouse(card, "mousemove", 300, 20);
     expect(readouts(card).map((r) => [r.x, r.y])).toEqual([[300, 48]]);
     mouse(card, "mouseup", 300, 20);
+    armDraw(card);
     // A finger's would sit under the fingertip there, so it goes beside the
     // finger at its height, on the side with more room, its near edge 44 px
     // from the touch. The plate is 138 px wide here ("2.50 m × 3.10 m" by
@@ -7969,12 +8110,14 @@ describe("zone map card size readout", () => {
     touch(card, "touchmove", 300, 50);
     expect(readouts(card).map((r) => [r.x, r.y])).toEqual([[300 + 44 + 69, 50]]);
     touch(card, "touchend", 300, 50);
+    armDraw(card);
     touch(card, "touchstart", 700, 300);
     touch(card, "touchmove", 500, 30);
     expect(readouts(card).map((r) => [r.text, r.x, r.y])).toEqual([
       ["2.50 m × 3.35 m", 500 - 44 - 69, 30],
     ]);
     touch(card, "touchend", 500, 30);
+    armDraw(card);
 
     // Sized in CSS px: on a card shown at 400 px, each is twice as many
     // backing px, and the font with them.
@@ -7985,6 +8128,7 @@ describe("zone map card size readout", () => {
       [300, 400 - 128, "bold 28px sans-serif"],
     ]);
     touch(card, "touchend", 150, 200);
+    armDraw(card);
     // Beside the finger too: 88 backing px from it, the 276 px plate kept
     // on the canvas.
     touch(card, "touchstart", 300, 150);
@@ -8015,6 +8159,7 @@ describe("zone map card size readout", () => {
     const hass = fakeHass({ ...ZONE_PAYLOAD, rotation_deg: 0 });
     const card = await mountCard(hass, { ...TEN_METER_GRID, start_locked: false });
     card._setDrawMode("rect");
+    armDraw(card);
     layOut(card, 800);
     card.hass = {
       ...hass,
@@ -8090,6 +8235,7 @@ describe("zone map card corner snapping", () => {
     const card = await mountCard(hass, { ...grid, start_locked: false });
     expect(card.selectedZone).toBe(1);
     card._setDrawMode(mode);
+    armDraw(card);
     layOut(card, 800);
     hass.callService.mockClear();
     return { card, hass };
@@ -8619,7 +8765,7 @@ describe("zone map card walk", () => {
     expect(walked).toEqual([
       { device_id: "dev123", zone_id: 1, shape: "rect", data, input_units: "mm" },
     ]);
-    expect(toasts).toEqual(["Doorway saved"]);
+    expect(toasts).toEqual(["Doorway redrawn"]);
     // Out of Walk, back in the mode it came from, the rect on the map at
     // once and Undo ready for it.
     expect(card.drawMode).toBe("rect");
@@ -8631,6 +8777,7 @@ describe("zone map card walk", () => {
     // A drag over the same rect sends the same call and says the same.
     hass.callService.mockClear();
     layOut(card, 800);
+    armDraw(card);
     const mouse = (type: string, x: number, y: number) =>
       card.canvas.dispatchEvent(new MouseEvent(type, { clientX: x, clientY: y }));
     mouse("mousedown", 160, 80);
@@ -8638,7 +8785,7 @@ describe("zone map card walk", () => {
     mouse("mouseup", 320, 240);
     await settle();
     expect(hass.callService.mock.calls.map((call: any[]) => call[2])).toEqual(walked);
-    expect(toasts).toEqual(["Doorway saved", "Doorway saved"]);
+    expect(toasts).toEqual(["Doorway redrawn", "Doorway redrawn"]);
   });
 
   it("keeps walked corners where the radar placed them, never snapped", async () => {
@@ -8684,7 +8831,7 @@ describe("zone map card walk", () => {
     expect(hass.callService.mock.calls.map((call: any[]) => call[2])).toEqual([
       { device_id: "dev123", zone_id: 1, shape: "polygon", data: { points }, input_units: "mm" },
     ]);
-    expect(toasts).toEqual(["Doorway saved"]);
+    expect(toasts).toEqual(["Doorway redrawn"]);
     expect(card.zones).toEqual([{ id: 1, shape: "polygon", data: { points } }]);
     // Back in polygon mode with nothing left in progress.
     expect(card.drawMode).toBe("polygon");
@@ -8919,17 +9066,21 @@ describe("zone map card walk", () => {
   it("lets the canvas pan and draws nothing with the pointer in Walk", async () => {
     const { card, toasts } = await walkCard();
     layOut(card, 800);
+    armDraw(card);
     expect(card.canvas.classList.contains("pans")).toBe(false);
 
+    // Walk ends arming.
     $(card, "btnModeWalk").click();
+    expect(card._armedZone).toBeNull();
 
     expect(card.canvas.classList.contains("pans")).toBe(true);
     card.canvas.dispatchEvent(new MouseEvent("mousedown", { clientX: 100, clientY: 100 }));
     expect(card.isDrawing).toBe(false);
     expect(toasts).toEqual([]);
 
+    // Out of Walk, the map waits for Draw shape.
     $(card, "btnWalkCancel").click();
-    expect(card.canvas.classList.contains("pans")).toBe(false);
+    expect(card.canvas.classList.contains("pans")).toBe(true);
   });
 
   it("lays the walk back out after a render", async () => {
@@ -10410,32 +10561,23 @@ describe("zone map card movement history", () => {
     expect(closed()).toEqual([null, false, null, false]);
   });
 
-  it("draws over the replay, and pressing a History control ends the shape", async () => {
-    // Drawing stays possible with History open: the heatmap is a good guide.
+  it("closes History when drawing is armed, and disarms when History opens", async () => {
+    // A replay hides the live dots.
     const { card } = await historyCard({ config: { start_locked: false } });
     document.body.appendChild(card);
     layOut(card, 800);
     await openHistory(card);
-    scrub(card, 20);
-    const mouse = (type: string, x: number, y: number) =>
-      card.canvas.dispatchEvent(new MouseEvent(type, { clientX: x, clientY: y }));
-    mouse("mousedown", 100, 100);
-    mouse("mousemove", 300, 250);
-    expect(card.isDrawing).toBe(true);
+    expect(card._history.open).toBe(true);
 
-    // The rubber band and its size over the replayed zones, under its dots.
-    const draws = frame(card);
-    expect(draws.filter((d) => d.name === "setLineDash" && d.args[0].join() === "5,5")).toHaveLength(1);
-    expect(draws.some((d) => d.name === "fillText" && String(d.args[0]).includes(" × "))).toBe(true);
-    expect(dots(draws)).toEqual([
-      ["1", 360, 160],
-      ["2", 560, 320],
-    ]);
+    armDraw(card);
+    expect(card._armedZone).toBe(1);
+    expect(card._history.open).toBe(false);
+    expect($(card, "historyPanel").hidden).toBe(true);
 
-    // A press on a History control ends it, as a press anywhere else in the
-    // card outside the map does.
-    pressOn($(card, "btnHistoryPlay"), "mousedown");
-    expect(card.isDrawing).toBe(false);
+    await openHistory(card);
+    expect(card._history.open).toBe(true);
+    expect(card._armedZone).toBeNull();
+    expect($(card, "drawBanner").hidden).toBe(true);
   });
 });
 
@@ -10598,6 +10740,7 @@ describe("zone map card flipped map", () => {
   it("saves a rect drawn on a flipped map in unflipped mm", async () => {
     const { card, hass, toasts } = await mapCard(FLIPPED, { start_locked: false });
     expect(card.selectedZone).toBe(1);
+    armDraw(card);
     vi.spyOn(card.canvas, "getBoundingClientRect").mockReturnValue({
       left: 0,
       top: 0,
@@ -10625,7 +10768,7 @@ describe("zone map card flipped map", () => {
       { device_id: "dev123", zone_id: 1, shape: "rect", data, input_units: "mm" },
     ]);
     expect(card.zones).toEqual([{ id: 1, shape: "rect", data }]);
-    expect(toasts).toEqual(["Doorway saved"]);
+    expect(toasts).toEqual(["Doorway redrawn"]);
   });
 
   it("an administrator saves the flip without input_units", async () => {
@@ -10914,10 +11057,10 @@ describe("zone map card zones panel", () => {
     const css = card.shadowRoot.querySelector("style").textContent.replace(/\s+/g, " ");
 
     expect(css).toContain(
-      "button.zone-btn[data-zone-id].active { background: var(--zm-chip-bg); color: var(--zm-chip-color); border-color: var(--zm-chip-active); box-shadow: inset 0 0 0 1px var(--zm-chip-active); }"
+      "button.zone-btn[data-zone-id].active, button.zone-btn[data-strip-zone].active { background: var(--zm-chip-bg); color: var(--zm-chip-color); border-color: var(--zm-chip-active); box-shadow: inset 0 0 0 1px var(--zm-chip-active); }"
     );
     expect(css).toContain(
-      ".container.dark button.zone-btn[data-zone-id].active { background: #2a2c31; color: #e5e9f0; border-color: #2d7dd2; box-shadow: inset 0 0 0 1px #2d7dd2; }"
+      ".container.dark button.zone-btn[data-zone-id].active, .container.dark button.zone-btn[data-strip-zone].active { background: #2a2c31; color: #e5e9f0; border-color: #2d7dd2; box-shadow: inset 0 0 0 1px #2d7dd2; }"
     );
     // The ring that kept the dot apart from the blue fill is gone with it.
     expect(css).not.toContain("button.zone-btn.active .zone-dot");
@@ -10981,6 +11124,9 @@ describe("zone map card zones panel", () => {
     expect(editorOf(card).querySelector(".zone-editor-head").nextElementSibling).toBe($(card, "zoneDraw"));
     expect($(card, "btnZoneUnlock").hidden).toBe(false);
     expect($(card, "btnZoneUnlock").textContent).toBe("Unlock");
+    // A locked map never arms.
+    expect(card._armedZone).toBeNull();
+    expect($(card, "btnZoneDraw").hidden).toBe(true);
 
     $(card, "btnZoneUnlock").click();
 
@@ -10989,38 +11135,57 @@ describe("zone map card zones panel", () => {
     expect(toasts).toEqual(["Drawing and cone rotation unlocked. You can edit zones now."]);
     expect($(card, "btnLock").title).toBe("Lock drawing and cone rotation");
     expect($(card, "btnZoneUnlock").hidden).toBe(true);
+    // Unlock arms a zone with no shape yet.
+    expect(card._armedZone).toBe(2);
+    expect($(card, "drawBannerText").textContent).toBe("Drawing Zone 2");
+    expect($(card, "btnZoneDraw").textContent).toBe("Cancel drawing");
     expect($(card, "zoneDrawText").textContent).toBe(
-      "Drag on the map to draw this zone as a rectangle. ✎ on the map offers an ellipse or a polygon. A tap on another zone picks it."
+      "Drag on the map to draw this zone as a rectangle. Cancel drawing or Esc stops without a change."
     );
   });
 
   it("says how to draw in each mode, and how to change a drawn zone's shape", async () => {
     const card = await mountCard(adminHass(), { start_locked: false });
     const draw = () => $(card, "zoneDrawText").textContent;
+    const EXPAND = " Expand, at the map's top right, fills the window with the map.";
 
     expect(draw()).toBe(
-      "To change its shape, drag on the map to draw this zone as a rectangle. ✎ on the map offers an ellipse or a polygon. A tap on another zone picks it."
+      "Press Redraw shape, then drag on the map to give this zone a new rectangle. ✎ on the map offers an ellipse or a polygon. A tap on a zone on the map picks it." +
+        EXPAND
     );
+    expect($(card, "btnZoneDraw").textContent).toBe("Redraw shape");
+    expect($(card, "btnZoneDraw").hidden).toBe(false);
     // A drawn zone's hint sits under its settings, not at the top.
     expect($(card, "zoneDraw").classList.contains("callout")).toBe(false);
     expect($(card, "zoneDraw").nextElementSibling.classList.contains("zone-delete-row")).toBe(true);
 
     $(card, "btnModeEllipse").click();
     expect(draw()).toBe(
-      "To change its shape, drag on the map to draw this zone as an ellipse. ✎ on the map offers a rectangle or a polygon. A tap on another zone picks it."
+      "Press Redraw shape, then drag on the map to give this zone a new ellipse. ✎ on the map offers a rectangle or a polygon. A tap on a zone on the map picks it." +
+        EXPAND
     );
     $(card, "btnModePolygon").click();
     expect(draw()).toBe(
-      "To change its shape, tap each corner of this zone on the map, up to 32, then double-tap the last one or press ✓."
+      "Press Redraw shape, then tap each corner of the new shape on the map, up to 32, and double-tap the last one or press ✓." +
+        EXPAND
     );
+    // Armed, the hint is short.
+    $(card, "btnZoneDraw").click();
+    expect(draw()).toBe(
+      "Tap each corner of this zone on the map, up to 32, then double-tap the last one or press ✓. Cancel drawing or Esc stops without a change."
+    );
+    $(card, "btnZoneDraw").click();
+    expect(card._armedZone).toBeNull();
 
     // Cleared, the zone has no shape, and the hint moves up as a callout.
     $(card, "configContent").hidden = false;
     $(card, "clearBtn").click();
     $(card, "btnClearAllYes").click();
     expect(draw()).toBe(
-      "Tap each corner of this zone on the map, up to 32, then double-tap the last one or press ✓."
+      "Press Draw shape, then tap each corner of this zone on the map, up to 32, and double-tap the last one or press ✓." +
+        EXPAND
     );
+    expect($(card, "btnZoneDraw").textContent).toBe("Draw shape");
     expect($(card, "zoneDraw").classList.contains("callout")).toBe(true);
   });
 
@@ -11033,8 +11198,10 @@ describe("zone map card zones panel", () => {
       "Marking this zone's corners by walking. Follow the steps under the map."
     );
     expect($(card, "btnZoneUnlock").hidden).toBe(true);
+    expect($(card, "btnZoneDraw").hidden).toBe(true);
     card._exitWalk();
-    expect($(card, "zoneDrawText").textContent).toContain("as a rectangle");
+    expect($(card, "zoneDrawText").textContent).toContain("Press Redraw shape");
+    expect($(card, "btnZoneDraw").hidden).toBe(false);
   });
 
   it("says what the selected zone's presence sensor says now", async () => {
@@ -11167,6 +11334,7 @@ describe("zone map card picking a zone on the map", () => {
   it.each(["rect", "ellipse"])("picks a zone with a tap in %s mode and saves nothing", async (mode) => {
     const { card, hass, toasts } = await mapCard({ start_locked: false });
     card._setDrawMode(mode);
+    armDraw(card);
     const zonesBefore = structuredClone(card.zones);
 
     // A few px of finger jitter is still a tap.
@@ -11179,23 +11347,29 @@ describe("zone map card picking a zone on the map", () => {
     expect(card.zones).toEqual(zonesBefore);
     expect(toasts).toEqual([]);
     expect(card.isDrawing).toBe(false);
-    expect(card._undoSnapshot).toBeNull();
+    expect(card._undo).toBeNull();
+    // Picking another zone ends drawing for the first.
+    expect(card._armedZone).toBeNull();
   });
 
   it("saves nothing for a tap in Ellipse mode off every zone", async () => {
     const { card, hass } = await mapCard({ start_locked: false });
     card._setDrawMode("ellipse");
+    armDraw(card);
 
     tap(card, 100, 600);
     await settleWrites();
 
     expect(card.selectedZone).toBe(1);
     expect(hass.callService).not.toHaveBeenCalled();
+    // A tap off every zone stays armed.
+    expect(card._armedZone).toBe(1);
   });
 
   it("still draws the selected zone with a drag", async () => {
     const { card, hass } = await mapCard({ start_locked: false });
     openZone(card, 2);
+    armDraw(card, 2);
 
     // From inside Doorway: a drag draws, it does not pick.
     mouse(card, "mousedown", 420, 20);
@@ -11208,11 +11382,26 @@ describe("zone map card picking a zone on the map", () => {
 
   it("picks a zone with a touch tap", async () => {
     const { card, hass } = await mapCard({ start_locked: false });
+    armDraw(card);
 
     touch(card, "touchstart", 600, 200);
     touch(card, "touchend", 600, 200);
 
     expect(card.selectedZone).toBe(2);
+    expect(hass.callService).not.toHaveBeenCalled();
+  });
+
+  it("picks a zone with the mousedown a touch tap makes on a map not armed", async () => {
+    const { card, hass, toasts } = await mapCard({ start_locked: false });
+
+    // The browser makes a mousedown of the tap.
+    touch(card, "touchstart", 600, 200);
+    touch(card, "touchend", 600, 200);
+    expect(card.selectedZone).toBe(1);
+    mouse(card, "mousedown", 600, 200);
+
+    expect(card.selectedZone).toBe(2);
+    expect(toasts).toEqual([]);
     expect(hass.callService).not.toHaveBeenCalled();
   });
 
@@ -11226,6 +11415,7 @@ describe("zone map card picking a zone on the map", () => {
       "a touch tap",
       { start_locked: false },
       (card: any) => {
+        armDraw(card);
         touch(card, "touchstart", 600, 200);
         touch(card, "touchend", 600, 200);
       },
@@ -11263,6 +11453,7 @@ describe("zone map card picking a zone on the map", () => {
   it("places a corner, not a pick, with a tap in Polygon mode", async () => {
     const { card } = await mapCard({ start_locked: false });
     card._setDrawMode("polygon");
+    armDraw(card);
 
     tap(card, 600, 200);
 
@@ -11285,21 +11476,105 @@ describe("zone map card picking a zone on the map", () => {
     expect(card.selectedZone).toBe(1);
   });
 
-  it("draws the selected zone thicker while the map can be drawn on", async () => {
-    const { card } = await mapCard({ start_locked: false });
-    const strokes = () => {
-      const { ctx, draws } = drawRecordingContext();
-      card.ctx = ctx;
-      card.drawZones();
-      return draws.filter((d) => d.name === "strokeRect").map((d) => d.lineWidth);
-    };
+  // Each shape draw with its style, and the dots.
+  function zoneFrame(card: any) {
+    const { ctx, draws } = drawRecordingContext();
+    card.ctx = ctx;
+    card.drawZones();
+    const shapes = draws
+      .filter((d) => ["fillRect", "strokeRect"].includes(d.name))
+      .map((d) => [d.name, d.args[0], d.lineWidth, d.alpha ?? 1]);
+    const dots = draws.filter((d) => d.name === "arc" && d.args[2] > 0);
+    const labels = draws.filter((d) => d.name === "fillText").map((d) => [d.args[0], d.alpha ?? 1]);
+    return { draws, shapes, dots, labels };
+  }
 
-    expect(strokes()).toEqual([4, 2]);
+  it("dims the other zones and draws the picked one last, bright, with corner dots", async () => {
+    const { card } = await mapCard({ start_locked: false });
+    const doorX = card.valueToPixels(0, "x");
+    const couchX = card.valueToPixels(2000, "x");
+
+    // Doorway picked: Couch dims to a faint outline.
+    let frame = zoneFrame(card);
+    expect(frame.shapes).toEqual([
+      ["strokeRect", couchX, 2, 0.35],
+      ["fillRect", doorX, 4, 1],
+      ["strokeRect", doorX, 4, 1],
+    ]);
+    expect(frame.dots).toHaveLength(4);
+    expect(frame.labels).toEqual([
+      ["Doorway", 1],
+      ["Couch", 0.55],
+    ]);
+    // Every name is drawn after the last shape.
+    const lastShape = frame.draws.map((d) => d.name).lastIndexOf("strokeRect");
+    const firstText = frame.draws.findIndex((d) => d.name === "fillText");
+    expect(firstText).toBeGreaterThan(lastShape);
+
     openZone(card, 2);
-    expect(strokes()).toEqual([2, 4]);
-    // Locked, nothing is about to be drawn over.
-    card._toggleLock();
-    expect(strokes()).toEqual([2, 2]);
+    frame = zoneFrame(card);
+    expect(frame.shapes).toEqual([
+      ["strokeRect", doorX, 2, 0.35],
+      ["fillRect", couchX, 4, 1],
+      ["strokeRect", couchX, 4, 1],
+    ]);
+  });
+
+  it("dots an ellipse's axis ends and every polygon corner", async () => {
+    const payload = {
+      ...ZONE_PAYLOAD,
+      zones: {
+        "1": { shape: "ellipse", data: { cx: 0, cy: 2000, rx: 1000, ry: 500 }, name: "Rug" },
+        "2": {
+          shape: "polygon",
+          data: {
+            points: [
+              { x: 2000, y: 2000 },
+              { x: 3000, y: 2000 },
+              { x: 3000, y: 3000 },
+              { x: 2500, y: 3500 },
+              { x: 2000, y: 3000 },
+            ],
+          },
+          name: "Nook",
+        },
+      },
+    };
+    const { card } = await mapCard({ start_locked: false }, payload);
+    expect(zoneFrame(card).dots).toHaveLength(4);
+    openZone(card, 2);
+    const dots = zoneFrame(card).dots;
+    expect(dots).toHaveLength(5);
+    expect([dots[0].args[0], dots[0].args[1]]).toEqual([
+      card.valueToPixels(2000, "x"),
+      card.valueToPixels(2000, "y"),
+    ]);
+  });
+
+  it("dims nothing on a locked map, for a viewer, in a replay or on the map alone", async () => {
+    const plain = [
+      ["fillRect", 2, 1],
+      ["strokeRect", 2, 1],
+      ["fillRect", 2, 1],
+      ["strokeRect", 2, 1],
+    ];
+    const looks = (card: any) => zoneFrame(card).shapes.map(([name, , width, alpha]) => [name, width, alpha]);
+
+    const locked = await mapCard();
+    expect(locked.card.isLocked).toBe(true);
+    expect(looks(locked.card)).toEqual(plain);
+    expect(zoneFrame(locked.card).dots).toHaveLength(0);
+
+    const viewer = await mapCard({ start_locked: false });
+    viewer.card._hass.user = { is_admin: false };
+    expect(looks(viewer.card)).toEqual(plain);
+
+    const replay = await mapCard({ start_locked: false });
+    replay.card._replayShowing = () => true;
+    expect(looks(replay.card)).toEqual(plain);
+
+    const alone = await mapCard({ start_locked: false, view_only: true });
+    expect(looks(alone.card)).toEqual(plain);
   });
 });
 
@@ -11351,10 +11626,6 @@ describe("zone map card clearing zones", () => {
     return { device_id: "dev123", zone_id: zoneId, shape: "none", data: null, input_units: "mm" };
   }
 
-  function restored(zoneId: number, data: any) {
-    return { device_id: "dev123", zone_id: zoneId, shape: "rect", data, input_units: "mm" };
-  }
-
   it("sits under Map settings, not among the zone chips", async () => {
     const { card } = await clearingCard();
 
@@ -11373,7 +11644,7 @@ describe("zone map card clearing zones", () => {
     expect($(card, "clearAllConfirm").hidden).toBe(false);
     expect($(card, "clearBtn").hidden).toBe(true);
     expect($(card, "clearAllConfirm").firstElementChild.textContent).toBe(
-      "Clear every zone's shape? The zones keep their names, types and hold times, and ↶ on the map brings the shapes back."
+      "Clear every zone's shape? The zones keep their names, types and hold times, and ↶ on the map or Restore previous shape in each zone brings the shapes back."
     );
     expect(card.shadowRoot.activeElement).toBe($(card, "btnClearAllNo"));
 
@@ -11398,12 +11669,27 @@ describe("zone map card clearing zones", () => {
     $(card, "clearBtn").click();
 
     expect($(card, "clearAllConfirm").firstElementChild.textContent).toBe(
-      "Clear every zone's shape? The zones keep their names, types and hold times. This cannot be undone."
+      "Clear every zone's shape? The zones keep their names, types and hold times, and Restore previous shape in each zone brings its shape back."
     );
   });
 
+  // The store's payload once both are cleared.
+  function pushCleared(hass: any) {
+    hass.handlers[ZONES_SUBSCRIBE][0]({
+      ...TWO_ZONES,
+      zones: {
+        "1": { shape: "none", data: null, name: "Doorway" },
+        "2": { shape: "none", data: null, name: "Window" },
+      },
+    });
+  }
+
   it("clears every zone with a write each and one toast, and Undo restores them", async () => {
     const { card, hass, toasts } = await clearingCard();
+    answerRestores(hass, {
+      1: { shape: "rect", data: DOORWAY },
+      2: { shape: "rect", data: WINDOW },
+    });
 
     clearAll(card);
     await settleWrites();
@@ -11411,9 +11697,10 @@ describe("zone map card clearing zones", () => {
     expect(zoneWrites(hass)).toEqual([cleared(1), cleared(2)]);
     expect(card.zones).toEqual([]);
     expect(toasts).toEqual(["All shapes cleared"]);
-    expect(card._undoSnapshot).toEqual([
-      { zoneId: 1, shape: "rect", data: DOORWAY },
-      { zoneId: 2, shape: "rect", data: WINDOW },
+    expect(card._undo.kind).toBe("clear");
+    expect(card._undo.zones.map((zone: any) => [zone.zoneId, zone.before])).toEqual([
+      [1, { shape: "rect", data: DOORWAY }],
+      [2, { shape: "rect", data: WINDOW }],
     ]);
     // The zones stay, and with nothing left to clear the button goes.
     expect(card.zoneConfig.map((z: any) => z.id)).toEqual([1, 2]);
@@ -11423,13 +11710,32 @@ describe("zone map card clearing zones", () => {
     undo(card);
     await settleWrites();
 
-    expect(zoneWrites(hass)).toEqual([restored(1, DOORWAY), restored(2, WINDOW)]);
+    // One restore for both, while both are still cleared.
+    expect(zoneWrites(hass)).toEqual([]);
+    expect(restoreCalls(hass).map((msg) => msg.zones)).toEqual([
+      [
+        { zone_id: 1, current: { shape: "none", data: null } },
+        { zone_id: 2, current: { shape: "none", data: null } },
+      ],
+    ]);
     expect(card.zones).toEqual([
       { id: 1, shape: "rect", data: DOORWAY },
       { id: 2, shape: "rect", data: WINDOW },
     ]);
-    expect(toasts).toEqual(["All shapes cleared", "Undid last zone change"]);
+    expect(toasts).toEqual(["All shapes cleared", "Undid Clear all shapes"]);
     expect($(card, "clearAll").hidden).toBe(false);
+  });
+
+  it("keeps only zones that had a shape in the undo", async () => {
+    const payload = {
+      ...TWO_ZONES,
+      zones: { ...TWO_ZONES.zones, "3": { shape: "none", data: null, name: "Desk" } },
+    };
+    const card = await mountCard(adminHass(payload), { start_locked: false });
+
+    clearAll(card);
+
+    expect(card._undo.zones.map((zone: any) => zone.zoneId)).toEqual([1, 2]);
   });
 
   it("does not say all shapes were cleared when one of them was refused", async () => {
@@ -11441,20 +11747,55 @@ describe("zone map card clearing zones", () => {
 
     expect(zoneWrites(hass)).toEqual([cleared(1), cleared(2)]);
     expect(toasts).toEqual(["Could not save: zone 2 is busy"]);
+    // The refused zone keeps its shape, and leaves the undo.
+    expect(card.zones).toEqual([{ id: 2, shape: "rect", data: WINDOW }]);
+    expect(card._undo.zones.map((zone: any) => zone.zoneId)).toEqual([1]);
+    expect($(card, "btnUndo").disabled).toBe(false);
   });
 
-  it("does not say the undo happened when one of its writes was refused", async () => {
+  it("names the zones an undo left alone, which changed since", async () => {
     const { card, hass, toasts } = await clearingCard();
     clearAll(card);
     await settleWrites();
-    hass.callService.mockClear();
-    refuse(hass, 1);
+    pushCleared(hass);
+    // Doorway was drawn again elsewhere: the store skips it.
+    answerRestores(hass, { 2: { shape: "rect", data: WINDOW } });
 
     undo(card);
     await settleWrites();
 
-    expect(zoneWrites(hass)).toEqual([restored(1, DOORWAY), restored(2, WINDOW)]);
-    expect(toasts).toEqual(["All shapes cleared", "Could not save: zone 1 is busy"]);
+    expect(card.zones).toEqual([{ id: 2, shape: "rect", data: WINDOW }]);
+    expect(toasts).toEqual([
+      "All shapes cleared",
+      "Doorway was changed in the meantime, so it was not undone.",
+    ]);
+    expect(card._undo).toBeNull();
+  });
+
+  it("puts the shapes back and keeps ↶ when the restore is refused", async () => {
+    const { card, hass, toasts } = await clearingCard();
+    clearAll(card);
+    await settleWrites();
+    hass.restoreReply = () => {
+      throw new Error("Home Assistant is restarting");
+    };
+
+    undo(card);
+    expect(card.zones).toHaveLength(2);
+    await settleWrites();
+
+    expect(card.zones).toEqual([]);
+    expect(toasts).toEqual(["All shapes cleared", "Could not undo: Home Assistant is restarting"]);
+    expect($(card, "btnUndo").disabled).toBe(false);
+
+    // An unreadable answer is no undo either.
+    hass.restoreReply = () => ({ restored: "all" });
+    undo(card);
+    await settleWrites();
+    expect(card.zones).toEqual([]);
+    expect(toasts[toasts.length - 1]).toBe(
+      "Could not undo: Home Assistant sent an answer this card cannot read."
+    );
   });
 
   it("is an administrator's only", async () => {
@@ -11496,7 +11837,7 @@ describe("zone map card clearing zones on a locked map", () => {
     expect($("clearAllConfirm").hidden).toBe(true);
     expect(hass.callService).not.toHaveBeenCalled();
     expect(card.zones).toEqual(zonesBefore);
-    expect(card._undoSnapshot).toBeNull();
+    expect(card._undo).toBeNull();
     expect(toasts).toEqual(["Unlock the map to clear zones."]);
     expect($("btnLock").classList.contains("nudge")).toBe(true);
 
@@ -11607,6 +11948,7 @@ describe("zone map card units and fitted grid", () => {
     } as DOMRect);
     const mouse = (type: string, [x, y]: [number, number]) =>
       card.canvas.dispatchEvent(new MouseEvent(type, { clientX: x, clientY: y }));
+    armDraw(card);
     mouse("mousedown", from);
     mouse("mousemove", to);
     mouse("mouseup", to);
@@ -12231,6 +12573,7 @@ describe("zone map card units and fitted grid", () => {
       const hass = unitHass("km", true, { ...EMPTY, zones: { "1": {} } });
       const card = await mountCard(hass, { start_locked: false });
       expect(card.selectedZone).toBe(1);
+      armDraw(card);
       vi.spyOn(card.canvas, "getBoundingClientRect").mockReturnValue({
         left: 0,
         top: 0,
@@ -12310,6 +12653,7 @@ describe("zone map card zoom and pan", () => {
     const card = await mountCard(hass, { ...TEN_METER_GRID, start_locked: false, ...config });
     card._setSelectedZone(1);
     card._setDrawMode(mode);
+    if (!card.isLocked) armDraw(card);
     layOut(card);
     hass.callService.mockClear();
     return { card, hass };
@@ -12703,6 +13047,7 @@ describe("zone map card zoom and pan", () => {
     expect(rect?.args.map((v: number) => Math.round(v * 1e6) / 1e6)).toEqual([100, 100, 200, 400]);
 
     card._setDrawMode("polygon");
+    armDraw(card);
     for (const [x, y] of [
       [100, 100],
       [300, 100],
@@ -13532,6 +13877,7 @@ describe("zone map card expand map", () => {
     const mouse = (type: string, x: number, y: number) =>
       card.canvas.dispatchEvent(new MouseEvent(type, { clientX: x, clientY: y, button: 0, bubbles: true }));
     if (when === "esc") $(card, "btnFullWindow").click();
+    armDraw(card);
     mouse("mousedown", 100, 100);
     mouse("mousemove", 200, 200);
     expect(card.isDrawing).toBe(true);
@@ -13817,6 +14163,7 @@ describe("zone map card expand map", () => {
     const card = await placedCard(hass, { ...TEN_METER_GRID, start_locked: false });
     expect(card.selectedZone).toBe(1);
     card._setDrawMode("rect");
+    armDraw(card);
     const container = containerOf(card);
     // A large monitor: the square map beside the panel, 1384 px wide.
     fullBox(container, 2544, 1384);
@@ -13864,5 +14211,942 @@ describe("zone map card expand map", () => {
     vi.resetModules();
     await import("../src/zone-map/card");
     expect(back).toHaveBeenCalledTimes(1);
+  });
+
+  it("says Expand beside its icon where the map has room, and keeps the button's name", async () => {
+    const card = await placedCard();
+    const button = $(card, "btnFullWindow");
+    const word = () => button.querySelector(".full-toggle-text");
+    expect(word().textContent).toBe("Expand");
+    expect(word().getAttribute("aria-hidden")).toBe("true");
+    expect(button.classList.contains("labeled")).toBe(true);
+    expect(button.getAttribute("aria-label")).toBe("Expand map");
+    const css = card.shadowRoot.querySelector("style").textContent.replace(/\s+/g, " ");
+    expect(css).toContain(".full-toggle-text { display: none; }");
+    expect(css).toContain(
+      "@container (min-width: 480px) { .overlay-controls button.full-toggle.labeled { width: auto; padding: 0 10px 0 6px; gap: 6px; } .full-toggle.labeled .full-toggle-text { display: inline; }"
+    );
+
+    button.click();
+    expect(word()).toBeNull();
+    expect(button.classList.contains("labeled")).toBe(false);
+    expect(button.getAttribute("aria-label")).toBe(FULL_WINDOW_CLOSE_LABEL);
+
+    $(card, "btnFullWindowClose").click();
+    expect(word().textContent).toBe("Expand");
+    expect(button.getAttribute("aria-label")).toBe("Expand map");
+  });
+
+  it("mentions Expand in the help line and the drawing hint while it can open", async () => {
+    const hass = fakeHass();
+    hass.user = { is_admin: true };
+    const card = await placedCard(hass, { start_locked: false });
+    const EXPAND = "Expand, at the map's top right, fills the window with the map.";
+    expect($(card, "gridInfo").textContent).toMatch(/Radar range: .*120°\. Expand, at the map's top right/);
+    expect($(card, "zoneDrawText").textContent.endsWith(` ${EXPAND}`)).toBe(true);
+    // Armed, the hint stays short.
+    card._armDrawing(1);
+    expect($(card, "zoneDrawText").textContent).not.toContain(EXPAND);
+    card._disarm();
+
+    $(card, "btnFullWindow").click();
+    expect($(card, "gridInfo").textContent).not.toContain(EXPAND);
+    expect($(card, "zoneDrawText").textContent).not.toContain(EXPAND);
+    $(card, "btnFullWindowClose").click();
+    expect($(card, "gridInfo").textContent).toContain(EXPAND);
+
+    // Where the map cannot expand, neither says so.
+    card.preview = true;
+    expect($(card, "gridInfo").textContent).not.toContain(EXPAND);
+  });
+
+  it("pins a strip of zone chips under a stacked expanded map, which picks and arms", async () => {
+    const hass = adminHass({
+      ...ZONE_PAYLOAD,
+      zones: { ...ZONE_PAYLOAD.zones, "2": { shape: "rect", data: { x_min: 0, x_max: 500, y_min: 2000, y_max: 2500 }, name: "Couch" } },
+    });
+    const card = await placedCard(hass, { start_locked: false });
+    const css = card.shadowRoot.querySelector("style").textContent.replace(/\s+/g, " ");
+    expect(css).toContain(".zone-strip { display: none; }");
+    expect(css).toContain(
+      '.container.full[data-layout="stacked"] .zone-strip:not([hidden]) { display: flex; position: sticky; top: 0;'
+    );
+    expect(css).toContain('.container.full[data-layout="stacked"] #zone-buttons { display: none; }');
+    expect(css).toContain(".zone-strip button { flex: none; min-height: 44px;");
+    const strip = $(card, "zoneStrip");
+    // The panel's first child, one group named Zones, never data-zone-id.
+    expect(strip.parentElement.id).toBe("mapSide");
+    expect(strip.parentElement.firstElementChild).toBe(strip);
+    expect(strip.getAttribute("role")).toBe("group");
+    expect(strip.getAttribute("aria-label")).toBe("Zones");
+    const chips = () => Array.from(strip.querySelectorAll(".strip-chip")) as any[];
+    expect(chips().map((c) => [c.dataset.stripZone, c.textContent, c.getAttribute("aria-pressed")])).toEqual([
+      ["1", "Doorway", "true"],
+      ["2", "Couch", "false"],
+    ]);
+    expect(strip.querySelectorAll("[data-zone-id]")).toHaveLength(0);
+
+    // A phone held upright: the panel goes under the map.
+    fullBox(containerOf(card), 374, 780);
+    $(card, "btnFullWindow").click();
+    expect(containerOf(card).dataset.layout).toBe("stacked");
+    const scrolled = vi.fn();
+    chips()[1].scrollIntoView = scrolled;
+
+    chips()[1].click();
+    expect(card.selectedZone).toBe(2);
+    expect(chips().map((c) => c.getAttribute("aria-pressed"))).toEqual(["false", "true"]);
+    expect(scrolled).toHaveBeenCalledWith({ inline: "nearest", block: "nearest" });
+    const pencil = $(card, "btnStripDraw");
+    expect(pencil.previousElementSibling).toBe(chips()[1]);
+    expect(pencil.getAttribute("aria-label")).toBe("Redraw Couch");
+    pencil.click();
+    expect(card._armedZone).toBe(2);
+    expect(pencil.textContent).toBe("✕");
+    // A rename reaches the strip too.
+    card._setZoneName(2, "Sofa");
+    card._renderZoneChips();
+    expect(chips()[1].textContent).toBe("Sofa");
+  });
+
+  it("hides the strip of a radar with no zones", async () => {
+    const card = await placedCard(fakeHass({ ...ZONE_PAYLOAD, zones: {} }));
+    expect($(card, "zoneStrip").hidden).toBe(true);
+    expect($(card, "zoneStrip").children).toHaveLength(0);
+  });
+
+  it("drops arming on the first Esc and closes on the next", async () => {
+    const hass = adminHass();
+    const card = await placedCard(hass, { start_locked: false });
+    $(card, "btnFullWindow").click();
+    card._armDrawing(1);
+
+    const first = keydown($(card, "fullWindow"), "Escape");
+    expect(first.defaultPrevented).toBe(true);
+    expect(cancel(card).defaultPrevented).toBe(true);
+    expect(card._armedZone).toBeNull();
+    expect(card._fullWindow).toBe(true);
+    window.dispatchEvent(new KeyboardEvent("keyup", { key: "Escape" }));
+
+    const second = keydown($(card, "fullWindow"), "Escape");
+    expect(second.defaultPrevented).toBe(false);
+    expect(cancel(card).defaultPrevented).toBe(false);
+  });
+
+  it("shows its own snackbar with Undo while expanded, where Home Assistant's toast is inert", async () => {
+    const hass = adminHass();
+    const card = await placedCard(hass, { ...TEN_METER_GRID, start_locked: false });
+    answerRestores(hass, { 1: { shape: "rect", data: ZONE_PAYLOAD.zones["1"].data } });
+    const details = toastDetails(card);
+    $(card, "btnFullWindow").click();
+    vi.spyOn(card.canvas, "getBoundingClientRect").mockReturnValue(box(800, 800));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      card._armDrawing(1);
+      const fire = (type: string, x: number, y: number) =>
+        card.canvas.dispatchEvent(new MouseEvent(type, { clientX: x, clientY: y }));
+      fire("mousedown", 100, 600);
+      fire("mousemove", 300, 700);
+      fire("mouseup", 300, 700);
+      await vi.advanceTimersByTimeAsync(0);
+
+      const snackbar = $(card, "fullWindowToast");
+      expect(snackbar.hidden).toBe(false);
+      expect($(card, "fullWindowToastText").textContent).toBe("Doorway redrawn");
+      expect($(card, "btnFullWindowToastUndo").hidden).toBe(false);
+      expect($(card, "btnFullWindowToastUndo").textContent).toBe("Undo");
+      // Home Assistant's toast gets the words, not the action.
+      expect(details).toEqual([{ message: "Doorway redrawn" }]);
+      expect(card.shadowRoot.activeElement).not.toBe($(card, "btnFullWindowToastUndo"));
+
+      await vi.advanceTimersByTimeAsync(9999);
+      expect(snackbar.hidden).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(snackbar.hidden).toBe(true);
+
+      // Its Undo undoes; a plain toast shows none.
+      card._announceChange(card._undo);
+      $(card, "btnFullWindowToastUndo").click();
+      expect(snackbar.hidden).toBe(true);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(restoreCalls(hass)).toHaveLength(1);
+      expect($(card, "fullWindowToastText").textContent).toBe("Undid the change to Doorway");
+      expect(snackbar.hidden).toBe(false);
+      expect($(card, "btnFullWindowToastUndo").hidden).toBe(true);
+      await vi.advanceTimersByTimeAsync(4000);
+      expect(snackbar.hidden).toBe(true);
+
+      // Closing the expanded map hides it.
+      card._notify("Doorway saved", { action: () => {} });
+      $(card, "btnFullWindowClose").click();
+      expect(snackbar.hidden).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+/** The detail of every toast the card raises. */
+function toastDetails(card: any): any[] {
+  const seen: any[] = [];
+  card.addEventListener("hass-notification", (event: any) => seen.push(event.detail));
+  return seen;
+}
+
+/** Drawing is armed for one zone at a time. */
+describe("zone map card arming drawing", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    document.body.replaceChildren();
+  });
+
+  const COUCH = { x_min: 2000, x_max: 3000, y_min: 2000, y_max: 3000 };
+  const TWO = {
+    ...ZONE_PAYLOAD,
+    zones: { ...ZONE_PAYLOAD.zones, "2": { shape: "rect", data: COUCH, name: "Couch" } },
+  };
+  const $ = (card: any, id: string) => card.shadowRoot.getElementById(id);
+
+  async function armCard(config: Record<string, any> = {}, payload: any = TWO, isAdmin = true) {
+    const hass = fakeHass(payload);
+    hass.user = { is_admin: isAdmin };
+    const card = await mountCard(hass, { ...TEN_METER_GRID, start_locked: false, ...config });
+    layOut(card, 800);
+    hass.callService.mockClear();
+    const toasts = notifications(card);
+    return { card, hass, toasts };
+  }
+
+  function mouse(card: any, type: string, x: number, y: number) {
+    card.canvas.dispatchEvent(new MouseEvent(type, { clientX: x, clientY: y }));
+  }
+
+  function drag(card: any, from: number[], to: number[]) {
+    mouse(card, "mousedown", from[0], from[1]);
+    mouse(card, "mousemove", to[0], to[1]);
+    mouse(card, "mouseup", to[0], to[1]);
+  }
+
+  it("draws nothing for a drag before Draw shape, and says how to draw", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    const { card, hass, toasts } = await armCard();
+    expect(card._armedZone).toBeNull();
+
+    // Off every zone, then on the picked one.
+    drag(card, [100, 600], [300, 700]);
+    expect(card.isDrawing).toBe(false);
+    await settleWrites();
+    expect(hass.callService).not.toHaveBeenCalled();
+    expect(card.zones).toEqual(TWO_ZONE_SHAPES(COUCH));
+    expect(toasts).toEqual(["To redraw Doorway, press Redraw shape first."]);
+    // Said once for a burst of tries.
+    drag(card, [440, 40], [470, 70]);
+    expect(toasts).toHaveLength(1);
+    expect(card.selectedZone).toBe(1);
+  });
+
+  it("picks another zone with a press before Draw shape, for a viewer too, who is never told to draw", async () => {
+    const admin = await armCard();
+    mouse(admin.card, "mousedown", 600, 200);
+    expect(admin.card.selectedZone).toBe(2);
+    expect(admin.toasts).toEqual([]);
+
+    const viewer = await armCard({}, TWO, false);
+    drag(viewer.card, [100, 600], [300, 700]);
+    expect(viewer.toasts).toEqual([]);
+    mouse(viewer.card, "mousedown", 600, 200);
+    expect(viewer.card.selectedZone).toBe(2);
+    expect(viewer.hass.callService).not.toHaveBeenCalled();
+  });
+
+  it("arms with Draw shape: the banner, the crosshair, then one drag saves and disarms", async () => {
+    const { card, hass } = await armCard();
+    expect($(card, "drawBanner").hidden).toBe(true);
+    expect(card.canvas.style.cursor).toBe("default");
+
+    $(card, "btnZoneDraw").click();
+
+    expect(card._armedZone).toBe(1);
+    expect($(card, "drawBanner").hidden).toBe(false);
+    expect($(card, "drawBannerText").textContent).toBe("Drawing Doorway");
+    expect($(card, "drawBannerText").getAttribute("role")).toBe("status");
+    expect($(card, "btnBannerCancel").textContent).toBe("Cancel");
+    expect(card.canvas.classList.contains("pans")).toBe(false);
+    expect(card.canvas.style.cursor).toBe("crosshair");
+    expect($(card, "btnZoneDraw").textContent).toBe("Cancel drawing");
+    expect($(card, "btnZoneDraw").className).toBe("zone-btn");
+
+    drag(card, [100, 600], [300, 700]);
+    await settleWrites();
+
+    expect(zoneWrites(hass).map((save) => [save.zone_id, save.shape])).toEqual([[1, "rect"]]);
+    expect(card._armedZone).toBeNull();
+    expect($(card, "drawBanner").hidden).toBe(true);
+    expect(card.canvas.classList.contains("pans")).toBe(true);
+    expect($(card, "btnZoneDraw").textContent).toBe("Redraw shape");
+    expect($(card, "btnZoneDraw").className).toBe("");
+  });
+
+  it("arms from the ✎ beside the picked chip, the only one in the row", async () => {
+    const { card } = await armCard();
+    const pencil = $(card, "btnChipDraw");
+    expect(pencil.hidden).toBe(false);
+    expect(pencil.previousElementSibling).toBe(chipOf(card, 1));
+    expect(pencil.hasAttribute("data-zone-id")).toBe(false);
+    expect(pencil.textContent).toBe("✎");
+    expect(pencil.getAttribute("aria-label")).toBe("Redraw Doorway");
+    expect(pencil.title).toBe("Redraw Doorway");
+    expect(chipOf(card, 1).classList.contains("joined")).toBe(true);
+    expect(card.shadowRoot.querySelectorAll("#zone-buttons .chip-draw")).toHaveLength(1);
+
+    pencil.click();
+    expect(card._armedZone).toBe(1);
+    expect(pencil.textContent).toBe("✕");
+    expect(pencil.getAttribute("aria-label")).toBe("Cancel drawing");
+    // Pressed again, it cancels.
+    pencil.click();
+    expect(card._armedZone).toBeNull();
+    expect(pencil.textContent).toBe("✎");
+
+    openZone(card, 2);
+    expect(pencil.previousElementSibling).toBe(chipOf(card, 2));
+    expect(chipOf(card, 1).classList.contains("joined")).toBe(false);
+    expect(pencil.getAttribute("aria-label")).toBe("Redraw Couch");
+    // A chip render keeps the one ✎ where it is.
+    card.renderZoneButtons();
+    expect(card.shadowRoot.querySelectorAll("#zone-buttons .chip-draw")).toHaveLength(1);
+    expect(pencil.previousElementSibling).toBe(chipOf(card, 2));
+  });
+
+  it("hides every way to arm on a locked map, in Walk and from a viewer", async () => {
+    const locked = await armCard({ start_locked: true });
+    expect($(locked.card, "btnChipDraw").hidden).toBe(true);
+    expect($(locked.card, "btnZoneDraw").hidden).toBe(true);
+    expect(locked.card._armDrawing(1)).toBe(false);
+    expect(locked.toasts).toEqual(["Unlock the map to draw zones."]);
+
+    const walking = await armCard();
+    walking.card._enterWalk();
+    expect($(walking.card, "btnChipDraw").hidden).toBe(true);
+    expect($(walking.card, "btnZoneDraw").hidden).toBe(true);
+    expect(walking.card._armDrawing(1)).toBe(false);
+
+    const viewer = await armCard({}, TWO, false);
+    expect($(viewer.card, "btnChipDraw").hidden).toBe(true);
+    expect($(viewer.card, "btnZoneDraw").hidden).toBe(true);
+    expect(viewer.card._armDrawing(1)).toBe(false);
+    expect($(viewer.card, "drawBanner").hidden).toBe(true);
+  });
+
+  it("arms the zone Add zone makes, and brings a map off screen into view", async () => {
+    const { card } = await armCard();
+    const mapBox = card.canvas.parentElement;
+    const scroll = vi.fn();
+    mapBox.scrollIntoView = scroll;
+    vi.spyOn(mapBox, "getBoundingClientRect").mockReturnValue({
+      top: -400,
+      bottom: 200,
+      left: 0,
+      right: 800,
+      width: 800,
+      height: 600,
+    } as DOMRect);
+
+    $(card, "btnAddZone").click();
+
+    expect(card.selectedZone).toBe(3);
+    expect(card._armedZone).toBe(3);
+    expect($(card, "drawBannerText").textContent).toBe("Drawing Zone 3");
+    expect(scroll).toHaveBeenCalledWith({ block: "nearest" });
+
+    // A map already in view stays where it is.
+    scroll.mockClear();
+    vi.spyOn(mapBox, "getBoundingClientRect").mockReturnValue({
+      top: 10,
+      bottom: 400,
+      left: 0,
+      right: 800,
+      width: 800,
+      height: 390,
+    } as DOMRect);
+    $(card, "btnZoneDraw").click();
+    $(card, "btnZoneDraw").click();
+    expect(card._armedZone).toBe(3);
+    expect(scroll).not.toHaveBeenCalled();
+  });
+
+  it("ends arming on the banner's Cancel, Cancel drawing and Esc, but not on Esc in a field", async () => {
+    const { card } = await armCard();
+    document.body.appendChild(card);
+
+    card._armDrawing(1);
+    $(card, "btnBannerCancel").focus();
+    $(card, "btnBannerCancel").click();
+    expect(card._armedZone).toBeNull();
+    // The banner hides, so the focus goes to Draw shape.
+    expect(card.shadowRoot.activeElement).toBe($(card, "btnZoneDraw"));
+
+    $(card, "btnZoneDraw").click();
+    expect(card._armedZone).toBe(1);
+    $(card, "btnZoneDraw").click();
+    expect(card._armedZone).toBeNull();
+    expect(card.shadowRoot.activeElement).toBe($(card, "btnZoneDraw"));
+
+    card._armDrawing(1);
+    nameFieldOf(card).focus();
+    pressKey(nameFieldOf(card), "Escape");
+    expect(card._armedZone).toBe(1);
+
+    const esc = new KeyboardEvent("keydown", { key: "Escape", cancelable: true });
+    window.dispatchEvent(esc);
+    expect(card._armedZone).toBeNull();
+    expect(esc.defaultPrevented).toBe(true);
+  });
+
+  it("ends arming when another zone is picked, dropping the polygon's corners", async () => {
+    const { card } = await armCard();
+    card._setDrawMode("polygon");
+    card._armDrawing(1);
+    for (const [x, y] of [
+      [100, 600],
+      [300, 600],
+    ]) {
+      card._lastPolyTap = 0;
+      mouse(card, "mousedown", x, y);
+      mouse(card, "mouseup", x, y);
+    }
+    expect(card._polyPoints).toHaveLength(2);
+
+    chipOf(card, 2).click();
+
+    expect(card._armedZone).toBeNull();
+    expect(card._polyPoints).toEqual([]);
+    expect(card.isDrawing).toBe(false);
+    expect($(card, "drawBanner").hidden).toBe(true);
+  });
+
+  it("ends arming on Lock, and Unlock leaves it ended", async () => {
+    const { card } = await armCard();
+    card._armDrawing(1);
+
+    $(card, "btnLock").click();
+    expect(card._armedZone).toBeNull();
+    expect($(card, "drawBanner").hidden).toBe(true);
+    expect($(card, "btnChipDraw").hidden).toBe(true);
+    expect(card.canvas.style.cursor).toBe("not-allowed");
+
+    $(card, "btnLock").click();
+    expect(card._armedZone).toBeNull();
+    expect($(card, "btnChipDraw").hidden).toBe(false);
+    expect(card.canvas.style.cursor).toBe("default");
+  });
+
+  it("names the zone Walk marks in the banner, whose Cancel asks once two corners are down", async () => {
+    const { card } = await armCard();
+    card._armDrawing(1);
+
+    card._enterWalk();
+    expect(card._armedZone).toBeNull();
+    expect($(card, "drawBanner").hidden).toBe(false);
+    expect($(card, "drawBannerText").textContent).toBe("Marking Doorway by walking");
+    // The banner follows the picked zone.
+    chipOf(card, 2).click();
+    expect($(card, "drawBannerText").textContent).toBe("Marking Couch by walking");
+
+    card._walk.corners.push({ x: 0, y: 1000 }, { x: 1000, y: 2000 });
+    $(card, "btnBannerCancel").click();
+    expect(card._walkConfirmCancel).toBe(true);
+    expect($(card, "walkConfirm").hidden).toBe(false);
+    // Esc answers Keep marking.
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", cancelable: true }));
+    expect(card._walkConfirmCancel).toBe(false);
+    expect(card._walk).not.toBeNull();
+
+    card._walk.corners.length = 1;
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", cancelable: true }));
+    expect(card._walk).toBeNull();
+    expect($(card, "drawBanner").hidden).toBe(true);
+  });
+
+  it("stays armed across a mode change and a render, and through a polygon too short to save", async () => {
+    const { card, hass, toasts } = await armCard();
+    card._armDrawing(2);
+
+    card._setDrawMode("ellipse");
+    expect(card._armedZone).toBe(2);
+    card.render();
+    layOut(card, 800);
+    expect(card._armedZone).toBe(2);
+    expect($(card, "drawBanner").hidden).toBe(false);
+    expect($(card, "drawBannerText").textContent).toBe("Drawing Couch");
+    expect($(card, "btnChipDraw").textContent).toBe("✕");
+
+    card._setDrawMode("polygon");
+    card._polyPoints = [
+      { x: 0, y: 6000 },
+      { x: 1000, y: 6000 },
+    ];
+    card.isDrawing = true;
+    card.finishPolygon();
+    expect(toasts).toEqual(["A polygon needs at least 3 different points."]);
+    expect(card._armedZone).toBe(2);
+
+    card._polyPoints = [
+      { x: 0, y: 6000 },
+      { x: 1000, y: 6000 },
+      { x: 500, y: 7000 },
+    ];
+    card.isDrawing = true;
+    card.finishPolygon();
+    await settleWrites();
+    expect(zoneWrites(hass).map((save) => [save.zone_id, save.shape])).toEqual([[2, "polygon"]]);
+    expect(card._armedZone).toBeNull();
+  });
+
+  it("never arms on the map alone", async () => {
+    const { card } = await armCard({ view_only: true });
+    expect(card._armDrawing(1)).toBe(false);
+    expect(card._armedZone).toBeNull();
+    expect($(card, "drawBanner")).toBeNull();
+  });
+
+  it("counts the banner among the boxes labels keep clear of", async () => {
+    const { card } = await armCard();
+    const banner = $(card, "drawBanner");
+    vi.spyOn(banner, "getBoundingClientRect").mockReturnValue({
+      left: 300,
+      right: 500,
+      top: 30,
+      bottom: 62,
+      width: 200,
+      height: 32,
+    } as DOMRect);
+    const has = () =>
+      card._overlayBoxes().some((b: any) => b.left === 300 && b.right === 500 && b.top === 30);
+
+    expect(has()).toBe(false);
+    card._armDrawing(1);
+    expect(has()).toBe(true);
+    expect(card._overlayBoxes({ notes: false }).some((b: any) => b.left === 300)).toBe(true);
+  });
+});
+
+/** The rect shapes of TWO, with Couch at `couch`. */
+function TWO_ZONE_SHAPES(couch: any) {
+  return [
+    { id: 1, shape: "rect", data: ZONE_PAYLOAD.zones["1"].data },
+    { id: 2, shape: "rect", data: couch },
+  ];
+}
+
+/** Undo through the store's previous shape. */
+describe("zone map card undoing a shape change", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  const DOORWAY = ZONE_PAYLOAD.zones["1"].data;
+  const $ = (card: any, id: string) => card.shadowRoot.getElementById(id);
+
+  async function undoCard(config: Record<string, any> = {}, payload: any = ZONE_PAYLOAD) {
+    const hass = fakeHass(payload);
+    hass.user = { is_admin: true };
+    const card = await mountCard(hass, { ...TEN_METER_GRID, start_locked: false, ...config });
+    layOut(card, 800);
+    hass.callService.mockClear();
+    const details = toastDetails(card);
+    return { card, hass, details };
+  }
+
+  function drag(card: any, from: number[], to: number[]) {
+    const fire = (type: string, [x, y]: number[]) =>
+      card.canvas.dispatchEvent(new MouseEvent(type, { clientX: x, clientY: y }));
+    fire("mousedown", from);
+    fire("mousemove", to);
+    fire("mouseup", to);
+  }
+
+  // (100, 600) to (300, 700) px: -3750..-1250 by 7500..8750 mm.
+  const DRAWN = { x_min: -3750, x_max: -1250, y_min: 7500, y_max: 8750 };
+
+  it("offers Undo in the toast for 10 seconds once Home Assistant takes the save", async () => {
+    const { card, details } = await undoCard();
+    card._armDrawing(1);
+    drag(card, [100, 600], [300, 700]);
+    // Not before the save is taken.
+    expect($(card, "btnUndo").disabled).toBe(true);
+    expect(details).toEqual([]);
+    await settleWrites();
+
+    expect(details).toEqual([
+      { message: "Doorway redrawn", duration: 10000, action: { text: "Undo", action: expect.any(Function) } },
+    ]);
+    expect($(card, "btnUndo").disabled).toBe(false);
+    expect($(card, "btnUndo").getAttribute("aria-label")).toBe("Undo last zone change");
+  });
+
+  it("says drawn for a zone's first shape", async () => {
+    const payload = {
+      ...ZONE_PAYLOAD,
+      zones: { ...ZONE_PAYLOAD.zones, "2": { shape: "none", data: null } },
+    };
+    const { card, details } = await undoCard({}, payload);
+    card._armDrawing(2);
+    drag(card, [100, 600], [300, 700]);
+    await settleWrites();
+    expect(details.map((d) => [d.message, d.action?.text])).toEqual([["Zone 2 drawn", "Undo"]]);
+  });
+
+  it("undoes from the toast through the store's previous shape, once", async () => {
+    const { card, hass, details } = await undoCard();
+    answerRestores(hass, { 1: { shape: "rect", data: DOORWAY } });
+    card._armDrawing(1);
+    drag(card, [100, 600], [300, 700]);
+    await settleWrites();
+
+    details[0].action.action();
+    // At once, ahead of the answer.
+    expect(card.zones).toEqual([{ id: 1, shape: "rect", data: DOORWAY }]);
+    expect($(card, "btnUndo").disabled).toBe(true);
+    await settleWrites();
+
+    expect(restoreCalls(hass)).toEqual([
+      {
+        type: ZONES_RESTORE_SHAPE,
+        device_id: "dev123",
+        zones: [{ zone_id: 1, current: { shape: "rect", data: DRAWN } }],
+      },
+    ]);
+    expect(zoneWrites(hass)).toHaveLength(1);
+    expect(details.map((d) => d.message)).toEqual(["Doorway redrawn", "Undid the change to Doorway"]);
+    // An undo's own toast offers no Undo.
+    expect(details[1].action).toBeUndefined();
+    expect($(card, "btnUndo").disabled).toBe(true);
+
+    details[0].action.action();
+    await settleWrites();
+    expect(restoreCalls(hass)).toHaveLength(1);
+  });
+
+  it("puts the old shape back and offers no Undo when the save is refused", async () => {
+    const { card, hass, details } = await undoCard();
+    hass.callService.mockRejectedValue(new Error("Home Assistant is restarting"));
+    card._armDrawing(1);
+    drag(card, [100, 600], [300, 700]);
+    expect(card.zones).toEqual([{ id: 1, shape: "rect", data: DRAWN }]);
+    await settleWrites();
+
+    expect(card.zones).toEqual([{ id: 1, shape: "rect", data: DOORWAY }]);
+    expect(details).toEqual([{ message: "Could not save: Home Assistant is restarting" }]);
+    expect(card._undo).toBeNull();
+    expect($(card, "btnUndo").disabled).toBe(true);
+  });
+
+  it("guards ↶ and the toast's Undo with the lock", async () => {
+    const { card, hass, details } = await undoCard();
+    card._armDrawing(1);
+    drag(card, [100, 600], [300, 700]);
+    await settleWrites();
+
+    $(card, "btnLock").click();
+    const undo = $(card, "btnUndo");
+    expect(undo.disabled).toBe(false);
+    expect(undo.classList.contains("locked-action")).toBe(true);
+    expect(undo.getAttribute("aria-disabled")).toBe("true");
+
+    undo.click();
+    details[0].action.action();
+    await settleWrites();
+    expect(restoreCalls(hass)).toEqual([]);
+    expect(details.map((d) => d.message)).toContain("Unlock the map to undo a shape change.");
+    expect(card.zones).toEqual([{ id: 1, shape: "rect", data: DRAWN }]);
+
+    $(card, "btnLock").click();
+    expect(undo.classList.contains("locked-action")).toBe(false);
+    expect(undo.hasAttribute("aria-disabled")).toBe(false);
+  });
+
+  it("keeps Undo in the toast on a card that hides ↶", async () => {
+    const { card, details } = await undoCard({ show_undo: false });
+    expect($(card, "btnUndo").style.display).toBe("none");
+    card._armDrawing(1);
+    drag(card, [100, 600], [300, 700]);
+    await settleWrites();
+    expect(details[0].action.text).toBe("Undo");
+  });
+
+  it("offers no Undo for a zone the store has not held, which has no previous shape", async () => {
+    const { card, details } = await undoCard({ zones: [{ id: 7, name: "Hall" }] });
+    openZone(card, 7);
+    card._armDrawing(7);
+    drag(card, [100, 600], [300, 700]);
+    await settleWrites();
+    expect(details).toEqual([{ message: "Hall drawn" }]);
+    expect($(card, "btnUndo").disabled).toBe(true);
+  });
+
+  it("offers Undo for a zone this card's Add zone made", async () => {
+    const { card, details } = await undoCard();
+    $(card, "btnAddZone").click();
+    expect(card._armedZone).toBe(2);
+    drag(card, [100, 600], [300, 700]);
+    await settleWrites();
+    expect(details.map((d) => [d.message, d.action?.text])).toEqual([["Zone 2 drawn", "Undo"]]);
+  });
+});
+
+/** Restore previous shape, in the picked zone's editor. */
+describe("zone map card restoring a previous shape", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const NOW = Date.parse("2026-11-13T15:10:00Z");
+  const DOORWAY = ZONE_PAYLOAD.zones["1"].data;
+  const OLD = { x_min: -1000, x_max: 1000, y_min: 500, y_max: 1500 };
+  const KEPT = {
+    ...ZONE_PAYLOAD,
+    zones: {
+      "1": {
+        ...ZONE_PAYLOAD.zones["1"],
+        previous_shape_at: "2026-11-13T15:05:00+00:00",
+        previous_shape_drawn: true,
+      },
+      "2": {
+        shape: "rect",
+        data: OLD,
+        name: "Couch",
+        previous_shape_at: "2026-11-13T15:05:00+00:00",
+        previous_shape_drawn: false,
+      },
+      "3": { shape: "rect", data: OLD, name: "Desk" },
+    },
+  };
+  const $ = (card: any, id: string) => card.shadowRoot.getElementById(id);
+
+  async function restoreCard({ locked = false, isAdmin = true, payload = KEPT as any } = {}) {
+    vi.spyOn(Date, "now").mockReturnValue(NOW);
+    const hass = fakeHass(payload);
+    hass.user = { is_admin: isAdmin };
+    const card = await mountCard(hass, { ...TEN_METER_GRID, start_locked: locked });
+    hass.callService.mockClear();
+    const details = toastDetails(card);
+    return { card, hass, details };
+  }
+
+  // A store swapping zone 1 with its kept shape.
+  function swapping(hass: any) {
+    const kept: Record<number, any> = { 1: { shape: "rect", data: OLD } };
+    hass.restoreReply = (msg: any) => {
+      const restored: any[] = [];
+      for (const { zone_id, current } of msg.zones) {
+        const previous = kept[zone_id];
+        kept[zone_id] = current;
+        restored.push({ zone_id, ...previous });
+      }
+      return { restored, skipped: [] };
+    };
+  }
+
+  it("shows Restore previous shape while the store keeps a drawn shape, with when it was replaced", async () => {
+    const { card } = await restoreCard();
+    const row = editorOf(card).querySelector(".zone-restore");
+    expect(row.hidden).toBe(false);
+    // After the size, before Type and Hold.
+    expect(row.previousElementSibling.classList.contains("zone-size")).toBe(true);
+    expect($(card, "btnZoneRestore").textContent).toBe("Restore previous shape");
+    expect($(card, "zoneRestoreHint").textContent).toBe("Replaced 5 min ago");
+    expect($(card, "btnZoneRestore").getAttribute("aria-describedby")).toBe("zoneRestoreHint");
+
+    // A previous shape of none, or none kept, shows nothing.
+    openZone(card, 2);
+    expect(editorOf(card).querySelector(".zone-restore").hidden).toBe(true);
+    openZone(card, 3);
+    expect(editorOf(card).querySelector(".zone-restore").hidden).toBe(true);
+  });
+
+  it("brings the kept shape back, with Undo in the toast", async () => {
+    const { card, hass, details } = await restoreCard();
+    swapping(hass);
+
+    $(card, "btnZoneRestore").click();
+    expect($(card, "btnZoneRestore").disabled).toBe(true);
+    await settleWrites();
+
+    expect(restoreCalls(hass).map((msg) => msg.zones)).toEqual([
+      [{ zone_id: 1, current: { shape: "rect", data: DOORWAY } }],
+    ]);
+    expect(card.zones.find((z: any) => z.id === 1)).toEqual({ id: 1, shape: "rect", data: OLD });
+    expect(details.map((d) => [d.message, d.action?.text])).toEqual([
+      ["Previous shape of Doorway restored", "Undo"],
+    ]);
+    expect($(card, "btnZoneRestore").disabled).toBe(false);
+    expect(hass.callService).not.toHaveBeenCalled();
+
+    // Undo swaps back, while Doorway still has the restored shape.
+    details[0].action.action();
+    await settleWrites();
+    expect(restoreCalls(hass)[1].zones).toEqual([{ zone_id: 1, current: { shape: "rect", data: OLD } }]);
+    expect(card.zones.find((z: any) => z.id === 1)).toEqual({ id: 1, shape: "rect", data: DOORWAY });
+    expect(details[1].message).toBe("Undid the change to Doorway");
+  });
+
+  it("says so when the zone changed since, or the restore failed", async () => {
+    const { card, hass, details } = await restoreCard();
+    hass.restoreReply = () => ({ restored: [], skipped: [1] });
+    $(card, "btnZoneRestore").click();
+    await settleWrites();
+    hass.restoreReply = () => {
+      throw new Error("timeout");
+    };
+    $(card, "btnZoneRestore").click();
+    await settleWrites();
+
+    expect(details.map((d) => d.message)).toEqual([
+      "Doorway was changed in the meantime, so nothing was restored.",
+      "Could not restore: timeout",
+    ]);
+    expect(card.zones.find((z: any) => z.id === 1).data).toEqual(DOORWAY);
+  });
+
+  it("is dimmed on a locked map, where a press says to unlock", async () => {
+    const { card, hass, details } = await restoreCard({ locked: true });
+    const button = $(card, "btnZoneRestore");
+    expect(button.disabled).toBe(false);
+    expect(button.classList.contains("locked-action")).toBe(true);
+    expect(button.getAttribute("aria-disabled")).toBe("true");
+
+    button.click();
+    await settleWrites();
+    expect(restoreCalls(hass)).toEqual([]);
+    expect(details.map((d) => d.message)).toEqual(["Unlock the map to restore a shape."]);
+
+    $(card, "btnLock").click();
+    expect(button.classList.contains("locked-action")).toBe(false);
+  });
+
+  it("is not offered to a viewer", async () => {
+    const { card } = await restoreCard({ isAdmin: false });
+    expect(editorOf(card).querySelector(".zone-restore")).toBeNull();
+  });
+
+  it("says when again on every payload", async () => {
+    const { card, hass } = await restoreCard();
+    hass.handlers[ZONES_SUBSCRIBE][0]({
+      ...KEPT,
+      zones: { ...KEPT.zones, "1": { ...KEPT.zones["1"], previous_shape_at: "2026-11-13T15:09:30+00:00" } },
+    });
+    expect($(card, "zoneRestoreHint").textContent).toBe("Replaced under a minute ago");
+  });
+});
+
+/** Zone names that never overlap, on the card. */
+describe("zone map card zone labels", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const rect = (x_min: number, x_max: number, y_min: number, y_max: number) => ({
+    shape: "rect",
+    data: { x_min, x_max, y_min, y_max },
+  });
+  // Three zones sharing one center, and a long name.
+  const NESTED = {
+    ...ZONE_PAYLOAD,
+    zones: {
+      "1": { ...rect(-2400, 2400, 800, 4600), name: "Living room" },
+      "2": { ...rect(-1100, 1100, 2200, 3200), name: "Couch" },
+      "3": { ...rect(-600, 600, 2400, 3000), name: "Ceiling fan", zone_type: "ignore" },
+      "4": {
+        shape: "polygon",
+        data: {
+          points: [
+            { x: -700, y: 2300 },
+            { x: 900, y: 2200 },
+            { x: 600, y: 3000 },
+            { x: -600, y: 3100 },
+          ],
+        },
+        name: "Reading nook by the big window",
+      },
+    },
+  };
+
+  async function labelCard(payload: any = NESTED) {
+    const card = await mountCard(fakeHass(payload), { ...TEN_METER_GRID });
+    layOut(card, 800);
+    const { ctx, texts } = textRecordingContext(browserTextWidth);
+    card.ctx = ctx;
+    return { card, texts };
+  }
+
+  it("keeps nested zones' names apart, the smallest on its center", async () => {
+    const { card, texts } = await labelCard();
+    card.drawZones();
+
+    expect(texts.map((t) => t.text).sort()).toEqual([
+      "Ceiling fan (ignored)",
+      "Couch",
+      "Living room",
+      "Reading nook by the big window",
+    ]);
+    for (const [a, b] of pairs(texts)) {
+      expect(spaceBetween(a, b), `${a.text} and ${b.text}`).toBeGreaterThan(0);
+    }
+    const fan = texts.find((t) => t.text === "Ceiling fan (ignored)")!;
+    expect([fan.x, fan.y]).toEqual([card.valueToPixels(0, "x"), card.valueToPixels(2700, "y")]);
+  });
+
+  it("draws one name per labeled zone however crowded, and _zoneLabelBoxes says where", async () => {
+    const zones: Record<string, any> = {};
+    for (let i = 1; i <= 8; i += 1) {
+      zones[String(i)] = { ...rect(-400 - 100 * i, 400 + 100 * i, 2000 - 50 * i, 2600 + 50 * i), name: `Zone ${i}` };
+    }
+    const { card, texts } = await labelCard({ ...ZONE_PAYLOAD, zones });
+    card.drawZones();
+    expect(texts).toHaveLength(8);
+    const boxes = card._zoneLabelBoxes();
+    expect(boxes).toHaveLength(8);
+    texts.forEach((t, i) => {
+      expect((boxes[i].left + boxes[i].right) / 2).toBeCloseTo(t.x, 9);
+      expect((boxes[i].top + boxes[i].bottom) / 2).toBeCloseTo(t.y, 9);
+    });
+  });
+
+  it("moves a name off the buttons and the banner over the map", async () => {
+    const { card, texts } = await labelCard({
+      ...ZONE_PAYLOAD,
+      zones: { "1": { ...rect(-2000, 2000, 2000, 6000), name: "Hall" } },
+    });
+    // The banner over the zone's center.
+    const banner = { left: 300, right: 500, top: 300, bottom: 340 };
+    card._overlayBoxes = () => [banner];
+    card.drawZones();
+    const [hall] = texts;
+    expect(hall.y).not.toBe(card.valueToPixels(4000, "y"));
+    const box = boxOf(hall);
+    const gap = Math.max(0, banner.top - box.bottom, box.top - banner.bottom);
+    expect(gap).toBeGreaterThanOrEqual(4);
+  });
+
+  it("draws a leader line back to a zone whose name had to go beside it", async () => {
+    const card = await mountCard(fakeHass({ ...ZONE_PAYLOAD, zones: { "2": { ...rect(2000, 3000, 2000, 3000), name: "Couch" } } }), {
+      ...TEN_METER_GRID,
+    });
+    layOut(card, 800);
+    const { ctx, draws } = drawRecordingContext();
+    card.ctx = ctx;
+    card._overlayBoxes = () => [{ left: 460, right: 680, top: 0, bottom: 800 }];
+
+    card.drawZones();
+
+    const [label] = card._zoneLabelLayout();
+    expect(label.leader).not.toBeNull();
+    const line = draws.filter((d) => d.name === "lineTo");
+    expect(line.map((d) => d.args)).toEqual([[label.leader.x2, label.leader.y2]]);
+    expect(label.leader.x2).toBe(card.valueToPixels(2500, "x"));
+    // A dot where the line meets the zone.
+    expect(draws.some((d) => d.name === "arc" && d.args[0] === label.leader.x2 && d.args[2] === 2)).toBe(true);
   });
 });
