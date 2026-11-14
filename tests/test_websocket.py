@@ -818,19 +818,21 @@ def _current(shape: str, data=None) -> dict:
 
 
 async def _restore(
-    client, device_id: str, *zones: tuple[int, dict], pushed: list | None = None
+    client, device_id: str, *zones: tuple, pushed: list | None = None
 ) -> dict:
     """
-    Send a restore for (zone_id, current) pairs and return the reply.
+    Send a restore for (zone_id, current[, extra]) items and return the reply.
 
-    The zone push comes before the reply; each one goes into `pushed`.
+    `extra` adds keys to the item, such as previous. The zone push comes
+    before the reply; each one goes into `pushed`.
     """
     await client.send_json_auto_id(
         {
             "type": RESTORE,
             "device_id": device_id,
             "zones": [
-                {"zone_id": zone_id, "current": current} for zone_id, current in zones
+                {"zone_id": zone_id, "current": current, **(extra[0] if extra else {})}
+                for zone_id, current, *extra in zones
             ],
         }
     )
@@ -963,6 +965,101 @@ async def test_restore_shape_skips_a_zone_changed_since(
     await hass.async_block_till_done()
     assert await _drain(client) == []
     assert events == []
+
+
+THIRD = {"x_min": 0, "x_max": 300, "y_min": 0, "y_max": 300}
+
+
+@pytest.mark.usefixtures("replaced_at", "init_integration")
+async def test_restore_shape_skips_when_previous_is_not_the_one_expected(
+    hass, hass_ws_client, device_id
+) -> None:
+    """A stale Undo whose current matches again does not bring back another shape."""
+    # The phone redraws RECT_A to MOVED and keeps that change to undo.
+    await _draw(hass, device_id, 1, "rect", RECT_A)
+    await _draw(hass, device_id, 1, "rect", MOVED)
+    # The monitor redraws to THIRD, then undoes it: MOVED is back.
+    await _draw(hass, device_id, 1, "rect", THIRD)
+    client = await hass_ws_client(hass)
+    monitor = await _restore(
+        client,
+        device_id,
+        (1, _current("rect", THIRD), {"previous": _current("rect", MOVED)}),
+    )
+    assert monitor["result"]["restored"] == [
+        {"zone_id": 1, "shape": "rect", "data": MOVED}
+    ]
+    before = copy.deepcopy(get_store(hass)._data_to_save())  # noqa: SLF001
+
+    phone = await _restore(
+        client,
+        device_id,
+        (1, _current("rect", MOVED), {"previous": _current("rect", RECT_A)}),
+    )
+
+    assert phone["result"] == {"restored": [], "skipped": [1]}
+    assert get_store(hass)._data_to_save() == before  # noqa: SLF001
+    zone = _zone(hass, device_id)
+    assert (zone["data"], zone["previous_shape"]["data"]) == (MOVED, THIRD)
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        # Rounded by the store, as the card's unrounded copy is not.
+        (
+            {"x_min": 0.3, "x_max": 99.8, "y_min": 0.2, "y_max": 100.1},
+            ("rect", MOVED),
+            _current(
+                "rect", {"x_min": 0.3, "x_max": 99.8, "y_min": 0.2, "y_max": 100.1}
+            ),
+        ),
+        # Undoing Clear all: the cleared zone expects its shape back.
+        (RECT_A, ("none", None), _current("rect", RECT_A)),
+    ],
+    ids=["rounded", "cleared"],
+)
+@pytest.mark.usefixtures("replaced_at", "init_integration")
+async def test_restore_shape_restores_the_previous_shape_expected(
+    hass, hass_ws_client, device_id, case
+) -> None:
+    """A previous that matches the store, as the store rounds it, restores."""
+    first, then, expected = case
+    await _draw(hass, device_id, 1, "rect", first)
+    await _draw(hass, device_id, 1, *then)
+    client = await hass_ws_client(hass)
+
+    reply = await _restore(
+        client, device_id, (1, _current(*then), {"previous": expected})
+    )
+
+    assert reply["result"]["restored"] == [
+        {"zone_id": 1, "shape": "rect", "data": _zone(hass, device_id)["data"]}
+    ]
+    assert _zone(hass, device_id)["shape"] == "rect"
+
+
+@pytest.mark.usefixtures("init_integration")
+async def test_restore_shape_checks_when_the_previous_shape_was_replaced(
+    hass, replaced_at, hass_ws_client, device_id
+) -> None:
+    """The editor's Restore names the time it showed; another time is skipped."""
+    await _draw(hass, device_id, 1, "rect", RECT_A)
+    await _draw(hass, device_id, 1, "rect", MOVED)
+    client = await hass_ws_client(hass)
+    stale = "2026-11-13T15:00:00+00:00"
+
+    skipped = await _restore(
+        client, device_id, (1, _current("rect", MOVED), {"previous_at": stale})
+    )
+    restored = await _restore(
+        client, device_id, (1, _current("rect", MOVED), {"previous_at": replaced_at})
+    )
+
+    assert skipped["result"] == {"restored": [], "skipped": [1]}
+    assert restored["result"]["restored"] == [
+        {"zone_id": 1, "shape": "rect", "data": RECT_A}
+    ]
 
 
 async def test_restore_shape_matches_current_as_the_store_rounds_it(
@@ -1107,6 +1204,24 @@ async def test_restore_shape_requires_admin(
                 "type": RESTORE,
                 "device_id": device_id,
                 "zones": [{"zone_id": 1}],
+            },
+            {
+                "type": RESTORE,
+                "device_id": device_id,
+                "zones": [
+                    {
+                        "zone_id": 1,
+                        "current": _current("none"),
+                        "previous": {"shape": "circle"},
+                    }
+                ],
+            },
+            {
+                "type": RESTORE,
+                "device_id": device_id,
+                "zones": [
+                    {"zone_id": 1, "current": _current("none"), "previous_at": 5}
+                ],
             },
         ):
             reply = await _ask(client, message)

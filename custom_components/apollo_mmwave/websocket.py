@@ -323,33 +323,44 @@ def ws_subscribe_zones(
 
 
 def _restore_zone_shape(
-    store: ZoneStore, device_id: str, zone_id: int, current: dict[str, Any]
+    store: ZoneStore, device_id: str, zone_id: int, item: dict[str, Any]
 ) -> dict[str, Any] | None:
     """
     Swap one zone's shape with its previous shape; None when it is skipped.
 
     Skipped when the zone or its previous shape is missing, when the zone's
-    shape is no longer ``current``, or when the previous geometry does not
-    normalize. The swap keeps the zone's name, type and hold time, and the
-    shape it replaces becomes the new previous shape, so it can be undone.
+    shape is no longer the item's ``current``, when the previous shape is
+    not the item's ``previous`` or was not replaced at its ``previous_at``
+    (either one, when sent), or when the previous geometry does not
+    normalize. A restore is a swap, so a zone can come back to the shape a
+    client saw while its previous shape is another one; the expected
+    previous shape keeps that client's Undo from bringing the other one
+    back. The swap keeps the zone's name, type and hold time, and the shape
+    it replaces becomes the new previous shape, so it can be undone.
     """
     from . import _normalize_zone_payload  # noqa: PLC0415 - avoid a module import cycle
 
     # Reads through `devices`, so a missing radar mints nothing.
     zone_def = store.zone(device_id, zone_id)
-    if zone_def is None:
-        return None
+    # None for a missing zone too.
     previous = previous_shape_of(zone_def)
-    if previous is None:
+    if previous is None or item.get("previous_at") not in (
+        None,
+        previous[PREVIOUS_REPLACED_AT],
+    ):
         return None
     replaced = shape_of(zone_def)
-    if _requested_shape(current, zone_id, device_id) != replaced:
+    if _requested_shape(item["current"], zone_id, device_id) != replaced:
         return None
     shape, data = previous[ATTR_SHAPE], previous[ATTR_DATA]
     if shape != SHAPE_NONE:
         data = _normalize_zone_payload(shape, data, zone_id, device_id)
-        if data is None:
-            return None
+    expected = item.get("previous")
+    if (shape != SHAPE_NONE and data is None) or (
+        expected is not None
+        and _requested_shape(expected, zone_id, device_id) != (shape, data)
+    ):
+        return None
     zone_def[ATTR_SHAPE] = shape
     zone_def[ATTR_DATA] = data
     zone_def[STORE_PREVIOUS_SHAPE] = make_previous_shape(*replaced)
@@ -367,6 +378,14 @@ def _requested_shape(
     return (SHAPE_NONE, None) if data is None else (shape, data)
 
 
+_GEOMETRY_SCHEMA = vol.Schema(
+    {
+        vol.Required("shape"): vol.In(list(SUPPORTED_SHAPES)),
+        vol.Optional("data"): vol.Any(None, dict),
+    }
+)
+
+
 # Admin only, like update_zone; schema errors come first.
 @websocket_api.websocket_command(
     {
@@ -380,12 +399,10 @@ def _requested_shape(
                             vol.Coerce(int), vol.Range(min=1, max=MAX_SAFE_INT)
                         ),
                         # Restore only while this is still the zone's shape.
-                        vol.Required("current"): vol.Schema(
-                            {
-                                vol.Required("shape"): vol.In(list(SUPPORTED_SHAPES)),
-                                vol.Optional("data"): vol.Any(None, dict),
-                            }
-                        ),
+                        vol.Required("current"): _GEOMETRY_SCHEMA,
+                        # And only to the shape the client expects back.
+                        vol.Optional("previous"): _GEOMETRY_SCHEMA,
+                        vol.Optional("previous_at"): str,
                     }
                 )
             ],
@@ -403,7 +420,10 @@ def ws_restore_shape(
 
     Each zone names the shape the client last saw, ``current``, and is only
     restored while that is still its shape, so an Undo never reverts a later
-    edit made elsewhere. One push and one event cover the whole request.
+    edit made elsewhere. It can also name the shape it expects back,
+    ``previous``, or when that shape was replaced, ``previous_at``; then it
+    is only restored while the zone's previous shape is that one. One push
+    and one event cover the whole request.
     """
     from . import _notify_zones_updated, get_store  # noqa: PLC0415 - avoid a module import cycle
 
@@ -420,7 +440,7 @@ def ws_restore_shape(
         if zone_id in seen:
             continue
         seen.add(zone_id)
-        geometry = _restore_zone_shape(store, device_id, zone_id, item["current"])
+        geometry = _restore_zone_shape(store, device_id, zone_id, item)
         if geometry is None:
             skipped.append(zone_id)
         else:
