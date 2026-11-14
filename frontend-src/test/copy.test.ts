@@ -398,9 +398,29 @@ describe("zone map card copy module", () => {
       ["rect", false, 32],
       ["rect", true, 32],
       ["ellipse", false, 32],
+      ["ellipse", true, 32],
       ["polygon", false, 32],
       ["polygon", true, 32],
+      ["rect", false, 32, { armed: true }],
+      ["ellipse", true, 32, { armed: true }],
+      ["polygon", true, 32, { armed: true }],
+      ["rect", true, 32, { canExpand: true }],
+      ["polygon", false, 32, { canExpand: true }],
     ],
+    drawChipLabel: [["Couch", false], ["Couch", true]],
+    drawingBanner: [["Couch"]],
+    walkingBanner: [["Couch"], [""]],
+    armFirstToast: [["Couch", false], ["Couch", true]],
+    zoneDrawnToast: [["Couch"]],
+    zoneRedrawnToast: [["Couch"]],
+    shapeRestoredToast: [["Couch"]],
+    undoneToast: [["Couch"]],
+    undoSkippedToast: [[["Couch"]], [["Couch", "Desk"]], [["Couch", "Desk", "Bed"]]],
+    restoreSkippedToast: [["Couch"]],
+    couldNotUndo: [["Home Assistant is restarting"]],
+    couldNotRestore: [["Home Assistant is restarting"]],
+    restoreShapeHint: [["5 min ago"]],
+    formatReplacedAgo: [[0], [300000], [7200000], [86400000 * 3]],
   };
 
   /** Every string copy.ts exports, the functions' output included. */
@@ -494,6 +514,72 @@ describe("zone map card copy module", () => {
     expect(zoneMapCopy.formatAgo(60000)).toBe("1 min ago");
     expect(zoneMapCopy.formatAgo(3599999)).toBe("59 min ago");
     expect(zoneMapCopy.formatAgo(3900000)).toBe("1 h 5 min ago");
+  });
+
+  it("words drawing, arming and Undo", () => {
+    expect(zoneMapCopy.drawHint("rect", false, 32)).toBe(
+      "Press Draw shape, then drag on the map to draw this zone as a rectangle. ✎ on the map offers an ellipse or a polygon. A tap on a zone on the map picks it."
+    );
+    expect(zoneMapCopy.drawHint("rect", true, 32)).toBe(
+      "Press Redraw shape, then drag on the map to give this zone a new rectangle. ✎ on the map offers an ellipse or a polygon. A tap on a zone on the map picks it."
+    );
+    expect(zoneMapCopy.drawHint("ellipse", true, 32)).toBe(
+      "Press Redraw shape, then drag on the map to give this zone a new ellipse. ✎ on the map offers a rectangle or a polygon. A tap on a zone on the map picks it."
+    );
+    expect(zoneMapCopy.drawHint("polygon", false, 32)).toBe(
+      "Press Draw shape, then tap each corner of this zone on the map, up to 32, and double-tap the last one or press ✓."
+    );
+    expect(zoneMapCopy.drawHint("polygon", true, 32)).toBe(
+      "Press Redraw shape, then tap each corner of the new shape on the map, up to 32, and double-tap the last one or press ✓."
+    );
+    expect(zoneMapCopy.drawHint("ellipse", false, 32, { armed: true, canExpand: true })).toBe(
+      "Drag on the map to draw this zone as an ellipse. Cancel drawing or Esc stops without a change."
+    );
+    expect(zoneMapCopy.drawHint("polygon", true, 32, { armed: true })).toBe(
+      "Tap each corner of this zone on the map, up to 32, then double-tap the last one or press ✓. Cancel drawing or Esc stops without a change."
+    );
+    expect(zoneMapCopy.drawHint("rect", false, 32, { canExpand: true })).toBe(
+      "Press Draw shape, then drag on the map to draw this zone as a rectangle. ✎ on the map offers an ellipse or a polygon. A tap on a zone on the map picks it. Expand, at the map's top right, fills the window with the map."
+    );
+    expect(zoneMapCopy.drawChipLabel("Couch", false)).toBe("Draw Couch");
+    expect(zoneMapCopy.drawChipLabel("Couch", true)).toBe("Redraw Couch");
+    expect(zoneMapCopy.drawingBanner("Couch")).toBe("Drawing Couch");
+    expect(zoneMapCopy.walkingBanner("Couch")).toBe("Marking Couch by walking");
+    expect(zoneMapCopy.walkingBanner("")).toBe("Marking corners by walking");
+    expect(zoneMapCopy.armFirstToast("Couch", false)).toBe("To draw Couch, press Draw shape first.");
+    expect(zoneMapCopy.armFirstToast("Couch", true)).toBe("To redraw Couch, press Redraw shape first.");
+    expect(zoneMapCopy.zoneDrawnToast("Couch")).toBe("Couch drawn");
+    expect(zoneMapCopy.zoneRedrawnToast("Couch")).toBe("Couch redrawn");
+    expect(zoneMapCopy.shapeRestoredToast("Couch")).toBe("Previous shape of Couch restored");
+    expect(zoneMapCopy.undoneToast("Couch")).toBe("Undid the change to Couch");
+    expect(zoneMapCopy.undoSkippedToast(["Couch"])).toBe(
+      "Couch was changed in the meantime, so it was not undone."
+    );
+    expect(zoneMapCopy.undoSkippedToast(["Couch", "Desk"])).toBe(
+      "Couch and Desk were changed in the meantime, so they were not undone."
+    );
+    expect(zoneMapCopy.undoSkippedToast(["Couch", "Desk", "Bed"])).toBe(
+      "Couch, Desk, and Bed were changed in the meantime, so they were not undone."
+    );
+    expect(zoneMapCopy.restoreSkippedToast("Couch")).toBe(
+      "Couch was changed in the meantime, so nothing was restored."
+    );
+    expect(zoneMapCopy.couldNotUndo("timeout")).toBe("Could not undo: timeout");
+    expect(zoneMapCopy.couldNotRestore("timeout")).toBe("Could not restore: timeout");
+    expect(zoneMapCopy.restoreShapeHint("5 min ago")).toBe("Replaced 5 min ago");
+  });
+
+  it("says how long ago a shape was replaced", () => {
+    const f = zoneMapCopy.formatReplacedAgo;
+    expect(f(-5000)).toBe("under a minute ago");
+    expect(f(Number.NaN)).toBe("under a minute ago");
+    expect(f(59999)).toBe("under a minute ago");
+    expect(f(60000)).toBe("1 min ago");
+    expect(f(3599999)).toBe("59 min ago");
+    expect(f(3600000)).toBe("1 h ago");
+    expect(f(48 * 3600000 - 1)).toBe("47 h ago");
+    expect(f(48 * 3600000)).toBe("2 days ago");
+    expect(f(10 * 86400000)).toBe("10 days ago");
   });
 });
 
