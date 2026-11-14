@@ -6,8 +6,8 @@ import copy
 import json
 import logging
 import time
-from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from homeassistant.core import callback
@@ -17,7 +17,10 @@ from homeassistant.helpers.dispatcher import (
     async_dispatcher_connect,
     async_dispatcher_send,
 )
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    async_fire_time_changed,
+)
 
 from custom_components.apollo_mmwave import get_store
 from custom_components.apollo_mmwave.const import (
@@ -26,6 +29,7 @@ from custom_components.apollo_mmwave.const import (
     DATA_MOVEMENT,
     DATA_STORE,
     DOMAIN,
+    EVENT_ZONE_UPDATED,
     KEY_PRESENCE_ENTITY_ID,
     SIGNAL_CALIBRATION_UPDATED,
     SIGNAL_ZONES_PAYLOAD,
@@ -39,8 +43,10 @@ from .conftest import (
     MOVEMENT_EXAMPLE,
     MOVEMENT_EXAMPLE_RECORDS,
     RADAR_TARGET_COUNT,
+    REPLACED_AT,
     RadarIds,
     finish_job,
+    previous,
     radar_ids,
     unpack_movement,
 )
@@ -671,6 +677,8 @@ async def test_zones_payload_does_not_mutate_the_store(
         {"device_id": device_id, **RECT_CALL, "hold_s": 30},
         blocking=True,
     )
+    # Zone 1 keeps a previous shape the payload omits.
+    await _draw(hass, device_id, 1, "rect", MOVED)
     store = get_store(hass)
     store.device(device_id)[STORE_ZONES][2] = {
         "shape": "none",
@@ -688,8 +696,13 @@ async def test_zones_payload_does_not_mutate_the_store(
     [pushed] = await _drain(client)
 
     assert result["zones"]["1"]["hold_s"] == 30
+    assert result["zones"]["1"]["previous_shape_drawn"] is True
     assert pushed["zones"]["2"][KEY_PRESENCE_ENTITY_ID] is not None
     assert store._data_to_save() == before  # noqa: SLF001
+    assert (
+        store.devices[device_id][STORE_ZONES][1]["previous_shape"]["data"]
+        == (RECT_CALL["data"])
+    )
     assert all(
         KEY_PRESENCE_ENTITY_ID not in zone
         for zone in store.devices[device_id][STORE_ZONES].values()
@@ -769,6 +782,502 @@ async def test_zones_subscription_end_drops_both_forwarders(
 
     assert _forwarder_count(hass) == 0
     assert _forwarder_count(hass, SIGNAL_ZONES_PAYLOAD) == 0
+
+
+# ---------------------------------------------------------------------------
+# Restoring a zone's previous shape, administrators only
+# ---------------------------------------------------------------------------
+
+RESTORE = "apollo_mmwave/zones/restore_shape"
+RECT_A = RECT_CALL["data"]
+MOVED = {"x_min": 0, "x_max": 500, "y_min": 0, "y_max": 500}
+ZONE_STORAGE_KEY = f"{DOMAIN}.zones"
+TWENTY_MINUTES_LATER = "2026-11-13T15:24:05+00:00"
+
+
+async def _draw(
+    hass, device_id: str, zone_id: int, shape: str, data: Any, **extra: Any
+) -> None:
+    await hass.services.async_call(
+        DOMAIN,
+        "update_zone",
+        {
+            "device_id": device_id,
+            "zone_id": zone_id,
+            "shape": shape,
+            "data": data,
+            **extra,
+        },
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+
+
+def _current(shape: str, data=None) -> dict:
+    return {"shape": shape, "data": data}
+
+
+async def _restore(
+    client, device_id: str, *zones: tuple[int, dict], pushed: list | None = None
+) -> dict:
+    """
+    Send a restore for (zone_id, current) pairs and return the reply.
+
+    The zone push comes before the reply; each one goes into `pushed`.
+    """
+    await client.send_json_auto_id(
+        {
+            "type": RESTORE,
+            "device_id": device_id,
+            "zones": [
+                {"zone_id": zone_id, "current": current} for zone_id, current in zones
+            ],
+        }
+    )
+    while (message := await client.receive_json())["type"] == "event":
+        assert pushed is not None
+        pushed.append(message["event"])
+    return message
+
+
+def _zone(hass, device_id: str, zone_id: int = 1) -> dict:
+    return get_store(hass).devices[device_id][STORE_ZONES][zone_id]
+
+
+def _zone_event_count(hass) -> list:
+    events: list = []
+    hass.bus.async_listen(EVENT_ZONE_UPDATED, events.append)
+    return events
+
+
+@pytest.mark.usefixtures("replaced_at", "init_integration")
+async def test_restore_shape_swaps_current_and_previous(
+    hass, freezer, hass_ws_client, device_id, hass_storage
+) -> None:
+    """The previous shape comes back, and the one it replaces becomes the previous."""
+    await _draw(hass, device_id, 1, "rect", RECT_A)
+    await _draw(hass, device_id, 1, "rect", MOVED)
+    assert _zone(hass, device_id)["previous_shape"] == previous(
+        "rect", RECT_A, REPLACED_AT
+    )
+    # Before the tick: an access token lasts 30 minutes.
+    client = await hass_ws_client(hass)
+    freezer.tick(timedelta(minutes=20))
+
+    reply = await _restore(client, device_id, (1, _current("rect", MOVED)))
+
+    assert reply["success"] is True
+    assert reply["result"] == {
+        "restored": [{"zone_id": 1, "shape": "rect", "data": RECT_A}],
+        "skipped": [],
+    }
+    assert _zone(hass, device_id) == {
+        "shape": "rect",
+        "data": RECT_A,
+        "previous_shape": previous("rect", MOVED, TWENTY_MINUTES_LATER),
+    }
+    # Saved after the store's usual delay, like every zone change.
+    freezer.tick(timedelta(seconds=3))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    on_disk = hass_storage[ZONE_STORAGE_KEY]["data"]["devices"][device_id]
+    assert on_disk["zones"]["1"]["data"] == RECT_A
+
+
+async def test_restore_shape_twice_puts_the_change_back(
+    hass, replaced_at, hass_ws_client, init_integration, device_id
+) -> None:
+    """A restore can itself be undone, by restoring again."""
+    _ = (replaced_at, init_integration)
+    await _draw(hass, device_id, 1, "rect", RECT_A)
+    await _draw(
+        hass, device_id, 1, "ellipse", {"cx": 0, "cy": 900, "rx": 300, "ry": 200}
+    )
+    client = await hass_ws_client(hass)
+    ellipse = _zone(hass, device_id)["data"]
+
+    first = await _restore(client, device_id, (1, _current("ellipse", ellipse)))
+    second = await _restore(client, device_id, (1, _current("rect", RECT_A)))
+
+    assert first["result"]["restored"] == [
+        {"zone_id": 1, "shape": "rect", "data": RECT_A}
+    ]
+    assert second["result"]["restored"] == [
+        {"zone_id": 1, "shape": "ellipse", "data": ellipse}
+    ]
+    zone = _zone(hass, device_id)
+    assert (zone["shape"], zone["data"]) == ("ellipse", ellipse)
+    assert zone["previous_shape"] == previous("rect", RECT_A, replaced_at)
+
+
+async def test_restore_shape_keeps_name_type_and_hold(
+    hass, replaced_at, hass_ws_client, init_integration, device_id
+) -> None:
+    """Only the geometry changes; what the zone does stays."""
+    _ = init_integration
+    await _draw(
+        hass, device_id, 1, "rect", RECT_A, name="Couch", zone_type="ignore", hold_s=45
+    )
+    await _draw(hass, device_id, 1, "rect", MOVED)
+    client = await hass_ws_client(hass)
+
+    await _restore(client, device_id, (1, _current("rect", MOVED)))
+
+    assert _zone(hass, device_id) == {
+        "shape": "rect",
+        "data": RECT_A,
+        "name": "Couch",
+        "zone_type": "ignore",
+        "hold_s": 45,
+        "previous_shape": previous("rect", MOVED, replaced_at),
+    }
+
+
+@pytest.mark.parametrize(
+    "current",
+    [
+        # What the zone had before someone else redrew it.
+        _current("rect", RECT_A),
+        _current("none"),
+        _current("rect", {**MOVED, "x_max": 400}),
+        _current("ellipse", {"cx": 0, "cy": 0, "rx": 500, "ry": 500}),
+    ],
+    ids=["older_shape", "none", "other_rect", "other_shape"],
+)
+@pytest.mark.usefixtures("replaced_at", "init_integration")
+async def test_restore_shape_skips_a_zone_changed_since(
+    hass, hass_ws_client, device_id, current
+) -> None:
+    """A zone whose shape is not the one the client saw is left as it is."""
+    await _draw(hass, device_id, 1, "rect", RECT_A)
+    await _draw(hass, device_id, 1, "rect", MOVED)
+    before = copy.deepcopy(get_store(hass)._data_to_save())  # noqa: SLF001
+    client = await hass_ws_client(hass)
+    await _subscribe_zones(client, device_id)
+    events = _zone_event_count(hass)
+
+    reply = await _restore(client, device_id, (1, current))
+
+    assert reply["result"] == {"restored": [], "skipped": [1]}
+    assert get_store(hass)._data_to_save() == before  # noqa: SLF001
+    await hass.async_block_till_done()
+    assert await _drain(client) == []
+    assert events == []
+
+
+async def test_restore_shape_matches_current_as_the_store_rounds_it(
+    hass, replaced_at, hass_ws_client, init_integration, device_id
+) -> None:
+    """The card names what it sent, unrounded; the store kept whole millimeters."""
+    _ = (replaced_at, init_integration)
+    await _draw(hass, device_id, 1, "rect", RECT_A)
+    sent = {"x_min": 0.3, "x_max": 499.8, "y_min": -0.2, "y_max": 500.1}
+    await _draw(hass, device_id, 1, "rect", sent)
+    assert _zone(hass, device_id)["data"] == MOVED
+    client = await hass_ws_client(hass)
+
+    reply = await _restore(client, device_id, (1, _current("rect", sent)))
+
+    assert reply["result"]["restored"] == [
+        {"zone_id": 1, "shape": "rect", "data": RECT_A}
+    ]
+
+
+async def test_restore_shape_skips_missing_zones_and_zones_without_previous(
+    hass, replaced_at, hass_ws_client, init_integration, device_id
+) -> None:
+    """Only a zone that has a previous shape is restored; the rest are listed."""
+    _ = (replaced_at, init_integration)
+    await _draw(hass, device_id, 1, "rect", RECT_A)
+    await _draw(hass, device_id, 2, "rect", RECT_A)
+    await _draw(hass, device_id, 2, "rect", MOVED)
+    client = await hass_ws_client(hass)
+
+    reply = await _restore(
+        client,
+        device_id,
+        (1, _current("rect", RECT_A)),
+        (2, _current("rect", MOVED)),
+        (3, _current("none")),
+    )
+
+    assert reply["result"] == {
+        "restored": [{"zone_id": 2, "shape": "rect", "data": RECT_A}],
+        "skipped": [1, 3],
+    }
+    assert _zone(hass, device_id, 1) == {"shape": "rect", "data": RECT_A}
+    assert 3 not in get_store(hass).devices[device_id][STORE_ZONES]
+
+
+async def test_restore_shape_acts_once_on_a_repeated_id(
+    hass, replaced_at, hass_ws_client, init_integration, device_id
+) -> None:
+    """A zone listed twice is restored once, not swapped back by its second entry."""
+    _ = (replaced_at, init_integration)
+    await _draw(hass, device_id, 1, "rect", RECT_A)
+    await _draw(hass, device_id, 1, "rect", MOVED)
+    client = await hass_ws_client(hass)
+
+    reply = await _restore(
+        client, device_id, (1, _current("rect", MOVED)), (1, _current("rect", RECT_A))
+    )
+
+    assert reply["result"] == {
+        "restored": [{"zone_id": 1, "shape": "rect", "data": RECT_A}],
+        "skipped": [],
+    }
+    assert _zone(hass, device_id)["data"] == RECT_A
+
+
+async def test_restore_shape_batch_pushes_once(
+    hass, replaced_at, hass_ws_client, init_integration, device_id
+) -> None:
+    """Undoing Clear all restores every zone with one push and one event."""
+    _ = init_integration
+    ellipse = {"cx": 0, "cy": 900, "rx": 300, "ry": 200}
+    await _draw(hass, device_id, 1, "rect", RECT_A)
+    await _draw(hass, device_id, 2, "ellipse", ellipse)
+    for zone_id in (1, 2):
+        await _draw(hass, device_id, zone_id, "none", None)
+    client = await hass_ws_client(hass)
+    await _subscribe_zones(client, device_id)
+    events = _zone_event_count(hass)
+
+    pushed: list = []
+
+    reply = await _restore(
+        client, device_id, (1, _current("none")), (2, _current("none")), pushed=pushed
+    )
+
+    assert reply["result"] == {
+        "restored": [
+            {"zone_id": 1, "shape": "rect", "data": RECT_A},
+            {"zone_id": 2, "shape": "ellipse", "data": ellipse},
+        ],
+        "skipped": [],
+    }
+    await hass.async_block_till_done()
+    assert await _drain(client) == []
+    [payload] = pushed
+    assert {key: zone["shape"] for key, zone in payload["zones"].items()} == {
+        "1": "rect",
+        "2": "ellipse",
+    }
+    # The cleared state is now the previous shape.
+    assert payload["zones"]["1"]["previous_shape_at"] == replaced_at
+    assert payload["zones"]["1"]["previous_shape_drawn"] is False
+    assert len(events) == 1
+    assert events[0].data == {"device_id": device_id}
+
+
+async def test_restore_shape_requires_admin(
+    hass, hass_ws_client, hass_read_only_access_token, init_integration, device_id
+) -> None:
+    """A non-admin gets unauthorized first; a malformed request is invalid_format."""
+    _ = init_integration
+    await _draw(hass, device_id, 1, "rect", RECT_A)
+    await _draw(hass, device_id, 1, "rect", MOVED)
+    before = copy.deepcopy(get_store(hass)._data_to_save())  # noqa: SLF001
+    user = await hass_ws_client(hass, hass_read_only_access_token)
+    admin = await hass_ws_client(hass)
+
+    # Unauthorized comes before not_found, whatever the device.
+    for device in (device_id, "no-such-device"):
+        reply = await _restore(user, device, (1, _current("rect", MOVED)))
+        assert reply["success"] is False
+        assert reply["error"]["code"] == "unauthorized"
+    assert get_store(hass)._data_to_save() == before  # noqa: SLF001
+
+    # Home Assistant checks the schema before the admin check.
+    for client in (user, admin):
+        for message in (
+            {"type": RESTORE, "device_id": device_id, "zones": []},
+            {"type": RESTORE, "device_id": device_id},
+            {
+                "type": RESTORE,
+                "device_id": device_id,
+                "zones": [{"zone_id": 0, "current": _current("none")}],
+            },
+            {
+                "type": RESTORE,
+                "device_id": device_id,
+                "zones": [{"zone_id": 1, "current": {"shape": "circle"}}],
+            },
+            {
+                "type": RESTORE,
+                "device_id": device_id,
+                "zones": [{"zone_id": 1}],
+            },
+        ):
+            reply = await _ask(client, message)
+            assert reply["error"]["code"] == "invalid_format", message
+    reply = await _restore(admin, device_id, (1, _current("rect", MOVED)))
+    assert reply["success"] is True
+    assert reply["result"]["skipped"] == []
+
+
+async def test_restore_shape_unknown_device_is_not_found(
+    hass, hass_ws_client, init_integration
+) -> None:
+    """A device id Home Assistant does not know is an error, and mints nothing."""
+    _ = init_integration
+    client = await hass_ws_client(hass)
+
+    reply = await _restore(client, "no-such-device", (1, _current("none")))
+
+    assert reply["success"] is False
+    assert reply["error"]["code"] == "not_found"
+    assert get_store(hass).devices == {}
+
+
+async def test_restore_shape_not_loaded_after_unload(
+    hass, hass_ws_client, hass_read_only_access_token, init_integration, device_id
+) -> None:
+    """The command outlives the config entry, so it answers without the store."""
+    client = await hass_ws_client(hass)
+    user = await hass_ws_client(hass, hass_read_only_access_token)
+    assert await hass.config_entries.async_unload(init_integration.entry_id)
+    await hass.async_block_till_done()
+
+    for device in (device_id, "no-such-device"):
+        reply = await _restore(client, device, (1, _current("none")))
+        assert reply["success"] is False
+        assert reply["error"]["code"] == "not_loaded"
+    reply = await _restore(user, device_id, (1, _current("none")))
+    assert reply["error"]["code"] == "unauthorized"
+
+
+async def test_restore_shape_does_not_mint_a_store_entry(
+    hass, hass_ws_client, init_integration, device_id
+) -> None:
+    """Asking about a radar with nothing stored skips its zones and stores nothing."""
+    _ = init_integration
+    client = await hass_ws_client(hass)
+
+    reply = await _restore(client, device_id, (1, _current("none")))
+
+    assert reply["result"] == {"restored": [], "skipped": [1]}
+    assert get_store(hass).devices == {}
+
+
+async def test_restore_shape_moves_presence(
+    hass, hass_ws_client, init_integration, device_id
+) -> None:
+    """The zone's presence sensor follows the restored geometry at once."""
+    _ = init_integration
+    await _draw(hass, device_id, 1, "rect", RECT_A)
+    await _draw(hass, device_id, 1, "rect", MOVED)
+    # Inside MOVED, outside RECT_A.
+    hass.states.async_set("sensor.r_pro_ld2450_target_1_x", "100")
+    hass.states.async_set("sensor.r_pro_ld2450_target_1_y", "100")
+    await hass.async_block_till_done()
+    assert hass.states.get(PRESENCE_1).state == "on"
+    client = await hass_ws_client(hass)
+
+    await _restore(client, device_id, (1, _current("rect", MOVED)))
+    await hass.async_block_till_done()
+
+    assert hass.states.get(PRESENCE_1).state == "off"
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        # x_min above x_max: update_zone would never have stored it.
+        (
+            {"shape": "rect", "data": {"x_min": 9, "x_max": 1, "y_min": 0, "y_max": 9}},
+            "invalid bounds",
+        ),
+        ({"shape": "polygon", "data": {"points": [{"x": 0, "y": 0}]}}, "insufficient"),
+        # Not a previous shape, so nothing is logged.
+        ({"shape": "rect", "data": [0, 9, 0, 9]}, None),
+    ],
+    ids=["bad_rect", "bad_polygon", "list_data"],
+)
+@pytest.mark.usefixtures("init_integration")
+async def test_restore_shape_skips_a_bad_previous_shape(
+    hass, hass_ws_client, device_id, caplog, case
+) -> None:
+    """A hand-edited previous shape that does not normalize is never written."""
+    bad, warned = case
+    await _draw(hass, device_id, 1, "rect", MOVED)
+    _zone(hass, device_id)["previous_shape"] = {
+        **bad,
+        "replaced_at": "2026-11-13T15:04:05+00:00",
+    }
+    before = copy.deepcopy(get_store(hass)._data_to_save())  # noqa: SLF001
+    client = await hass_ws_client(hass)
+    caplog.clear()
+
+    reply = await _restore(client, device_id, (1, _current("rect", MOVED)))
+
+    assert reply["result"] == {"restored": [], "skipped": [1]}
+    assert get_store(hass)._data_to_save() == before  # noqa: SLF001
+    if warned:
+        assert warned in caplog.text
+    else:
+        assert "zone 1" not in caplog.text.lower()
+
+
+async def test_zones_payload_carries_previous_shape_at(
+    hass, replaced_at, hass_ws_client, init_integration, device_id
+) -> None:
+    """Each zone says when its shape was last replaced, and whether that had one."""
+    _ = init_integration
+    # Redrawn, drawn for the first time, and only created.
+    await _draw(hass, device_id, 1, "rect", RECT_A)
+    await _draw(hass, device_id, 1, "rect", MOVED)
+    await _draw(hass, device_id, 2, "none", None, name="Zone 2")
+    await _draw(hass, device_id, 2, "rect", RECT_A)
+    await _draw(hass, device_id, 3, "rect", RECT_A)
+    client = await hass_ws_client(hass)
+
+    zones = (await _get(client, device_id))["zones"]
+
+    assert {
+        zone_id: {
+            key: zone[key]
+            for key in ("previous_shape_at", "previous_shape_drawn")
+            if key in zone
+        }
+        for zone_id, zone in zones.items()
+    } == {
+        "1": {"previous_shape_at": replaced_at, "previous_shape_drawn": True},
+        "2": {"previous_shape_at": replaced_at, "previous_shape_drawn": False},
+        "3": {},
+    }
+    # The previous geometry itself stays on the server.
+    assert all("previous_shape" not in zone for zone in zones.values())
+
+
+async def test_zones_payload_ignores_a_hand_edited_previous_shape(
+    hass, hass_ws_client, init_integration, device_id
+) -> None:
+    """A previous shape the service could not have written is left out."""
+    _ = init_integration
+    rect = {"shape": "rect", "data": RECT_A}
+    at = "2026-11-13T15:04:05+00:00"
+    get_store(hass).device(device_id)[STORE_ZONES].update(
+        {
+            1: {**rect, "previous_shape": ["rect", RECT_A]},
+            2: {**rect, "previous_shape": {**rect}},
+            3: {**rect, "previous_shape": {**rect, "replaced_at": 1763046245}},
+            4: {**rect, "previous_shape": {"shape": "circle", "replaced_at": at}},
+            5: {**rect, "previous_shape": {**rect, "data": [0, 1], "replaced_at": at}},
+            # Read as no shape: a rect with no geometry.
+            6: {**rect, "previous_shape": {"shape": "rect", "replaced_at": at}},
+        }
+    )
+    client = await hass_ws_client(hass)
+
+    zones = (await _get(client, device_id))["zones"]
+
+    for zone_id in ("1", "2", "3", "4", "5"):
+        assert "previous_shape_at" not in zones[zone_id]
+        assert "previous_shape_drawn" not in zones[zone_id]
+    assert zones["6"]["previous_shape_at"] == at
+    assert zones["6"]["previous_shape_drawn"] is False
+    assert all("previous_shape" not in zone for zone in zones.values())
 
 
 # ---------------------------------------------------------------------------

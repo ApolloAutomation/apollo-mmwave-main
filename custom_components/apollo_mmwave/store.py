@@ -18,6 +18,8 @@ in-memory shape is::
                     "shape": ..., "data": ..., "name": ...,
                     "zone_type": "ignore",  # optional; absent means detect
                     "hold_s": 30,  # optional, 1 to 3600; absent means no hold
+                    # optional; written only by a shape change, never seeded
+                    "previous_shape": {"shape": ..., "data": ..., "replaced_at": ...},
                 },
                 ...
             },
@@ -61,6 +63,7 @@ zones.
 
 from __future__ import annotations
 
+import copy
 import logging
 import math
 from typing import TYPE_CHECKING, Any
@@ -68,14 +71,22 @@ from typing import TYPE_CHECKING, Any
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.storage import Store
+from homeassistant.util import dt as dt_util
 from homeassistant.util import slugify
 
 from .const import (
+    ATTR_DATA,
     ATTR_ROTATION_DEG,
+    ATTR_SHAPE,
     DISPLAY_UNITS,
     DOMAIN,
     HOLD_S_MAX,
     INPUT_UNIT_FACTORS,
+    PREVIOUS_REPLACED_AT,
+    SHAPE_ELLIPSE,
+    SHAPE_NONE,
+    SHAPE_POLYGON,
+    SHAPE_RECT,
     STORE_ALIASES,
     STORE_DEVICES,
     STORE_DISPLAY_UNITS,
@@ -86,8 +97,10 @@ from .const import (
     STORE_MIRROR_X,
     STORE_MOVEMENT_HISTORY,
     STORE_ORPHANS,
+    STORE_PREVIOUS_SHAPE,
     STORE_ZONE_TYPE,
     STORE_ZONES,
+    SUPPORTED_SHAPES,
     ZONE_TYPE_DETECT,
     ZONE_TYPE_IGNORE,
 )
@@ -100,6 +113,7 @@ _LOGGER = logging.getLogger(__name__)
 STORAGE_VERSION = 2
 STORAGE_KEY = f"{DOMAIN}.zones"
 SAVE_DELAY_SECONDS = 2.0
+_DRAWN_SHAPES = (SHAPE_RECT, SHAPE_ELLIPSE, SHAPE_POLYGON)
 
 
 def _empty_device() -> dict[str, Any]:
@@ -136,6 +150,59 @@ def zone_hold_s(zone_def: Any) -> int:
     if value <= 0:
         return 0
     return min(int(value), HOLD_S_MAX)
+
+
+def shape_of(zone_def: Any) -> tuple[str, dict[str, Any] | None]:
+    """
+    Return a zone's geometry as (shape, data), or ("none", None) for none.
+
+    Only a rect, ellipse or polygon whose data is an object has geometry, so
+    the legacy placeholder {} and a shape stored with data null read as none.
+    """
+    if isinstance(zone_def, dict):
+        shape = zone_def.get(ATTR_SHAPE)
+        data = zone_def.get(ATTR_DATA)
+        if isinstance(shape, str) and shape in _DRAWN_SHAPES and isinstance(data, dict):
+            return shape, data
+    return SHAPE_NONE, None
+
+
+def previous_shape_of(zone_def: Any) -> dict[str, Any] | None:
+    """
+    Return the shape a zone's last shape change replaced, or None.
+
+    The result holds shape, data and replaced_at, with shape and data read
+    through shape_of. A value update_zone could not have written, which only
+    a hand edit leaves, is None: not an object, replaced_at not a string, a
+    shape that is not one of SUPPORTED_SHAPES, or data neither an object nor
+    null. The data is the store's own, not a copy.
+    """
+    previous = (
+        zone_def.get(STORE_PREVIOUS_SHAPE) if isinstance(zone_def, dict) else None
+    )
+    if not isinstance(previous, dict):
+        return None
+    replaced_at = previous.get(PREVIOUS_REPLACED_AT)
+    shape = previous.get(ATTR_SHAPE)
+    data = previous.get(ATTR_DATA)
+    if (
+        not isinstance(replaced_at, str)
+        or not isinstance(shape, str)
+        or shape not in SUPPORTED_SHAPES
+        or (data is not None and not isinstance(data, dict))
+    ):
+        return None
+    shape, data = shape_of(previous)
+    return {ATTR_SHAPE: shape, ATTR_DATA: data, PREVIOUS_REPLACED_AT: replaced_at}
+
+
+def make_previous_shape(shape: str, data: dict[str, Any] | None) -> dict[str, Any]:
+    """Return the previous_shape value for geometry replaced now."""
+    return {
+        ATTR_SHAPE: shape,
+        ATTR_DATA: copy.deepcopy(data),
+        PREVIOUS_REPLACED_AT: dt_util.utcnow().replace(microsecond=0).isoformat(),
+    }
 
 
 def device_flag(entry: Any, key: str) -> bool:

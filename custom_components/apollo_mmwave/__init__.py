@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import math
 from typing import TYPE_CHECKING, Any
@@ -54,6 +55,7 @@ from .const import (
     HOLD_S_MAX,
     INPUT_UNIT_FACTORS,
     ISSUE_DASHBOARD_SAVED_COPY,
+    MAX_SAFE_INT,
     POLYGON_MAX_POINTS,
     POLYGON_MIN_POINTS,
     SERVICE_UPDATE_ZONE,
@@ -70,6 +72,7 @@ from .const import (
     STORE_LABEL,
     STORE_MIRROR_X,
     STORE_MOVEMENT_HISTORY,
+    STORE_PREVIOUS_SHAPE,
     STORE_ZONE_TYPE,
     STORE_ZONES,
     SUPPORTED_SHAPES,
@@ -101,7 +104,15 @@ from .migration import (
     async_migrate_unique_ids,
 )
 from .movement import MovementHistory, async_remove_movement_store
-from .store import ZoneStore, device_flag, zone_hold_s, zone_type_of
+from .store import (
+    ZoneStore,
+    device_flag,
+    make_previous_shape,
+    previous_shape_of,
+    shape_of,
+    zone_hold_s,
+    zone_type_of,
+)
 from .target_units import async_track_target_units
 from .websocket import async_register as async_register_websocket
 
@@ -125,7 +136,7 @@ _DATA_LOCATION_WARNED = "location_deprecation_warned"
 # bits, so one bigger value made every later store write fail for every radar;
 # the card could not read such a number exactly either. This is a
 # serialization limit, not a geometry bound.
-_MAX_SAFE_INT = 2**53 - 1
+_MAX_SAFE_INT = MAX_SAFE_INT
 
 
 def get_store(hass: HomeAssistant) -> ZoneStore:
@@ -590,6 +601,24 @@ def _carry_zone_settings(
         zone_entry[STORE_HOLD_S] = hold_s
 
 
+def _record_previous_shape(
+    zone_entry: dict[str, Any], existing: dict[str, Any] | None
+) -> None:
+    """
+    Keep the shape a shape change replaces, with when, for the card's restore.
+
+    A new zone replaced nothing and gets no previous shape. Rewriting the
+    geometry a zone already has keeps the previous shape it had.
+    """
+    if existing is None:
+        return
+    replaced = shape_of(existing)
+    if replaced != shape_of(zone_entry):
+        zone_entry[STORE_PREVIOUS_SHAPE] = make_previous_shape(*replaced)
+    elif (previous := previous_shape_of(existing)) is not None:
+        zone_entry[STORE_PREVIOUS_SHAPE] = copy.deepcopy(previous)
+
+
 def _zone_settings_change(call: ServiceCall, zone_def: dict[str, Any]) -> bool:
     """Report whether the call's zone_type or hold_s acts on a stored zone."""
     # Like a map unit, a setting counts even when it is the one stored. A
@@ -757,6 +786,7 @@ def _write_zone_geometry(
         zone_entry[ATTR_NAME] = existing[ATTR_NAME]
     _carry_zone_settings(zone_entry, existing)
     _apply_zone_settings(zone_entry, call)
+    _record_previous_shape(zone_entry, existing)
 
     store.device(device_id)[STORE_ZONES][zone_id] = zone_entry
 

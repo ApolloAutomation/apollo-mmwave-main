@@ -8,7 +8,7 @@ import logging
 import struct
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from functools import partial
 from itertools import accumulate, pairwise
 from typing import TYPE_CHECKING, Any
@@ -62,6 +62,27 @@ RECT_ZONE: dict[str, Any] = {
     "shape": "rect",
     "data": {"x_min": -1000, "x_max": 1000, "y_min": 0, "y_max": 2000},
 }
+
+# When the `replaced_at` fixture's shape changes replace a shape.
+REPLACED_AT = "2026-11-13T15:04:05+00:00"
+
+
+@pytest.fixture
+def replaced_at(freezer) -> str:
+    """
+    Freeze time inside REPLACED_AT's second, and return REPLACED_AT.
+
+    The clock stands at a fraction of that second, which the stored time
+    leaves out. Ask for it before `hass_ws_client`, so the client's access
+    token is issued at the frozen time too.
+    """
+    freezer.move_to(datetime(2026, 11, 13, 15, 4, 5, 678901, tzinfo=UTC))
+    return REPLACED_AT
+
+
+def previous(shape: str, data: dict[str, Any] | None, at: str) -> dict[str, Any]:
+    """Return the previous_shape a zone keeps for geometry replaced at a time."""
+    return {"shape": shape, "data": data, "replaced_at": at}
 
 
 @pytest.fixture(autouse=True)

@@ -30,7 +30,7 @@ update_zone:
           max: 32
     shape:
       name: Shape
-      description: Shape of the zone (none, rect, ellipse, polygon). Use 'none' to clear.
+      description: "Shape of the zone (none, rect, ellipse, polygon). Use 'none' to clear. Changing a zone's shape keeps the shape it replaces, with the time, so the zone map card can restore it. Deleting a zone drops it."
       required: false
       selector:
         select:

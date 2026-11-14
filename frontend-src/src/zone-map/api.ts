@@ -14,6 +14,8 @@
 export const DOMAIN = "apollo_mmwave";
 export const ZONES_GET = `${DOMAIN}/zones/get`;
 export const ZONES_SUBSCRIBE = `${DOMAIN}/zones/subscribe`;
+/** Put back zones' previous shapes. Administrators only. */
+export const ZONES_RESTORE_SHAPE = `${DOMAIN}/zones/restore_shape`;
 /** Movement history. Administrators only: anyone else gets `unauthorized`. */
 export const MOVEMENT_GET = `${DOMAIN}/movement/get`;
 export const MOVEMENT_CLEAR = `${DOMAIN}/movement/clear`;
@@ -47,6 +49,10 @@ export interface ZoneDef {
   /** The zone's presence sensor. null: not registered (yet); absent: a
    *  backend older than 2.4.0. */
   presence_entity_id?: string | null;
+  /** When its shape was last replaced (UTC); absent if never. */
+  previous_shape_at?: string;
+  /** Whether that previous shape had geometry. */
+  previous_shape_drawn?: boolean;
 }
 
 export interface ZoneConfig {
@@ -84,6 +90,20 @@ export interface ZoneConfig {
   mirror_x?: boolean;
   /** An administrator turned movement history on for this radar. */
   movement_history?: boolean;
+}
+
+/** A zone's stored geometry; shape "none" has data null. */
+export interface ShapeGeometry {
+  shape: string;
+  data: Record<string, any> | null;
+}
+
+/** What `apollo_mmwave/zones/restore_shape` answers. */
+export interface RestoreShapeReply {
+  /** Each restored zone's geometry after the swap. */
+  restored: Array<{ zone_id: number } & ShapeGeometry>;
+  /** Zones not restored: missing, nothing to restore, or changed. */
+  skipped: number[];
 }
 
 export type Unsubscribe = () => void | Promise<void>;
@@ -406,6 +426,48 @@ export async function clearMovement(
   deviceId: string
 ): Promise<{ cleared: number }> {
   return hass.callWS<{ cleared: number }>({ type: MOVEMENT_CLEAR, device_id: deviceId });
+}
+
+/** Swap zones back to their previous shapes, if still `current`. */
+export async function restoreShapes(
+  hass: Pick<ZoneApiHass, "callWS">,
+  deviceId: string,
+  zones: Array<{ zone_id: number; current: ShapeGeometry }>
+): Promise<RestoreShapeReply> {
+  return hass.callWS<RestoreShapeReply>({
+    type: ZONES_RESTORE_SHAPE,
+    device_id: deviceId,
+    zones: zones.map(({ zone_id, current }) => ({
+      zone_id,
+      current: { shape: current.shape, data: current.data ?? null },
+    })),
+  });
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isZoneId(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 1;
+}
+
+/** Whether an answer has the shape of a `RestoreShapeReply`. */
+export function isRestoreShapeReply(value: unknown): value is RestoreShapeReply {
+  if (!isObject(value)) return false;
+  const { restored, skipped } = value;
+  return (
+    Array.isArray(restored) &&
+    restored.every(
+      (item) =>
+        isObject(item) &&
+        isZoneId(item.zone_id) &&
+        typeof item.shape === "string" &&
+        (item.data === null || isObject(item.data))
+    ) &&
+    Array.isArray(skipped) &&
+    skipped.every(isZoneId)
+  );
 }
 
 function isFiniteNumber(value: unknown): value is number {
