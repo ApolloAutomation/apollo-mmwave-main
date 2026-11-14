@@ -242,17 +242,30 @@ including what each HACS box says.
    freely. Each zone gets a presence sensor, listed on the **Zone presence**
    card next to the map.
 
-   To pick a zone, tap its chip under **Zones** or tap it on the map. The
-   box under the chips is that zone's editor: its **Name** (saved when you
-   press Enter or leave the field), **Type** and **Hold**, whether someone
-   is in it **Now**, and **Delete zone**, which asks first. Once a radar has
-   zones the map starts locked, so a scroll cannot draw on it or turn the
-   cone. Press **Locked** in its corner, or **Unlock** in the editor, to
-   draw; the name, Type and Hold work while it is locked. **Cone rotation**
-   and the map's other options are under **Map settings** at the bottom of
-   the card. See
+   To pick a zone, tap its chip under **Zones** or tap it on the map; the
+   picked zone is drawn bright with a dot on each corner, and the others
+   fade. The box under the chips is that zone's editor: its **Name** (saved
+   when you press Enter or leave the field), **Type** and **Hold**, whether
+   someone is in it **Now**, and **Delete zone**, which asks first. Once a
+   radar has zones the map starts locked, so a scroll cannot draw on it or
+   turn the cone. Press **Locked** in its corner, or **Unlock** in the
+   editor, to change shapes; the name, Type and Hold work while it is
+   locked. **Cone rotation** and the map's other options are under **Map
+   settings** at the bottom of the card. Zone names move apart where zones
+   overlap, so no name covers another. See
    [Drawing zones](docs/configuration.md#drawing-zones) and
    [The Zones panel](docs/configuration.md#the-zones-panel).
+
+   A drag on the map draws only after you say which zone it draws. To give
+   a zone a new shape, pick it and press **Redraw shape** in its editor
+   (**Draw shape** for a zone with no shape yet), or ✎ beside its chip. A
+   banner at the top of the map names the zone, such as "Drawing Couch";
+   **Cancel** or Esc stops without a change. **Add zone** does this for you,
+   so a new zone is one press and one drag. After each shape saves, the
+   message, such as "Couch redrawn", offers **Undo**, and the zone's editor
+   keeps **Restore previous shape**, which still works after the page
+   reloads or from another device. See
+   [Undo a shape change](docs/configuration.md#undo-a-shape-change).
 
    To draw more precisely, zoom in with **+** over the map's lower right
    corner, with Ctrl or Cmd and the scroll wheel, or with two fingers on a
@@ -265,12 +278,14 @@ including what each HACS box says.
    [Zoom and pan](docs/configuration.md#zoom-and-pan) and
    [Mark corners by walking](docs/configuration.md#mark-corners-by-walking).
 
-   To give the map the whole window, press the expand button in its top
-   right corner. The map fills the browser or app window, with Walk, the
-   **Zones** panel and **Map settings** beside it, or under it on a phone
-   held upright, so you can draw, pick and rename zones there. Your zoom,
-   picked zone and an unfinished polygon come along. To return, press ×
-   beside the title, the same corner button, Esc, or Back on Android. See
+   To give the map the whole window, press **Expand** in its top right
+   corner (on a phone, the expand icon alone). The map fills the browser or
+   app window, with Walk, the **Zones** panel and **Map settings** beside
+   it, or under it on a phone held upright, where a strip of zone chips
+   stays pinned under the map, so you can draw, pick and rename zones
+   there. Your zoom, picked zone and an unfinished polygon come along. To
+   return, press × beside the title, the same corner button, Esc, or Back
+   on Android. See
    [Expand the map](docs/configuration.md#expand-the-map).
 
    ![The zone map card on a laptop's dashboard tab, in feet, expanding to fill the window: the mouse pointer clicks the expand button in the map's top-right corner, and the map takes the left of the window, with ×, the title R PRO-1 Living Room, Coverage, the Zones panel and the picked zone's editor on the right. Locked is clicked to unlock the map and Add zone adds Zone 5. A rectangle dragged around dot 3 becomes the Zone 5 zone, filled in because dot 3 is inside it, with the message Zone 5 saved. Zone 5 is renamed Armchair in the editor's Name box, a click on the Couch zone on the map picks it, and Esc puts the card back on the tab with the Armchair zone on its map](https://raw.githubusercontent.com/ApolloAutomation/apollo-mmwave-main/main/docs/images/apollo-mmwave-zone-map-expand-2.4.0.gif)
