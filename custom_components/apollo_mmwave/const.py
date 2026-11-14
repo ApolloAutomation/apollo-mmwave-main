@@ -168,6 +168,13 @@ ATTR_ZONE_TYPE = "zone_type"
 # Zones payload, per zone: the presence entity's current id, so the card can
 # light a zone from its state whatever the entity was renamed to.
 KEY_PRESENCE_ENTITY_ID = "presence_entity_id"
+# Per zone: the shape its last shape change replaced.
+STORE_PREVIOUS_SHAPE = "previous_shape"
+# When it was replaced: UTC ISO 8601, whole seconds.
+PREVIOUS_REPLACED_AT = "replaced_at"
+# Zones payload: replaced when, and whether it had geometry.
+KEY_PREVIOUS_SHAPE_AT = "previous_shape_at"
+KEY_PREVIOUS_SHAPE_DRAWN = "previous_shape_drawn"
 
 # Shapes
 SHAPE_RECT = "rect"
@@ -179,6 +186,10 @@ SUPPORTED_SHAPES = (SHAPE_NONE, SHAPE_RECT, SHAPE_ELLIPSE, SHAPE_POLYGON)
 # Limits / defaults
 POLYGON_MAX_POINTS = 32
 POLYGON_MIN_POINTS = 3
+# JavaScript's Number.MAX_SAFE_INTEGER: the largest zone coordinate or id.
+MAX_SAFE_INT = 2**53 - 1
+# Most zones one zones/restore_shape request takes.
+RESTORE_SHAPE_MAX_ZONES = 64
 
 # The zone-drawing card this integration bundles (forked from zone-mapper-card).
 # The name is ours alone: the standalone card keeps `zone-mapper-card`, and a

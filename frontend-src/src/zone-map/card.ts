@@ -16,7 +16,15 @@
 
 import { registerElement } from '../register';
 import { versionNoticeElement, watchVersion } from '../version-check';
-import { clearMovement, connectZones, fetchMovement, isMovementPayload } from './api';
+import {
+  clearMovement,
+  connectZones,
+  fetchMovement,
+  isMovementPayload,
+  isRestoreShapeReply,
+  RESTORE_SHAPE_MAX_ZONES,
+  restoreShapes,
+} from './api';
 import { CELL_MM, CellGrid, bucketCells } from './cells';
 import {
   ADD_ZONE_FIRST_TOAST,
@@ -24,6 +32,8 @@ import {
   ADMIN_ONLY_NOTE,
   ADMIN_ONLY_TITLE,
   ALL_CLEARED_TOAST,
+  BANNER_CANCEL,
+  CANCEL_DRAWING_LABEL,
   CLEAR_ALL_CONFIRM,
   CLEAR_ALL_CONFIRM_NO_UNDO,
   CLEAR_ALL_LABEL,
@@ -39,9 +49,12 @@ import {
   DELETE_ZONE_YES,
   DRAW_HINT_WALKING,
   DRAW_LOCKED_TOAST,
+  DRAW_SHAPE_LABEL,
+  EXPAND_HINT,
   FULL_WINDOW_CLOSE_LABEL,
   FULL_WINDOW_CLOSE_TITLE,
   FULL_WINDOW_OPEN_LABEL,
+  FULL_WINDOW_OPEN_TEXT,
   FULL_WINDOW_OPEN_TITLE,
   HELD_SUFFIX,
   HISTORY_CLEAR,
@@ -92,12 +105,19 @@ import {
   PRESENCE_NO_SENSOR,
   PRESENCE_OFF,
   PRESENCE_ON,
+  REDRAW_SHAPE_LABEL,
+  RESTORE_LOCKED_TOAST,
+  RESTORE_SHAPE_LABEL,
   SELECT_ZONE_TOAST,
   SIZE_PREFIX,
   TYPE_DETECT_HINT,
   TYPE_IGNORE_HINT,
   TYPE_LABEL,
   TYPE_OPTIONS,
+  UNDONE_CLEAR_TOAST,
+  UNDO_ACTION,
+  UNDO_LOCKED_TOAST,
+  UNDO_TITLE,
   UNLOCK_LABEL,
   UNLOCK_TITLE,
   WALK_BUTTON_TITLE,
@@ -132,14 +152,28 @@ import {
   ZOOM_IN_TITLE,
   ZOOM_OUT_LABEL,
   ZOOM_PAN_HINT,
+  armFirstToast,
+  couldNotRestore,
+  couldNotUndo,
   deleteZoneConfirm,
+  drawChipLabel,
   drawHint,
+  drawingBanner,
   formatAgo,
+  formatReplacedAgo,
   fullWindowLabel,
   historyClearError,
   historyError,
   replayBadge,
+  restoreShapeHint,
+  restoreSkippedToast,
+  shapeRestoredToast,
+  undoSkippedToast,
+  undoneToast,
   walkHintNext,
+  walkingBanner,
+  zoneDrawnToast,
+  zoneRedrawnToast,
   zonesFullNote,
   zoomReadout,
 } from './copy';
@@ -157,6 +191,7 @@ import {
 } from './full-window';
 import { pointInZone, rotateToMap } from './geometry';
 import { decodeMovement, heatCells, positionAt, sparkBuckets, trailAt } from './history';
+import { layOutZoneLabels, placementBox } from './labels';
 import { fallbackPresenceId, presenceLook } from './presence';
 import { backingStore, logicalWidth } from './resolution';
 import { snapDecimals, snapMm, snapStepMm } from './snap';
@@ -187,6 +222,11 @@ const COLOR = Object.freeze({
     overlayButtonDarkBg: 'rgba(255, 255, 255, 0.16)',
     overlayButtonDarkBorder: 'rgba(255, 255, 255, 0.25)',
     overlayButtonText: '#ffffff',
+    // Banner and snackbar, readable over any map.
+    bannerLightBg: 'rgba(0, 0, 0, 0.75)',
+    bannerDarkBg: 'rgba(255, 255, 255, 0.18)',
+    snackbarBg: '#323232',
+    snackbarDarkBg: '#474a50',
     overlayButtonActiveOutline: '#4caf50',
     darkPrimaryButton: '#2d7dd2',
     darkZoneButtonBg: '#2a2c31',
@@ -368,6 +408,18 @@ const RING_LABEL_REPEAT_EM = 2;
 const RING_LABEL_SAME_DISTANCE_MM = 1;
 
 const POLYGON_MAX_POINTS = 32;
+
+// Other zones while one is picked for editing.
+const DIM_ZONE_ALPHA = 0.35;
+const DIM_LABEL_ALPHA = 0.55;
+// Picked zone's corner dots, in CSS px.
+const CORNER_DOT_CSS_PX = 5;
+const CORNER_RING_CSS_PX = 2;
+// How long a toast with Undo stays.
+const UNDO_TOAST_MS = 10000;
+// Expanded map's snackbar for toasts without Undo.
+const PLAIN_TOAST_MS = 4000;
+const NO_SHAPE = Object.freeze({ shape: 'none', data: null });
 
 // Add zone gives out zone ids 1 to this, the most the update_zone service's
 // zone_id selector offers. Only the card stops there: a zone a service call
@@ -855,7 +907,15 @@ export class ZoneMapCard extends HTMLElement {
     this.isLocked = false;
     this._lastLockWarningTs = 0;
     this.showUndo = DEFAULT_SHOW_UNDO;
-    this._undoSnapshot = null;
+    // Last shape change Undo can reverse.
+    this._undo = null;
+    // Zone ids this card's Add zone created.
+    this._addedZones = new Set();
+    // Zone a drag draws now, or null.
+    this._armedZone = null;
+    // Zone whose Restore previous shape is in flight.
+    this._restoring = null;
+    this._fullToastTimer = null;
     this.inputUnits = 'mm';
     this.gridUnits = 'mm';
     this.inputUnitMultiplier = LENGTH_UNITS.mm;
@@ -961,6 +1021,7 @@ export class ZoneMapCard extends HTMLElement {
       // progress, no Walk panel and no History, so all three end here. It
       // has no zoom buttons either, so it shows the whole map.
       this._resetDrawingState();
+      this._armedZone = null;
       this._exitWalk();
       this._closeHistory();
       this._resetView();
@@ -1077,11 +1138,12 @@ export class ZoneMapCard extends HTMLElement {
     this.zones = [];
     this.trackedEntities = [];
     this.selectedZone = null;
-    // The snapshot holds the OLD radar's geometry, and _performUndo writes it
-    // under whatever device the card points at when the button is clicked. A
-    // snapshot that outlives the retarget is the same cross-device overwrite as
-    // a drag, just reached through Undo. render() disables the button from here.
-    this._undoSnapshot = null;
+    // The old radar's undo, arming and added zones.
+    this._undo = null;
+    this._armedZone = null;
+    this._addedZones = new Set();
+    this._restoring = null;
+    this._hideFullToast();
     // Same for a polygon in progress: its vertices were placed on the old
     // radar's map, and Finish would save them under the new radar's zone.
     this._resetDrawingState();
@@ -1169,10 +1231,14 @@ export class ZoneMapCard extends HTMLElement {
     if (this._isAdmin() !== adminBefore) {
       // The switch's tooltips, the controls only an administrator can use and
       // the zone panel all depend on who is viewing.
+      if (!this._isAdmin()) this._disarm({ draw: false });
       this._renderUnitSwitch();
       this._renderAdminControls();
       this._renderZonePanel();
       this._renderZoneManager();
+      this._renderDrawControls();
+      this._renderDrawBanner();
+      this.drawGrid();
     }
     // Home Assistant assigns a new hass on every state change in the whole
     // instance, and the tracked targets and the zones' presence sensors are
@@ -1431,6 +1497,8 @@ export class ZoneMapCard extends HTMLElement {
     this._offlineShown = offline;
     const note = this.shadowRoot?.getElementById('offlineNote');
     if (note) note.hidden = !offline;
+    // The draw banner moves below the note.
+    note?.parentElement?.classList.toggle('note-shown', offline);
   }
 
   /**
@@ -1586,7 +1654,7 @@ export class ZoneMapCard extends HTMLElement {
       .sort((a, b) => a - b);
 
     this.zones = [];
-    // Kept apart from this.zones, whose entries _upsertZone and _performUndo
+    // Kept apart from this.zones, whose entries _upsertZone and _undoChange
     // rebuild as { id, shape, data }: a redraw must not lose a zone's type or
     // its presence sensor. Every stored zone gets an entry, geometry or not.
     this._zoneMeta = new Map();
@@ -1602,6 +1670,8 @@ export class ZoneMapCard extends HTMLElement {
         presence: typeof entry.presence_entity_id === 'string' ? entry.presence_entity_id : null,
         type: entry.zone_type === 'ignore' ? 'ignore' : 'detect',
         holdS: Number.isInteger(hold) && hold >= 1 && hold <= 3600 ? hold : 0,
+        previousAt: typeof entry.previous_shape_at === 'string' ? entry.previous_shape_at : null,
+        previousDrawn: entry.previous_shape_drawn === true,
       });
     });
 
@@ -1859,6 +1929,16 @@ export class ZoneMapCard extends HTMLElement {
         .map-note { position: absolute; top: var(--zm-note-top, 4px); left: 4px; z-index: 1; pointer-events: none; padding: 4px 8px; border-radius: 6px; font-size: 12px; line-height: 1.3; background: ${COLOR.ui.overlayButtonLightBg}; color: ${COLOR.ui.overlayButtonText}; }
         /* The same kind of note in the top right corner while a replay shows. */
         .map-note.replay-badge { left: auto; right: 4px; font-variant-numeric: tabular-nums; }
+        /* Pinned top center while armed or walking. */
+        /* Top left, outside the cone; Cancel at the corner. */
+        .draw-banner { position: absolute; top: var(--zm-note-top, 4px); left: 4px; max-width: calc(100% - 48px); box-sizing: border-box; height: 32px; z-index: 1; display: flex; align-items: center; gap: 8px; padding-right: 10px; border-radius: 6px; font-size: 13px; line-height: 1; background: ${COLOR.ui.bannerLightBg}; color: ${COLOR.ui.overlayButtonText}; pointer-events: none; }
+        .draw-banner[hidden] { display: none; }
+        .container.dark .draw-banner { background: ${COLOR.ui.bannerDarkBg}; }
+        .note-shown .draw-banner { top: calc(var(--zm-note-top, 4px) + 28px); }
+        .draw-banner-dot { flex: none; width: 10px; height: 10px; border-radius: 50%; background: var(--zone-color, currentColor); box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85); }
+        .draw-banner-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .container .draw-banner button { flex: none; pointer-events: auto; height: 32px; min-height: 32px; padding: 0 10px; border-radius: 6px 0 0 6px; font-size: 13px; font-weight: 600; background: ${COLOR.ui.overlayButtonDarkBg}; color: ${COLOR.ui.overlayButtonText}; }
+        .container.dark .draw-banner button { background: ${COLOR.ui.overlayButtonDarkBg}; }
         .overlay-controls { position: absolute; bottom: 4px; display: flex; gap: 4px; z-index: 1; }
         .overlay-controls-left { left: 4px; flex-direction: column; align-items: flex-start; }
         .overlay-controls-right { right: 4px; }
@@ -1941,13 +2021,13 @@ export class ZoneMapCard extends HTMLElement {
         /* A pressed zone chip keeps the plain chip fill and gets a ring
            instead: on a blue fill, a blue zone's dot (Zone 2, 7, ...) would
            look as hollow as a zone that is not drawn yet. */
-        button.zone-btn[data-zone-id].active {
+        button.zone-btn[data-zone-id].active, button.zone-btn[data-strip-zone].active {
           background: var(--zm-chip-bg);
           color: var(--zm-chip-color);
           border-color: var(--zm-chip-active);
           box-shadow: inset 0 0 0 1px var(--zm-chip-active);
         }
-        .container.dark button.zone-btn[data-zone-id].active {
+        .container.dark button.zone-btn[data-zone-id].active, .container.dark button.zone-btn[data-strip-zone].active {
           background: ${COLOR.ui.darkZoneButtonBg};
           color: ${COLOR.ui.darkZoneButtonText};
           border-color: ${COLOR.ui.darkZoneButtonActiveBorder};
@@ -2014,6 +2094,17 @@ export class ZoneMapCard extends HTMLElement {
         .zone-dot.undrawn { background: transparent; border: 2px dashed var(--zone-color); }
         .zone-dot.ignore { background: repeating-linear-gradient(45deg, ${COLOR.canvas.ignoreStrokeLight} 0 2px, transparent 2px 4px); border: 1px solid ${COLOR.canvas.ignoreStrokeLight}; }
         .container.dark .zone-dot.ignore { background: repeating-linear-gradient(45deg, ${COLOR.canvas.ignoreStrokeDark} 0 2px, transparent 2px 4px); border-color: ${COLOR.canvas.ignoreStrokeDark}; }
+        /* ✎ beside the picked chip, its pill's right half. */
+        button.zone-btn.joined { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+        button.zone-btn.chip-draw { margin-left: calc(-1 * var(--zm-gap)); border-top-left-radius: 0; border-bottom-left-radius: 0; min-width: 44px; padding: 6px 12px; }
+        /* Expanded and stacked: chips pinned under the map. */
+        .zone-strip { display: none; }
+        .container.full[data-layout="stacked"] .zone-strip:not([hidden]) { display: flex; position: sticky; top: 0; z-index: 2; gap: var(--zm-gap); overflow-x: auto; padding-bottom: 8px; scrollbar-width: thin; background: var(--ha-card-background, var(--card-background-color, white)); }
+        .container.dark.full[data-layout="stacked"] .zone-strip:not([hidden]) { background: ${COLOR.ui.darkContainerBackground}; }
+        .zone-strip button { flex: none; min-height: 44px; box-sizing: border-box; }
+        .zone-strip button.strip-chip { max-width: 70vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .container.full[data-layout="stacked"] #zone-buttons { display: none; }
+        .zone-restore { display: flex; flex-wrap: wrap; align-items: center; gap: 4px var(--zm-gap); }
         .zone-empty { display: flex; flex-direction: column; gap: 4px; }
         .zone-hint { font-size: 0.85em; color: var(--secondary-text-color); }
         .container.dark .zone-hint { color: ${COLOR.ui.infoDarkText}; }
@@ -2059,6 +2150,14 @@ export class ZoneMapCard extends HTMLElement {
         .overlay-controls-top { top: var(--zm-note-top, 4px); bottom: auto; right: 4px; }
         .overlay-controls-top[hidden], .full-close[hidden] { display: none; }
         .overlay-controls button.full-toggle { width: 32px; height: 32px; min-width: 32px; padding: 0; }
+        .full-toggle-text { display: none; }
+        /* Room for the word Expand beside its icon. */
+        @container (min-width: 480px) {
+          .overlay-controls button.full-toggle.labeled { width: auto; padding: 0 10px 0 6px; gap: 6px; }
+          .full-toggle.labeled .full-toggle-text { display: inline; }
+          .container.has-expand:not(.full) .map-note.replay-badge { right: 104px; }
+          .container:not(.full) .draw-banner { max-width: calc(100% - 112px); }
+        }
         .full-toggle:focus-visible, .full-close:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 2px; }
         .container.has-expand .map-note.replay-badge { right: 40px; }
         .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
@@ -2078,6 +2177,15 @@ export class ZoneMapCard extends HTMLElement {
         .container.full .full-close:hover { background: rgba(127, 127, 127, 0.16); opacity: 1; }
         .container.full .canvas-container { box-sizing: border-box; width: var(--zm-full-width); margin: 0 auto; flex: none; }
         .container.full canvas, .container.full canvas.pans { touch-action: none; }
+        /* Toasts while expanded, where Home Assistant's are inert. */
+        .full-toast { display: none; }
+        .container.full .full-toast:not([hidden]) { position: absolute; z-index: 3; left: 50%; transform: translateX(-50%); bottom: calc(16px + var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px))); width: max-content; max-width: calc(100% - 32px); box-sizing: border-box; display: flex; align-items: center; gap: 12px; padding: 6px 6px 6px 16px; min-height: 48px; border-radius: 8px; background: ${COLOR.ui.snackbarBg}; color: ${COLOR.ui.overlayButtonText}; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35); }
+        .container.dark.full .full-toast:not([hidden]) { background: ${COLOR.ui.snackbarDarkBg}; outline: 1px solid ${COLOR.ui.overlayButtonDarkBorder}; }
+        .full-toast-text { min-width: 0; overflow-wrap: anywhere; }
+        .container.full .full-toast button { flex: none; min-height: 44px; }
+        .container.full .full-toast button[hidden] { display: none; }
+        /* Beside the map, over the panel, clear of its buttons. */
+        .container.full[data-layout="side"] .full-toast:not([hidden]) { left: auto; right: calc(8px + var(--safe-area-inset-right, env(safe-area-inset-right, 0px))); transform: none; max-width: var(--zm-side-width); }
         .container.full .map-side { min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding-inline-end: 4px; }
         .container.full[data-layout="stacked"] { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto auto minmax(0, 1fr); }
         .container.full[data-layout="side"] { grid-template-columns: minmax(0, 1fr) var(--zm-side-width); grid-template-rows: auto auto minmax(0, 1fr); }
@@ -2095,11 +2203,17 @@ export class ZoneMapCard extends HTMLElement {
         </div>
         <div id="versionNotice"></div>
         <div class="map-stage" id="mapStage">
-        <div class="canvas-container">
+        <div class="canvas-container ${this._offlineShown ? 'note-shown' : ''}">
           <canvas id="zoneCanvas"></canvas>
           <div class="map-note" id="offlineNote" role="status" ${this._offlineShown ? '' : 'hidden'}>${OFFLINE_NOTE}</div>
           <!-- _renderHistoryTime shows it while a replay is on the map. -->
           <div class="map-note replay-badge" id="replayBadge" hidden></div>
+          <!-- _renderDrawBanner fills it while armed or walking. -->
+          <div class="draw-banner" id="drawBanner" hidden>
+            <button type="button" id="btnBannerCancel">${BANNER_CANCEL}</button>
+            <span class="draw-banner-dot" aria-hidden="true"></span>
+            <span class="draw-banner-text" id="drawBannerText" role="status" aria-live="polite"></span>
+          </div>
           <div class="overlay-controls overlay-controls-left" id="overlayControlsLeft">
             <div id="modeGroup" style="display: ${this.showModeMenu ? 'flex' : 'none'}; flex-direction: column; gap: 4px;">
               <button id="btnPolyFinish" title="Finish polygon">✓</button>
@@ -2118,7 +2232,7 @@ export class ZoneMapCard extends HTMLElement {
               <button id="btnUnitM" data-unit="m" aria-pressed="false">m</button>
               <button id="btnUnitFt" data-unit="ft" aria-pressed="false">ft</button>
             </div>
-            <button id="btnUndo" class="undo-toggle" title="Undo last zone change" disabled>↶</button>
+            <button id="btnUndo" class="undo-toggle" title="${UNDO_TITLE}" aria-label="${UNDO_TITLE}" disabled>↶</button>
             <button id="btnLock" class="lock-toggle" title="${LOCK_TITLE}">🔓</button>
           </div>
           <!-- _renderZoomControls sets the readout, what is disabled and what Fit says. -->
@@ -2130,12 +2244,14 @@ export class ZoneMapCard extends HTMLElement {
           </div>
           <!-- _renderFullWindowButton shows it where the map can expand. -->
           <div class="overlay-controls overlay-controls-top" id="overlayControlsTop" hidden>
-            <button id="btnFullWindow" class="full-toggle" type="button" aria-haspopup="dialog" aria-label="${FULL_WINDOW_OPEN_LABEL}" title="${FULL_WINDOW_OPEN_TITLE}" data-icon="expand">${iconSvg(ICON_EXPAND)}</button>
+            <button id="btnFullWindow" class="full-toggle labeled" type="button" aria-haspopup="dialog" aria-label="${FULL_WINDOW_OPEN_LABEL}" title="${FULL_WINDOW_OPEN_TITLE}" data-icon="expand">${iconSvg(ICON_EXPAND)}<span class="full-toggle-text" aria-hidden="true">${FULL_WINDOW_OPEN_TEXT}</span></button>
           </div>
         </div>
         </div>
         <!-- Everything under the map: beside it or under it while expanded. -->
         <div class="map-side" id="mapSide">
+        <!-- Shown while expanded with the panel under the map. -->
+        <div class="zone-strip" id="zoneStrip" role="group" aria-label="${ZONES_TITLE}" hidden></div>
         ${this._walkPanelTemplate()}
         ${this._viewToolsTemplate()}
         ${this._historyPanelTemplate()}
@@ -2203,6 +2319,10 @@ export class ZoneMapCard extends HTMLElement {
         <!-- The card's toasts, repeated for screen readers while expanded:
              Home Assistant's own are inert under the modal dialog. -->
         <div id="fullWindowStatus" class="visually-hidden" role="status" aria-live="polite"></div>
+        <div id="fullWindowToast" class="full-toast" hidden>
+          <span id="fullWindowToastText" class="full-toast-text"></span>
+          <button type="button" id="btnFullWindowToastUndo" hidden>${UNDO_ACTION}</button>
+        </div>
       </div>
       <dialog class="full-window" id="fullWindow"></dialog>
     `;
@@ -2355,6 +2475,26 @@ export class ZoneMapCard extends HTMLElement {
     // Started again at the end, once the new canvas has its picture.
     this._stopTrailTimer();
     this._detachGlobalListeners();
+    this._hideFullToast();
+    // The chips pass through no selection before the payload returns.
+    this._holdArming = true;
+    try {
+      this._renderBody(reopen);
+    } finally {
+      this._holdArming = false;
+    }
+    this._checkArming();
+  }
+
+  // Arming ends where its zone or rights went.
+  _checkArming() {
+    if (this._armedZone === null) return;
+    if (this._loadError || !this._drawEntryShown() || this._armedZone !== Number(this.selectedZone)) {
+      this._disarm();
+    }
+  }
+
+  _renderBody(reopen) {
     this.shadowRoot.innerHTML = this._template();
     this._renderTitle();
     // The new template's host is empty, whatever the old one showed.
@@ -2394,6 +2534,9 @@ export class ZoneMapCard extends HTMLElement {
     this._renderWalkPanel();
     this._renderHistoryPanel();
     this._updateCanvasTouchMode();
+    this._updateCanvasCursor();
+    this._renderDrawBanner();
+    this._renderDrawControls();
     // A trail fading when the theme flipped keeps fading on the new canvas.
     this._kickTrailTimer();
     this._renderFullWindowButton();
@@ -2416,34 +2559,8 @@ export class ZoneMapCard extends HTMLElement {
     if (!this.zoneConfig || this.zoneConfig.length === 0) {
       this._setSelectedZone(null);
     }
-    const existing = new Map();
-    container.querySelectorAll('.zone-btn[data-zone-id]').forEach((btn) => {
-      existing.set(btn.dataset.zoneId, btn);
-    });
-    const chips = (this.zoneConfig || []).map((zone) => {
-      const key = String(zone.id);
-      let btn = existing.get(key);
-      if (!btn) {
-        btn = document.createElement('button');
-        btn.className = 'zone-btn';
-        btn.type = 'button';
-        btn.dataset.zoneId = key;
-        btn.setAttribute('aria-pressed', 'false');
-        btn.setAttribute('aria-controls', 'zoneManager');
-      }
-      existing.delete(key);
-      this._renderZoneChip(btn, zone.id);
-      return btn;
-    });
-    // In id order, moving only what is out of place, so a chip being
-    // pressed stays in the document.
-    chips.forEach((btn, i) => {
-      if (container.children[i] !== btn) container.insertBefore(btn, container.children[i] || null);
-    });
-    existing.forEach((btn) => btn.remove());
-    Array.from(container.children)
-      .filter((child) => !chips.includes(child))
-      .forEach((child) => child.remove());
+    this._syncChipRow(container, 'zoneId', 'btnChipDraw');
+    this._syncChipRow(this.shadowRoot.getElementById('zoneStrip'), 'stripZone', 'btnStripDraw');
 
     const firstZone = container.querySelector('.zone-btn[data-zone-id]');
     if (this.selectedZone !== null && this.selectedZone !== undefined) {
@@ -2457,7 +2574,53 @@ export class ZoneMapCard extends HTMLElement {
     }
     if (firstZone) {
       this._setSelectedZone(Number(firstZone.dataset.zoneId));
+    } else {
+      this._renderDrawControls();
     }
+  }
+
+  // One chip per zone; chips move, never ✎.
+  _syncChipRow(row, key, drawId) {
+    if (!row) return;
+    const attr = key === 'zoneId' ? 'data-zone-id' : 'data-strip-zone';
+    const existing = new Map();
+    row.querySelectorAll(`.zone-btn[${attr}]`).forEach((btn) => {
+      existing.set(btn.dataset[key], btn);
+    });
+    let draw = row.querySelector(`#${drawId}`);
+    if (!draw) {
+      draw = document.createElement('button');
+      draw.type = 'button';
+      draw.id = drawId;
+      draw.className = 'zone-btn chip-draw';
+      draw.hidden = true;
+    }
+    const chips = (this.zoneConfig || []).map((zone) => {
+      const id = String(zone.id);
+      let btn = existing.get(id);
+      if (!btn) {
+        btn = document.createElement('button');
+        btn.className = key === 'zoneId' ? 'zone-btn' : 'zone-btn strip-chip';
+        btn.type = 'button';
+        btn.dataset[key] = id;
+        btn.setAttribute('aria-pressed', 'false');
+        btn.setAttribute('aria-controls', 'zoneManager');
+      }
+      existing.delete(id);
+      this._renderZoneChip(btn, zone.id);
+      return btn;
+    });
+    const chipKids = () => Array.from(row.children).filter((child) => child !== draw);
+    chips.forEach((btn, i) => {
+      const at = chipKids()[i];
+      if (at !== btn) row.insertBefore(btn, at || null);
+    });
+    Array.from(row.children)
+      .filter((child) => child !== draw && !chips.includes(child))
+      .forEach((child) => child.remove());
+    if (!chips.length) draw.remove();
+    else if (draw.parentNode !== row) row.append(draw);
+    row.hidden = chips.length === 0;
   }
 
   /** Chip `btn` for zone `zoneId`: its dot and its name, so the chip's text
@@ -2479,6 +2642,10 @@ export class ZoneMapCard extends HTMLElement {
     this.shadowRoot?.querySelectorAll('#zone-buttons .zone-btn[data-zone-id]').forEach((btn) => {
       this._renderZoneChip(btn, Number(btn.dataset.zoneId));
     });
+    this.shadowRoot?.querySelectorAll('#zoneStrip .strip-chip[data-strip-zone]').forEach((btn) => {
+      this._renderZoneChip(btn, Number(btn.dataset.stripZone));
+    });
+    this._renderDrawControls();
   }
 
   /** Zone `zoneId`'s colors on the map, by id, as drawZones picks them. */
@@ -2536,6 +2703,11 @@ export class ZoneMapCard extends HTMLElement {
     if (clearBtn) clearBtn.hidden = this._clearAllConfirm;
     const confirm = root.getElementById('clearAllConfirm');
     if (confirm) confirm.hidden = !this._clearAllConfirm;
+    // Past one restore's limit, only Restore previous shape undoes.
+    const undoable = this.showUndo && (this.zones || []).length <= RESTORE_SHAPE_MAX_ZONES;
+    const question = confirm?.firstElementChild;
+    const text = undoable ? CLEAR_ALL_CONFIRM : CLEAR_ALL_CONFIRM_NO_UNDO;
+    if (question && question.textContent !== text) question.textContent = text;
   }
 
   /** A target dot's radius in backing px: it follows the card's width,
@@ -2623,6 +2795,29 @@ export class ZoneMapCard extends HTMLElement {
     this._attachViewTools();
     this._attachHistoryPanel();
     this._attachFullWindow();
+    this._attachDrawControls();
+  }
+
+  // Banner Cancel, the strip and the snackbar's Undo.
+  _attachDrawControls() {
+    const root = this.shadowRoot;
+    root.getElementById('btnBannerCancel')?.addEventListener('click', () => {
+      if (this._walk) this._walkCancel();
+      else this._disarm({ refocus: true });
+    });
+    root.getElementById('zoneStrip')?.addEventListener('click', (event) => {
+      if (event.target?.closest?.('#btnStripDraw')) {
+        this._toggleArm(this.selectedZone);
+        return;
+      }
+      const chip = event.target?.closest?.('.strip-chip[data-strip-zone]');
+      if (chip) this._setSelectedZone(Number(chip.dataset.stripZone));
+    });
+    root.getElementById('btnFullWindowToastUndo')?.addEventListener('click', () => {
+      const action = this._fullToastAction;
+      this._hideFullToast();
+      action?.();
+    });
   }
 
   _attachViewTools() {
@@ -2951,6 +3146,7 @@ export class ZoneMapCard extends HTMLElement {
       return;
     }
     this._closeHistory();
+    this._disarm({ draw: false });
     this._modeBeforeWalk = this.drawMode;
     this._walk = { corners: [] };
     this._walkConfirmCancel = false;
@@ -3115,6 +3311,7 @@ export class ZoneMapCard extends HTMLElement {
   _openHistory() {
     const h = this._history;
     if (h.open || this._walk || !this._historyAllowed()) return;
+    this._disarm();
     h.open = true;
     this._fetchHistory();
   }
@@ -3582,11 +3779,12 @@ export class ZoneMapCard extends HTMLElement {
     const value = (mm) => this._formatGridValue(mm);
     this._infoUnits = this._targetUnitsText();
     // How to draw is said in the zone editor, for the mode in use.
+    const expand = this._canExpand() && !this._fullWindow ? `. ${EXPAND_HINT}` : '';
     host.textContent =
       `Grid units: ${this._unitLabel(this._displayUnit())}` +
       ` (X: ${value(this.xMin)}..${value(this.xMax)}, Y: ${value(this.yMin)}..${value(this.yMax)}).` +
       this._infoUnits +
-      ` Radar range: ${this._rangeText()}`;
+      ` Radar range: ${this._rangeText()}${expand}`;
   }
 
   /**
@@ -3668,6 +3866,10 @@ export class ZoneMapCard extends HTMLElement {
     if (zoneButtons) {
       // On the row, so a chip made by a later payload selects too.
       zoneButtons.addEventListener('click', (event) => {
+        if (event.target?.closest?.('#btnChipDraw')) {
+          this._toggleArm(this.selectedZone);
+          return;
+        }
         const chip = event.target?.closest?.('.zone-btn[data-zone-id]');
         if (chip) this._setSelectedZone(Number(chip.dataset.zoneId));
       });
@@ -3859,6 +4061,26 @@ export class ZoneMapCard extends HTMLElement {
         this._setCursorFree(true);
         return;
       }
+      // Esc a confirm in this card took is used up.
+      const used = event.defaultPrevented && event.composedPath().includes(this);
+      if (event.key === 'Escape' && !used) {
+        if (this._walk) {
+          this._consumeEscape(event);
+          if (this._walkConfirmCancel) {
+            this._walkConfirmCancel = false;
+            this._renderWalkPanel();
+          } else {
+            this._walkCancel();
+          }
+          return;
+        }
+        if (this._armedZone !== null) {
+          // An expanded map stays open; the next Esc closes it.
+          this._consumeEscape(event);
+          this._disarm({ refocus: true });
+          return;
+        }
+      }
       if (this.drawMode !== DRAW_MODES.POLYGON) return;
       if (event.key === 'Escape') {
         // Dropping corners uses the key up, so an expanded map stays open;
@@ -4002,6 +4224,7 @@ export class ZoneMapCard extends HTMLElement {
     this._lastLockWarningTs = 0;
     if (this.isLocked) {
       if (this.isDrawing) this.cancelDrawing();
+      this._disarm();
       // Walk saves a zone too, so the lock ends it, corners and all.
       this._exitWalk();
       this._notify(LOCK_ON_TOAST);
@@ -4085,9 +4308,7 @@ export class ZoneMapCard extends HTMLElement {
           ? '<span>Locked</span><span class="icon">🔒</span>'
           : '<span>Unlocked</span><span class="icon">🔓</span>';
         btnLock.title = this.isLocked ? UNLOCK_TITLE : LOCK_TITLE;
-        if (this.canvas) {
-          this.canvas.style.cursor = this.isLocked ? 'not-allowed' : 'crosshair';
-        }
+        this._updateCanvasCursor();
         const angleSlider = this.shadowRoot.getElementById('coneAngleSlider');
         if (angleSlider) angleSlider.disabled = this.isLocked;
         const coneControls = this.shadowRoot.getElementById('cone-controls');
@@ -4098,7 +4319,9 @@ export class ZoneMapCard extends HTMLElement {
         this._updateCanvasTouchMode();
         // The editor's drawing hint says whether the map can be drawn on,
         // and the selected zone stands out on the map only while it can.
-        this._renderZoneDraw();
+        this._renderDrawControls();
+        this._renderZoneRestore();
+        this._refreshUndoButton();
         this.drawGrid();
       };
       btnLock.addEventListener('click', () => this._toggleLock());
@@ -4111,7 +4334,7 @@ export class ZoneMapCard extends HTMLElement {
       if (!this.showUndo) {
         btnUndo.style.display = 'none';
       } else {
-        btnUndo.addEventListener('click', () => this._performUndo());
+        btnUndo.addEventListener('click', () => this._undoChange(this._undo));
       }
       this._refreshUndoButton();
     }
@@ -4944,8 +5167,9 @@ export class ZoneMapCard extends HTMLElement {
     this._renderWalkPanel();
     this._renderWalkChip();
     this._renderHistoryChip();
-    // The editor says how to draw in this mode.
-    this._renderZoneDraw();
+    // Walk's banner, and the entry points it hides.
+    this._renderDrawBanner();
+    this._renderDrawControls();
     this._invalidateGridCache();
     this._refitAndDraw();
   }
@@ -4977,6 +5201,9 @@ export class ZoneMapCard extends HTMLElement {
   _setSelectedZone(zoneId) {
     const next = zoneId === null || zoneId === undefined ? null : Number(zoneId);
     const changed = next !== (this.selectedZone ?? null);
+    // Picking another zone ends drawing; render() checks after.
+    const disarm = !this._holdArming && this._armedZone !== null && this._armedZone !== next;
+    if (disarm) this._disarm({ draw: false });
     this.selectedZone = next;
     this._updateCanvasTouchMode();
     this.shadowRoot?.querySelectorAll('#zone-buttons .zone-btn[data-zone-id]').forEach((btn) => {
@@ -4984,7 +5211,21 @@ export class ZoneMapCard extends HTMLElement {
       btn.classList.toggle('active', pressed);
       btn.setAttribute('aria-pressed', pressed ? 'true' : 'false');
     });
-    if (!changed) return;
+    const stripShown = this._fullWindow && this._fullLayout?.layout === 'stacked';
+    this.shadowRoot?.querySelectorAll('#zoneStrip .strip-chip[data-strip-zone]').forEach((btn) => {
+      const pressed = Number(btn.dataset.stripZone) === this.selectedZone;
+      btn.classList.toggle('active', pressed);
+      btn.setAttribute('aria-pressed', pressed ? 'true' : 'false');
+      if (pressed && changed && stripShown) {
+        btn.scrollIntoView?.({ inline: 'nearest', block: 'nearest' });
+      }
+    });
+    this._renderDrawControls();
+    this._renderDrawBanner();
+    if (!changed) {
+      if (disarm) this._refitAndDraw();
+      return;
+    }
     const field = this.shadowRoot?.getElementById('zoneName');
     if (field && field.value !== field.dataset.storedName) this._commitZoneName(field);
     this._deleteConfirmZone = null;
@@ -4997,15 +5238,16 @@ export class ZoneMapCard extends HTMLElement {
   /**
    * Whether a touch on the canvas belongs to the page rather than to drawing:
    * the map is locked, Walk is on (corners come from the radar, not the
-   * finger), or no zone is selected, so nothing could be drawn. A new radar's
-   * map starts unlocked with no zones, and a phone must still scroll past it.
+   * finger), no zone is selected or drawing is not armed, so nothing could
+   * be drawn. A phone must still scroll past such a map.
    */
   _canvasPans() {
     return (
       !!this.isLocked ||
       this.drawMode === DRAW_MODES.WALK ||
       this.selectedZone === null ||
-      this.selectedZone === undefined
+      this.selectedZone === undefined ||
+      this._armedZone === null
     );
   }
 
@@ -5014,6 +5256,156 @@ export class ZoneMapCard extends HTMLElement {
    *  touch-action: none the browser still would not scroll for it. */
   _updateCanvasTouchMode() {
     if (this.canvas) this.canvas.classList.toggle('pans', this._canvasPans());
+  }
+
+  // Crosshair only while a drag would draw.
+  _updateCanvasCursor() {
+    if (!this.canvas || this._viewOnly) return;
+    let cursor = 'default';
+    if (this.isLocked) cursor = 'not-allowed';
+    else if (this._armedZone !== null) cursor = 'crosshair';
+    this.canvas.style.cursor = cursor;
+  }
+
+  // From here a drag draws zone `zoneId`.
+  _armDrawing(zoneId) {
+    const id = Number(zoneId);
+    if (this._viewOnly || !this._isAdmin() || this._walk) return false;
+    if (!(this.zoneConfig || []).some((zone) => Number(zone.id) === id)) return false;
+    if (this.isLocked) {
+      this._remindLocked(DRAW_LOCKED_TOAST);
+      return false;
+    }
+    if (this.selectedZone !== id) this._setSelectedZone(id);
+    this._closeHistory();
+    this._resetDrawingState();
+    this._armedZone = id;
+    this._updateCanvasTouchMode();
+    this._updateCanvasCursor();
+    this._renderDrawBanner();
+    this._renderDrawControls();
+    this.drawGrid();
+    this._revealMap();
+    return true;
+  }
+
+  // Entry points toggle: pressed again, they cancel.
+  _toggleArm(zoneId) {
+    if (zoneId === null || zoneId === undefined) return;
+    if (this._armedZone !== null && this._armedZone === Number(zoneId)) this._disarm();
+    else this._armDrawing(zoneId);
+  }
+
+  // `refocus` moves focus off the hidden banner.
+  _disarm({ refocus = false, draw = true } = {}) {
+    if (this._armedZone === null) return;
+    const root = this.shadowRoot;
+    const fromBanner = this._focusedId() === 'btnBannerCancel';
+    this._armedZone = null;
+    this._resetDrawingState();
+    this._updateCanvasTouchMode();
+    this._updateCanvasCursor();
+    this._renderDrawBanner();
+    this._renderDrawControls();
+    if (draw) this._refitAndDraw();
+    if (refocus && fromBanner) {
+      const button = root.getElementById('btnZoneDraw');
+      const chip = root.querySelector(`#zone-buttons .zone-btn[data-zone-id="${this.selectedZone}"]`);
+      (button && !button.hidden ? button : chip)?.focus?.();
+    }
+  }
+
+  // The focused element's id in this card.
+  _focusedId() {
+    try {
+      return this.isConnected ? this.shadowRoot?.activeElement?.id || null : null;
+    } catch {
+      return null;
+    }
+  }
+
+  // Scroll a partly hidden map into view.
+  _revealMap() {
+    if (this._fullWindow) return;
+    const box = this.canvas?.parentElement;
+    const rect = box?.getBoundingClientRect?.();
+    if (!rect || typeof window === 'undefined') return;
+    const inside = rect.top >= 0 && rect.bottom <= (window.innerHeight || 0);
+    if (!inside) box.scrollIntoView?.({ block: 'nearest' });
+  }
+
+  // Whether Draw shape and the ✎ buttons show.
+  _drawEntryShown() {
+    const id = this.selectedZone;
+    return (
+      !this._viewOnly &&
+      this._isAdmin() &&
+      !this.isLocked &&
+      !this._walk &&
+      id !== null &&
+      id !== undefined &&
+      (this.zoneConfig || []).some((zone) => Number(zone.id) === Number(id))
+    );
+  }
+
+  // Draw shape, the chip's ✎ and the strip's ✎.
+  _renderDrawControls() {
+    const root = this.shadowRoot;
+    if (!root) return;
+    const shown = this._drawEntryShown();
+    const id = Number(this.selectedZone);
+    const armed = shown && this._armedZone === id;
+    const name = shown ? this._zoneLabel(id) : '';
+    const drawn = shown && !!this._getZone(id);
+    [
+      ['zone-buttons', 'btnChipDraw', 'data-zone-id'],
+      ['zoneStrip', 'btnStripDraw', 'data-strip-zone'],
+    ].forEach(([rowId, drawId, attr]) => {
+      const row = root.getElementById(rowId);
+      const button = row?.querySelector(`#${drawId}`);
+      if (!button) return;
+      const chip = shown ? row.querySelector(`.zone-btn[${attr}="${id}"]`) : null;
+      row.querySelectorAll('.zone-btn.joined').forEach((other) => {
+        if (other !== chip) other.classList.remove('joined');
+      });
+      button.hidden = !chip;
+      if (!chip) return;
+      chip.classList.add('joined');
+      if (chip.nextElementSibling !== button) {
+        const focused = this._focusedId() === button.id;
+        chip.after(button);
+        if (focused) button.focus();
+      }
+      const text = armed ? '✕' : '✎';
+      if (button.textContent !== text) button.textContent = text;
+      const label = armed ? CANCEL_DRAWING_LABEL : drawChipLabel(name, drawn);
+      button.setAttribute('aria-label', label);
+      button.title = label;
+    });
+    this._renderZoneDraw();
+  }
+
+  // Names the zone being drawn or walked.
+  _renderDrawBanner() {
+    const root = this.shadowRoot;
+    const banner = root?.getElementById('drawBanner');
+    if (!banner) return;
+    let text = '';
+    let zoneId = null;
+    if (this._walk) {
+      zoneId = this.selectedZone;
+      const listed = (this.zoneConfig || []).some((zone) => Number(zone.id) === Number(zoneId));
+      text = walkingBanner(listed ? this._zoneLabel(zoneId) : '');
+    } else if (this._armedZone !== null) {
+      zoneId = this._armedZone;
+      text = drawingBanner(this._zoneLabel(zoneId));
+    }
+    banner.hidden = !text;
+    if (zoneId !== null && zoneId !== undefined) {
+      banner.style.setProperty('--zone-color', this._zoneColor(zoneId).stroke);
+    }
+    const label = root.getElementById('drawBannerText');
+    if (label && label.textContent !== text) label.textContent = text;
   }
 
   /** Undo the last polygon vertex (Backspace or the undo button). Popping
@@ -5078,22 +5470,26 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   _clearAllZones() {
-    // TODO(REVIEW_REPORT.md X43): this and undo write shape none for YAML-seeded ids the store
-    // never held. Consider clearing only ids in this.zones or the payload; no delete from undo.
-    const zoneIds = (this.zoneConfig || []).map((zone) => zone.id);
-    this._setUndoSnapshot(this._snapshotZones(zoneIds));
+    // TODO(REVIEW_REPORT.md X43): this writes shape none for YAML-seeded ids the store never
+    // held. Consider clearing only ids in this.zones or the payload.
+    this._disarm({ draw: false });
+    const zoneIds = (this.zoneConfig || []).map((zone) => Number(zone.id));
+    const entries = zoneIds
+      .filter((id) => this._getZone(id))
+      .map((id) => ({ zoneId: id, before: this._shapeOf(id), after: { ...NO_SHAPE } }));
+    const record = entries.length ? this._newUndo('clear', entries) : null;
     this.zones = [];
     this._renderZoneSizes();
     this._resetDrawingState();
     this.drawGrid();
     if (!zoneIds.length) return;
-    // One toast for the batch, and only if every zone actually cleared. A
-    // partial failure has already said which one refused.
-    Promise.all(zoneIds.map((id) => this.updateHomeAssistantShape(id, 'none', null))).then(
-      (saved) => {
-        if (saved.every(Boolean)) this._notify(ALL_CLEARED_TOAST);
-      },
-    );
+    this._writeShapes(
+      record,
+      zoneIds.map((id) => ({ zoneId: id, geometry: NO_SHAPE })),
+    ).then((saved) => {
+      // A partial failure has already said which one refused.
+      if (saved && !record) this._notify(ALL_CLEARED_TOAST);
+    });
   }
 
   endDrawing(e) {
@@ -5281,20 +5677,17 @@ export class ZoneMapCard extends HTMLElement {
     return { x: this.valueToPixels(at.x, 'x'), y: this.valueToPixels(at.y, 'y') };
   }
 
-  /**
-   * Save a finished rect or ellipse as zone `zoneId`'s shape: an undo
-   * snapshot of what it replaces, the new shape on the map at once, and the
-   * write, which toasts "<label> saved" once Home Assistant takes it.
-   */
+  // Save a rect or ellipse; disarms, toasts Undo.
   _commitZoneShape(zoneId, payload) {
-    this._setUndoSnapshot(this._snapshotZones([zoneId]));
+    const id = Number(zoneId);
+    this._disarm({ draw: false });
+    const after = { shape: payload.shape, data: payload.data };
+    const record = this._newUndo('shape', [{ zoneId: id, before: this._shapeOf(id), after }]);
     this._upsertZone(zoneId, payload.shape, payload.data);
     this._renderZoneSizes();
     // The save's echo fits the map again, but a refused save sends none.
     this._refitAndDraw();
-    const savedMessage =
-      zoneId === null || zoneId === undefined ? null : `${this._zoneLabel(zoneId)} saved`;
-    return this.updateHomeAssistantShape(zoneId, payload.shape, payload.data, savedMessage);
+    return this._writeShapes(record, [{ zoneId: id, geometry: after }]);
   }
 
   /** Whether a polygon tap at canvas point `p` (backing px) finishes the
@@ -5413,54 +5806,164 @@ export class ZoneMapCard extends HTMLElement {
     this.cancelDrawing();
   }
 
-  _snapshotZones(zoneIds) {
-    const snap = [];
-    (zoneIds || []).forEach((rawId) => {
-      const id = Number(rawId);
-      if (!Number.isFinite(id) || id <= 0) return;
-      const existing = (this.zones || []).find((z) => Number(z.id) === id);
-      if (existing) {
-        snap.push({ zoneId: id, shape: existing.shape, data: existing.data });
-      } else {
-        snap.push({ zoneId: id, shape: 'none', data: null });
-      }
+  // Geometry on the map now, as update_zone takes it.
+  _shapeOf(zoneId) {
+    const zone = this._getZone(zoneId);
+    return zone ? { shape: zone.shape, data: zone.data } : { ...NO_SHAPE };
+  }
+
+  // Geometry in the last payload.
+  _storedShapeOf(zoneId) {
+    const entry = this._zoneConfigPayload?.zones?.[String(zoneId)];
+    if (entry?.shape && entry.shape !== 'none' && entry.data) {
+      return { shape: entry.shape, data: entry.data };
+    }
+    return { ...NO_SHAPE };
+  }
+
+  _sameShape(a, b) {
+    const norm = (g) => (!g || g.shape === 'none' || !g.data ? 'none' : JSON.stringify([g.shape, g.data]));
+    return norm(a) === norm(b);
+  }
+
+  _applyShapes(items) {
+    items.forEach(({ zoneId, geometry }) => {
+      if (!geometry || geometry.shape === 'none' || !geometry.data) this._removeZone(zoneId);
+      else this._upsertZone(zoneId, geometry.shape, geometry.data);
     });
-    return snap;
+    this._renderZoneSizes();
+    this._refitAndDraw();
   }
 
-  _setUndoSnapshot(snap) {
-    this._undoSnapshot = snap && snap.length ? snap : null;
+  _reasonOf(error) {
+    return error?.message ? String(error.message) : REJECTED_REASON;
+  }
+
+  // Undoable only where the store keeps a previous shape.
+  _newUndo(kind, zones) {
+    const stored = this._zoneConfigPayload?.zones;
+    const undoable =
+      zones.length <= RESTORE_SHAPE_MAX_ZONES &&
+      zones.every(
+        ({ zoneId }) =>
+          (!!stored && typeof stored === 'object' && String(zoneId) in stored) ||
+          this._addedZones.has(zoneId),
+      );
+    const record = { deviceId: this.deviceId, kind, zones, undoable, ready: false, used: false };
+    this._undo = record;
     this._refreshUndoButton();
+    return record;
   }
 
+  // Refused zones revert and leave the record.
+  async _writeShapes(record, writes) {
+    const saved = await Promise.all(
+      writes.map(({ zoneId, geometry }) =>
+        this.updateHomeAssistantShape(zoneId, geometry.shape, geometry.data),
+      ),
+    );
+    const allSaved = saved.every(Boolean);
+    if (!record || record.deviceId !== this.deviceId) return allSaved;
+    const refused = new Set(writes.filter((_, i) => !saved[i]).map(({ zoneId }) => Number(zoneId)));
+    const failed = record.zones.filter(({ zoneId }) => refused.has(zoneId));
+    // Only where the refused shape still shows.
+    const revert = failed.filter(({ zoneId, after }) => this._sameShape(this._shapeOf(zoneId), after));
+    if (revert.length) {
+      this._applyShapes(revert.map(({ zoneId, before }) => ({ zoneId, geometry: before })));
+    }
+    record.zones = record.zones.filter((zone) => !failed.includes(zone));
+    if (!record.zones.length) {
+      if (this._undo === record) this._undo = null;
+    } else {
+      record.ready = true;
+    }
+    this._refreshUndoButton();
+    if (allSaved && record.zones.length) this._announceChange(record);
+    return allSaved;
+  }
+
+  // Toast the change, with Undo while undoable.
+  _announceChange(record) {
+    const [first] = record.zones;
+    const name = first ? this._zoneLabel(first.zoneId) : '';
+    let message = ALL_CLEARED_TOAST;
+    if (record.kind === 'restore') message = shapeRestoredToast(name);
+    else if (record.kind === 'shape') {
+      message = first.before.shape === 'none' ? zoneDrawnToast(name) : zoneRedrawnToast(name);
+    }
+    const offer = record.undoable && this._undo === record;
+    this._notify(message, offer ? { action: () => this._undoChange(record) } : {});
+  }
+
+  // Dimmed, not disabled, while locked.
   _refreshUndoButton() {
     const btn = this.shadowRoot?.getElementById('btnUndo');
     if (!btn) return;
-    btn.disabled = !(this._undoSnapshot && this._undoSnapshot.length);
+    const record = this._undo;
+    const enabled =
+      !!record && record.ready && !record.used && record.undoable && record.deviceId === this.deviceId;
+    btn.disabled = !enabled;
+    const locked = enabled && !!this.isLocked;
+    btn.classList.toggle('locked-action', locked);
+    if (locked) btn.setAttribute('aria-disabled', 'true');
+    else btn.removeAttribute('aria-disabled');
   }
 
-  _performUndo() {
-    if (!this._undoSnapshot || !this._undoSnapshot.length) return;
-    const snap = this._undoSnapshot;
-    this._undoSnapshot = null;
-    const writes = snap.map(({ zoneId, shape, data }) => {
-      if (shape === 'none' || !data) {
-        this._removeZone(zoneId);
-      } else {
-        this._upsertZone(zoneId, shape, data);
-      }
-      return this.updateHomeAssistantShape(
-        zoneId,
-        shape || 'none',
-        data == null ? null : data,
-      );
-    });
-    this._renderZoneSizes();
-    this.drawGrid();
-    Promise.all(writes).then((saved) => {
-      if (saved.every(Boolean)) this._notify('Undid last zone change');
-    });
+  // Restores only zones still showing the record's shape.
+  async _undoChange(record) {
+    if (!record || record !== this._undo || record.used || !record.ready || !record.undoable) return;
+    if (record.deviceId !== this.deviceId || !this._hass) return;
+    if (this.isLocked) {
+      this._remindLocked(UNDO_LOCKED_TOAST);
+      return;
+    }
+    record.used = true;
     this._refreshUndoButton();
+    if (record.zones.some(({ zoneId }) => zoneId === this._armedZone)) this._disarm({ draw: false });
+    this._applyShapes(record.zones.map(({ zoneId, before }) => ({ zoneId, geometry: before })));
+    let reply;
+    try {
+      reply = await restoreShapes(
+        this._hass,
+        record.deviceId,
+        record.zones.map(({ zoneId, before, after }) => ({
+          zone_id: zoneId,
+          current: after,
+          previous: before,
+        })),
+      );
+      if (!isRestoreShapeReply(reply)) throw new Error(HISTORY_UNREADABLE);
+    } catch (error) {
+      if (record.deviceId !== this.deviceId) return;
+      this._applyShapes(record.zones.map(({ zoneId, after }) => ({ zoneId, geometry: after })));
+      // Still current, so ↶ can try again.
+      record.used = false;
+      this._refreshUndoButton();
+      this._notify(couldNotUndo(this._reasonOf(error)));
+      return;
+    }
+    if (record.deviceId !== this.deviceId) return;
+    const mine = new Set(record.zones.map(({ zoneId }) => zoneId));
+    const restored = reply.restored.filter((item) => mine.has(Number(item.zone_id)));
+    const skipped = record.zones.filter(
+      ({ zoneId }) => !restored.some((item) => Number(item.zone_id) === zoneId),
+    );
+    this._applyShapes([
+      ...restored.map((item) => ({
+        zoneId: Number(item.zone_id),
+        geometry: { shape: item.shape, data: item.data ?? null },
+      })),
+      ...skipped.map(({ zoneId }) => ({ zoneId, geometry: this._storedShapeOf(zoneId) })),
+    ]);
+    if (this._undo === record) this._undo = null;
+    this._refreshUndoButton();
+    if (skipped.length) {
+      this._notify(undoSkippedToast(skipped.map(({ zoneId }) => this._zoneLabel(zoneId))));
+    } else if (record.kind === 'clear') {
+      this._notify(UNDONE_CLEAR_TOAST);
+    } else {
+      this._notify(undoneToast(this._zoneLabel(record.zones[0].zoneId)));
+    }
   }
 
   /**
@@ -5587,9 +6090,16 @@ export class ZoneMapCard extends HTMLElement {
     unlock.textContent = UNLOCK_LABEL;
     unlock.hidden = true;
     unlock.addEventListener('click', () => {
-      if (this.isLocked) this._toggleLock();
+      if (!this.isLocked) return;
+      this._toggleLock();
+      // A zone with no shape yet is ready to draw.
+      if (!this._getZone(zoneId)) this._armDrawing(zoneId);
     });
-    draw.append(drawText, unlock);
+    const drawButton = make('button', '', 'btnZoneDraw');
+    drawButton.type = 'button';
+    drawButton.hidden = true;
+    drawButton.addEventListener('click', () => this._toggleArm(zoneId));
+    draw.append(drawText, drawButton, unlock);
 
     const nameField = make('div', 'zone-field');
     const nameLabel = make('label');
@@ -5611,6 +6121,17 @@ export class ZoneMapCard extends HTMLElement {
     const size = make('div', 'zone-size');
     size.dataset.zone = String(zoneId);
 
+    // Administrators only; _renderZoneRestore shows it.
+    const restore = make('div', 'zone-restore');
+    restore.hidden = true;
+    const restoreButton = make('button', 'zone-btn', 'btnZoneRestore');
+    restoreButton.type = 'button';
+    restoreButton.textContent = RESTORE_SHAPE_LABEL;
+    restoreButton.setAttribute('aria-describedby', 'zoneRestoreHint');
+    restoreButton.addEventListener('click', () => this._restorePreviousShape(zoneId));
+    const restoreHint = make('span', 'zone-hint', 'zoneRestoreHint');
+    restore.append(restoreButton, restoreHint);
+
     const meta = this._zoneSettings(zoneId);
     const settings = make('div', 'zone-settings');
     const type = this._zoneSettingSelect(zoneId, 'zone_type', TYPE_OPTIONS, meta.type);
@@ -5626,7 +6147,9 @@ export class ZoneMapCard extends HTMLElement {
     const presenceText = make('span', '', 'zonePresenceText');
     presence.append(presenceLabel, presenceText);
 
-    editor.append(head, draw, nameField, size, settings, hint, presence);
+    editor.append(head, draw, nameField, size);
+    if (admin) editor.append(restore);
+    editor.append(settings, hint, presence);
     if (!admin) {
       // A disabled field's title never reaches touch or keyboard users.
       const note = make('div', 'zone-hint zone-settings-note');
@@ -5737,6 +6260,7 @@ export class ZoneMapCard extends HTMLElement {
     if (question) question.textContent = confirming ? deleteZoneConfirm(this._zoneLabel(zoneId)) : '';
 
     this._renderZoneDraw();
+    this._renderZoneRestore();
     this._renderZonePresence();
     this._renderZoneSaveStatus();
   }
@@ -5755,21 +6279,102 @@ export class ZoneMapCard extends HTMLElement {
     const zoneId = Number(editor.dataset.editorZone);
     const admin = editor.dataset.admin === 'true';
     const drawn = !!this._getZone(zoneId);
+    const armed = this._armedZone === zoneId;
     let text = '';
     if (!admin) text = '';
     else if (this.drawMode === DRAW_MODES.WALK) text = DRAW_HINT_WALKING;
     else if (this.isLocked) text = ZONES_LOCKED_HINT;
-    else text = drawHint(this.drawMode, drawn, this.polyMaxPoints);
+    else {
+      text = drawHint(this.drawMode, drawn, this.polyMaxPoints, {
+        armed,
+        canExpand: this._canExpand() && !this._fullWindow,
+      });
+    }
     box.hidden = !text;
     const textEl = editor.querySelector('#zoneDrawText');
     if (textEl && textEl.textContent !== text) textEl.textContent = text;
     const unlock = editor.querySelector('#btnZoneUnlock');
     if (unlock) unlock.hidden = !(admin && this.isLocked && this.drawMode !== DRAW_MODES.WALK);
+    const drawButton = editor.querySelector('#btnZoneDraw');
+    if (drawButton) {
+      drawButton.hidden = !(admin && !this.isLocked && this.drawMode !== DRAW_MODES.WALK);
+      const label = armed ? CANCEL_DRAWING_LABEL : drawn ? REDRAW_SHAPE_LABEL : DRAW_SHAPE_LABEL;
+      if (drawButton.textContent !== label) drawButton.textContent = label;
+      // Primary until armed; then a quiet Cancel.
+      drawButton.className = armed ? 'zone-btn' : '';
+    }
     const callout = admin && !drawn;
     box.classList.toggle('callout', callout);
     const head = editor.querySelector('.zone-editor-head');
     const before = callout ? head?.nextSibling : editor.querySelector('.zone-delete-row');
     if (box.nextSibling !== (before || null) && before !== box) editor.insertBefore(box, before || null);
+  }
+
+  // Shown while the store keeps a drawn shape.
+  _renderZoneRestore() {
+    const row = this.shadowRoot?.querySelector('#zoneManager .zone-restore');
+    const editor = row?.closest('.zone-editor');
+    if (!editor) return;
+    const zoneId = Number(editor.dataset.editorZone);
+    const meta = this._zoneMeta.get(zoneId);
+    const at = meta?.previousAt ? Date.parse(meta.previousAt) : NaN;
+    const shown = editor.dataset.admin === 'true' && !!meta?.previousDrawn && Number.isFinite(at);
+    row.hidden = !shown;
+    if (!shown) return;
+    const hint = row.querySelector('#zoneRestoreHint');
+    const text = restoreShapeHint(formatReplacedAgo(Date.now() - at));
+    if (hint && hint.textContent !== text) hint.textContent = text;
+    const button = row.querySelector('#btnZoneRestore');
+    if (button) {
+      button.disabled = this._restoring === zoneId;
+      button.classList.toggle('locked-action', !!this.isLocked);
+      if (this.isLocked) button.setAttribute('aria-disabled', 'true');
+      else button.removeAttribute('aria-disabled');
+    }
+  }
+
+  // Swap with the kept shape; the toast offers Undo.
+  async _restorePreviousShape(zoneId) {
+    const id = Number(zoneId);
+    if (!this._hass || !this._isAdmin() || this._restoring !== null) return;
+    if (this.isLocked) {
+      this._remindLocked(RESTORE_LOCKED_TOAST);
+      return;
+    }
+    if (this._armedZone === id) this._disarm();
+    const deviceId = this.deviceId;
+    const current = this._shapeOf(id);
+    // The one its Replaced line showed.
+    const previousAt = this._zoneMeta.get(id)?.previousAt;
+    this._restoring = id;
+    this._renderZoneRestore();
+    let reply;
+    try {
+      reply = await restoreShapes(this._hass, deviceId, [
+        { zone_id: id, current, ...(previousAt ? { previous_at: previousAt } : {}) },
+      ]);
+      if (!isRestoreShapeReply(reply)) throw new Error(HISTORY_UNREADABLE);
+    } catch (error) {
+      if (this.deviceId === deviceId) this._notify(couldNotRestore(this._reasonOf(error)));
+      return;
+    } finally {
+      if (this.deviceId === deviceId) {
+        this._restoring = null;
+        this._renderZoneRestore();
+      }
+    }
+    if (this.deviceId !== deviceId) return;
+    const restored = reply.restored.find((item) => Number(item.zone_id) === id);
+    if (!restored) {
+      this._notify(restoreSkippedToast(this._zoneLabel(id)));
+      return;
+    }
+    const after = { shape: restored.shape, data: restored.data ?? null };
+    this._applyShapes([{ zoneId: id, geometry: after }]);
+    const record = this._newUndo('restore', [{ zoneId: id, before: current, after }]);
+    record.ready = true;
+    this._refreshUndoButton();
+    this._announceChange(record);
   }
 
   /** The editor's Now line: what the selected zone's presence sensor says. */
@@ -5943,16 +6548,14 @@ export class ZoneMapCard extends HTMLElement {
 
   /**
    * Delete zone `zoneId` and its entities, once Delete zone was answered.
-   * Undo writes every snapshot entry back, and the backend stores any zone
-   * id it is given, so an entry for this zone would re-create it and its
-   * entities (or overwrite a zone added later under the freed id). Delete
-   * itself is not undoable; the other entries still are. The focus goes to
-   * the zone selected next, or to Add zone.
+   * Delete itself is not undoable. The focus goes to the zone selected
+   * next, or to Add zone.
    */
   _deleteZone(zoneId) {
     const id = Number(zoneId);
     this._deleteConfirmZone = null;
     if (!Number.isFinite(id) || id <= 0) return;
+    if (this._armedZone === id) this._disarm({ draw: false });
     if (this._hass) {
       this._saveZoneUpdate(
         { device_id: this.deviceId, zone_id: id, delete: true },
@@ -5962,7 +6565,13 @@ export class ZoneMapCard extends HTMLElement {
     this.zoneConfig = (this.zoneConfig || []).filter((zone) => Number(zone.id) !== id);
     this.zones = (this.zones || []).filter((zone) => Number(zone.id) !== id);
     if (Number(this.selectedZone) === id) this.selectedZone = null;
-    this._setUndoSnapshot((this._undoSnapshot || []).filter((s) => s.zoneId !== id));
+    // Delete is not undoable, and drops the zone from Undo.
+    if (this._undo) {
+      this._undo.zones = this._undo.zones.filter((zone) => zone.zoneId !== id);
+      if (!this._undo.zones.length) this._undo = null;
+    }
+    this._addedZones.delete(id);
+    this._refreshUndoButton();
     this.renderZoneButtons();
     this._renderZonePanel();
     this._renderZoneManager();
@@ -6122,8 +6731,8 @@ export class ZoneMapCard extends HTMLElement {
 
   /**
    * Add zone: the lowest free id, as "Zone N" with no shape, saved so its
-   * entities are created, and selected, so the next drag on the map draws
-   * it. The lock does not stop it, as it does not stop a rename: the editor
+   * entities are created, selected and armed, so the next drag on the map
+   * draws it. The lock does not stop it, as it does not stop a rename: the editor
    * then says to unlock the map to draw the zone. The focus stays on Add
    * zone, so a phone keyboard does not open over the map. Every id up to
    * MAX_ZONE_ID taken, it adds nothing (the button is disabled then).
@@ -6149,10 +6758,13 @@ export class ZoneMapCard extends HTMLElement {
       },
       null,
     );
+    this._addedZones.add(next);
     this._setSelectedZone(next);
     this.renderZoneButtons();
     this._renderZonePanel();
     this._renderZoneManager();
+    // A first zone stays one step: it is armed.
+    if (!this.isLocked && !this._walk) this._armDrawing(next);
   }
 
   finishPolygon() {
@@ -6177,19 +6789,13 @@ export class ZoneMapCard extends HTMLElement {
         x: this._clampAndRound(pt.x, this.xMin, this.xMax),
         y: this._clampAndRound(pt.y, this.yMin, this.yMax),
       }));
-      const payload = {
-        shape: DRAW_MODES.POLYGON,
-        data: { points },
-      };
-      this._setUndoSnapshot(this._snapshotZones([zoneId]));
-      this._upsertZone(zoneId, payload.shape, payload.data);
+      const after = { shape: DRAW_MODES.POLYGON, data: { points } };
+      const id = Number(zoneId);
+      this._disarm({ draw: false });
+      const record = this._newUndo('shape', [{ zoneId: id, before: this._shapeOf(id), after }]);
+      this._upsertZone(zoneId, after.shape, after.data);
       this._renderZoneSizes();
-      this.updateHomeAssistantShape(
-        zoneId,
-        payload.shape,
-        payload.data,
-        `${this._zoneLabel(zoneId)} saved`,
-      );
+      this._writeShapes(record, [{ zoneId: id, geometry: after }]);
     }
     this._resetDrawingState();
     // Also when nothing was saved, which brings no payload to fit again.
@@ -6231,11 +6837,13 @@ export class ZoneMapCard extends HTMLElement {
     let ringLabels = [];
     let rangeLabel = null;
     let xLabels = [];
+    const buttons = this.unitDisplay ? this._overlayBoxes({ notes: false, canvasRect }) : [];
+    if (this.unitDisplay) rangeLabel = this._rangeLabel(buttons);
+    // Laid out once a frame, before the axis labels.
+    const zoneLabels = this._zoneLabelLayout(replay?.lit ?? null, { canvasRect, rangeLabel });
     if (this.unitDisplay) {
       const { thetaStart, thetaEnd, radius } = this._coneSector();
       const rings = this._getConeRingsRenderState(thetaStart, thetaEnd, radius, gridMetrics);
-      const buttons = this._overlayBoxes({ notes: false, canvasRect });
-      rangeLabel = this._rangeLabel(buttons);
       const gap = gridState?.labelGap ?? LABEL_GAP_CSS_PX;
       // The zones' names keep their places too: a zone across the radar's
       // line (x = 0) put its name over the y labels running down it. So do
@@ -6243,7 +6851,7 @@ export class ZoneMapCard extends HTMLElement {
       // edge, where they showed through the zoom row and the unit switch.
       const labels = this._clearOfBoxes(
         this._clearAround(this._layOutLabels(rings?.labels, gridState), rangeLabel, gap),
-        [...this._zoneLabelBoxes(replay?.lit ?? null), ...buttons],
+        [...zoneLabels.map((label) => this._zoneLabelBox(label)), ...buttons],
         gap,
       );
       if (gridState) {
@@ -6257,7 +6865,7 @@ export class ZoneMapCard extends HTMLElement {
     this.drawDeviceCone(gridMetrics, ringLabels);
     this._drawRangeLabel(ctx, rangeLabel);
 
-    this.drawZones(replay ? { lit: replay.lit } : {});
+    this.drawZones({ lit: replay?.lit ?? null, labels: zoneLabels });
     this._drawInProgress();
     this._drawWalkPreview(ctx);
     // Trails under the dots, which they lead up to.
@@ -6845,7 +7453,7 @@ export class ZoneMapCard extends HTMLElement {
    * shows over a detect zone they overlap. `lit`, a Set of zone ids, stands
    * in for the presence sensors when a replay draws zones as they were.
    */
-  drawZones({ lit = null } = {}) {
+  drawZones({ lit = null, labels = null } = {}) {
     const ctx = this.ctx;
     if (!ctx) return;
     const colors = COLOR.canvas.zonePalette;
@@ -6854,39 +7462,36 @@ export class ZoneMapCard extends HTMLElement {
       ...byId.filter((zone) => !this._isIgnoreZone(zone?.id)),
       ...byId.filter((zone) => this._isIgnoreZone(zone?.id)),
     ];
-    // While the map can be drawn on, the next drag replaces the selected
-    // zone's shape, so its outline is drawn thicker: the zone the editor
-    // under the map is showing is the one that changes.
-    const marked = this._drawingTarget();
-    orderedZones.forEach((zone, idx) => {
+    const emphasis = this._emphasisZone();
+    const picked = emphasis === null ? null : orderedZones.find((zone) => Number(zone?.id) === emphasis);
+    const sequence = picked ? [...orderedZones.filter((zone) => zone !== picked), picked] : orderedZones;
+    sequence.forEach((zone, idx) => {
       if (!zone || !zone.shape || !zone.data) return;
       const color = colors[(Number(zone.id) - 1) % colors.length] || colors[idx % colors.length];
       const look = this._zoneLook(zone.id, color, lit);
+      const dimmed = !!picked && zone !== picked;
       // Each zone in its own save and restore, so its dash never reaches the
       // grid lines, a shape being drawn or the dots.
       ctx.save();
       ctx.strokeStyle = look.stroke;
       ctx.fillStyle = look.fill;
-      ctx.lineWidth = look.lineWidth + (!lit && Number(zone.id) === marked ? 2 : 0);
+      ctx.lineWidth = look.lineWidth + (zone === picked ? 2 : 0);
       ctx.setLineDash(look.dash);
-      // {x, y, width, height} in px, the one _zoneLabelBoxes lays the
-      // labels out from too.
+      ctx.globalAlpha = dimmed ? DIM_ZONE_ALPHA : 1;
+      // {x, y, width, height} in px, the one the name layout uses too.
       const bbox = this._zonePixelBox(zone);
       if (zone.shape === DRAW_MODES.RECT) {
         const { x, y, width, height } = bbox;
-        ctx.fillRect(x, y, width, height);
+        if (!dimmed) ctx.fillRect(x, y, width, height);
         ctx.strokeRect(x, y, width, height);
       } else if (zone.shape === DRAW_MODES.ELLIPSE) {
         const { x, y, width, height } = bbox;
         ctx.beginPath();
         ctx.ellipse(x + width / 2, y + height / 2, width / 2, height / 2, 0, 0, Math.PI * 2);
-        ctx.fill();
+        if (!dimmed) ctx.fill();
         ctx.stroke();
       } else if (zone.shape === DRAW_MODES.POLYGON && Array.isArray(zone.data.points)) {
-        const pts = zone.data.points.map((point) => ({
-          x: this.valueToPixels(point.x, 'x'),
-          y: this.valueToPixels(point.y, 'y'),
-        }));
+        const pts = this._zoneCorners(zone);
         if (pts.length >= 3) {
           ctx.beginPath();
           ctx.moveTo(pts[0].x, pts[0].y);
@@ -6896,24 +7501,69 @@ export class ZoneMapCard extends HTMLElement {
           // (pointInPolygon), so a polygon that goes around an area twice,
           // as a second lap of Walk can, is not filled where presence finds
           // nobody.
-          ctx.fill('evenodd');
+          if (!dimmed) ctx.fill('evenodd');
           ctx.stroke();
         }
       }
       ctx.restore();
-      if (this._zoneLabeled(bbox)) {
-        this._drawZoneLabel(zone, bbox, look.suffix);
-      }
+      if (zone === picked) this._drawCornerDots(ctx, zone, look.stroke);
     });
+    // Names over every shape, so no fill covers one.
+    const layout = labels ?? this._zoneLabelLayout(lit);
+    layout.forEach((label) => this._drawZoneLabel(label, { dimmed: !!picked && label.id !== emphasis }));
   }
 
-  /** The zone a drag on the map would draw now, or null when the map takes
-   *  no drawing: locked, in Walk, or with no zone selected. */
-  _drawingTarget() {
-    if (this._viewOnly || this.isLocked || this.drawMode === DRAW_MODES.WALK) return null;
-    return this.selectedZone === null || this.selectedZone === undefined
-      ? null
-      : Number(this.selectedZone);
+  // Picked zone drawn bright while an admin edits.
+  _emphasisZone() {
+    if (this._viewOnly || !this._isAdmin() || this.isLocked || this._replayShowing()) return null;
+    const id = this.selectedZone;
+    if (id === null || id === undefined) return null;
+    return (this.zoneConfig || []).some((zone) => Number(zone.id) === Number(id)) ? Number(id) : null;
+  }
+
+  // Rect corners, ellipse axis ends, polygon points.
+  _zoneCorners(zone) {
+    const bbox = this._zonePixelBox(zone);
+    if (!bbox) return [];
+    const { x, y, width, height } = bbox;
+    if (zone.shape === DRAW_MODES.RECT) {
+      return [
+        { x, y },
+        { x: x + width, y },
+        { x: x + width, y: y + height },
+        { x, y: y + height },
+      ];
+    }
+    if (zone.shape === DRAW_MODES.ELLIPSE) {
+      return [
+        { x: x + width / 2, y },
+        { x: x + width, y: y + height / 2 },
+        { x: x + width / 2, y: y + height },
+        { x, y: y + height / 2 },
+      ];
+    }
+    return (zone.data?.points || []).map((point) => ({
+      x: this.valueToPixels(point.x, 'x'),
+      y: this.valueToPixels(point.y, 'y'),
+    }));
+  }
+
+  // Dots ringed in the canvas color.
+  _drawCornerDots(ctx, zone, stroke) {
+    const scale = this._frameScale || 1;
+    ctx.save();
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = stroke;
+    ctx.strokeStyle = this.darkMode ? COLOR.ui.darkCanvasBackground : COLOR.ui.lightCanvasBackground;
+    ctx.lineWidth = CORNER_RING_CSS_PX * scale;
+    this._zoneCorners(zone).forEach(({ x, y }) => {
+      ctx.beginPath();
+      ctx.arc(x, y, CORNER_DOT_CSS_PX * scale, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    });
+    ctx.restore();
   }
 
   /**
@@ -6962,25 +7612,68 @@ export class ZoneMapCard extends HTMLElement {
 
   /**
    * The boxes (backing px) the zones' names cover this frame, laid out as
-   * _drawZoneLabel lays them out, for the axis and ring labels to keep
-   * clear of. `lit` is a replay's lit zones, as drawZones takes it.
+   * _drawZoneLabel lays them out, for the axis and ring labels to keep clear
+   * of. `lit` is a replay's lit zones, as drawZones takes it.
    */
   _zoneLabelBoxes(lit = null) {
-    if (!this.ctx || !this.canvas) return [];
-    return (this.zones || []).flatMap((zone) => {
-      if (!zone || !zone.shape || !zone.data) return [];
+    return this._zoneLabelLayout(lit).map((label) => this._zoneLabelBox(label));
+  }
+
+  _zoneLabelBox(label) {
+    return placementBox(label);
+  }
+
+  // Every name placed clear of others (./labels).
+  _zoneLabelLayout(lit = null, { canvasRect = this.canvas?.getBoundingClientRect?.(), rangeLabel } = {}) {
+    const ctx = this.ctx;
+    if (!ctx || !this.canvas) return [];
+    const widths = new Map();
+    const measure = (text, fontPx) => {
+      const key = `${fontPx}|${text}`;
+      if (!widths.has(key)) {
+        ctx.save();
+        ctx.font = `${fontPx}px sans-serif`;
+        const measured = ctx.measureText?.(text)?.width;
+        ctx.restore();
+        widths.set(
+          key,
+          typeof measured === 'number' && measured > 0
+            ? measured
+            : text.length * fontPx * LABEL_FALLBACK_EM_PER_CHAR,
+        );
+      }
+      return widths.get(key);
+    };
+    const items = [];
+    (this.zones || []).forEach((zone) => {
+      if (!zone || !zone.shape || !zone.data) return;
       const bbox = this._zonePixelBox(zone);
-      if (!this._zoneLabeled(bbox)) return [];
-      const place = this._zoneLabelPlacement(zone, bbox, this._zoneSuffix(zone.id, lit));
-      if (!place) return [];
-      return [
-        {
-          left: place.x - place.width / 2,
-          right: place.x + place.width / 2,
-          top: place.y - place.fontPx / 2,
-          bottom: place.y + place.fontPx / 2,
-        },
-      ];
+      if (!this._zoneLabeled(bbox)) return;
+      const anchor = this._zoneLabelPlacement(zone, bbox, this._zoneSuffix(zone.id, lit));
+      if (!anchor) return;
+      const size = zoneSize(zone.shape, zone.data);
+      items.push({
+        id: Number(zone.id),
+        areaMm2: size ? size.width * size.depth : Infinity,
+        text: anchor.text,
+        anchor: { x: anchor.anchorX, y: anchor.anchorY },
+        box: bbox,
+      });
+    });
+    if (!items.length) return [];
+    const range = rangeLabel === undefined ? this._rangeLabel() : rangeLabel;
+    const obstacles = [
+      ...this._overlayBoxes({ notes: true, canvasRect }),
+      ...(range ? [this._labelBox(range)] : []),
+    ];
+    const scale = this._frameScale || 1;
+    return layOutZoneLabels(items, {
+      width: this._mapW,
+      height: this._mapH,
+      obstacles,
+      gap: LABEL_GAP_CSS_PX * scale,
+      pad: 4 * scale,
+      measure,
     });
   }
 
@@ -7365,19 +8058,26 @@ export class ZoneMapCard extends HTMLElement {
   /**
    * The boxes (backing px) of the buttons and notes laid over the canvas
    * that are showing now: the drawing modes, the unit switch, Undo and
-   * Locked, the zoom row, Expand map and the offline note. Nothing drawn on the canvas
-   * under them can be read. None while the canvas has no layout box. With
-   * `notes` false, the buttons only: _placeMapNotes puts the offline note
-   * under the x labels, so the labels never make room for it. `canvasRect`
-   * is the canvas's box where the frame has read it already.
+   * Locked, the zoom row, Expand map, the banner, the offline note and a
+   * replay's badge. Nothing drawn on the canvas under them can be read.
+   * None while the canvas has no layout box. With `notes` false, the
+   * buttons only: _placeMapNotes puts the notes under the x labels, so the
+   * labels never make room for them. `canvasRect` is the canvas's box where
+   * the frame has read it already.
    */
   _overlayBoxes({ notes = true, canvasRect = this.canvas?.getBoundingClientRect?.() } = {}) {
     const root = this.shadowRoot;
     if (!root || !canvasRect || !(canvasRect.width > 0) || !(canvasRect.height > 0)) return [];
     const scaleX = this._mapW / canvasRect.width;
     const scaleY = this._mapH / canvasRect.height;
-    const ids = ['overlayControlsLeft', 'overlayControlsRight', 'zoomControls', 'overlayControlsTop'];
-    if (notes) ids.push('offlineNote');
+    const ids = [
+      'overlayControlsLeft',
+      'overlayControlsRight',
+      'zoomControls',
+      'overlayControlsTop',
+      'drawBanner',
+    ];
+    if (notes) ids.push('offlineNote', 'replayBadge');
     return ids.flatMap((id) => {
       const element = root.getElementById(id);
       if (!element || element.hidden) return [];
@@ -7411,16 +8111,42 @@ export class ZoneMapCard extends HTMLElement {
     ctx.stroke();
   }
 
-  /** The zone's name at its center, followed by `suffix` (" (held)" or
-   *  " (ignored)") when its look needs one, moved in as far as it takes to
-   *  stay on the canvas. A zone wholly off the canvas gets none. */
-  _drawZoneLabel(zone, bbox, suffix = '') {
-    const place = this._zoneLabelPlacement(zone, bbox, suffix);
-    if (!place) return;
+  // One laid out name, with leader or plate.
+  _drawZoneLabel(label, { dimmed = false } = {}) {
+    if (!label) return;
     const ctx = this.ctx;
+    const scale = this._frameScale || 1;
+    const axis = this.darkMode ? COLOR.canvas.axisDark : COLOR.canvas.axisLight;
+    const alpha = dimmed ? DIM_LABEL_ALPHA : 1;
     ctx.save();
-    ctx.font = `${place.fontPx}px sans-serif`;
-    ctx.fillStyle = this.darkMode ? COLOR.canvas.axisDark : COLOR.canvas.axisLight;
+    if (label.leader) {
+      const { x1, y1, x2, y2 } = label.leader;
+      ctx.save();
+      ctx.globalAlpha = alpha * 0.7;
+      ctx.strokeStyle = axis;
+      ctx.fillStyle = axis;
+      ctx.lineWidth = scale;
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(x2, y2, 2 * scale, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+    if (label.plate) {
+      const box = placementBox(label);
+      ctx.save();
+      ctx.globalAlpha = alpha * 0.85;
+      ctx.fillStyle = this.darkMode ? COLOR.ui.darkCanvasBackground : COLOR.ui.lightCanvasBackground;
+      ctx.fillRect(box.left - 2, box.top, box.right - box.left + 4, box.bottom - box.top);
+      ctx.restore();
+    }
+    ctx.globalAlpha = alpha;
+    ctx.font = `${label.fontPx}px sans-serif`;
+    ctx.fillStyle = axis;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.shadowColor = this.darkMode
@@ -7429,20 +8155,18 @@ export class ZoneMapCard extends HTMLElement {
     ctx.shadowBlur = 2;
     ctx.shadowOffsetX = 0;
     ctx.shadowOffsetY = 0;
-    ctx.fillText(place.text, place.x, place.y);
+    ctx.fillText(label.text, label.x, label.y);
     ctx.restore();
   }
 
   /**
-   * Where zone `zone`'s name goes: `{ text, x, y, width, fontPx }` in
-   * backing px, centered at (x, y), or null for none. At the shape's center
-   * (a polygon's centroid, anything else's box center), moved in as far as
-   * it takes to stay on the canvas. A zone wholly off the canvas gets none.
+   * Where zone `zone`'s name goes: `{ text, anchorX, anchorY }` in backing
+   * px, at the shape's center (a polygon's centroid, anything else's box
+   * center), or null for none. A zone wholly off the canvas gets none.
    */
   _zoneLabelPlacement(zone, bbox, suffix = '') {
-    const ctx = this.ctx;
     const name = this._zoneLabel(zone.id);
-    if (!name || !ctx || !this.canvas) return null;
+    if (!name || !this.ctx || !this.canvas) return null;
     // A YAML grid smaller than the room can leave a zone off the canvas,
     // and its name, pulled onto the edge, would label whatever is drawn
     // there. A fitted map takes in every zone.
@@ -7450,25 +8174,18 @@ export class ZoneMapCard extends HTMLElement {
     const canvasH = this._mapH;
     if (bbox.x >= canvasW || bbox.x + bbox.width <= 0) return null;
     if (bbox.y >= canvasH || bbox.y + bbox.height <= 0) return null;
-    const text = `${name}${suffix}`;
-    const fontPx = 24;
-
-    // Shape center; polygons use centroid, others use bbox center
     let cx = bbox.x + bbox.width / 2;
     let cy = bbox.y + bbox.height / 2;
-    if (
-      zone.shape === DRAW_MODES.POLYGON &&
-      Array.isArray(zone.data?.points) &&
-      zone.data.points.length >= 3
-    ) {
-      let A = 0,
-        Cx = 0,
-        Cy = 0;
-      for (let i = 0, j = zone.data.points.length - 1; i < zone.data.points.length; j = i++) {
-        const xi = this.valueToPixels(zone.data.points[i].x, 'x');
-        const yi = this.valueToPixels(zone.data.points[i].y, 'y');
-        const xj = this.valueToPixels(zone.data.points[j].x, 'x');
-        const yj = this.valueToPixels(zone.data.points[j].y, 'y');
+    const points = zone.data?.points;
+    if (zone.shape === DRAW_MODES.POLYGON && Array.isArray(points) && points.length >= 3) {
+      let A = 0;
+      let Cx = 0;
+      let Cy = 0;
+      for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+        const xi = this.valueToPixels(points[i].x, 'x');
+        const yi = this.valueToPixels(points[i].y, 'y');
+        const xj = this.valueToPixels(points[j].x, 'x');
+        const yj = this.valueToPixels(points[j].y, 'y');
         const cross = xi * yj - xj * yi;
         A += cross;
         Cx += (xi + xj) * cross;
@@ -7480,21 +8197,7 @@ export class ZoneMapCard extends HTMLElement {
         cy = Cy / (6 * A);
       }
     }
-    // Centered on a zone at a wall, a label ran off the canvas and lost its
-    // start or its " (ignored)". Measured the way _drawSizeReadout measures,
-    // with 2 px to spare at either side; one wider than the canvas is
-    // centered on it.
-    ctx.save();
-    ctx.font = `${fontPx}px sans-serif`;
-    const measured = ctx.measureText?.(text)?.width;
-    ctx.restore();
-    const width =
-      typeof measured === 'number' && measured > 0
-        ? measured
-        : text.length * fontPx * LABEL_FALLBACK_EM_PER_CHAR;
-    cx = clampOnto(cx, width / 2 + 2, canvasW);
-    cy = clampOnto(cy, fontPx / 2, canvasH);
-    return { text, x: cx, y: cy, width, fontPx };
+    return { text: `${name}${suffix}`, anchorX: cx, anchorY: cy };
   }
 
   /** The cone's edges in radians, rotation applied, and its range in mm. A
@@ -7880,6 +8583,24 @@ export class ZoneMapCard extends HTMLElement {
       if (!(this.zoneConfig || []).length && this._isAdmin()) {
         this._notifyThrottled(ADD_ZONE_FIRST_TOAST);
       }
+      return;
+    }
+    if (this._armedZone === null) {
+      // Not armed: pick another zone, else say how.
+      const at = this._getPointFromEvent(e, isTouch ? this._touchIdOf(e) : null);
+      const hit = at ? this._zoneAt(at) : null;
+      if (hit !== null && hit !== Number(this.selectedZone)) {
+        this._setSelectedZone(hit);
+        return;
+      }
+      if (this._isAdmin()) {
+        const id = Number(this.selectedZone);
+        this._notifyThrottled(armFirstToast(this._zoneLabel(id), !!this._getZone(id)));
+      }
+      return;
+    }
+    if (this._armedZone !== Number(this.selectedZone)) {
+      this._disarm();
       return;
     }
     if (!this.canvas) return;
@@ -8320,8 +9041,12 @@ export class ZoneMapCard extends HTMLElement {
       const icon = open ? 'collapse' : 'expand';
       if (toggle.dataset.icon !== icon) {
         toggle.dataset.icon = icon;
-        toggle.innerHTML = iconSvg(open ? ICON_COLLAPSE : ICON_EXPAND);
+        // The word shows where the map has room.
+        toggle.innerHTML = open
+          ? iconSvg(ICON_COLLAPSE)
+          : `${iconSvg(ICON_EXPAND)}<span class="full-toggle-text" aria-hidden="true">${FULL_WINDOW_OPEN_TEXT}</span>`;
       }
+      toggle.classList.toggle('labeled', !open);
       toggle.setAttribute('aria-label', open ? FULL_WINDOW_CLOSE_LABEL : FULL_WINDOW_OPEN_LABEL);
       toggle.title = open ? FULL_WINDOW_CLOSE_TITLE : FULL_WINDOW_OPEN_TITLE;
       if (open) toggle.removeAttribute('aria-haspopup');
@@ -8329,6 +9054,9 @@ export class ZoneMapCard extends HTMLElement {
     }
     const close = root.getElementById('btnFullWindowClose');
     if (close) close.hidden = !open;
+    // The help line and drawing hint mention Expand.
+    this._renderInfo();
+    this._renderZoneDraw();
   }
 
   _attachFullWindow() {
@@ -8664,6 +9392,7 @@ export class ZoneMapCard extends HTMLElement {
     this._fullBox = null;
     const status = this.shadowRoot?.getElementById('fullWindowStatus');
     if (status) status.textContent = '';
+    this._hideFullToast();
     this._unlockPage();
     // Our history entry goes, unless Back took it already, or the page has
     // moved on to another entry (Home Assistant's quick bar navigating),
@@ -8824,10 +9553,14 @@ export class ZoneMapCard extends HTMLElement {
       : 'No targets are tracked, which is what this radar was told to do.';
   }
 
-  _notify(message) {
+  // Undo rides the snackbar while expanded.
+  _notify(message, { action = null } = {}) {
     try {
       const ev = new Event('hass-notification', { bubbles: true, composed: true });
-      ev.detail = { message };
+      ev.detail =
+        action && !this._fullWindow
+          ? { message, duration: UNDO_TOAST_MS, action: { text: UNDO_ACTION, action } }
+          : { message };
       this.dispatchEvent(ev);
     } catch {
       alert(message);
@@ -8843,7 +9576,34 @@ export class ZoneMapCard extends HTMLElement {
           if (this._fullWindow) region.textContent = message;
         });
       }
+      this._showFullToast(message, action);
     }
+  }
+
+  // The expanded map's snackbar; focus never moves to it.
+  _showFullToast(message, action) {
+    const root = this.shadowRoot;
+    const toast = root?.getElementById('fullWindowToast');
+    if (!toast) return;
+    clearTimeout(this._fullToastTimer);
+    this._fullToastAction = action || null;
+    const text = root.getElementById('fullWindowToastText');
+    if (text) text.textContent = message;
+    const undo = root.getElementById('btnFullWindowToastUndo');
+    if (undo) undo.hidden = !action;
+    toast.hidden = false;
+    this._fullToastTimer = setTimeout(
+      () => this._hideFullToast(),
+      action ? UNDO_TOAST_MS : PLAIN_TOAST_MS,
+    );
+  }
+
+  _hideFullToast() {
+    clearTimeout(this._fullToastTimer);
+    this._fullToastTimer = null;
+    this._fullToastAction = null;
+    const toast = this.shadowRoot?.getElementById('fullWindowToast');
+    if (toast) toast.hidden = true;
   }
 }
 

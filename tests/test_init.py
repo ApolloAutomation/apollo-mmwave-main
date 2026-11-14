@@ -83,6 +83,7 @@ from .conftest import (
     apollo_warnings,
     async_dashboard_config,
     async_owned_entry,
+    previous,
     record_dashboard_writes,
     rows_on_url_path,
     setup_integration,
@@ -1116,7 +1117,7 @@ async def test_geometry_without_zone_id_alone_is_refused(
 
 
 async def test_shape_none_clears_zone_geometry(
-    hass, init_integration, device_id
+    hass, init_integration, device_id, replaced_at
 ) -> None:
     """`shape: none` is the documented way to clear a zone, and it works."""
     _ = init_integration
@@ -1125,7 +1126,11 @@ async def test_shape_none_clears_zone_geometry(
     await _update_zone(hass, {"device_id": device_id, "zone_id": 1, "shape": "none"})
 
     zone = get_store(hass).devices[device_id][STORE_ZONES][1]
-    assert zone == {"shape": "none", "data": None}
+    assert zone == {
+        "shape": "none",
+        "data": None,
+        "previous_shape": previous("rect", RECT, replaced_at),
+    }
 
 
 async def test_data_null_without_shape_keeps_geometry(
@@ -1449,7 +1454,9 @@ async def test_unknown_shape_is_rejected_by_schema(
     ],
 )
 @pytest.mark.usefixtures("init_integration")
-async def test_drawable_shape_without_data_warns(hass, device_id, caplog, case) -> None:
+async def test_drawable_shape_without_data_warns(
+    hass, device_id, caplog, case, replaced_at
+) -> None:
     """A drawable shape with no data is stored without geometry, and says so."""
     zone_id, extra = case
     await _create_rect_zone(hass, device_id)
@@ -1460,18 +1467,21 @@ async def test_drawable_shape_without_data_warns(hass, device_id, caplog, case) 
     )
 
     zone = get_store(hass).device(device_id)[STORE_ZONES][zone_id]
-    assert zone == {"shape": "rect", "data": None}
+    # Only zone 1 had a shape to replace.
+    assert zone == {"shape": "rect", "data": None} | (
+        {"previous_shape": previous("rect", RECT, replaced_at)} if zone_id == 1 else {}
+    )
     assert WARN_ZONE_NO_GEOMETRY % (zone_id, device_id, "rect") in caplog.messages
 
 
 @pytest.mark.parametrize(
     "extra", [{}, {"data": None}], ids=["data_omitted", "data_null"]
 )
+@pytest.mark.usefixtures("init_integration")
 async def test_shape_none_without_data_does_not_warn(
-    hass, init_integration, device_id, caplog, extra
+    hass, device_id, caplog, extra, replaced_at
 ) -> None:
     """`shape: none` is the documented clear, so it logs nothing."""
-    _ = init_integration
     await _create_rect_zone(hass, device_id)
     caplog.clear()
 
@@ -1480,7 +1490,11 @@ async def test_shape_none_without_data_does_not_warn(
     )
 
     zone = get_store(hass).device(device_id)[STORE_ZONES][1]
-    assert zone == {"shape": "none", "data": None}
+    assert zone == {
+        "shape": "none",
+        "data": None,
+        "previous_shape": previous("rect", RECT, replaced_at),
+    }
     assert "no geometry" not in caplog.text
 
 
@@ -2182,7 +2196,7 @@ async def test_hold_s_is_stored_and_zero_pops_it(
 
 
 async def test_zone_settings_survive_a_redraw(
-    hass, init_integration, device_id
+    hass, init_integration, device_id, replaced_at
 ) -> None:
     """A redraw keeps a zone's name, type and hold time; its own settings win."""
     _ = init_integration
@@ -2210,6 +2224,7 @@ async def test_zone_settings_survive_a_redraw(
         "name": "Fan",
         "zone_type": "ignore",
         "hold_s": 45,
+        "previous_shape": previous("rect", RECT, replaced_at),
     }
 
     # Undo sends the earlier geometry the same way; a setting in the same call
@@ -2235,7 +2250,7 @@ async def test_zone_settings_survive_a_redraw(
 
 
 async def test_zone_settings_survive_shape_none(
-    hass, init_integration, device_id
+    hass, init_integration, device_id, replaced_at
 ) -> None:
     """Clearing a zone, as Clear and Clear All do, keeps its type and hold time."""
     _ = init_integration
@@ -2259,6 +2274,7 @@ async def test_zone_settings_survive_shape_none(
         "data": None,
         "zone_type": "ignore",
         "hold_s": 45,
+        "previous_shape": previous("rect", RECT, replaced_at),
     }
     _, presence_id = _zone_entity_ids(hass, device_id)
     assert hass.states.get(presence_id).attributes["zone_type"] == "ignore"
@@ -2817,3 +2833,228 @@ async def test_default_name_on_the_creating_call_leaves_registry_names_alone(
     await _rename_zone(hass, device_id, "Couch")
     assert registry.async_get(sensor_id).name == "Zone 1 - Couch"
     assert registry.async_get(presence_id).name == "Zone 1 presence - Couch"
+
+
+# ---------------------------------------------------------------------------
+# The previous shape a shape change keeps
+# ---------------------------------------------------------------------------
+
+ELLIPSE = {"cx": 0, "cy": 1000, "rx": 400, "ry": 300}
+TRIANGLE = {"points": [{"x": 0, "y": 0}, {"x": 500, "y": 0}, {"x": 0, "y": 500}]}
+# One hour after REPLACED_AT.
+AN_HOUR_LATER = "2026-11-13T16:04:05+00:00"
+
+
+async def _set_shape(
+    hass, device_id: str, shape: str, data: Any = None, zone_id: int = 1
+) -> None:
+    await _update_zone(
+        hass,
+        {"device_id": device_id, "zone_id": zone_id, "shape": shape, "data": data},
+    )
+
+
+@pytest.mark.usefixtures("init_integration")
+async def test_redraw_records_the_previous_shape(
+    hass, device_id, replaced_at, freezer, hass_storage
+) -> None:
+    """Each redraw keeps the shape it replaced, with when, and saves it."""
+    await _create_rect_zone(hass, device_id)
+    replaced = _stored_zone(hass, device_id)["data"]
+
+    await _set_shape(hass, device_id, "ellipse", ELLIPSE)
+
+    assert _stored_zone(hass, device_id) == {
+        "shape": "ellipse",
+        "data": ELLIPSE,
+        "previous_shape": previous("rect", RECT, replaced_at),
+    }
+    # A copy, sharing nothing with the dict it replaced.
+    assert _stored_zone(hass, device_id)["previous_shape"]["data"] is not replaced
+
+    freezer.tick(timedelta(hours=1))
+    await _set_shape(hass, device_id, "polygon", TRIANGLE)
+
+    assert _stored_zone(hass, device_id) == {
+        "shape": "polygon",
+        "data": TRIANGLE,
+        "previous_shape": previous("ellipse", ELLIPSE, AN_HOUR_LATER),
+    }
+    await get_store(hass).async_save()
+    on_disk = hass_storage[ZONE_STORAGE_KEY]["data"]["devices"][device_id]
+    assert on_disk["zones"]["1"]["previous_shape"] == previous(
+        "ellipse", ELLIPSE, AN_HOUR_LATER
+    )
+    # The zone sensors publish only their own keys.
+    for entity_id in _zone_entity_ids(hass, device_id):
+        assert "previous_shape" not in hass.states.get(entity_id).attributes
+
+
+@pytest.mark.parametrize(
+    "first",
+    [
+        {"shape": "none", "data": None, "name": "Zone 1"},
+        # The legacy placeholder for a zone whose geometry was lost.
+        {},
+        # A drawable shape stored with no geometry reads as none.
+        {"shape": "rect", "data": None},
+    ],
+    ids=["add_zone", "legacy_placeholder", "rect_without_data"],
+)
+async def test_first_drawing_records_no_shape_as_previous(
+    hass, init_integration, device_id, replaced_at, first
+) -> None:
+    """Drawing a zone that had no shape keeps "none", so Undo can clear it."""
+    _ = init_integration
+    get_store(hass).device(device_id)[STORE_ZONES][1] = dict(first)
+
+    await _set_shape(hass, device_id, "rect", RECT)
+
+    zone = _stored_zone(hass, device_id)
+    assert (zone["shape"], zone["data"]) == ("rect", RECT)
+    assert zone["previous_shape"] == previous("none", None, replaced_at)
+
+
+@pytest.mark.parametrize(
+    ("shape", "data"), [("rect", RECT), ("none", None)], ids=["drawn", "add_zone"]
+)
+async def test_creating_a_zone_records_no_previous_shape(
+    hass, init_integration, device_id, shape, data
+) -> None:
+    """A new zone replaced nothing, so it has no previous shape."""
+    _ = init_integration
+
+    await _set_shape(hass, device_id, shape, data)
+
+    assert _stored_zone(hass, device_id) == {"shape": shape, "data": data}
+
+
+async def test_rewriting_the_same_shape_keeps_the_previous_shape(
+    hass, init_integration, device_id, replaced_at, freezer
+) -> None:
+    """The same geometry written again, as rounding gives it, replaces nothing."""
+    _ = init_integration
+    await _create_rect_zone(hass, device_id)
+    await _set_shape(hass, device_id, "rect", MOVED)
+    freezer.tick(timedelta(hours=1))
+
+    await _set_shape(hass, device_id, "rect", MOVED)
+    await _set_shape(
+        hass,
+        device_id,
+        "rect",
+        {"x_min": 0.4, "x_max": 499.6, "y_min": 0, "y_max": 500},
+    )
+
+    assert _stored_zone(hass, device_id) == {
+        "shape": "rect",
+        "data": MOVED,
+        "previous_shape": previous("rect", RECT, replaced_at),
+    }
+
+
+async def test_clearing_records_the_previous_shape(
+    hass, init_integration, device_id, replaced_at
+) -> None:
+    """Clear and Clear all keep the shape they cleared."""
+    _ = init_integration
+    await _create_rect_zone(hass, device_id)
+    await _set_shape(hass, device_id, "polygon", TRIANGLE)
+
+    await _set_shape(hass, device_id, "none")
+
+    assert _stored_zone(hass, device_id) == {
+        "shape": "none",
+        "data": None,
+        "previous_shape": previous("polygon", TRIANGLE, replaced_at),
+    }
+
+
+async def test_clearing_an_undrawn_zone_keeps_its_previous_shape(
+    hass, init_integration, device_id, replaced_at, freezer
+) -> None:
+    """Clear all on a zone that has no shape changes nothing it could restore."""
+    _ = init_integration
+    await _create_rect_zone(hass, device_id)
+    await _set_shape(hass, device_id, "none")
+    freezer.tick(timedelta(hours=1))
+
+    await _set_shape(hass, device_id, "none")
+
+    assert _stored_zone(hass, device_id) == {
+        "shape": "none",
+        "data": None,
+        "previous_shape": previous("rect", RECT, replaced_at),
+    }
+
+    # A zone never drawn still has none.
+    await _set_shape(hass, device_id, "none", zone_id=2)
+    await _set_shape(hass, device_id, "none", zone_id=2)
+    assert _stored_zone(hass, device_id, 2) == {"shape": "none", "data": None}
+
+
+async def test_rename_and_settings_keep_the_previous_shape(
+    hass, init_integration, device_id, replaced_at, freezer
+) -> None:
+    """A rename, a zone setting or a device-wide field leaves it alone."""
+    _ = init_integration
+    await _create_rect_zone(hass, device_id)
+    await _set_shape(hass, device_id, "rect", MOVED)
+    freezer.tick(timedelta(hours=1))
+
+    await _rename_zone(hass, device_id, "Couch")
+    await _update_zone(
+        hass,
+        {
+            "device_id": device_id,
+            "zone_id": 1,
+            STORE_ZONE_TYPE: "ignore",
+            STORE_HOLD_S: 30,
+        },
+    )
+    await _update_zone(hass, {"device_id": device_id, ATTR_ROTATION_DEG: 15})
+
+    assert _stored_zone(hass, device_id) == {
+        "shape": "rect",
+        "data": MOVED,
+        "name": "Couch",
+        "zone_type": "ignore",
+        "hold_s": 30,
+        "previous_shape": previous("rect", RECT, replaced_at),
+    }
+
+
+async def test_delete_drops_the_previous_shape_and_a_new_zone_on_the_id_has_none(
+    hass, init_integration, device_id, replaced_at
+) -> None:
+    """Delete is not undoable: the previous shape goes with the zone."""
+    _ = (init_integration, replaced_at)
+    await _create_rect_zone(hass, device_id)
+    await _set_shape(hass, device_id, "rect", MOVED)
+
+    await _update_zone(hass, {"device_id": device_id, "zone_id": 1, "delete": True})
+
+    assert get_store(hass).devices[device_id][STORE_ZONES] == {}
+
+    await _set_shape(hass, device_id, "rect", RECT)
+
+    assert _stored_zone(hass, device_id) == {"shape": "rect", "data": RECT}
+
+
+async def test_rejected_geometry_records_the_previous_shape(
+    hass, init_integration, device_id, replaced_at
+) -> None:
+    """A geometry stored as no shape replaced the one before, so it is kept."""
+    _ = init_integration
+    await _create_rect_zone(hass, device_id)
+
+    # x_min above x_max: the zone is kept with no geometry.
+    await _set_shape(
+        hass, device_id, "rect", {"x_min": 500, "x_max": 0, "y_min": 0, "y_max": 500}
+    )
+
+    assert _stored_zone(hass, device_id) == {
+        "shape": "rect",
+        "data": None,
+        "previous_shape": previous("rect", RECT, replaced_at),
+    }

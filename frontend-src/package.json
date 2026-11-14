@@ -1,6 +1,6 @@
 {
   "name": "apollo-mmwave-frontend",
-  "version": "2.4.0",
+  "version": "2.4.1",
   "type": "module",
   "description": "Apollo mmWave Lovelace frontend (radar tuning cards + dashboard strategy), bundled into the apollo_mmwave integration",
   "license": "MIT",
@@ -20,7 +20,7 @@
     "happy-dom": "^21.0.4",
     "terser": "^5.51.2",
     "typescript": "^7.0.2",
-    "vite": "^8.3.5",
-    "vitest": "^5.0.5"
+    "vite": "^8.3.7",
+    "vitest": "^5.1.0"
   }
 }

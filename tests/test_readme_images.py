@@ -24,8 +24,8 @@ IMAGE_URL = re.compile(
     r"([^/)\s]+)/docs/images/([^)\s]+)"
 )
 
-# Every image the README of a published release (2.2.6, 2.2.7, 2.3.0 and
-# 2.4.0) links, with the SHA-256 of the file as those releases were tagged.
+# Every image the README of a published release (2.2.6, 2.2.7, 2.3.0, 2.4.0
+# and 2.4.1) links, with the SHA-256 of the file as those releases were tagged.
 # The pull request that makes a release adds the images its README links that
 # are not here yet.
 PUBLISHED_IMAGES = {
@@ -56,6 +56,16 @@ PUBLISHED_IMAGES = {
     ),
     "apollo-mmwave-zone-map-zones-2.4.0.png": (
         "d281837e4ef329de72d6966b87027b7741bc142c3e288d52e2d79eb249b799fe"
+    ),
+    # 2.4.1
+    "apollo-mmwave-zone-map-expand-2.4.1.gif": (
+        "177ab338581dad8a43eae8c483e6bfe97e66e9d22b89fdb0654acbeeed9490b4"
+    ),
+    "apollo-mmwave-zone-map-redraw-2.4.1.gif": (
+        "686b895230f19ef12155d4114ea32b3974a7d8dfbeea19baf0b2a14c2cef5b5d"
+    ),
+    "apollo-mmwave-zone-map-zones-2.4.1.png": (
+        "d286a555c9de79fcb2848940d845e91a9457ac9feb77d13d650cbf4d38874151"
     ),
 }
 

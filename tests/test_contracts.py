@@ -41,6 +41,7 @@ from custom_components.apollo_mmwave.const import (
     DOMAIN,
     FRONTEND_DIR,
     HOLD_S_MAX,
+    RESTORE_SHAPE_MAX_ZONES,
     SENSOR_UNIT_FACTORS,
     STORE_HOLD_S,
     STORE_MOVEMENT_HISTORY,
@@ -147,6 +148,7 @@ def test_sensor_unit_factors_match_the_zone_card() -> None:
     [
         ("ZONES_GET", websocket.TYPE_GET),
         ("ZONES_SUBSCRIBE", websocket.TYPE_SUBSCRIBE),
+        ("ZONES_RESTORE_SHAPE", websocket.TYPE_RESTORE_SHAPE),
         ("MOVEMENT_GET", websocket.TYPE_MOVEMENT_GET),
         ("MOVEMENT_CLEAR", websocket.TYPE_MOVEMENT_CLEAR),
     ],
@@ -172,6 +174,12 @@ async def test_zones_payload_keys_are_the_fields_api_ts_declares(
     for call in (
         {"zone_id": 1, **rect, "name": "Couch", STORE_HOLD_S: 60},
         {"zone_id": 2, **rect, STORE_ZONE_TYPE: ZONE_TYPE_IGNORE},
+        # A redraw adds the two previous shape keys.
+        {
+            "zone_id": 1,
+            "shape": "ellipse",
+            "data": {"cx": 0, "cy": 9, "rx": 5, "ry": 5},
+        },
     ):
         await hass.services.async_call(
             DOMAIN, "update_zone", {"device_id": device_id, **call}, blocking=True
@@ -184,6 +192,102 @@ async def test_zones_payload_keys_are_the_fields_api_ts_declares(
     assert set(result) == _interface_fields(source, "ZoneConfig")
     zone_keys = {key for zone in result[STORE_ZONES].values() for key in zone}
     assert zone_keys == _interface_fields(source, "ZoneDef")
+
+
+async def test_restore_shape_reply_is_what_api_ts_declares(
+    hass, hass_ws_client, init_integration, device_id
+) -> None:
+    """zones/restore_shape answers RestoreShapeReply, each zone a ShapeGeometry."""
+    _ = init_integration
+    rect = {"x_min": 0, "x_max": 10, "y_min": 0, "y_max": 10}
+    moved = {"x_min": 0, "x_max": 500, "y_min": 0, "y_max": 500}
+    for data in (rect, moved):
+        await hass.services.async_call(
+            DOMAIN,
+            "update_zone",
+            {"device_id": device_id, "zone_id": 1, "shape": "rect", "data": data},
+            blocking=True,
+        )
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id(
+        {
+            "type": websocket.TYPE_RESTORE_SHAPE,
+            "device_id": device_id,
+            "zones": [
+                {"zone_id": 1, "current": {"shape": "rect", "data": moved}},
+                {"zone_id": 2, "current": {"shape": "none", "data": None}},
+            ],
+        }
+    )
+    result = (await client.receive_json())["result"]
+    source = _read(API_TS)
+
+    assert result == {
+        "restored": [{"zone_id": 1, "shape": "rect", "data": rect}],
+        "skipped": [2],
+    }
+    assert set(result) == _interface_fields(source, "RestoreShapeReply")
+    assert set(result["restored"][0]) == {"zone_id"} | _interface_fields(
+        source, "ShapeGeometry"
+    )
+    assert "restored: Array<{ zone_id: number } & ShapeGeometry>;" in source
+    assert "skipped: number[];" in source
+
+
+async def test_restore_shape_takes_each_field_api_ts_sends(
+    hass, hass_ws_client, init_integration, device_id
+) -> None:
+    """Every RestoreShapeItem field is in the schema, and nothing more is."""
+    _ = init_integration
+    client = await hass_ws_client(hass)
+    none = {"shape": "none", "data": None}
+    item = {
+        "zone_id": 1,
+        "current": none,
+        "previous": none,
+        "previous_at": "2026-11-13T15:04:05+00:00",
+    }
+
+    assert set(item) == _interface_fields(_read(API_TS), "RestoreShapeItem")
+    for zone, ok in ((item, True), ({**item, "name": "Couch"}, False)):
+        await client.send_json_auto_id(
+            {
+                "type": websocket.TYPE_RESTORE_SHAPE,
+                "device_id": device_id,
+                "zones": [zone],
+            }
+        )
+        reply = await client.receive_json()
+        assert reply["success"] is ok, zone
+        if not ok:
+            assert reply["error"]["code"] == "invalid_format"
+
+
+async def test_restore_shape_takes_as_many_zones_as_api_ts_sends(
+    hass, hass_ws_client, init_integration, device_id
+) -> None:
+    """The card offers no Undo past the zone count one restore takes."""
+    _ = init_integration
+    client = await hass_ws_client(hass)
+
+    def ask(count: int) -> dict[str, Any]:
+        return {
+            "type": websocket.TYPE_RESTORE_SHAPE,
+            "device_id": device_id,
+            "zones": [
+                {"zone_id": zone_id, "current": {"shape": "none", "data": None}}
+                for zone_id in range(1, count + 1)
+            ],
+        }
+
+    await client.send_json_auto_id(ask(RESTORE_SHAPE_MAX_ZONES))
+    assert (await client.receive_json())["success"] is True
+    await client.send_json_auto_id(ask(RESTORE_SHAPE_MAX_ZONES + 1))
+    assert (await client.receive_json())["error"]["code"] == "invalid_format"
+    assert (
+        f"export const RESTORE_SHAPE_MAX_ZONES = {RESTORE_SHAPE_MAX_ZONES};"
+        in _read(API_TS)
+    )
 
 
 @pytest.fixture

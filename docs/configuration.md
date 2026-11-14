@@ -25,6 +25,7 @@ install the integration and run your first calibration.
   - [Expand the map](#expand-the-map)
 - [Drawing zones](#drawing-zones)
   - [The Zones panel](#the-zones-panel)
+  - [Undo a shape change](#undo-a-shape-change)
   - [Mark corners by walking](#mark-corners-by-walking)
   - [Map units and size](#map-units-and-size)
   - [Target X and Y units](#target-x-and-y-units)
@@ -153,13 +154,13 @@ Copy the URLs from the warning exactly and add each one once, as a module:
 lovelace:
   resource_mode: yaml
   resources:
-    - url: /apollo_mmwave/apollo-radar-tuning.js?v=2.4.0
+    - url: /apollo_mmwave/apollo-radar-tuning.js?v=2.4.1
       type: module
-    - url: /apollo_mmwave/apollo-radar-zone-map-card.js?v=2.4.0
+    - url: /apollo_mmwave/apollo-radar-zone-map-card.js?v=2.4.1
       type: module
 ```
 
-The `?v=` is the integration version, such as `?v=2.4.0`, and nothing else,
+The `?v=` is the integration version, such as `?v=2.4.1`, and nothing else,
 so a bundle's URL changes only when the version does. After every upgrade,
 replace each row's URL with the new one from the warning instead of adding a
 second row. An out-of-date row makes the browser run the bundle twice, once
@@ -786,6 +787,24 @@ The zone map draws what the radar sees right now over the zones you drew:
 - **Ignore zones** are hatched, with a dashed outline, and add "(ignored)"
   to their label. A target inside one is a hollow gray ring with a gray
   number, and its trail is gray: no zone counts it.
+- **The picked zone stands out.** While an administrator edits on an
+  unlocked map, a zone picked under **Zones** that has a shape is drawn
+  bright, with a thicker outline and a dot on each corner, and the other
+  zones fade to faint outlines with paler names, so you can see which zone
+  a drag would redraw. A picked zone with no shape yet, such as a new one
+  from **Add zone**, leaves the others as they are until you draw it.
+  A locked map, a view-only map, a replay and other users' maps draw every
+  zone alike.
+- **Names stay apart.** Each zone's name sits in the middle of its zone
+  where it fits. Where zones overlap, or one sits inside another, the
+  smaller zone's name is placed first, and a name that would cover another
+  moves to the top or bottom inside its zone, then right above or below it,
+  a size smaller if it must, then out beside the zone, as close as there is
+  room, with a line to it. Only if the whole map is too crowded for that is
+  it drawn on a backing so it stays readable. No name is hidden to make
+  room, and names keep clear of the buttons, the banner and the notes over
+  the map ("Radar offline" and a replay's time). A zone drawn smaller than
+  about 20 by 14 px still shows no name; zoom in to see it.
 - **Radar offline.** While every target sensor the map tracks is
   unavailable, the map shows "Radar offline" in its top-left corner and the
   zones turn gray, because their presence sensors read `unavailable`.
@@ -847,7 +866,8 @@ presence sensors and other viewers' maps stay as they are.
   while you mark corners by walking and with no zone selected: put both
   fingers down before you move them, since a second finger cannot take over
   once one finger is scrolling the page. Over the map a pinch zooms the map,
-  not the page. One finger draws or scrolls the page as before. A second
+  not the page. One finger draws while drawing is on (see
+  [Drawing zones](#drawing-zones)) and scrolls the page otherwise. A second
   finger that lands before the first has moved about 10 px starts a pinch
   and drops the rectangle or ellipse the first finger began, while a polygon
   keeps its corners. Once the first finger has moved farther, a second
@@ -869,9 +889,14 @@ presence sensors and other viewers' maps stay as they are.
 
 ### Expand the map
 
-Press the expand button (**Expand map**) in the map's top right corner,
-under the distance labels, to give the map the whole browser or app window.
-Its tooltip reads "Expand the map to fill the window. Press Esc to return."
+Press **Expand** in the map's top right corner, under the distance labels,
+to give the map the whole browser or app window. Where the map is at least
+480 px wide, the button shows the word **Expand** beside its icon; on a
+narrower map, such as on a phone, it is the icon alone. Screen readers hear
+"Expand map" either way, and its tooltip reads "Expand the map to fill the
+window. Press Esc to return." The help line in **Map settings** and the
+zone editor's drawing hint say where it is: "Expand, at the map's top
+right, fills the window with the map."
 
 - **Layout.** On a wide window, a panel beside the map holds Walk,
   **Coverage** and **History**, the **Zones** panel and **Map settings**. It
@@ -887,6 +912,16 @@ Its tooltip reads "Expand the map to fill the window. Press Esc to return."
   that is playing, Coverage, whether Map settings is open and text you are
   typing come along when the map expands and when it closes. A rectangle or
   ellipse you are dragging at that moment is dropped.
+- **Zone chips on a phone held upright.** Where the panel sits under the
+  map, a strip of zone chips stays pinned under the map, with ✎ beside the
+  picked one for an administrator on an unlocked map, so you can see and
+  switch the zone, and start drawing it, without scrolling down to the
+  **Zones** panel. The chips in the panel hide meanwhile.
+- **Messages.** Home Assistant's own messages would sit behind the
+  expanded map, so the card shows them in a bar at the bottom of the
+  window, under the panel where the panel sits beside the map, with
+  **Undo** after a shape saves (see
+  [Undo a shape change](#undo-a-shape-change)).
 - **Finer grid on a large screen.** Where the expanded map is wider than
   the card's 800 px drawing, as on a large monitor, it is drawn as wide as
   it shows, up to 1600 px, so the grid lines and the snap can get finer
@@ -897,8 +932,9 @@ Its tooltip reads "Expand the map to fill the window. Press Esc to return."
   same corner button, Esc, or Back in a browser, the Android app or Chrome
   for Android. In the iPhone and iPad app, press ×. Esc first undoes what
   you are in the middle of: it puts back a zone name you were changing,
-  drops an unfinished polygon's corners, or closes a **Delete zone** or
-  **Clear all shapes** question. The next Esc closes the window.
+  drops an unfinished polygon's corners, stops drawing (the "Drawing Couch"
+  banner), or closes a **Delete zone** or **Clear all shapes** question.
+  The next Esc closes the window.
 - **The page stays put.** The page behind the map does not scroll while it
   is expanded, and closing it puts you back where you were. Screen readers
   hear the card's messages there too.
@@ -912,29 +948,59 @@ Its tooltip reads "Expand the map to fill the window. Press Esc to return."
 The zone map card on R PRO-1 and MTR-1 tabs draws occupancy zones over the
 LD2450's live targets. If the map shows no dot with someone in the room,
 check the [Radar setup](#radar-setup) card first. Only administrators can
-add, draw or change zones; other users see them, and the card answers a
-change with "Could not save".
+add, draw or change zones. Other users see them, and for them a swipe on
+the map scrolls the page.
 
 A new radar has no zones yet. The **Zones** panel under the map then says
 "No zones yet. Press Add zone, then drag on the map to draw it.", and a
 press on the map says "Press Add zone under the map first." If the sensor is
 turned or mounted in a corner, set **Cone rotation** under **Map settings**
 first (see [Map units and size](#map-units-and-size)). Then press **Add
-zone**: it adds "Zone 1" and picks it. Drag on the map to draw it as a
-rectangle, or first choose Ellipse or Polygon from the drawing-mode menu
-(✎) on the map, or walk the zone's corners with 🚶 (see
+zone**: it adds "Zone 1", picks it and gets the map ready to draw it, with
+the banner "Drawing Zone 1" in the map's top left corner. Drag on the map to draw
+it as a rectangle, or first choose Ellipse or Polygon from the drawing-mode
+menu (✎) on the map, or walk the zone's corners with 🚶 (see
 [Mark corners by walking](#mark-corners-by-walking)). The zone's editor
-under the chips says how to draw it in the mode you chose. Drawing a zone
-that already has a shape replaces that shape. Naming, **Type**, **Hold**
-and deleting are under [The Zones panel](#the-zones-panel).
+under the chips says how to draw it in the mode you chose. Naming,
+**Type**, **Hold** and deleting are under
+[The Zones panel](#the-zones-panel), and putting a shape back under
+[Undo a shape change](#undo-a-shape-change).
+
+**Draw shape and Redraw shape.** A drag on the map draws only once you have
+said which zone it draws, so a drag that starts while the wrong zone is
+picked cannot replace that zone's shape. Pick the zone under **Zones**,
+then press **Draw shape** in its editor (**Redraw shape** once it has a
+shape), or ✎ beside its chip (**Draw Couch** or **Redraw Couch**). **Add
+zone** does this for its new zone, and so does the editor's **Unlock** for
+a zone with no shape yet. If the map was partly off the screen it scrolls
+into view, the pointer turns to a crosshair, and a banner in the map's top
+left corner, clear of the radar's cone, names the zone, with **Cancel** at
+its left end and a dot in its color, such as "Drawing Couch". **Draw shape** becomes **Cancel drawing** and ✎ becomes ✕.
+The shape you finish replaces the zone's shape, saves and ends drawing, so
+the next drag draws nothing until you press **Redraw shape** again.
+**Cancel**, **Cancel drawing**, ✕ and Esc end drawing without a change, and
+so do picking another zone (with its chip or a tap on it on the map),
+locking the map, **Mark corners by walking**, **History** and **Delete
+zone**.
+
+While drawing is not on, nothing you do on the unlocked map draws:
+
+- One finger on a phone scrolls the page, and two fingers zoom and pan it.
+- A press on another zone picks it.
+- A press anywhere else, the picked zone included, says "To redraw Couch,
+  press Redraw shape first.", or "To draw Couch, press Draw shape first."
+  for a zone with no shape yet.
+- Shift and drag, or the middle mouse button, still moves a zoomed map.
+
+Once drawing is on, each drawing mode works like this:
 
 - **Rectangle:** drag out a box. A click or a tap draws and saves nothing;
   on a zone it picks that zone instead. A perfectly straight drag saves
   nothing either.
 - **Ellipse:** drag out its bounding box. A click or a tap saves nothing
   and picks the zone under it, as for a rectangle. A perfectly straight
-  drag still saves an ellipse with a 1 mm radius one way, so use **Undo
-  last zone change** (↶) if that happens.
+  drag still saves an ellipse with a 1 mm radius one way, so press **Undo**
+  in the message, or ↶, if that happens.
 - **Polygon:** click or tap each corner, then press **Finish polygon** (✓) or
   double-click or double-tap the last corner. A polygon needs at least 3
   distinct corners and finishes on its own at 32. With fewer, **Finish
@@ -942,8 +1008,8 @@ and deleting are under [The Zones panel](#the-zones-panel).
   different points." and drops the corners, while a double-tap says the same
   and lets you add more. If no zone is selected by then, **Finish polygon**
   says "Select a zone first." Backspace or **Undo last point** removes the
-  last corner and Escape discards the polygon; keys typed into a text field
-  go to that field instead.
+  last corner, and Escape discards the polygon and ends drawing; keys typed
+  into a text field go to that field instead.
 - Pressing anywhere else in the card, such as a zone's chip, **Add zone** or
   the rotation slider, cancels a shape in progress (the buttons on the grid
   itself do not). Moving the mouse off the grid cancels a rectangle or ellipse
@@ -990,18 +1056,21 @@ browser remembers your choice for each radar. While the map is locked:
 - **Clear all shapes** under **Map settings** looks dimmed and clears
   nothing: the **Locked** button is outlined and the card says "Unlock the
   map to clear zones."
-- **Add zone**, a zone's name, **Type** and **Hold**, **Delete zone** and
-  **Undo last zone change** still work. Instead of how to draw, the zone's
+- **Add zone**, a zone's name, **Type** and **Hold**, and **Delete zone**
+  still work. **Undo last zone change** (↶) and **Restore previous shape**
+  look dimmed, and a press says "Unlock the map to undo a shape change." or
+  "Unlock the map to restore a shape." Instead of how to draw, the zone's
   editor says "The map is locked, so drawing is off. Unlock it to draw this
   zone or change its shape." Its **Unlock** button unlocks the map, as
-  **Locked** does.
+  **Locked** does, and for a zone with no shape yet starts drawing it.
 - The **Cone rotation** slider under **Map settings** is gray, a scroll
   that starts on it scrolls the page, and a tap or drag on it outlines the
   **Locked** button and shows "Cone rotation is locked. Press Locked on the
   map to change it."
 
-An unlocked map lets a swipe scroll the page too while no zone is selected,
-or while you mark corners by walking, since nothing can be drawn then.
+On an unlocked map a swipe scrolls the page too whenever drawing is not
+on: with no zone picked, before you press **Draw shape** or **Redraw
+shape**, and while you mark corners by walking.
 
 ### The Zones panel
 
@@ -1015,12 +1084,17 @@ three parts:
   "The map holds up to 32 zones. Delete one to add another."
 - **The chips** name each zone, with a dot in its color on the map: hollow
   and dashed while the zone is not drawn yet, and gray and hatched for an
-  ignore zone. The picked zone's chip has a colored ring around it. Press a
-  chip to pick its zone. You can also tap the zone on the map: on a locked
-  map, and in Rectangle or Ellipse mode on an unlocked one, a tap picks the
-  zone under it, the smallest one where zones overlap. While the map is
-  unlocked, the picked zone is outlined thicker. When the card opens, the
-  first zone is picked.
+  ignore zone. The picked zone's chip has a colored ring around it, and
+  for an administrator on an unlocked map a ✎ joined to it (**Draw Couch**
+  or **Redraw Couch**), which starts drawing that zone and shows ✕
+  (**Cancel drawing**) while you draw. Press a chip to pick its zone. You
+  can also tap the zone on the map: on a locked map, on an unlocked one
+  while drawing is not on, and in Rectangle or Ellipse mode while it is, a
+  tap picks the zone under it, the smallest one where zones overlap. While
+  you edit on an unlocked map, a picked zone that has a shape is drawn
+  bright and the others fade (see
+  [What the map shows](#what-the-map-shows)). When the
+  card opens, the first zone is picked.
 - **The editor** under the chips belongs to the picked zone, with its
   number as the heading:
   - **Name.** Type a name and press Enter, leave the field, or pick
@@ -1028,6 +1102,9 @@ three parts:
     field saves the default name, such as "Zone 2". The chip and the label
     on the map change as you save.
   - The zone's size, such as "Size 2.0 m × 0.9 m", or "Not drawn yet".
+  - **Restore previous shape**, with when the shape was replaced, such as
+    "Replaced 5 min ago", while Apollo mmWave keeps an earlier shape for
+    the zone (see [Undo a shape change](#undo-a-shape-change)).
   - **Type** and **Hold** (see
     [Ignore zones and hold time](#ignore-zones-and-hold-time)), with a line
     under them that says what they do for this zone.
@@ -1037,10 +1114,15 @@ three parts:
     ignores targets", a zone with no shape "Turns on once the zone is
     drawn", and a zone whose sensor is not there yet "No presence sensor
     yet".
-  - How to draw the zone in the drawing mode chosen on the map, such as
-    "Drag on the map to draw this zone as a rectangle. ✎ on the map offers
-    an ellipse or a polygon. A tap on another zone picks it.", or the lock
-    note with **Unlock** while the map is locked.
+  - How to draw the zone in the drawing mode chosen on the map, with
+    **Draw shape** (**Redraw shape** once the zone has a shape), such as
+    "Press Redraw shape, then drag on the map to give this zone a new
+    rectangle. ✎ on the map offers an ellipse or a polygon. A tap on a zone
+    on the map picks it. Expand, at the map's top right, fills the window
+    with the map." While you draw it reads "Drag on the map to draw this
+    zone as a rectangle. Cancel drawing or Esc stops without a change.",
+    beside **Cancel drawing**. While the map is locked, the lock note with
+    **Unlock** shows instead.
   - **Delete zone** asks first, for example "Delete Couch? Its sensors
     leave Home Assistant, so automations that use them stop working. This
     cannot be undone." **Delete** deletes the zone, and **Keep it** or
@@ -1049,8 +1131,9 @@ three parts:
 A name, a **Type** or a **Hold** saves on its own. Beside the zone's
 heading the card shows "Saving...", then "Saved", or "Not saved" in red
 with a "Could not save" message; a name you typed then stays in the field,
-so you can try again. A shape you draw says "Couch saved", with the zone's
-name. Saving a name for a zone that only the card's YAML `zones:` list
+so you can try again. A shape you draw says "Couch drawn" or "Couch
+redrawn", with the zone's name and **Undo** (see
+[Undo a shape change](#undo-a-shape-change)). Saving a name for a zone that only the card's YAML `zones:` list
 names creates that zone, so the name sticks, and a name you are typing is
 kept when the card receives an update from elsewhere.
 
@@ -1064,18 +1147,71 @@ with the unit the target sensors show (see
 [Target X and Y units](#target-x-and-y-units)).
 **Clear all shapes** shows while any zone has a shape, and asks first:
 "Clear every zone's shape? The zones keep their names, types and hold
-times, and ↶ on the map brings the shapes back." On a card whose YAML hides
-↶ (`show_undo: false`) it ends "This cannot be undone." instead. **Clear
-shapes** clears them and says "All shapes cleared", and **Keep them** keeps
-them. No button clears a single zone's shape: draw a new one over it,
-delete the zone, or send `shape: none` with `apollo_mmwave.update_zone`.
+times, and ↶ on the map or Restore previous shape in each zone brings the
+shapes back." On a card whose YAML hides ↶ (`show_undo: false`) it ends
+"and Restore previous shape in each zone brings its shape back." instead.
+**Clear shapes** clears them and says "All shapes cleared", with **Undo**,
+and **Keep them** keeps them. No button clears a single zone's shape:
+redraw it, delete the zone, or send `shape: none` with
+`apollo_mmwave.update_zone`.
 
 Other users see the zones and the editor, with its fields grayed out under
-"Only an administrator can change these.", and no **Add zone**, **Delete
-zone** or **Clear all shapes**. With no zones the panel tells them "No
+"Only an administrator can change these.", and no **Add zone**, **Draw
+shape**, **Restore previous shape**, **Delete zone** or **Clear all
+shapes**. With no zones the panel tells them "No
 zones yet. An administrator can add them." They also see the flip box
 grayed out, and get no 🚶 (in the menu or as a chip), no **History** and no
 Movement history setting.
+
+### Undo a shape change
+
+A shape change can be put back, also after the page reloads:
+
+- **Undo in the message.** Once Home Assistant has saved a shape you drew,
+  a polygon you finished, corners you marked by walking or **Clear all
+  shapes**, the card says what changed, such as "Couch redrawn", "Zone 2
+  drawn" or "All shapes cleared", with **Undo** for 10 seconds. Home
+  Assistant shows the message at the bottom of the screen, and the expanded
+  map in a bar of its own. **Undo** puts the old shape back and says "Undid
+  the change to Couch" or "Undid Clear all shapes". A shape Home Assistant
+  refuses to save goes back to the old one on the map, with "Could not
+  save" and the reason, and offers no **Undo**.
+- **↶ on the map.** **Undo last zone change** (↶), over the map's lower
+  right corner, does the same for the last shape change made in this card,
+  until you undo it or make another. It is grayed out while there is
+  nothing to undo.
+- **Restore previous shape.** Apollo mmWave keeps the shape each zone had
+  before its last shape change, and when it was replaced, in its zone store
+  in Home Assistant. While that was a real shape, the picked zone's editor
+  shows **Restore previous shape** under the zone's size, with when, such
+  as "Replaced 5 min ago". It works after a reload, after the Home
+  Assistant app comes back from the background, and from another device or
+  browser. It swaps the two shapes and says "Previous shape of Couch
+  restored", with **Undo**; pressed again, it swaps them back. A zone keeps
+  one previous shape, so the next change to its shape replaces it. After
+  **Clear all shapes**, each zone's editor offers its old shape back.
+
+A zone whose shape changed somewhere else in the meantime, in another
+browser or by an automation, is left as it is. So is a zone whose kept
+shape is no longer the one this card would bring back, for example after
+another device redrew it and then undid that. The card says "Couch was
+changed in the meantime, so it was not undone." or "Couch was changed in
+the meantime, so nothing was restored." An Undo of **Clear all shapes**
+still puts back the other zones. If Home Assistant cannot be reached, the
+card says "Could not undo:" or "Could not restore:" with the reason, and ↶
+stays ready to try again.
+
+Undo, ↶ and **Restore previous shape** are for administrators and need an
+unlocked map; on a locked map they say "Unlock the map to undo a shape
+change." or "Unlock the map to restore a shape." A new name, **Type** or
+**Hold** is not a shape change and keeps the previous shape. A deleted zone
+takes its previous shape with it, so nothing brings it back. A zone that
+only the card's YAML `zones:` list names, and that was never saved, has no
+previous shape yet, so its first shape saves without **Undo**. A **Clear
+all shapes** over more than 64 drawn zones offers no **Undo** either, while
+**Restore previous shape** in each zone still works. On a card whose YAML
+hides ↶ (`show_undo: false`), **Undo** in the message and **Restore
+previous shape** still work.
 
 ### Mark corners by walking
 
@@ -1087,16 +1223,17 @@ must be the only person the radar sees.
 1. Pick the zone with its chip under **Zones**. Open the drawing-mode menu
    (✎) and press 🚶 (**Mark corners by walking**). On a phone or tablet you
    can press the **🚶 Mark corners by walking** chip beside **Coverage**
-   under the map instead. A panel opens under the map, and the chip hides
-   until you leave Walk.
+   under the map instead. A panel opens under the map, the chip hides
+   until you leave Walk, and a banner in the map's top left corner reads "Marking
+   Couch by walking", with **Cancel**.
 2. Stand still in one corner of the area for about 3 seconds and press
    **Corner here**.
 3. Walk along the edge to the next corner, stand still for about 3 seconds,
    and press **Corner here** again. Go around the zone in order. Two corners
    make a rectangle (use opposite corners), three or more a polygon, up to
    32.
-4. Press **Finish**. The zone is saved like one you drew, and the map leaves
-   Walk.
+4. Press **Finish**. The zone is saved like one you drew, with **Undo** in
+   the message, and the map leaves Walk.
 
 The hint above the buttons says what to do next. Each corner is where the
 radar placed you over the last 1.5 seconds, and the radar updates your
@@ -1119,9 +1256,9 @@ should be in view. If you are alone, a fan or curtain may be moving: add an
 ignore zone over it." After 32 corners it says "That is the most corners a
 zone can have. Press Finish."
 
-**Undo corner** removes the last corner. **Cancel** leaves Walk; with two or
-more corners it first asks "Drop the corners you marked?" with **Drop them**
-and **Keep marking**. Locking the map or choosing another drawing mode leaves
+**Undo corner** removes the last corner. **Cancel**, under the map or in
+the banner, leaves Walk; with two or more corners it first asks "Drop the
+corners you marked?" with **Drop them** and **Keep marking**. Locking the map or choosing another drawing mode leaves
 Walk and drops the corners without asking. While you walk, a swipe on the map
 scrolls the page, two fingers zoom and pan it, and **History** stays
 unavailable ("Finish or cancel the walk first."). On a zoomed map, Walk pans
@@ -1416,7 +1553,10 @@ is inside the zone, or while the zone is held (see
   Settings → Tools → Actions lists its fields (also in the table below). It
   takes the radar's `device_id` and a `zone_id` of 1 or more, with geometry in
   millimeters. To clear a zone send `shape: none`, and to remove it and its
-  entities send `delete: true`. A call that changes nothing, such as a
+  entities send `delete: true`. A call that changes a zone's shape keeps
+  the shape it replaces, with the time, for the zone map's **Restore
+  previous shape** (see [Undo a shape change](#undo-a-shape-change)). A
+  call that changes nothing, such as a
   `zone_id` alone or `data` without a `shape`, is refused with a warning in
   the log. The `display_units` field sets the map unit for everyone: `m`,
   `ft`, or `auto` to follow Home Assistant's unit system again (`auto` with
@@ -1758,9 +1898,9 @@ versions. Apollo mmWave adds:
     the zones track, with their readings and units, whether each unit was
     picked in the sensor's settings, and whether Apollo mmWave switched it
     to mm or left it as it was;
-  - its zones as stored, with each zone's type and hold time, the radar's
-    rotation, units, flip and movement history setting, and this
-    integration's zone entities;
+  - its zones as stored, with each zone's type, hold time and the shape
+    its last shape change replaced, the radar's rotation, units, flip and
+    movement history setting, and this integration's zone entities;
   - whether movement history is on and how many points it holds, never the
     points themselves;
   - the running calibration, the saved snapshots and the last calibration
@@ -2011,7 +2151,9 @@ the two rows yourself under Settings → Dashboards → ⋮ → **Resources**.
   holds. 2.3.0 ignores `view_only` too, so view-only cards show the full map
   with its drawing tools again, and on a phone a swipe that starts on the
   map does not scroll the page; remove or replace those cards before going
-  back.
+  back. Going back from 2.4.1 to 2.4.0 needs no restore either: 2.4.0
+  ignores each zone's previous shape and drops it the next time it changes
+  that zone's shape.
 - **Still stuck?** Send Apollo a support file with your question: Settings →
   Devices & services → Apollo mmWave → ⋮ → **Download diagnostics**. It
   leaves out MAC and IP addresses and Wi-Fi names; see

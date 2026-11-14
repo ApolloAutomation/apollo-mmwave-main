@@ -4,6 +4,76 @@ What changed in each release of Apollo mmWave, newest first. Setup and
 everyday use are in [README.md](README.md) and
 [docs/configuration.md](docs/configuration.md).
 
+## What changed in 2.4.1
+
+A shape drawn over the wrong zone can now be put back, also after the page
+reloads, and the map shows which zone a drag will draw before you draw.
+Zone names move apart instead of covering each other, and the expand button
+says **Expand** where there is room. Nothing needs changing by hand unless
+your Lovelace resources are managed in YAML (replace both `?v=` URLs; see
+[Lovelace resources](docs/configuration.md#lovelace-resources)). One habit
+changes: a drag on an unlocked map no longer redraws the picked zone by
+itself. Press **Redraw shape** in the zone's editor, or ✎ beside its chip,
+first. **Add zone** still goes straight to drawing its new zone.
+
+- **Undo that survives a reload.** After each shape saves, whether you
+  dragged it, finished a polygon, finished marking corners by walking or
+  pressed **Clear all shapes**, a message such as "Couch redrawn" or
+  "Zone 2 drawn" offers **Undo** for 10 seconds. The zone's editor also
+  has **Restore previous shape**, with when the shape was replaced, such as
+  "Replaced 5 min ago". Apollo mmWave keeps each zone's previous shape in
+  its zone store until that zone's shape changes again, so the restore
+  works after a reload, after the Home Assistant app comes back from the
+  background, and from another device. ↶ on the map uses the same kept
+  shape. A zone changed elsewhere in the meantime is left alone, and the
+  card says so. Undo and restore are for administrators on an unlocked map,
+  and a deleted zone does not come back. See
+  [Undo a shape change](docs/configuration.md#undo-a-shape-change).
+- **Draw shape and the highlighted zone.** A drag draws only after you
+  press **Draw shape** (**Redraw shape** once the zone has a shape) in the
+  picked zone's editor, or ✎ beside its chip. A banner in the map's top
+  left corner, clear of the radar's cone, then names the zone, such as
+  "Drawing Couch", with **Cancel**. Esc,
+  picking another zone or locking the map cancels too, and finishing the
+  shape ends it. Until then a drag on the map draws nothing: one finger
+  scrolls the page, a press on another zone picks it, and anywhere else the
+  card says "To redraw Couch, press Redraw shape first." While you edit on
+  an unlocked map, a picked zone that has a shape is drawn bright, with a
+  dot on each corner, and the other zones fade to faint outlines. In the
+  expanded map on a
+  phone held upright, a strip of zone chips under the map shows and
+  switches the zone without scrolling down to the panel. Marking corners by
+  walking shows a banner too. See
+  [Drawing zones](docs/configuration.md#drawing-zones).
+- **Labels that move apart.** Where zones overlap, or one sits inside
+  another, their names no longer pile up in the middle. A name that would
+  cover another moves to the top or bottom inside its zone, then right above
+  or below it, then out beside it with a line to its zone, and no
+  name is hidden to make room. Names also keep clear of the buttons, the
+  banner and the notes over the map. See
+  [What the map shows](docs/configuration.md#what-the-map-shows).
+- **The Expand label.** The expand button in the map's top right corner
+  reads **Expand** beside its icon where the map is at least 480 px wide,
+  and the help line in **Map settings** and the zone's drawing hint say
+  where it is. In the expanded map the card's messages, with their
+  **Undo**, show in a bar at the bottom of the window. See
+  [Expand the map](docs/configuration.md#expand-the-map).
+- **Smaller changes.** **Undo last zone change** (↶) is dimmed on a locked
+  map and says "Unlock the map to undo a shape change." A shape Home
+  Assistant refuses to save goes back to the old one on the map. Only
+  administrators can draw on the map; for other users a swipe on it
+  scrolls the page. Opening **History** cancels drawing, and drawing
+  closes the replay. The **Clear all shapes** question now says ↶ or
+  **Restore previous shape** brings the shapes back.
+- **The previous shape in the zone store.** `apollo_mmwave.update_zone`
+  keeps the shape a call replaces as the zone's previous shape, with the
+  time, in `.storage/apollo_mmwave.zones`, and the support file shows it
+  with the zones. A rename or a new **Type** or **Hold** keeps it, and
+  deleting the zone drops it. Going back to 2.4.0 needs no restore: 2.4.0
+  ignores the previous shape and drops it when it redraws that zone.
+- **Developer tooling.** Vite 8.3.7, vitest 5.1.0, ruff 0.17.4 and pip 26.3
+  or later; none of it ships to Home Assistant.
+
 ## What changed in 2.4.0
 
 The zone map on R PRO-1 and MTR-1 tabs now shows what each zone is doing: a
