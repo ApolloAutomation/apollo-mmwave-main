@@ -100,6 +100,17 @@ export interface ShapeGeometry {
   data: Record<string, any> | null;
 }
 
+/** One zone of an `apollo_mmwave/zones/restore_shape` request. */
+export interface RestoreShapeItem {
+  zone_id: number;
+  /** Restored only while this is still the zone's shape. */
+  current: ShapeGeometry;
+  /** And only while its previous shape is this one. */
+  previous?: ShapeGeometry;
+  /** Or was replaced at this time (`previous_shape_at`). */
+  previous_at?: string;
+}
+
 /** What `apollo_mmwave/zones/restore_shape` answers. */
 export interface RestoreShapeReply {
   /** Each restored zone's geometry after the swap. */
@@ -434,14 +445,20 @@ export async function clearMovement(
 export async function restoreShapes(
   hass: Pick<ZoneApiHass, "callWS">,
   deviceId: string,
-  zones: Array<{ zone_id: number; current: ShapeGeometry }>
+  zones: RestoreShapeItem[]
 ): Promise<RestoreShapeReply> {
+  const geometry = ({ shape, data }: ShapeGeometry): ShapeGeometry => ({
+    shape,
+    data: data ?? null,
+  });
   return hass.callWS<RestoreShapeReply>({
     type: ZONES_RESTORE_SHAPE,
     device_id: deviceId,
-    zones: zones.map(({ zone_id, current }) => ({
+    zones: zones.map(({ zone_id, current, previous, previous_at }) => ({
       zone_id,
-      current: { shape: current.shape, data: current.data ?? null },
+      current: geometry(current),
+      ...(previous ? { previous: geometry(previous) } : {}),
+      ...(typeof previous_at === "string" ? { previous_at } : {}),
     })),
   });
 }

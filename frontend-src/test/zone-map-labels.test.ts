@@ -2,7 +2,6 @@
 
 import { describe, it, expect } from "vitest";
 import {
-  LEADER_RINGS,
   ZONE_LABEL_FONT_PX,
   ZONE_LABEL_SMALL_FONT_PX,
   boxGap,
@@ -118,7 +117,7 @@ describe("zone label layout", () => {
     expect(box.left).toBe(400 + 4 + 2 * 24);
   });
 
-  it(`goes out up to ${LEADER_RINGS} steps, then falls back to a plate at the center`, () => {
+  it("goes out step by step past the canvas, then falls back to a plate at the center", () => {
     const zone = item(1, 300, 300, 100, 100, "Rug");
     const all: Box[] = [{ left: 0, right: 800, top: 0, bottom: 800 }];
     const [placed] = layOutZoneLabels([zone], { ...OPTIONS, obstacles: all });
@@ -131,6 +130,46 @@ describe("zone label layout", () => {
     const zones = Array.from({ length: 12 }, (_, i) => item(i + 1, 350, 350, 100 + i, 100 + i));
     const placed = layOutZoneLabels(zones, OPTIONS);
     expect(placed.map((p) => p.id)).toEqual(zones.map((z) => z.id));
+  });
+
+  it("keeps 32 zones in a dense room apart on a 320 px card", () => {
+    // 24 grid zones, plus a seat inside eight.
+    const scale = 800 / 270;
+    const names = ["Couch", "Desk", "Bed", "Door", "Closet", "Window", "Chair", "Table"];
+    const zones: LabelItem[] = [];
+    for (let row = 0; row < 4; row += 1) {
+      for (let col = 0; col < 6; col += 1) {
+        const id = row * 6 + col + 1;
+        const zone = item(id, 137.5 + col * 87.5, 43.7 + row * 94.75, 72.9, 80.2);
+        zones.push({ ...zone, areaMm2: 1_100_000, text: `${names[(id - 1) % 8]} ${id}` });
+      }
+    }
+    for (let k = 0; k < 8; k += 1) {
+      const step = k % 4;
+      const x = 144.8 + (k < 4 ? 0 : 262.5) + step * 65.6;
+      const zone = item(25 + k, x, 51 + step * 94.75, 21.9, 29.2, `Inner seat ${25 + k}`);
+      zones.push({ ...zone, areaMm2: 120_000 });
+    }
+    // The unlocked card's buttons.
+    const buttons: Box[] = [
+      { left: 11.9, right: 106.7, top: 515.3, bottom: 610.1 },
+      { left: 223.9, right: 788.1, top: 515.3, bottom: 610.1 },
+      { left: 480, right: 788.1, top: 408.7, bottom: 503.5 },
+      { left: 693.3, right: 788.1, top: 32.6, bottom: 127.4 },
+    ];
+    const placed = layOutZoneLabels(zones, {
+      width: 800,
+      height: 622,
+      obstacles: buttons,
+      gap: 4 * scale,
+      pad: 4 * scale,
+      // The card's own fallback measure.
+      measure: (text, fontPx) => text.length * fontPx * 0.6,
+    });
+
+    expect(placed).toHaveLength(32);
+    expect(placed.filter((p) => p.plate)).toEqual([]);
+    expect(overlaps(placed)).toBe(false);
   });
 
   it("gives the same result whatever order the zones come in", () => {

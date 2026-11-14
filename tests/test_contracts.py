@@ -234,6 +234,35 @@ async def test_restore_shape_reply_is_what_api_ts_declares(
     assert "skipped: number[];" in source
 
 
+async def test_restore_shape_takes_each_field_api_ts_sends(
+    hass, hass_ws_client, init_integration, device_id
+) -> None:
+    """Every RestoreShapeItem field is in the schema, and nothing more is."""
+    _ = init_integration
+    client = await hass_ws_client(hass)
+    none = {"shape": "none", "data": None}
+    item = {
+        "zone_id": 1,
+        "current": none,
+        "previous": none,
+        "previous_at": "2026-11-13T15:04:05+00:00",
+    }
+
+    assert set(item) == _interface_fields(_read(API_TS), "RestoreShapeItem")
+    for zone, ok in ((item, True), ({**item, "name": "Couch"}, False)):
+        await client.send_json_auto_id(
+            {
+                "type": websocket.TYPE_RESTORE_SHAPE,
+                "device_id": device_id,
+                "zones": [zone],
+            }
+        )
+        reply = await client.receive_json()
+        assert reply["success"] is ok, zone
+        if not ok:
+            assert reply["error"]["code"] == "invalid_format"
+
+
 async def test_restore_shape_takes_as_many_zones_as_api_ts_sends(
     hass, hass_ws_client, init_integration, device_id
 ) -> None:

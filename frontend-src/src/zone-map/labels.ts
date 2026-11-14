@@ -2,8 +2,6 @@
 
 export const ZONE_LABEL_FONT_PX = 24;
 export const ZONE_LABEL_SMALL_FONT_PX = 20;
-// Leader steps tried outward from a zone.
-export const LEADER_RINGS = 3;
 
 export interface Box {
   left: number;
@@ -133,7 +131,8 @@ export function layOutZoneLabels(items: LabelItem[], options: LabelLayoutOptions
     const w = measure(item.text, fontPx);
     const left = box.x;
     const right = box.x + box.width;
-    for (let ring = 0; ring < LEADER_RINGS; ring += 1) {
+    // Leader steps outward, until past the canvas.
+    for (let ring = 0; pad + ring * (h + pad) <= Math.max(width, height); ring += 1) {
       const off = pad + ring * (h + pad);
       const spots: Point[] = [
         { x: right + off + w / 2, y: anchor.y },

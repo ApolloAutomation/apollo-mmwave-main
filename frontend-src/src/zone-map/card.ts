@@ -1930,13 +1930,14 @@ export class ZoneMapCard extends HTMLElement {
         /* The same kind of note in the top right corner while a replay shows. */
         .map-note.replay-badge { left: auto; right: 4px; font-variant-numeric: tabular-nums; }
         /* Pinned top center while armed or walking. */
-        .draw-banner { position: absolute; top: var(--zm-note-top, 4px); left: 50%; transform: translateX(-50%); max-width: calc(100% - 88px); box-sizing: border-box; height: 32px; z-index: 1; display: flex; align-items: center; gap: 8px; padding-left: 10px; border-radius: 6px; font-size: 13px; line-height: 1; background: ${COLOR.ui.bannerLightBg}; color: ${COLOR.ui.overlayButtonText}; pointer-events: none; }
+        /* Top left, outside the cone; Cancel at the corner. */
+        .draw-banner { position: absolute; top: var(--zm-note-top, 4px); left: 4px; max-width: calc(100% - 48px); box-sizing: border-box; height: 32px; z-index: 1; display: flex; align-items: center; gap: 8px; padding-right: 10px; border-radius: 6px; font-size: 13px; line-height: 1; background: ${COLOR.ui.bannerLightBg}; color: ${COLOR.ui.overlayButtonText}; pointer-events: none; }
         .draw-banner[hidden] { display: none; }
         .container.dark .draw-banner { background: ${COLOR.ui.bannerDarkBg}; }
         .note-shown .draw-banner { top: calc(var(--zm-note-top, 4px) + 28px); }
         .draw-banner-dot { flex: none; width: 10px; height: 10px; border-radius: 50%; background: var(--zone-color, currentColor); box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85); }
         .draw-banner-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .container .draw-banner button { flex: none; pointer-events: auto; height: 32px; min-height: 32px; padding: 0 10px; border-radius: 0 6px 6px 0; font-size: 13px; font-weight: 600; background: ${COLOR.ui.overlayButtonDarkBg}; color: ${COLOR.ui.overlayButtonText}; }
+        .container .draw-banner button { flex: none; pointer-events: auto; height: 32px; min-height: 32px; padding: 0 10px; border-radius: 6px 0 0 6px; font-size: 13px; font-weight: 600; background: ${COLOR.ui.overlayButtonDarkBg}; color: ${COLOR.ui.overlayButtonText}; }
         .container.dark .draw-banner button { background: ${COLOR.ui.overlayButtonDarkBg}; }
         .overlay-controls { position: absolute; bottom: 4px; display: flex; gap: 4px; z-index: 1; }
         .overlay-controls-left { left: 4px; flex-direction: column; align-items: flex-start; }
@@ -2155,7 +2156,7 @@ export class ZoneMapCard extends HTMLElement {
           .overlay-controls button.full-toggle.labeled { width: auto; padding: 0 10px 0 6px; gap: 6px; }
           .full-toggle.labeled .full-toggle-text { display: inline; }
           .container.has-expand:not(.full) .map-note.replay-badge { right: 104px; }
-          .container:not(.full) .draw-banner { max-width: calc(100% - 208px); }
+          .container:not(.full) .draw-banner { max-width: calc(100% - 112px); }
         }
         .full-toggle:focus-visible, .full-close:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 2px; }
         .container.has-expand .map-note.replay-badge { right: 40px; }
@@ -2183,6 +2184,8 @@ export class ZoneMapCard extends HTMLElement {
         .full-toast-text { min-width: 0; overflow-wrap: anywhere; }
         .container.full .full-toast button { flex: none; min-height: 44px; }
         .container.full .full-toast button[hidden] { display: none; }
+        /* Beside the map, over the panel, clear of its buttons. */
+        .container.full[data-layout="side"] .full-toast:not([hidden]) { left: auto; right: calc(8px + var(--safe-area-inset-right, env(safe-area-inset-right, 0px))); transform: none; max-width: var(--zm-side-width); }
         .container.full .map-side { min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding-inline-end: 4px; }
         .container.full[data-layout="stacked"] { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto auto minmax(0, 1fr); }
         .container.full[data-layout="side"] { grid-template-columns: minmax(0, 1fr) var(--zm-side-width); grid-template-rows: auto auto minmax(0, 1fr); }
@@ -2207,9 +2210,9 @@ export class ZoneMapCard extends HTMLElement {
           <div class="map-note replay-badge" id="replayBadge" hidden></div>
           <!-- _renderDrawBanner fills it while armed or walking. -->
           <div class="draw-banner" id="drawBanner" hidden>
+            <button type="button" id="btnBannerCancel">${BANNER_CANCEL}</button>
             <span class="draw-banner-dot" aria-hidden="true"></span>
             <span class="draw-banner-text" id="drawBannerText" role="status" aria-live="polite"></span>
-            <button type="button" id="btnBannerCancel">${BANNER_CANCEL}</button>
           </div>
           <div class="overlay-controls overlay-controls-left" id="overlayControlsLeft">
             <div id="modeGroup" style="display: ${this.showModeMenu ? 'flex' : 'none'}; flex-direction: column; gap: 4px;">
@@ -5923,7 +5926,11 @@ export class ZoneMapCard extends HTMLElement {
       reply = await restoreShapes(
         this._hass,
         record.deviceId,
-        record.zones.map(({ zoneId, after }) => ({ zone_id: zoneId, current: after })),
+        record.zones.map(({ zoneId, before, after }) => ({
+          zone_id: zoneId,
+          current: after,
+          previous: before,
+        })),
       );
       if (!isRestoreShapeReply(reply)) throw new Error(HISTORY_UNREADABLE);
     } catch (error) {
@@ -6337,11 +6344,15 @@ export class ZoneMapCard extends HTMLElement {
     if (this._armedZone === id) this._disarm();
     const deviceId = this.deviceId;
     const current = this._shapeOf(id);
+    // The one its Replaced line showed.
+    const previousAt = this._zoneMeta.get(id)?.previousAt;
     this._restoring = id;
     this._renderZoneRestore();
     let reply;
     try {
-      reply = await restoreShapes(this._hass, deviceId, [{ zone_id: id, current }]);
+      reply = await restoreShapes(this._hass, deviceId, [
+        { zone_id: id, current, ...(previousAt ? { previous_at: previousAt } : {}) },
+      ]);
       if (!isRestoreShapeReply(reply)) throw new Error(HISTORY_UNREADABLE);
     } catch (error) {
       if (this.deviceId === deviceId) this._notify(couldNotRestore(this._reasonOf(error)));
@@ -8047,11 +8058,12 @@ export class ZoneMapCard extends HTMLElement {
   /**
    * The boxes (backing px) of the buttons and notes laid over the canvas
    * that are showing now: the drawing modes, the unit switch, Undo and
-   * Locked, the zoom row, Expand map, the banner and the offline note. Nothing drawn on the canvas
-   * under them can be read. None while the canvas has no layout box. With
-   * `notes` false, the buttons only: _placeMapNotes puts the offline note
-   * under the x labels, so the labels never make room for it. `canvasRect`
-   * is the canvas's box where the frame has read it already.
+   * Locked, the zoom row, Expand map, the banner, the offline note and a
+   * replay's badge. Nothing drawn on the canvas under them can be read.
+   * None while the canvas has no layout box. With `notes` false, the
+   * buttons only: _placeMapNotes puts the notes under the x labels, so the
+   * labels never make room for them. `canvasRect` is the canvas's box where
+   * the frame has read it already.
    */
   _overlayBoxes({ notes = true, canvasRect = this.canvas?.getBoundingClientRect?.() } = {}) {
     const root = this.shadowRoot;
@@ -8065,7 +8077,7 @@ export class ZoneMapCard extends HTMLElement {
       'overlayControlsTop',
       'drawBanner',
     ];
-    if (notes) ids.push('offlineNote');
+    if (notes) ids.push('offlineNote', 'replayBadge');
     return ids.flatMap((id) => {
       const element = root.getElementById(id);
       if (!element || element.hidden) return [];

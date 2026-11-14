@@ -7873,7 +7873,13 @@ describe("zone map card drawing", () => {
       {
         type: ZONES_RESTORE_SHAPE,
         device_id: "dev123",
-        zones: [{ zone_id: 1, current: { shape: "rect", data: rect } }],
+        zones: [
+          {
+            zone_id: 1,
+            current: { shape: "rect", data: rect },
+            previous: { shape: "rect", data: DOORWAY },
+          },
+        ],
       },
     ]);
     expect(card.zones).toEqual([{ id: 1, shape: "rect", data: DOORWAY }]);
@@ -11715,8 +11721,16 @@ describe("zone map card clearing zones", () => {
     expect(zoneWrites(hass)).toEqual([]);
     expect(restoreCalls(hass).map((msg) => msg.zones)).toEqual([
       [
-        { zone_id: 1, current: { shape: "none", data: null } },
-        { zone_id: 2, current: { shape: "none", data: null } },
+        {
+          zone_id: 1,
+          current: { shape: "none", data: null },
+          previous: { shape: "rect", data: DOORWAY },
+        },
+        {
+          zone_id: 2,
+          current: { shape: "none", data: null },
+          previous: { shape: "rect", data: WINDOW },
+        },
       ],
     ]);
     expect(card.zones).toEqual([
@@ -14363,6 +14377,17 @@ describe("zone map card expand map", () => {
     expect(cancel(card).defaultPrevented).toBe(false);
   });
 
+  it("puts the expanded snackbar beside a side-by-side map, clear of its buttons", async () => {
+    const card = await placedCard();
+    const css = card.shadowRoot.querySelector("style").textContent.replace(/\s+/g, " ");
+    // Centered on the window it covered Locked, + and Fit.
+    expect(css).toContain(
+      '.container.full[data-layout="side"] .full-toast:not([hidden]) { left: auto; right: calc(8px + var(--safe-area-inset-right, env(safe-area-inset-right, 0px))); transform: none; max-width: var(--zm-side-width); }'
+    );
+    // Stacked, it stays centered at the bottom.
+    expect(css).toContain(".container.full .full-toast:not([hidden]) { position: absolute; z-index: 3; left: 50%; transform: translateX(-50%);");
+  });
+
   it("shows its own snackbar with Undo while expanded, where Home Assistant's toast is inert", async () => {
     const hass = adminHass();
     const card = await placedCard(hass, { ...TEN_METER_GRID, start_locked: false });
@@ -14740,6 +14765,22 @@ describe("zone map card arming drawing", () => {
     expect($(card, "drawBanner")).toBeNull();
   });
 
+  it("pins the banner in the map's top left, outside the cone, with Cancel first", async () => {
+    const { card } = await armCard();
+    const banner = $(card, "drawBanner");
+    expect(Array.from(banner.children, (el: any) => el.id || el.className)).toEqual([
+      "btnBannerCancel",
+      "draw-banner-dot",
+      "drawBannerText",
+    ]);
+    const css = card.shadowRoot.querySelector("style").textContent.replace(/\s+/g, " ");
+    const rule = /\.draw-banner \{([^}]*)\}/.exec(css)?.[1] ?? "";
+    // Top center sat over the cone's apex.
+    expect(rule).toContain("left: 4px;");
+    expect(rule).not.toContain("translateX");
+    expect(css).toContain("border-radius: 6px 0 0 6px;");
+  });
+
   it("counts the banner among the boxes labels keep clear of", async () => {
     const { card } = await armCard();
     const banner = $(card, "drawBanner");
@@ -14758,6 +14799,27 @@ describe("zone map card arming drawing", () => {
     card._armDrawing(1);
     expect(has()).toBe(true);
     expect(card._overlayBoxes({ notes: false }).some((b: any) => b.left === 300)).toBe(true);
+  });
+
+  it("keeps names clear of a replay's badge, as of the offline note", async () => {
+    const { card } = await armCard();
+    const badge = $(card, "replayBadge");
+    vi.spyOn(badge, "getBoundingClientRect").mockReturnValue({
+      left: 600,
+      right: 760,
+      top: 30,
+      bottom: 52,
+      width: 160,
+      height: 22,
+    } as DOMRect);
+    const has = (options?: any) =>
+      card._overlayBoxes(options).some((b: any) => b.left === 600 && b.right === 760 && b.top === 30);
+
+    expect(has()).toBe(false);
+    badge.hidden = false;
+    expect(has()).toBe(true);
+    // Under the x labels, which never make room for it.
+    expect(has({ notes: false })).toBe(false);
   });
 });
 
@@ -14845,7 +14907,14 @@ describe("zone map card undoing a shape change", () => {
       {
         type: ZONES_RESTORE_SHAPE,
         device_id: "dev123",
-        zones: [{ zone_id: 1, current: { shape: "rect", data: DRAWN } }],
+        // The shape it expects back, too.
+        zones: [
+          {
+            zone_id: 1,
+            current: { shape: "rect", data: DRAWN },
+            previous: { shape: "rect", data: DOORWAY },
+          },
+        ],
       },
     ]);
     expect(zoneWrites(hass)).toHaveLength(1);
@@ -15034,8 +15103,15 @@ describe("zone map card restoring a previous shape", () => {
     expect($(card, "btnZoneRestore").disabled).toBe(true);
     await settleWrites();
 
+    // Only the kept shape its Replaced line showed.
     expect(restoreCalls(hass).map((msg) => msg.zones)).toEqual([
-      [{ zone_id: 1, current: { shape: "rect", data: DOORWAY } }],
+      [
+        {
+          zone_id: 1,
+          current: { shape: "rect", data: DOORWAY },
+          previous_at: "2026-11-13T15:05:00+00:00",
+        },
+      ],
     ]);
     expect(card.zones.find((z: any) => z.id === 1)).toEqual({ id: 1, shape: "rect", data: OLD });
     expect(details.map((d) => [d.message, d.action?.text])).toEqual([
@@ -15047,7 +15123,9 @@ describe("zone map card restoring a previous shape", () => {
     // Undo swaps back, while Doorway still has the restored shape.
     details[0].action.action();
     await settleWrites();
-    expect(restoreCalls(hass)[1].zones).toEqual([{ zone_id: 1, current: { shape: "rect", data: OLD } }]);
+    expect(restoreCalls(hass)[1].zones).toEqual([
+      { zone_id: 1, current: { shape: "rect", data: OLD }, previous: { shape: "rect", data: DOORWAY } },
+    ]);
     expect(card.zones.find((z: any) => z.id === 1)).toEqual({ id: 1, shape: "rect", data: DOORWAY });
     expect(details[1].message).toBe("Undid the change to Doorway");
   });

@@ -586,6 +586,29 @@ describe("restoring a previous shape", () => {
     ]);
   });
 
+  it("sends the previous shape or its time only where given", async () => {
+    const hass = fakeHass({ callWS: vi.fn().mockResolvedValue(REPLY) });
+    const zone: any = { shape: "rect", data: RECT, name: "Couch" };
+
+    await restoreShapes(hass, "dev123", [
+      { zone_id: 1, current: { shape: "rect", data: MOVED }, previous: zone },
+      { zone_id: 2, current: { shape: "none", data: null }, previous: { shape: "none" } as any },
+      { zone_id: 3, current: { shape: "rect", data: MOVED }, previous_at: "2026-11-13T15:05:00+00:00" },
+      { zone_id: 4, current: { shape: "rect", data: MOVED } },
+    ]);
+
+    expect(hass.callWS.mock.calls[0][0].zones).toEqual([
+      { zone_id: 1, current: { shape: "rect", data: MOVED }, previous: { shape: "rect", data: RECT } },
+      { zone_id: 2, current: { shape: "none", data: null }, previous: { shape: "none", data: null } },
+      {
+        zone_id: 3,
+        current: { shape: "rect", data: MOVED },
+        previous_at: "2026-11-13T15:05:00+00:00",
+      },
+      { zone_id: 4, current: { shape: "rect", data: MOVED } },
+    ]);
+  });
+
   it("passes a refusal through for the card to word", async () => {
     const refusal = { code: "unauthorized", message: "Unauthorized" };
     const hass = fakeHass({ callWS: vi.fn().mockRejectedValue(refusal) });
