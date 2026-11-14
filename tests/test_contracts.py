@@ -147,6 +147,7 @@ def test_sensor_unit_factors_match_the_zone_card() -> None:
     [
         ("ZONES_GET", websocket.TYPE_GET),
         ("ZONES_SUBSCRIBE", websocket.TYPE_SUBSCRIBE),
+        ("ZONES_RESTORE_SHAPE", websocket.TYPE_RESTORE_SHAPE),
         ("MOVEMENT_GET", websocket.TYPE_MOVEMENT_GET),
         ("MOVEMENT_CLEAR", websocket.TYPE_MOVEMENT_CLEAR),
     ],
@@ -172,6 +173,12 @@ async def test_zones_payload_keys_are_the_fields_api_ts_declares(
     for call in (
         {"zone_id": 1, **rect, "name": "Couch", STORE_HOLD_S: 60},
         {"zone_id": 2, **rect, STORE_ZONE_TYPE: ZONE_TYPE_IGNORE},
+        # A redraw adds the two previous shape keys.
+        {
+            "zone_id": 1,
+            "shape": "ellipse",
+            "data": {"cx": 0, "cy": 9, "rx": 5, "ry": 5},
+        },
     ):
         await hass.services.async_call(
             DOMAIN, "update_zone", {"device_id": device_id, **call}, blocking=True
@@ -184,6 +191,46 @@ async def test_zones_payload_keys_are_the_fields_api_ts_declares(
     assert set(result) == _interface_fields(source, "ZoneConfig")
     zone_keys = {key for zone in result[STORE_ZONES].values() for key in zone}
     assert zone_keys == _interface_fields(source, "ZoneDef")
+
+
+async def test_restore_shape_reply_is_what_api_ts_declares(
+    hass, hass_ws_client, init_integration, device_id
+) -> None:
+    """zones/restore_shape answers RestoreShapeReply, each zone a ShapeGeometry."""
+    _ = init_integration
+    rect = {"x_min": 0, "x_max": 10, "y_min": 0, "y_max": 10}
+    moved = {"x_min": 0, "x_max": 500, "y_min": 0, "y_max": 500}
+    for data in (rect, moved):
+        await hass.services.async_call(
+            DOMAIN,
+            "update_zone",
+            {"device_id": device_id, "zone_id": 1, "shape": "rect", "data": data},
+            blocking=True,
+        )
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id(
+        {
+            "type": websocket.TYPE_RESTORE_SHAPE,
+            "device_id": device_id,
+            "zones": [
+                {"zone_id": 1, "current": {"shape": "rect", "data": moved}},
+                {"zone_id": 2, "current": {"shape": "none", "data": None}},
+            ],
+        }
+    )
+    result = (await client.receive_json())["result"]
+    source = _read(API_TS)
+
+    assert result == {
+        "restored": [{"zone_id": 1, "shape": "rect", "data": rect}],
+        "skipped": [2],
+    }
+    assert set(result) == _interface_fields(source, "RestoreShapeReply")
+    assert set(result["restored"][0]) == {"zone_id"} | _interface_fields(
+        source, "ShapeGeometry"
+    )
+    assert "restored: Array<{ zone_id: number } & ShapeGeometry>;" in source
+    assert "skipped: number[];" in source
 
 
 @pytest.fixture

@@ -16,12 +16,15 @@ import {
   MOVEMENT_GET,
   RETRY_DELAYS_MS,
   ZONES_GET,
+  ZONES_RESTORE_SHAPE,
   ZONES_SUBSCRIBE,
   clearMovement,
   connectZones,
   fetchMovement,
   fetchZones,
   isMovementPayload,
+  isRestoreShapeReply,
+  restoreShapes,
   subscribeZones,
 } from "../src/zone-map/api";
 
@@ -534,6 +537,92 @@ describe("movement history", () => {
       const missing: Record<string, unknown> = { ...MOVEMENT };
       delete missing[key];
       expect(isMovementPayload(missing), key).toBe(false);
+    }
+  });
+});
+
+describe("restoring a previous shape", () => {
+  const RECT = { x_min: 0, x_max: 10, y_min: 0, y_max: 10 };
+  const MOVED = { x_min: 0, x_max: 500, y_min: 0, y_max: 500 };
+  const REPLY = {
+    restored: [{ zone_id: 1, shape: "rect", data: RECT }],
+    skipped: [2],
+  };
+
+  it("sends each zone with the shape this card last saw", async () => {
+    const hass = fakeHass({ callWS: vi.fn().mockResolvedValue(REPLY) });
+
+    const reply = await restoreShapes(hass, "dev123", [
+      { zone_id: 1, current: { shape: "rect", data: MOVED } },
+      { zone_id: 2, current: { shape: "none", data: null } },
+    ]);
+
+    expect(ZONES_RESTORE_SHAPE).toBe("apollo_mmwave/zones/restore_shape");
+    expect(hass.callWS).toHaveBeenCalledTimes(1);
+    expect(hass.callWS).toHaveBeenCalledWith({
+      type: ZONES_RESTORE_SHAPE,
+      device_id: "dev123",
+      zones: [
+        { zone_id: 1, current: { shape: "rect", data: MOVED } },
+        { zone_id: 2, current: { shape: "none", data: null } },
+      ],
+    });
+    expect(reply).toEqual(REPLY);
+  });
+
+  it("sends only shape and data, which is all the command's schema takes", async () => {
+    // The backend refuses extra keys, such as a zone's name.
+    const hass = fakeHass({ callWS: vi.fn().mockResolvedValue(REPLY) });
+    const zone: any = { shape: "rect", data: RECT, name: "Couch", hold_s: 30 };
+
+    await restoreShapes(hass, "dev123", [
+      { zone_id: 1, current: zone },
+      { zone_id: 2, current: { shape: "none" } as any },
+    ]);
+
+    expect(hass.callWS.mock.calls[0][0].zones).toEqual([
+      { zone_id: 1, current: { shape: "rect", data: RECT } },
+      { zone_id: 2, current: { shape: "none", data: null } },
+    ]);
+  });
+
+  it("passes a refusal through for the card to word", async () => {
+    const refusal = { code: "unauthorized", message: "Unauthorized" };
+    const hass = fakeHass({ callWS: vi.fn().mockRejectedValue(refusal) });
+
+    await expect(
+      restoreShapes(hass, "dev123", [{ zone_id: 1, current: { shape: "none", data: null } }])
+    ).rejects.toEqual(refusal);
+  });
+
+  it("recognizes a restore reply and nothing else", () => {
+    expect(isRestoreShapeReply(REPLY)).toBe(true);
+    expect(isRestoreShapeReply({ restored: [], skipped: [1, 2] })).toBe(true);
+    expect(
+      isRestoreShapeReply({ restored: [{ zone_id: 3, shape: "none", data: null }], skipped: [] })
+    ).toBe(true);
+
+    // The card tests' fake hass answers unknown commands with [].
+    for (const value of [[], [REPLY], null, undefined, "", 0, true, PAYLOAD]) {
+      expect(isRestoreShapeReply(value), JSON.stringify(value)).toBe(false);
+    }
+    const broken: unknown[] = [
+      { restored: [] },
+      { skipped: [] },
+      { restored: {}, skipped: [] },
+      { restored: [], skipped: {} },
+      { restored: [], skipped: ["1"] },
+      { restored: [], skipped: [0] },
+      { restored: [], skipped: [1.5] },
+      { restored: [null], skipped: [] },
+      { restored: [{ shape: "rect", data: RECT }], skipped: [] },
+      { restored: [{ zone_id: "1", shape: "rect", data: RECT }], skipped: [] },
+      { restored: [{ zone_id: 1, data: RECT }], skipped: [] },
+      { restored: [{ zone_id: 1, shape: "rect" }], skipped: [] },
+      { restored: [{ zone_id: 1, shape: "rect", data: [0, 10, 0, 10] }], skipped: [] },
+    ];
+    for (const value of broken) {
+      expect(isRestoreShapeReply(value), JSON.stringify(value)).toBe(false);
     }
   });
 });
