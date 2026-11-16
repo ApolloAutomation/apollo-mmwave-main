@@ -218,6 +218,8 @@ CONF_AUTO_CREATE_VIEW = "auto_create_view"
 # The config entry minor version that records dashboard ownership. Entries on
 # minor version 1 come from 2.2.5 or earlier.
 ENTRY_MINOR_VERSION = 2
+# New entries only; existing entries keep their title.
+ENTRY_TITLE = "Apollo mmWave Dashboard"
 
 # Options flow: explicit device selection for the dashboard. Empty means
 # automatic detection (live Apollo mmWave devices); a non-empty list means
@@ -228,7 +230,8 @@ CONF_DASHBOARD_DEVICES = "dashboard_devices"
 # dashboard config is just `{"strategy": {"type": DASHBOARD_STRATEGY_TYPE}}`;
 # the frontend strategy detects every Apollo mmWave device and builds one tab each.
 DASHBOARD_URL_PATH = "apollo-mmwave"
-DASHBOARD_TITLE = "Apollo mmWave"
+# New dashboards only; nothing renames an existing one.
+DASHBOARD_TITLE = "Apollo mmWave Dashboard"
 DASHBOARD_ICON = "mdi:radar"
 DASHBOARD_STRATEGY_TYPE = "custom:apollo-radar-tuning"
 # Every card and row type the bundles define starts with this. A stored config
@@ -242,7 +245,7 @@ CARD_TYPE_PREFIX = "custom:apollo-"
 # SAVED_COPY_URL_PATH-2, -3 and so on, then puts the strategy back.
 ISSUE_DASHBOARD_SAVED_COPY = "dashboard_saved_copy"
 SAVED_COPY_URL_PATH = "apollo-mmwave-saved"
-SAVED_COPY_TITLE = "Apollo mmWave (saved copy)"
+SAVED_COPY_TITLE = "Apollo mmWave Dashboard (saved copy)"
 
 # Frontend assets bundled with the integration and served as Lovelace resources,
 # so users install ONE thing (no separate card downloads). Filenames live in www/.

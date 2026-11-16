@@ -1,6 +1,6 @@
 {
   "domain": "apollo_mmwave",
-  "name": "Apollo mmWave",
+  "name": "Apollo mmWave Dashboard",
   "codeowners": [
     "@ApolloAutomation",
     "@WestwardWinds"

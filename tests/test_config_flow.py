@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
@@ -16,6 +15,7 @@ from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers import selector
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.apollo_mmwave import frontend as apollo_frontend
 from custom_components.apollo_mmwave.config_flow import MMWAVE_MODELS
@@ -48,9 +48,6 @@ from .conftest import (
     rows_on_url_path,
     setup_integration,
 )
-
-if TYPE_CHECKING:
-    from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 PROFILES_TS = Path(__file__).parents[1] / "frontend-src" / "src" / "profiles.ts"
 
@@ -101,13 +98,13 @@ async def test_user_flow_creates_the_dashboard_once_and_records_it(
     await hass.async_block_till_done()
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert result["title"] == "Apollo mmWave"
+    assert result["title"] == "Apollo mmWave Dashboard"
     [row] = rows_on_url_path(hass)
     assert result["options"] == {
         CONF_DASHBOARD_ID: row["id"],
         CONF_DASHBOARD_URL_PATH: DASHBOARD_URL_PATH,
     }
-    assert row["title"] == DASHBOARD_TITLE
+    assert row["title"] == DASHBOARD_TITLE == "Apollo mmWave Dashboard"
     assert row["icon"] == DASHBOARD_ICON
     assert row["show_in_sidebar"] is True
     assert row["require_admin"] is admin_only
@@ -161,7 +158,7 @@ async def test_user_flow_sets_up_without_the_dashboards_collection(
     assert entry.state is config_entries.ConfigEntryState.LOADED
     [warning] = apollo_warnings(caplog)
     assert "could not reach Lovelace's dashboards collection" in warning
-    assert "Settings > Dashboards > Add dashboard > Apollo Radar Tuning" in warning
+    assert "Settings > Dashboards > Add dashboard > Apollo mmWave Dashboard" in warning
     assert DASHBOARD_URL_PATH not in hass.data[DATA_PANELS]
 
 
@@ -299,6 +296,32 @@ async def test_add_dashboard_creates_it_once_and_records_it(hass, admin_only) ->
     assert (
         await async_dashboard_config(hass, USER_DASHBOARD_PATH) == USER_DASHBOARD_CONFIG
     )
+
+
+async def test_add_dashboard_names_it_anew_and_leaves_an_older_entry_title(
+    hass,
+) -> None:
+    """An entry from before 2.4.2 gets the new dashboard name, not a new title."""
+    config_entry = MockConfigEntry(
+        domain=DOMAIN,
+        # The title releases before 2.4.2 wrote.
+        title="Apollo mmWave",
+        data={},
+        options={CONF_DASHBOARD_ID: None, CONF_DASHBOARD_URL_PATH: None},
+        unique_id=DOMAIN,
+        minor_version=ENTRY_MINOR_VERSION,
+    )
+    await setup_integration(hass, config_entry)
+    result = await _choose(
+        hass, await _open_options(hass, config_entry, OWNS_NONE_MENU), "add_dashboard"
+    )
+
+    result = await _submit(hass, result, {CONF_DASHBOARD_ADMIN_ONLY: True})
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    [row] = rows_on_url_path(hass)
+    assert row["title"] == "Apollo mmWave Dashboard"
+    assert config_entry.title == "Apollo mmWave"
 
 
 async def test_add_dashboard_on_a_taken_path_shows_an_error(

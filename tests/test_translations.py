@@ -23,6 +23,8 @@ EM_DASH = "\u2014"
 # The product is written "R PRO-1" in display text. "R-PRO-1-W" and
 # "R-PRO-1-ETH" are model identifiers, so a hyphen after the 1 is allowed.
 HYPHENATED_R_PRO = re.compile(r"R-PRO-1(?!-)")
+# The software is "Apollo mmWave Dashboard"; the hardware keeps its name.
+OLD_PRODUCT_NAME = re.compile(r"Apollo mmWave(?! Dashboard\b| sensors?\b| devices?\b)")
 
 
 def _strings(node: Any, path: str = "") -> Iterator[tuple[str, str]]:
@@ -54,6 +56,25 @@ def test_backend_text_has_no_em_dash_or_hyphenated_r_pro(load) -> None:
     assert strings
     assert [path for path, value in strings if EM_DASH in value] == []
     assert [path for path, value in strings if HYPHENATED_R_PRO.search(value)] == []
+
+
+@pytest.mark.parametrize(
+    "load", [_en_json, _services_yaml], ids=["en.json", "services.yaml"]
+)
+def test_backend_text_names_the_integration_one_way(load) -> None:
+    """The integration is Apollo mmWave Dashboard everywhere it is named."""
+    strings = load()
+    assert strings
+    assert [path for path, value in strings if OLD_PRODUCT_NAME.search(value)] == []
+
+
+def test_name_check_leaves_the_hardware_alone() -> None:
+    """Apollo mmWave sensors and devices are hardware, not the integration."""
+    assert OLD_PRODUCT_NAME.search("Removing Apollo mmWave also removes it")
+    assert OLD_PRODUCT_NAME.search("**Apollo mmWave (saved copy)**")
+    assert not OLD_PRODUCT_NAME.search("each Apollo mmWave sensor.")
+    assert not OLD_PRODUCT_NAME.search("every Apollo mmWave device automatically")
+    assert not OLD_PRODUCT_NAME.search("**Apollo mmWave Dashboard (saved copy)**")
 
 
 def test_r_pro_check_ignores_model_identifiers() -> None:

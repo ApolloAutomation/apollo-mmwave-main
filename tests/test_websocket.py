@@ -188,6 +188,7 @@ async def test_zones_get_reports_the_integration_unloaded(
     message = await client.receive_json()
     assert message["success"] is False
     assert message["error"]["code"] == "not_loaded"
+    assert message["error"]["message"] == "Apollo mmWave Dashboard is not loaded."
 
 
 async def test_zones_subscribe_pushes_on_change(
@@ -1606,6 +1607,7 @@ async def test_movement_get_not_loaded_after_unload(
         reply = await _ask(client, {"type": command, "device_id": device_id})
         assert reply["success"] is False
         assert reply["error"]["code"] == "not_loaded"
+        assert reply["error"]["message"] == "Apollo mmWave Dashboard is not loaded."
     # Unauthorized comes first, then not_loaded, then not_found.
     reply = await _ask(user, {"type": MOVEMENT_GET, "device_id": device_id})
     assert reply["error"]["code"] == "unauthorized"
@@ -1846,6 +1848,7 @@ async def test_calibration_get_not_loaded_after_unload(
     message = await client.receive_json()
     assert message["success"] is False
     assert message["error"]["code"] == "not_loaded"
+    assert message["error"]["message"] == "Apollo mmWave Dashboard is not loaded."
 
 
 async def test_calibration_get_not_loaded_when_only_zone_store_is_present(

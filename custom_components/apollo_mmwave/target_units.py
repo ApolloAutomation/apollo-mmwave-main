@@ -99,11 +99,11 @@ MM = UnitOfLength.MILLIMETERS
 
 # What the notification after the pass over existing sensors says. Home
 # Assistant shows a persistent notification as written, in Markdown.
-NOTIFICATION_TITLE = "Apollo mmWave: Target X and Y now in mm"
+NOTIFICATION_TITLE = "Apollo mmWave Dashboard: Target X and Y now in mm"
 NOTIFICATION_LEAD = (
-    "Apollo mmWave switched these sensors from {units} to mm, the unit the"
-    " radar reports and its built-in zone corners use. Home Assistant had"
-    " picked {units} on its own. Nothing was written to the radar."
+    "Apollo mmWave Dashboard switched these sensors from {units} to mm, the"
+    " unit the radar reports and its built-in zone corners use. Home Assistant"
+    " had picked {units} on its own. Nothing was written to the radar."
 )
 NOTIFICATION_READ = (
     "Automations, templates and history graphs now read these sensors in mm."
@@ -115,7 +115,7 @@ NOTIFICATION_IN_USE = (
 )
 NOTIFICATION_BACK = (
     "To go back, open a sensor's settings and choose {symbols} under Unit of"
-    " measurement. Apollo mmWave will not change it again."
+    " measurement. Apollo mmWave Dashboard will not change it again."
 )
 # The words for a unit. The Radar setup card's UNIT_WORDS (setup-checks.ts)
 # says them the same way; tests/test_contracts.py keeps the two equal.
