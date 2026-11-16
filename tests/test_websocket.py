@@ -617,8 +617,7 @@ async def test_presence_entity_rename_pushes_the_new_id(
 
     [pushed] = await _drain(client)
     assert pushed["zones"]["1"][KEY_PRESENCE_ENTITY_ID] == renamed
-    # Home Assistant re-added the same entity under its new id: no zone signal
-    # ran a platform sync against it, so nothing was added beside it.
+    # No zone signal ran a platform sync, so nothing was added.
     assert zone_signals == []
     assert aborted == []
     assert _ours() == expected

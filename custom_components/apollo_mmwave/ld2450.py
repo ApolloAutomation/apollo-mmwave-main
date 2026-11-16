@@ -136,11 +136,7 @@ def async_track_target_pairs(hass: HomeAssistant) -> CALLBACK_TYPE:
         if event.data.get("action") == "update" and "old_entity_id" in event.data:
             entry = er.async_get(hass).async_get(entity_id)
             if entry is not None and entry.platform == DOMAIN and entry.device_id:
-                # The card lights a zone by its presence entity id, so a renamed
-                # id must reach it. Only the websocket forwarders listen: the
-                # platforms and the recorder have nothing to redo, and Home
-                # Assistant is removing and re-adding the renamed entity at
-                # this moment, which a platform sync must not race.
+                # Card only: a platform sync could race a re-add.
                 async_dispatcher_send(hass, SIGNAL_ZONES_PAYLOAD, entry.device_id)
                 return
         # A rename also reports the id the entity had before, and a pair cached

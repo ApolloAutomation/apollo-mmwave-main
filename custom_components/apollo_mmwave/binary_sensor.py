@@ -202,6 +202,12 @@ class ZonePresenceBinarySensor(ZoneEntityMixin, BinarySensorEntity):
             self._unsub_state_listener = None
         await super().async_will_remove_from_hass()
 
+    # On each class: HA checks every class's own hooks.
+    @callback
+    def async_entity_id_changed(self, old_entity_id: str) -> None:
+        """Keep the entity added through an entity id change."""
+        super().async_entity_id_changed(old_entity_id)  # type: ignore[misc]
+
     def _tracked_pairs(self) -> list[dict[str, str]]:
         return effective_target_pairs(self.hass, self._store, self._device_id)
 
