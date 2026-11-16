@@ -8,6 +8,7 @@ import {
   ICON_CLOSE,
   ICON_COLLAPSE,
   ICON_EXPAND,
+  ICON_SHAPES,
   fullWindowLayout,
   iconSvg,
   insideDialog,
@@ -97,7 +98,7 @@ describe("fullWindowLayout", () => {
 
 describe("iconSvg", () => {
   it("draws a 20 px icon in the text color that assistive tech skips", () => {
-    for (const path of [ICON_EXPAND, ICON_COLLAPSE, ICON_CLOSE]) {
+    for (const path of [ICON_EXPAND, ICON_COLLAPSE, ICON_CLOSE, ICON_SHAPES]) {
       const host = document.createElement("div");
       host.innerHTML = iconSvg(path);
       const svg = host.querySelector("svg")!;

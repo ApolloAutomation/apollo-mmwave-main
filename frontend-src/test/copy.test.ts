@@ -518,13 +518,13 @@ describe("zone map card copy module", () => {
 
   it("words drawing, arming and Undo", () => {
     expect(zoneMapCopy.drawHint("rect", false, 32)).toBe(
-      "Press Draw shape, then drag on the map to draw this zone as a rectangle. ✎ on the map offers an ellipse or a polygon. A tap on a zone on the map picks it."
+      "Press Draw shape, then drag on the map to draw this zone as a rectangle. Shapes, at the map's bottom left, offers an ellipse or a polygon. A tap on a zone on the map picks it."
     );
     expect(zoneMapCopy.drawHint("rect", true, 32)).toBe(
-      "Press Redraw shape, then drag on the map to give this zone a new rectangle. ✎ on the map offers an ellipse or a polygon. A tap on a zone on the map picks it."
+      "Press Redraw shape, then drag on the map to give this zone a new rectangle. Shapes, at the map's bottom left, offers an ellipse or a polygon. A tap on a zone on the map picks it."
     );
     expect(zoneMapCopy.drawHint("ellipse", true, 32)).toBe(
-      "Press Redraw shape, then drag on the map to give this zone a new ellipse. ✎ on the map offers a rectangle or a polygon. A tap on a zone on the map picks it."
+      "Press Redraw shape, then drag on the map to give this zone a new ellipse. Shapes, at the map's bottom left, offers a rectangle or a polygon. A tap on a zone on the map picks it."
     );
     expect(zoneMapCopy.drawHint("polygon", false, 32)).toBe(
       "Press Draw shape, then tap each corner of this zone on the map, up to 32, and double-tap the last one or press ✓."
@@ -539,8 +539,19 @@ describe("zone map card copy module", () => {
       "Tap each corner of this zone on the map, up to 32, then double-tap the last one or press ✓. Cancel drawing or Esc stops without a change."
     );
     expect(zoneMapCopy.drawHint("rect", false, 32, { canExpand: true })).toBe(
-      "Press Draw shape, then drag on the map to draw this zone as a rectangle. ✎ on the map offers an ellipse or a polygon. A tap on a zone on the map picks it. Expand, at the map's top right, fills the window with the map."
+      "Press Draw shape, then drag on the map to draw this zone as a rectangle. Shapes, at the map's bottom left, offers an ellipse or a polygon. A tap on a zone on the map picks it. Expand, at the map's top right, fills the window with the map."
     );
+    for (const mode of ["rect", "ellipse", "polygon"]) {
+      for (const drawn of [false, true]) {
+        for (const armed of [false, true]) {
+          expect(zoneMapCopy.drawHint(mode, drawn, 32, { armed, canExpand: true })).not.toContain(
+            "✎"
+          );
+        }
+      }
+    }
+    expect(zoneMapCopy.SHAPES_MENU_LABEL).toBe("Shapes");
+    expect(zoneMapCopy.SHAPES_MENU_TITLE).toBe("Shapes: rectangle, ellipse or polygon");
     expect(zoneMapCopy.drawChipLabel("Couch", false)).toBe("Draw Couch");
     expect(zoneMapCopy.drawChipLabel("Couch", true)).toBe("Redraw Couch");
     expect(zoneMapCopy.drawingBanner("Couch")).toBe("Drawing Couch");

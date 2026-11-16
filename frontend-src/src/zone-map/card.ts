@@ -109,6 +109,8 @@ import {
   RESTORE_LOCKED_TOAST,
   RESTORE_SHAPE_LABEL,
   SELECT_ZONE_TOAST,
+  SHAPES_MENU_LABEL,
+  SHAPES_MENU_TITLE,
   SIZE_PREFIX,
   TYPE_DETECT_HINT,
   TYPE_IGNORE_HINT,
@@ -185,6 +187,7 @@ import {
   ICON_CLOSE,
   ICON_COLLAPSE,
   ICON_EXPAND,
+  ICON_SHAPES,
   fullWindowLayout,
   iconSvg,
   insideDialog,
@@ -2224,7 +2227,7 @@ export class ZoneMapCard extends HTMLElement {
               <button id="btnModeEllipse" title="Ellipse">◯</button>
               <button id="btnModeRect" title="Rectangle">▭</button>
             </div>
-            <button id="btnModeMenu" title="Drawing modes">✎</button>
+            <button id="btnModeMenu" type="button" aria-label="${SHAPES_MENU_LABEL}" title="${SHAPES_MENU_TITLE}" aria-controls="modeGroup" aria-expanded="${this.showModeMenu ? 'true' : 'false'}">${iconSvg(ICON_SHAPES)}</button>
           </div>
           <div class="overlay-controls overlay-controls-right" id="overlayControlsRight">
             <div class="unit-switch" role="group" aria-label="Map units">
@@ -4276,6 +4279,7 @@ export class ZoneMapCard extends HTMLElement {
       btnModeMenu.addEventListener('click', () => {
         this.showModeMenu = !this.showModeMenu;
         modeGroup.style.display = this.showModeMenu ? 'flex' : 'none';
+        btnModeMenu.setAttribute('aria-expanded', String(this.showModeMenu));
       });
     }
 
