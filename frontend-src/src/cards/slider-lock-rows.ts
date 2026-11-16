@@ -156,7 +156,7 @@ export class ApolloRadarSliderRow extends LitElement {
 
   public setConfig(config: SliderRowConfig): void {
     if (!config?.entity || !config.device_id) {
-      throw new Error("Apollo mmWave: a slider row needs entity and device_id.");
+      throw new Error("Apollo mmWave Dashboard: a slider row needs entity and device_id.");
     }
     const moved = config.device_id !== this._config?.device_id;
     this._config = config;
@@ -462,7 +462,7 @@ export class ApolloRadarSliderLockRow extends LitElement {
 
   public setConfig(config: SliderLockRowConfig): void {
     if (!config?.device_id) {
-      throw new Error("Apollo mmWave: the slider lock row needs device_id.");
+      throw new Error("Apollo mmWave Dashboard: the slider lock row needs device_id.");
     }
     const moved = config.device_id !== this._config?.device_id;
     this._config = config;

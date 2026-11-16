@@ -99,6 +99,9 @@ export const DRAW_SHAPE_LABEL = "Draw shape";
 export const REDRAW_SHAPE_LABEL = "Redraw shape";
 export const CANCEL_DRAWING_LABEL = "Cancel drawing";
 export const BANNER_CANCEL = "Cancel";
+// The drawing-mode menu button, bottom left.
+export const SHAPES_MENU_LABEL = "Shapes";
+export const SHAPES_MENU_TITLE = "Shapes: rectangle, ellipse or polygon";
 
 // The chip's ✎ label.
 export function drawChipLabel(name: string, drawn: boolean): string {
@@ -149,7 +152,7 @@ export function drawHint(
   const lead = drawn
     ? `${press}, then drag on the map to give this zone a new ${mode === "ellipse" ? "ellipse" : "rectangle"}.`
     : `${press}, then drag on the map to draw this zone as ${shape}.`;
-  return `${lead} ✎ on the map offers ${others}. A tap on a zone on the map picks it.${tail}`;
+  return `${lead} Shapes, at the map's bottom left, offers ${others}. A tap on a zone on the map picks it.${tail}`;
 }
 
 // Undo: toast, ↶ and Restore previous shape.

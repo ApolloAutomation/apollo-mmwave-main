@@ -228,7 +228,9 @@ def _answerable(
     if DATA_STORE not in hass.data.get(DOMAIN, {}):
         # The commands outlive the config entry, so a dashboard left open keeps
         # calling them after an unload or during a reload.
-        connection.send_error(msg["id"], ERR_NOT_LOADED, "Apollo mmWave is not loaded.")
+        connection.send_error(
+            msg["id"], ERR_NOT_LOADED, "Apollo mmWave Dashboard is not loaded."
+        )
         return False
     device_id = msg["device_id"]
     if not _device_is_registered(hass, device_id):
@@ -461,7 +463,9 @@ def _movement_answerable(
     # The history reads its flags from the zone store, and the entry's
     # teardown pops the two at different moments.
     if movement is None or DATA_STORE not in data:
-        connection.send_error(msg["id"], ERR_NOT_LOADED, "Apollo mmWave is not loaded.")
+        connection.send_error(
+            msg["id"], ERR_NOT_LOADED, "Apollo mmWave Dashboard is not loaded."
+        )
         return None
     device_id = msg["device_id"]
     if not _device_is_registered(hass, device_id):
@@ -569,7 +573,9 @@ def _calibration_answerable(
     from . import _device_is_registered  # noqa: PLC0415 - avoid a module import cycle
 
     if not _calibration_loaded(hass):
-        connection.send_error(msg["id"], ERR_NOT_LOADED, "Apollo mmWave is not loaded.")
+        connection.send_error(
+            msg["id"], ERR_NOT_LOADED, "Apollo mmWave Dashboard is not loaded."
+        )
         return False
     device_id = msg["device_id"]
     if not _device_is_registered(hass, device_id):

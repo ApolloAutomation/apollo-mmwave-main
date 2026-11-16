@@ -17,7 +17,7 @@ body:
   attributes:
     label: "Integration version"
     description: "The version of this custom integration you are using"
-    placeholder: "2.4.1"
+    placeholder: "2.4.2"
   validations:
     required: false
 - type: textarea
@@ -65,7 +65,7 @@ body:
 
 - type: textarea
   attributes:
-    label: "Apollo mmWave support file"
-    description: "Open Settings > Devices & services > Apollo mmWave, choose Download diagnostics from the three dots menu, and drag the file here. It leaves out MAC and IP addresses and Wi-Fi names. (see https://www.home-assistant.io/integrations/diagnostics/ for info)"
+    label: "Apollo mmWave Dashboard support file"
+    description: "Open Settings > Devices & services > Apollo mmWave Dashboard, choose Download diagnostics from the three dots menu, and drag the file here. It leaves out MAC and IP addresses and Wi-Fi names. (see https://www.home-assistant.io/integrations/diagnostics/ for info)"
   validations:
     required: false

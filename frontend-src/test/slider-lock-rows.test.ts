@@ -242,14 +242,14 @@ describe("slider row and Home Assistant's row", () => {
     const el: any = document.createElement(SLIDER_ROW_TAG);
     const type = `custom:${SLIDER_ROW_TAG}`;
     expect(() => el.setConfig({ type, device_id: "x" })).toThrow(
-      "Apollo mmWave: a slider row needs entity and device_id."
+      "Apollo mmWave Dashboard: a slider row needs entity and device_id."
     );
     expect(() => el.setConfig({ type, entity: ENTITY })).toThrow(
-      "Apollo mmWave: a slider row needs entity and device_id."
+      "Apollo mmWave Dashboard: a slider row needs entity and device_id."
     );
     const lock: any = document.createElement(SLIDER_LOCK_ROW_TAG);
     expect(() => lock.setConfig({ type: `custom:${SLIDER_LOCK_ROW_TAG}` })).toThrow(
-      "Apollo mmWave: the slider lock row needs device_id."
+      "Apollo mmWave Dashboard: the slider lock row needs device_id."
     );
   });
 

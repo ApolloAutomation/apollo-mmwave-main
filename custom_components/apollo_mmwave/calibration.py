@@ -1615,7 +1615,7 @@ def _runtime(
     jobs = data.get(DATA_CALIBRATION_JOBS)
     closing = starting and bool(data.get(_DATA_CALIBRATION_CLOSING))
     if store is None or jobs is None or closing:
-        msg = "Apollo mmWave calibration is not loaded."
+        msg = "Apollo mmWave Dashboard calibration is not loaded."
         raise HomeAssistantError(msg)
     if starting and hass.is_stopping:
         msg = "Home Assistant is stopping, so no calibration or restore can start."

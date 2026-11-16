@@ -38,6 +38,7 @@ from custom_components.apollo_mmwave.const import (
     DATA_CALIBRATION_JOBS,
     DOMAIN,
     ENTRY_MINOR_VERSION,
+    ENTRY_TITLE,
     SERVICE_CALIBRATE_GATES,
     SERVICE_CANCEL_CALIBRATION,
     SERVICE_RESTORE_GATE_THRESHOLDS,
@@ -100,7 +101,7 @@ def make_entry(dashboard_id: str | None = None, **options: Any) -> MockConfigEnt
     """
     return MockConfigEntry(
         domain=DOMAIN,
-        title="Apollo mmWave",
+        title=ENTRY_TITLE,
         data={},
         options={
             CONF_DASHBOARD_ID: dashboard_id,

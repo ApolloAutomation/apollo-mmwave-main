@@ -19,7 +19,7 @@ This integration ships its own Lovelace frontend so users install ONE thing:
    serves the files.
 
 2. ``async_create_dashboard`` creates an ordinary storage dashboard named
-   "Apollo mmWave" in Lovelace's dashboards collection, and saves
+   "Apollo mmWave Dashboard" in Lovelace's dashboards collection, and saves
    ``{"strategy": {"type": "custom:apollo-radar-tuning"}}`` as its config. The
    frontend strategy re-runs on every load, detecting each Apollo mmWave device
    and building one tab per device, so the dashboard self-updates as devices
@@ -629,8 +629,8 @@ async def _async_our_row(
 
 # Where every warning about a dashboard that was not created sends the user.
 _PICKER_HINT = (
-    "Add one from Settings > Dashboards > Add dashboard > Apollo Radar Tuning"
-    f" (strategy type '{DASHBOARD_STRATEGY_TYPE}')."
+    "Add one from Settings > Dashboards > Add dashboard > "
+    f"{DASHBOARD_TITLE} (strategy type '{DASHBOARD_STRATEGY_TYPE}')."
 )
 
 
@@ -765,8 +765,9 @@ async def async_dashboard_state(
         found = await _async_recorded_row(hass, collection, dashboard_id, url_path)
     except Exception:
         _LOGGER.warning(
-            "Apollo mmWave: could not read the dashboards to find the '%s' dashboard.",
-            DASHBOARD_TITLE,
+            "Apollo mmWave: could not read the dashboards to find the dashboard"
+            " at /%s.",
+            DASHBOARD_URL_PATH,
             exc_info=True,
         )
         return None
@@ -802,9 +803,9 @@ async def async_set_dashboard_devices(
         if collection is None:
             _LOGGER.warning(
                 "Apollo mmWave: could not reach Lovelace's dashboards collection,"
-                " so the device selection was not written into the '%s'"
-                " dashboard.",
-                DASHBOARD_TITLE,
+                " so the device selection was not written into the dashboard"
+                " at /%s.",
+                DASHBOARD_URL_PATH,
             )
             return False
         found = await _async_our_row(hass, collection, dashboard_id, url_path)
@@ -819,9 +820,9 @@ async def async_set_dashboard_devices(
             await dashboard.async_save(desired)
     except Exception:
         _LOGGER.warning(
-            "Apollo mmWave: could not write the device selection into the '%s'"
-            " dashboard.",
-            DASHBOARD_TITLE,
+            "Apollo mmWave: could not write the device selection into the"
+            " dashboard at /%s.",
+            DASHBOARD_URL_PATH,
             exc_info=True,
         )
         return False
@@ -852,9 +853,9 @@ async def async_remove_dashboard(
         if collection is None:
             _LOGGER.warning(
                 "Apollo mmWave: could not reach Lovelace's dashboards collection,"
-                " so the '%s' dashboard was not removed. You can delete it in"
+                " so the dashboard at /%s was not removed. You can delete it in"
                 " Settings > Dashboards.",
-                DASHBOARD_TITLE,
+                DASHBOARD_URL_PATH,
             )
             return False
         found = await _async_our_row(hass, collection, dashboard_id, url_path)
@@ -863,13 +864,13 @@ async def async_remove_dashboard(
         await collection.async_delete_item(found[0]["id"])
     except Exception:
         _LOGGER.warning(
-            "Apollo mmWave: could not remove the '%s' dashboard. You can delete"
-            " it in Settings > Dashboards.",
-            DASHBOARD_TITLE,
+            "Apollo mmWave: could not remove the dashboard at /%s. You can"
+            " delete it in Settings > Dashboards.",
+            DASHBOARD_URL_PATH,
             exc_info=True,
         )
         return False
-    _LOGGER.info("Apollo mmWave: removed the '%s' dashboard.", DASHBOARD_TITLE)
+    _LOGGER.info("Apollo mmWave: removed the dashboard at /%s.", DASHBOARD_URL_PATH)
     return True
 
 
@@ -956,8 +957,8 @@ async def async_restore_dashboard(
         if collection is None:
             _LOGGER.warning(
                 "Apollo mmWave: could not reach Lovelace's dashboards collection,"
-                " so the '%s' dashboard was not restored. Nothing was changed.",
-                DASHBOARD_TITLE,
+                " so the dashboard at /%s was not restored. Nothing was changed.",
+                DASHBOARD_URL_PATH,
             )
             return RestoreResult.COPY_NOT_SAVED
         found = await _async_recorded_row(hass, collection, dashboard_id, url_path)
@@ -967,10 +968,10 @@ async def async_restore_dashboard(
         copy_url_path = await _async_keep_saved_copy(hass, collection, item, stored)  # type: ignore[arg-type]
     except Exception:
         _LOGGER.warning(
-            "Apollo mmWave: could not keep a copy of the '%s' dashboard, so it"
+            "Apollo mmWave: could not keep a copy of the dashboard at /%s, so it"
             " was not restored. Nothing was changed. Please report this"
             " traceback:",
-            DASHBOARD_TITLE,
+            DASHBOARD_URL_PATH,
             exc_info=True,
         )
         return RestoreResult.COPY_NOT_SAVED
@@ -981,19 +982,18 @@ async def async_restore_dashboard(
         await dashboard.async_save(_desired_config(devices))
     except Exception:
         _LOGGER.warning(
-            "Apollo mmWave: kept a copy of the '%s' dashboard as '%s' at /%s, but"
-            " could not restore the automatic dashboard, which was left as it"
-            " is. Please report this traceback:",
-            DASHBOARD_TITLE,
+            "Apollo mmWave: kept a copy of the dashboard at /%s as '%s' at /%s,"
+            " but could not restore the automatic dashboard, which was left as"
+            " it is. Please report this traceback:",
+            DASHBOARD_URL_PATH,
             SAVED_COPY_TITLE,
             copy_url_path,
             exc_info=True,
         )
         return RestoreResult.DASHBOARD_NOT_RESTORED
     _LOGGER.info(
-        "Apollo mmWave: restored the automatic '%s' dashboard at /%s. The saved"
+        "Apollo mmWave: restored the automatic dashboard at /%s. The saved"
         " copy is the '%s' dashboard at /%s, in Settings > Dashboards.",
-        DASHBOARD_TITLE,
         item[CONF_URL_PATH],
         SAVED_COPY_TITLE,
         copy_url_path,
@@ -1039,9 +1039,9 @@ async def async_check_saved_copy(hass: HomeAssistant, entry: ConfigEntry) -> Non
             ir.async_delete_issue(hass, DOMAIN, ISSUE_DASHBOARD_SAVED_COPY)
     except Exception:
         _LOGGER.warning(
-            "Apollo mmWave: could not check whether the '%s' dashboard is a"
+            "Apollo mmWave: could not check whether the dashboard at /%s is a"
             " saved copy.",
-            DASHBOARD_TITLE,
+            DASHBOARD_URL_PATH,
             exc_info=True,
         )
 
@@ -1073,8 +1073,8 @@ def async_forget_deleted_dashboard(
             ):
                 return
             _LOGGER.debug(
-                "Apollo mmWave: the '%s' dashboard was deleted; forgetting it.",
-                DASHBOARD_TITLE,
+                "Apollo mmWave: the dashboard at /%s was deleted; forgetting it.",
+                DASHBOARD_URL_PATH,
             )
             hass.config_entries.async_update_entry(
                 entry,
@@ -1086,8 +1086,8 @@ def async_forget_deleted_dashboard(
             )
         except Exception:
             _LOGGER.warning(
-                "Apollo mmWave: could not forget the deleted '%s' dashboard.",
-                DASHBOARD_TITLE,
+                "Apollo mmWave: could not forget the deleted dashboard at /%s.",
+                DASHBOARD_URL_PATH,
                 exc_info=True,
             )
 
@@ -1097,9 +1097,9 @@ def async_forget_deleted_dashboard(
             return collection.async_add_listener(_changed)
     except Exception:
         _LOGGER.warning(
-            "Apollo mmWave: could not watch the dashboards for the '%s'"
-            " dashboard being deleted.",
-            DASHBOARD_TITLE,
+            "Apollo mmWave: could not watch the dashboards for the dashboard"
+            " at /%s being deleted.",
+            DASHBOARD_URL_PATH,
             exc_info=True,
         )
     return lambda: None
@@ -1156,17 +1156,17 @@ async def async_find_legacy_dashboard(hass: HomeAssistant) -> str | None:
             return await _async_legacy_row_id(hass, collection)
     except Exception as err:
         _LOGGER.warning(
-            "Apollo mmWave: could not read the dashboards to find the '%s'"
-            " dashboard from an earlier release. %s",
-            DASHBOARD_TITLE,
+            "Apollo mmWave: could not read the dashboards to find the dashboard"
+            " at /%s from an earlier release. %s",
+            DASHBOARD_URL_PATH,
             _LEGACY_RETRY_HINT,
             exc_info=True,
         )
         raise DashboardsUnreadableError from err
     _LOGGER.warning(
         "Apollo mmWave: could not reach Lovelace's dashboards collection, so the"
-        " '%s' dashboard from an earlier release is not tracked yet. %s",
-        DASHBOARD_TITLE,
+        " dashboard at /%s from an earlier release is not tracked yet. %s",
+        DASHBOARD_URL_PATH,
         _LEGACY_RETRY_HINT,
     )
     raise DashboardsUnreadableError

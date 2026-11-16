@@ -1704,7 +1704,10 @@ async def test_calls_during_the_unload_wait_are_refused(
     assert hass.services.has_service(DOMAIN, SERVICE_CALIBRATE_GATES)
 
     for service in (SERVICE_CALIBRATE_GATES, SERVICE_RESTORE_GATE_THRESHOLDS):
-        with pytest.raises(HomeAssistantError, match="not loaded"):
+        with pytest.raises(
+            HomeAssistantError,
+            match=r"^Apollo mmWave Dashboard calibration is not loaded\.$",
+        ):
             await hass.services.async_call(
                 DOMAIN, service, {"device_id": rpro.device_id}, blocking=True
             )

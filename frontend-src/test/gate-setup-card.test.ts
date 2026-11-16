@@ -629,7 +629,7 @@ describe("gate setup card states", () => {
   it("shows the line when the integration is not loaded, then retries the feed", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const hass = ld2410Hass({ engineering: "on" });
-    hass.subscribeError = { code: "not_loaded", message: "Apollo mmWave is not loaded." };
+    hass.subscribeError = { code: "not_loaded", message: "Apollo mmWave Dashboard is not loaded." };
     const el = await mount(hass);
     expect(labels(el)).toEqual([ENGINEERING_OFF_LABEL]);
     const calls = () =>
@@ -673,7 +673,7 @@ describe("gate setup card states", () => {
     expect(labels(el)).toEqual([ENGINEERING_OFF_LABEL]);
   });
 
-  it("reopens the feed when Apollo mmWave loads again", async () => {
+  it("reopens the feed when Apollo mmWave Dashboard loads again", async () => {
     const hass = ld2410Hass();
     const el = await mountIdle(hass);
     for (const cb of hass.entryHandlers) {

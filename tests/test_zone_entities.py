@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
-from homeassistant.const import ATTR_RESTORED, STATE_UNAVAILABLE
+import homeassistant.helpers.entity as entity_helper
+import pytest
+from homeassistant.const import (
+    ATTR_RESTORED,
+    MAJOR_VERSION,
+    MINOR_VERSION,
+    STATE_UNAVAILABLE,
+)
 from homeassistant.core import callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
@@ -17,6 +24,7 @@ from homeassistant.helpers.entity_platform import (
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.apollo_mmwave import _zone_entity_unique_ids, get_store
+from custom_components.apollo_mmwave.binary_sensor import ZonePresenceBinarySensor
 from custom_components.apollo_mmwave.const import (
     DOMAIN,
     SERVICE_UPDATE_ZONE,
@@ -26,6 +34,7 @@ from custom_components.apollo_mmwave.const import (
     STORE_ORPHANS,
     STORE_ZONES,
 )
+from custom_components.apollo_mmwave.sensor import ZoneCoordsSensor
 from custom_components.apollo_mmwave.store import STORAGE_KEY as ZONE_STORAGE_KEY
 from custom_components.apollo_mmwave.zone_entities import (
     ZoneEntityMixin,
@@ -33,12 +42,29 @@ from custom_components.apollo_mmwave.zone_entities import (
 )
 
 from .conftest import RECT_ZONE, setup_integration
+from .test_binary_sensor import (
+    HOLD_S,
+    TARGET_1,
+    _advance,
+    _hold_state,
+    _presence_id,
+    _sit,
+    _store_zone,
+    _vanish,
+)
 
 DISABLED_RADAR_SERIAL = "apollo_mtr_1_fed789"
 DISABLED_RADAR_NAME = "Apollo MTR-1 fed789"
 # The live radar's first LD2450 target, as the `esphome_device` fixture names it.
 TARGET_1_X = "sensor.r_pro_ld2450_target_1_x"
 TARGET_1_Y = "sensor.r_pro_ld2450_target_1_y"
+# HA 2026.11 changes an opted-in entity's id in place.
+IN_PLACE = (MAJOR_VERSION, MINOR_VERSION) >= (2026, 11)
+ZONE_CLASSES = pytest.mark.parametrize(
+    "cls",
+    [ZoneCoordsSensor, ZonePresenceBinarySensor],
+    ids=["sensor", "binary_sensor"],
+)
 
 
 def _zone_entity_ids(hass, device_id: str) -> tuple[str | None, str | None]:
@@ -432,3 +458,102 @@ async def test_platform_unique_ids_match_the_service_lookup(
         entry = entity_registry.async_get(entity.entity_id)
         assert entry is not None
         assert entry.name == f"{entity.name} - Kitchen"
+
+
+@ZONE_CLASSES
+def test_zone_entities_opt_in_to_in_place_entity_id_changes(cls) -> None:
+    """
+    Each zone class defines async_entity_id_changed itself.
+
+    Home Assistant 2026.11 keeps an entity through an entity id change only
+    when every class with add or remove hooks, or a subclass of it, defines
+    the hook. One on ZoneEntityMixin would not cover the subclasses' own
+    async_added_to_hass. Releases before 2026.11 never call it.
+    """
+    assert "async_entity_id_changed" in vars(cls)
+
+
+@pytest.mark.skipif(not IN_PLACE, reason="needs Home Assistant 2026.11 or later")
+@ZONE_CLASSES
+def test_home_assistant_changes_zone_entity_ids_in_place(cls) -> None:
+    """Home Assistant's own check says the zone classes need no re-add."""
+    assert not entity_helper._entity_class_requires_readd(cls)  # noqa: SLF001
+
+
+@pytest.mark.usefixtures("init_integration")
+@pytest.mark.parametrize(
+    "zone_entity",
+    [
+        ("sensor", "", "sensor.couch_zone"),
+        ("binary_sensor", "_presence", "binary_sensor.couch_presence"),
+    ],
+    ids=["sensor", "binary_sensor"],
+)
+async def test_entity_id_change_keeps_the_zone_entity(
+    hass, device_id, monkeypatch, zone_entity
+) -> None:
+    """
+    A new entity id moves the zone entity in place on HA 2026.11 and later.
+
+    Earlier releases remove the entity and add it again, as before. Either way
+    the old id loses its state, the new one has it, and the entity still
+    follows its zone and the radar's targets.
+    """
+    domain, suffix, renamed = zone_entity
+    await _draw(hass, device_id)
+    await hass.async_block_till_done()
+    registry = er.async_get(hass)
+    old = registry.async_get_entity_id(domain, DOMAIN, f"{device_id}_zone_1{suffix}")
+    calls: list[str] = []
+    for name in ("mark_gone", "mark_live"):
+        real = getattr(ZoneEntityTracker, name)
+
+        def _record(self, key, _name: str = name, _real=real) -> None:
+            calls.append(_name)
+            _real(self, key)
+
+        monkeypatch.setattr(ZoneEntityTracker, name, _record)
+
+    registry.async_update_entity(old, new_entity_id=renamed)
+    await hass.async_block_till_done()
+
+    assert calls == ([] if IN_PLACE else ["mark_gone", "mark_live"])
+    assert hass.states.get(old) is None
+    assert hass.states.get(renamed) is not None
+    if domain == "sensor":
+        get_store(hass).device(device_id)[STORE_ZONES][1] = {
+            "shape": "ellipse",
+            "data": {"cx": 0, "cy": 1000, "rx": 500, "ry": 500},
+        }
+        async_dispatcher_send(hass, SIGNAL_ZONES_UPDATED, device_id)
+        await hass.async_block_till_done()
+        assert hass.states.get(renamed).attributes["shape"] == "ellipse"
+    else:
+        assert hass.states.get(renamed).state == "off"
+        hass.states.async_set(TARGET_1_X, "500")
+        hass.states.async_set(TARGET_1_Y, "1000")
+        await hass.async_block_till_done()
+        assert hass.states.get(renamed).state == "on"
+
+
+async def test_entity_id_change_keeps_a_hold(
+    hass, freezer, entity_registry, setup_entry_with_zone
+) -> None:
+    """A zone held when its entity id changes stays held for the hold time."""
+    device_id, _ = setup_entry_with_zone
+    await _store_zone(hass, device_id)
+    old = _presence_id(entity_registry, device_id)
+    await _sit(hass, freezer, TARGET_1, 0, 1000)
+    await _vanish(hass, TARGET_1)
+    assert _hold_state(hass, old) == ("on", True)
+
+    renamed = "binary_sensor.couch_presence"
+    entity_registry.async_update_entity(old, new_entity_id=renamed)
+    await hass.async_block_till_done()
+
+    assert hass.states.get(old) is None
+    assert _hold_state(hass, renamed) == ("on", True)
+    await _advance(hass, freezer, HOLD_S - 5)
+    assert _hold_state(hass, renamed) == ("on", True)
+    await _advance(hass, freezer, 6)
+    assert _hold_state(hass, renamed) == ("off", False)

@@ -135,3 +135,9 @@ class ZoneCoordsSensor(ZoneEntityMixin, SensorEntity):
         self.async_on_remove(
             async_dispatcher_connect(self.hass, SIGNAL_ZONES_UPDATED, _zones_updated)
         )
+
+    # On each class: HA checks every class's own hooks.
+    @callback
+    def async_entity_id_changed(self, old_entity_id: str) -> None:
+        """Keep the entity added through an entity id change."""
+        super().async_entity_id_changed(old_entity_id)  # type: ignore[misc]

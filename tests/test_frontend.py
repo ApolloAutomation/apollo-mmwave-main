@@ -10,6 +10,7 @@ element with no way to recover short of a hard refresh.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import json
 from http import HTTPStatus
@@ -784,7 +785,7 @@ async def test_unreachable_dashboards_collection_is_warned_about(hass, caplog) -
         assert await async_create_dashboard(hass, require_admin=True) is None
         [created] = apollo_warnings(caplog)
         assert "could not reach Lovelace's dashboards collection" in created
-        assert "Add dashboard > Apollo Radar Tuning" in created
+        assert "Add dashboard > Apollo mmWave Dashboard (strategy type" in created
         assert DASHBOARD_STRATEGY_TYPE in created
         caplog.clear()
 
@@ -813,8 +814,38 @@ async def test_unreachable_dashboards_collection_is_warned_about(hass, caplog) -
         [legacy] = apollo_warnings(caplog)
         assert "is not tracked yet" in legacy
 
+        # An existing dashboard may carry an older or custom title.
+        for warning in (devices, removed, legacy):
+            assert f"the dashboard at /{DASHBOARD_URL_PATH}" in warning
+            assert DASHBOARD_TITLE not in warning
+
     assert DASHBOARD_URL_PATH not in hass.data[LOVELACE_DATA].dashboards
     assert DASHBOARD_URL_PATH not in hass.data[DATA_PANELS]
+
+
+def test_only_creation_logs_name_the_dashboard_by_its_title() -> None:
+    """
+    Every other log names the dashboard by its address.
+
+    The title is what a new dashboard gets. One made before 2.4.2, or one the
+    user renamed, has another, so a log about it must not quote ours.
+    """
+    tree = ast.parse(Path(apollo_frontend.__file__).read_text(encoding="utf-8"))
+    naming = {
+        func.name
+        for func in ast.walk(tree)
+        if isinstance(func, ast.AsyncFunctionDef | ast.FunctionDef)
+        for call in ast.walk(func)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute)
+        and isinstance(call.func.value, ast.Name)
+        and call.func.value.id == "_LOGGER"
+        and any(
+            isinstance(arg, ast.Name) and arg.id == "DASHBOARD_TITLE"
+            for arg in call.args
+        )
+    }
+    assert naming == {"async_create_dashboard"}
 
 
 async def test_reloading_the_entry_keeps_the_users_dashboard_edits(hass) -> None:
@@ -936,7 +967,7 @@ async def test_user_added_strategy_options_survive_a_device_write(hass) -> None:
 STALE_ROW: dict[str, Any] = {
     "id": "apollo_mmwave",
     "url_path": DASHBOARD_URL_PATH,
-    "title": DASHBOARD_TITLE,
+    "title": "Apollo mmWave",
     "icon": DASHBOARD_ICON,
     "show_in_sidebar": True,
     "require_admin": False,
@@ -1102,8 +1133,8 @@ async def test_failed_first_config_save_does_not_strand_the_row(hass, caplog) ->
         assert DASHBOARD_URL_PATH not in hass.data[LOVELACE_DATA].dashboards
         assert DASHBOARD_URL_PATH not in hass.data[DATA_PANELS]
         [warning] = apollo_warnings(caplog)
-        assert "could not create the 'Apollo mmWave' dashboard" in warning
-        assert "Add dashboard > Apollo Radar Tuning" in warning
+        assert "could not create the 'Apollo mmWave Dashboard' dashboard" in warning
+        assert "Add dashboard > Apollo mmWave Dashboard (strategy type" in warning
 
         assert await async_create_dashboard(hass, require_admin=True)
 

@@ -39,7 +39,6 @@ from custom_components.apollo_mmwave.const import (
     CONF_DASHBOARD_URL_PATH,
     DASHBOARD_ICON,
     DASHBOARD_STRATEGY_TYPE,
-    DASHBOARD_TITLE,
     DASHBOARD_URL_PATH,
     DATA_MOVEMENT,
     DATA_STORE,
@@ -729,7 +728,8 @@ OUR_CONFIG: dict[str, Any] = {"strategy": {"type": DASHBOARD_STRATEGY_TYPE}}
 LEGACY_ROW: dict[str, Any] = {
     "id": "apollo_mmwave",
     "url_path": DASHBOARD_URL_PATH,
-    "title": DASHBOARD_TITLE,
+    # The title releases before 2.4.2 wrote.
+    "title": "Apollo mmWave",
     "icon": DASHBOARD_ICON,
     "show_in_sidebar": True,
     "require_admin": False,
@@ -834,6 +834,9 @@ async def test_migration_adopts_a_2_2_5_dashboard_without_writing(
     # Left as it is: still visible to every user, config unchanged.
     assert rows_on_url_path(hass) == [LEGACY_ROW]
     assert await async_dashboard_config(hass) == config
+    # Neither the entry nor the dashboard takes the new name.
+    assert entry.title == "Apollo mmWave"
+    assert rows_on_url_path(hass)[0]["title"] == "Apollo mmWave"
 
 
 async def test_migration_with_no_dashboard_records_none(hass) -> None:

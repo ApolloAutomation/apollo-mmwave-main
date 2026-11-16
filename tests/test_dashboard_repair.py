@@ -524,7 +524,9 @@ async def test_the_fix_keeps_the_copy_before_it_restores(hass, admin_only) -> No
     assert writes == ["create_item", "save_config", "save_config"]
     assert saved_paths == [SAVED_COPY_URL_PATH, DASHBOARD_URL_PATH]
     [copy_row] = rows_on_url_path(hass, SAVED_COPY_URL_PATH)
-    assert copy_row["title"] == SAVED_COPY_TITLE
+    assert (
+        copy_row["title"] == SAVED_COPY_TITLE == "Apollo mmWave Dashboard (saved copy)"
+    )
     assert copy_row["icon"] == DASHBOARD_ICON
     assert copy_row["show_in_sidebar"] is False
     assert copy_row["require_admin"] is admin_only
@@ -537,6 +539,26 @@ async def test_the_fix_keeps_the_copy_before_it_restores(hass, admin_only) -> No
     assert rows_on_url_path(hass) == [ours_before]
     assert dict(entry.options) == options_before
     assert _issue(hass) is None
+
+
+async def test_the_fix_leaves_an_older_dashboard_title(hass) -> None:
+    """A dashboard made before 2.4.2 keeps its title through a restore."""
+    entry = await _saved_copy_entry(hass)
+    [ours] = rows_on_url_path(hass)
+    # The title releases before 2.4.2 wrote.
+    await _dashboards_collection(hass).async_update_item(
+        ours["id"], {"title": "Apollo mmWave"}
+    )
+    await setup_integration(hass, entry)
+
+    result = await _submit_fix(hass, await _confirm_form(hass))
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert await async_dashboard_config(hass) == OUR_CONFIG
+    [ours] = rows_on_url_path(hass)
+    assert ours["title"] == "Apollo mmWave"
+    [copy_row] = rows_on_url_path(hass, SAVED_COPY_URL_PATH)
+    assert copy_row["title"] == "Apollo mmWave Dashboard (saved copy)"
 
 
 @pytest.mark.parametrize(

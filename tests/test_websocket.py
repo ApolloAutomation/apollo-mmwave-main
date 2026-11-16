@@ -188,6 +188,7 @@ async def test_zones_get_reports_the_integration_unloaded(
     message = await client.receive_json()
     assert message["success"] is False
     assert message["error"]["code"] == "not_loaded"
+    assert message["error"]["message"] == "Apollo mmWave Dashboard is not loaded."
 
 
 async def test_zones_subscribe_pushes_on_change(
@@ -617,8 +618,7 @@ async def test_presence_entity_rename_pushes_the_new_id(
 
     [pushed] = await _drain(client)
     assert pushed["zones"]["1"][KEY_PRESENCE_ENTITY_ID] == renamed
-    # Home Assistant re-added the same entity under its new id: no zone signal
-    # ran a platform sync against it, so nothing was added beside it.
+    # No zone signal ran a platform sync, so nothing was added.
     assert zone_signals == []
     assert aborted == []
     assert _ours() == expected
@@ -1607,6 +1607,7 @@ async def test_movement_get_not_loaded_after_unload(
         reply = await _ask(client, {"type": command, "device_id": device_id})
         assert reply["success"] is False
         assert reply["error"]["code"] == "not_loaded"
+        assert reply["error"]["message"] == "Apollo mmWave Dashboard is not loaded."
     # Unauthorized comes first, then not_loaded, then not_found.
     reply = await _ask(user, {"type": MOVEMENT_GET, "device_id": device_id})
     assert reply["error"]["code"] == "unauthorized"
@@ -1847,6 +1848,7 @@ async def test_calibration_get_not_loaded_after_unload(
     message = await client.receive_json()
     assert message["success"] is False
     assert message["error"]["code"] == "not_loaded"
+    assert message["error"]["message"] == "Apollo mmWave Dashboard is not loaded."
 
 
 async def test_calibration_get_not_loaded_when_only_zone_store_is_present(

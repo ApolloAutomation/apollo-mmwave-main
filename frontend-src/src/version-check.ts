@@ -35,12 +35,12 @@ export const VERSION_APP_LINE =
   "In the Home Assistant app, if Reload does not help, close the app fully and open it again.";
 
 export function versionReloadLine(running: string, page: string): string {
-  return `Apollo mmWave was updated to ${running}, but this page still runs ${page}.`;
+  return `Apollo mmWave Dashboard was updated to ${running}, but this page still runs ${page}.`;
 }
 
 export function versionRestartLine(running: string, page: string): string {
   return (
-    `Apollo mmWave ${page} is installed, but Home Assistant still runs ${running}.` +
+    `Apollo mmWave Dashboard ${page} is installed, but Home Assistant still runs ${running}.` +
     " Restart Home Assistant to finish updating."
   );
 }

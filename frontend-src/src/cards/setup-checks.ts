@@ -244,7 +244,8 @@ export const TARGET_UNITS_SET = "apollo_mmwave/target_units/set";
 export const UNITS_LABEL = "Show Target X and Y in mm";
 export const UNITS_PROGRESS = "Switching Target X and Y to mm...";
 export const UNITS_FAILURE = "Could not change the Target X and Y units";
-export const UNITS_NOT_LOADED = "Apollo mmWave is not loaded. Reload the page and try again.";
+export const UNITS_NOT_LOADED =
+  "Apollo mmWave Dashboard is not loaded. Reload the page and try again.";
 const UNITS_HINT = "After the change, automations and templates that use these sensors read mm.";
 const UNITS_USED_HINT = "An automation, a script or a helper uses them: check any number it compares them to.";
 

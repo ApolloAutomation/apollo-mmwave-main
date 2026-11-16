@@ -6,6 +6,7 @@ import {
   generateCards,
   generateSections,
   generateViews,
+  DASHBOARD_TITLE,
   type StrategyConfig,
 } from "./strategy-core";
 
@@ -108,9 +109,7 @@ function availabilityChanged(oldHass: HomeAssistant, newHass: HomeAssistant): bo
 }
 
 const EMPTY_VIEW = {
-  // TODO(REVIEW_REPORT.md X32): differs from the "Apollo mmWave" sidebar name; to unify, set that
-  // here, in STALE_SELECTION_VIEW and the dashboard title, with a test (picker name can stay).
-  title: "Apollo Radar Tuning",
+  title: DASHBOARD_TITLE,
   cards: [
     {
       type: "markdown",
@@ -127,15 +126,15 @@ const EMPTY_VIEW = {
  *  window, or a hand-typed id. The radars may well be added and live, so the
  *  fix is the selection, not the device. */
 const STALE_SELECTION_VIEW = {
-  title: "Apollo Radar Tuning",
+  title: DASHBOARD_TITLE,
   cards: [
     {
       type: "markdown",
       content:
         "The dashboard's device selection points at devices that no longer exist " +
-        "in Home Assistant. Open Settings > Devices & Services > Apollo mmWave > " +
-        "Configure and clear or update Dashboard devices (leave it empty to show " +
-        "every Apollo mmWave device automatically).",
+        "in Home Assistant. Open Settings > Devices & Services > " +
+        "Apollo mmWave Dashboard > Configure and clear or update Dashboard devices " +
+        "(leave it empty to show every Apollo mmWave device automatically).",
     },
   ],
 };
@@ -180,7 +179,7 @@ class ApolloLd2410DashboardStrategy extends HTMLElement {
     const empty =
       config.devices?.length || config.device_id ? STALE_SELECTION_VIEW : EMPTY_VIEW;
     return {
-      title: "Apollo Radar Tuning",
+      title: DASHBOARD_TITLE,
       views: views.length ? views : [empty],
     };
   }
@@ -188,7 +187,7 @@ class ApolloLd2410DashboardStrategy extends HTMLElement {
 
 /**
  * Section strategy: a single grid section with the mmWave cards, for dropping
- * into an existing sections dashboard (add section → "Apollo Radar Tuning").
+ * into an existing sections dashboard.
  * Pass `device_id` to limit it to one device, or `devices` (a list of device
  * ids) to limit it to those; `device_id` takes precedence and `devices` is
  * ignored when both are set. Otherwise every detected device's cards are
@@ -232,7 +231,7 @@ if (
   (window as any).customStrategies.push({
     type: "apollo-radar-tuning",
     strategyType: "dashboard",
-    name: "Apollo Radar Tuning",
+    name: DASHBOARD_TITLE,
     description:
       "Auto-built tuning dashboard for Apollo radar devices " +
       "(MSR / LD2410, R PRO / LD2412 + LD2450, MTR-1 / LD2450).",

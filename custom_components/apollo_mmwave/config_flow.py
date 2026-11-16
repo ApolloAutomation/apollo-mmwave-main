@@ -36,6 +36,7 @@ from .const import (
     DEFAULT_DASHBOARD_ADMIN_ONLY,
     DOMAIN,
     ENTRY_MINOR_VERSION,
+    ENTRY_TITLE,
 )
 from .frontend import (
     DashboardState,
@@ -114,7 +115,7 @@ class ApolloMmwaveConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     ),
                 )
             return self.async_create_entry(
-                title="Apollo mmWave", data={}, options=_ownership(dashboard_id)
+                title=ENTRY_TITLE, data={}, options=_ownership(dashboard_id)
             )
 
         schema = vol.Schema(

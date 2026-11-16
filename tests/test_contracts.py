@@ -37,6 +37,7 @@ from custom_components.apollo_mmwave import (
 from custom_components.apollo_mmwave.const import (
     CARD_TYPE,
     DASHBOARD_STRATEGY_TYPE,
+    DASHBOARD_TITLE,
     DATA_MOVEMENT,
     DOMAIN,
     FRONTEND_DIR,
@@ -105,6 +106,21 @@ def test_dashboard_strategy_element_matches_the_strategy_type() -> None:
     bundle = _read(WWW / "apollo-radar-tuning.js")
 
     assert _has_string_literal(bundle, f"ll-strategy-dashboard-{name}")
+
+
+def test_dashboard_title_matches_the_strategy() -> None:
+    """The picker lists the strategy by the name the backend gives."""
+    # The warnings say Add dashboard > DASHBOARD_TITLE.
+    core = _read(FRONTEND_SRC / "strategy-core.ts")
+    strategy = _read(FRONTEND_SRC / "strategy.ts")
+    picker = re.search(
+        r"customStrategies\.push\(\{\n(.*?)^  \}\);", strategy, re.MULTILINE | re.DOTALL
+    )
+
+    assert f'export const DASHBOARD_TITLE = "{DASHBOARD_TITLE}";' in core
+    assert picker is not None
+    assert "    name: DASHBOARD_TITLE,\n" in picker[1]
+    assert _has_string_literal(_read(WWW / "apollo-radar-tuning.js"), DASHBOARD_TITLE)
 
 
 def test_zone_map_card_element_matches_card_type() -> None:

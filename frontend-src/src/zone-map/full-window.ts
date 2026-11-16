@@ -104,12 +104,14 @@ export function fullWindowLayout({
   };
 }
 
-// mdi icons (Pictogrammers, Apache 2.0): mdiFullscreen, mdiFullscreenExit
-// and mdiClose.
+// mdi icons (Pictogrammers, Apache 2.0): mdiFullscreen, mdiFullscreenExit,
+// mdiClose and mdiShapeOutline.
 export const ICON_EXPAND = 'M5,5H10V7H7V10H5V5M14,5H19V10H17V7H14V5M17,14H19V19H14V17H17V14M10,17V19H5V14H7V17H10Z';
 export const ICON_COLLAPSE = 'M14,14H19V16H16V19H14V14M5,14H10V19H8V16H5V14M8,5H10V10H5V8H8V5M19,8V10H14V5H16V8H19Z';
 export const ICON_CLOSE =
   'M19,6.41L17.59,5L12,10.59L6.41,5L5,6.41L10.59,12L5,17.59L6.41,19L12,13.41L17.59,19L19,17.59L13.41,12L19,6.41Z';
+export const ICON_SHAPES =
+  'M11,13.5V21.5H3V13.5H11M9,15.5H5V19.5H9V15.5M12,2L17.5,11H6.5L12,2M12,5.86L10.08,9H13.92L12,5.86M17.5,13C20,13 22,15 22,17.5C22,20 20,22 17.5,22C15,22 13,20 13,17.5C13,15 15,13 17.5,13M17.5,15A2.5,2.5 0 0,0 15,17.5A2.5,2.5 0 0,0 17.5,20A2.5,2.5 0 0,0 20,17.5A2.5,2.5 0 0,0 17.5,15Z';
 
 /** A 20 px icon in the text color, hidden from assistive tech: the button
  *  around it carries the label. */
