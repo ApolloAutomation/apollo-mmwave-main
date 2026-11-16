@@ -187,7 +187,7 @@ class ApolloLd2410DashboardStrategy extends HTMLElement {
 
 /**
  * Section strategy: a single grid section with the mmWave cards, for dropping
- * into an existing sections dashboard (add section → "Apollo Radar Tuning").
+ * into an existing sections dashboard.
  * Pass `device_id` to limit it to one device, or `devices` (a list of device
  * ids) to limit it to those; `device_id` takes precedence and `devices` is
  * ignored when both are set. Otherwise every detected device's cards are
