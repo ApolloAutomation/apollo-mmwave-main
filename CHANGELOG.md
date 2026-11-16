@@ -1,8 +1,39 @@
 # Changelog
 
-What changed in each release of Apollo mmWave, newest first. Setup and
-everyday use are in [README.md](README.md) and
+What changed in each release of Apollo mmWave Dashboard, newest first. Setup
+and everyday use are in [README.md](README.md) and
 [docs/configuration.md](docs/configuration.md).
+
+## What changed in 2.4.2
+
+Apollo mmWave is now called Apollo mmWave Dashboard, the zone map's shape
+menu has its own button, and zone entities are ready for a Home Assistant
+change due in 2027.11. Nothing needs changing by hand unless your Lovelace
+resources are managed in YAML (replace both `?v=` URLs; see
+[Lovelace resources](docs/configuration.md#lovelace-resources)).
+
+- **A new name.** HACS, the Marketplace, Settings → Devices & services and
+  the Community dashboards picker (formerly Apollo Radar Tuning) say
+  Apollo mmWave Dashboard, and a new setup names its entry and sidebar
+  dashboard that. An existing setup keeps **Apollo mmWave** until you
+  rename it: the entry from its ⋮ menu under
+  **Settings → Devices & services**, the dashboard under
+  **Settings → Dashboards**. The domain, /apollo-mmwave, entity ids, device
+  names and services do not change, so automations need nothing. Messages
+  about an existing dashboard name it by its address, and a copy kept from
+  now on is **Apollo mmWave Dashboard (saved copy)**.
+- **Shapes has its own button.** The menu at the map's bottom left that
+  offers Rectangle, Ellipse, Polygon and 🚶 shows a shapes icon and is
+  called **Shapes**, and screen readers hear whether it is open. ✎ now
+  means **Draw shape** only, beside the picked zone's chip. See
+  [Drawing zones](docs/configuration.md#drawing-zones).
+- **Entity id changes on Home Assistant 2026.11.** Zone presence and shape
+  entities take a new entity id in place on 2026.11 and later, the way
+  2027.11 will require, instead of being removed and added again. Nothing
+  changes on 2026.8 to 2026.10. On every version the zone map, zone
+  presence and a running hold follow the new id; see
+  [Zones in automations](docs/configuration.md#zones-in-automations).
+- **Tested on Home Assistant 2026.11.1** as well as 2026.10.0.
 
 ## What changed in 2.4.1
 

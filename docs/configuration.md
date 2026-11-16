@@ -1,11 +1,11 @@
-# Apollo mmWave configuration
+# Apollo mmWave Dashboard configuration
 
 This page has the details behind the [README](../README.md). Start there to
 install the integration and run your first calibration.
 
 ## Contents
 
-- [The Apollo mmWave dashboard](#the-apollo-mmwave-dashboard)
+- [The Apollo mmWave Dashboard](#the-apollo-mmwave-dashboard)
   - [A saved copy misses new cards](#a-saved-copy-misses-new-cards)
 - [Lovelace resources](#lovelace-resources)
   - [After an update](#after-an-update)
@@ -36,36 +36,43 @@ install the integration and run your first calibration.
   - [Strategy options](#strategy-options)
   - [Card options](#card-options)
 - [Support file](#support-file)
-- [Removing Apollo mmWave](#removing-apollo-mmwave)
+- [Removing Apollo mmWave Dashboard](#removing-apollo-mmwave)
 - [Troubleshooting](#troubleshooting)
 
-## The Apollo mmWave dashboard
+## The Apollo mmWave Dashboard
+
+Apollo mmWave Dashboard was called Apollo mmWave before 2.4.2. A setup from
+before then keeps its entry and its sidebar dashboard under the old name,
+Apollo mmWave, until you rename them: the entry from its ⋮ menu under
+**Settings → Devices & services**, the dashboard under
+**Settings → Dashboards**.
 
 When you add the integration, the setup window offers to add a dashboard for
-you: **Apollo mmWave** in the sidebar, at `/apollo-mmwave`, with a tab for
-each Apollo mmWave sensor. Both boxes start ticked:
+you: **Apollo mmWave Dashboard** in the sidebar, at `/apollo-mmwave`, with a
+tab for each Apollo mmWave sensor. Both boxes start ticked:
 
-- **Add the Apollo mmWave dashboard to the sidebar** creates it once, when you
-  press **Submit**.
+- **Add the Apollo mmWave Dashboard to the sidebar** creates it once, when
+  you press **Submit**.
 - **Only administrators can see it** keeps it out of other users' sidebars.
   To change that later, open the dashboard's settings in Settings →
   Dashboards.
 
-Apollo mmWave never recreates, rewrites or deletes the dashboard on its own:
+The integration never recreates, rewrites or deletes the dashboard on its own:
 not when Home Assistant restarts, and not when the integration reloads or
 updates. It is an ordinary dashboard, so you can rename it, change its icon,
 hide it, take control of it or delete it like any other. The integration
 records which dashboard it created and changes only that one: when you remove
-the integration (see [Removing Apollo mmWave](#removing-apollo-mmwave)), and
-when you ask in its options (Settings → Devices & services → Apollo mmWave →
+the integration (see
+[Removing Apollo mmWave Dashboard](#removing-apollo-mmwave)), and when you ask
+in its options (Settings → Devices & services → Apollo mmWave Dashboard →
 **Configure**):
 
-- **Add the Apollo mmWave dashboard** shows up while the integration has no
-  dashboard, for example after you unticked the box during setup or deleted
-  the dashboard. It says what it will create and asks the admin-only question
-  again.
-- **Remove the Apollo mmWave dashboard** shows up while it has one. It says
-  what will be deleted and deletes it when you press **Submit**.
+- **Add the Apollo mmWave Dashboard to the sidebar** shows up while the
+  integration has no dashboard, for example after you unticked the box during
+  setup or deleted the dashboard. It says what it will create and asks the
+  admin-only question again.
+- **Remove the dashboard at /apollo-mmwave** shows up while it has one. It
+  says what will be deleted and deletes it when you press **Submit**.
 - **Restore the automatic dashboard** shows up instead of both while the
   dashboard is a saved copy; see
   [A saved copy misses new cards](#a-saved-copy-misses-new-cards).
@@ -99,19 +106,19 @@ longer deleted at every restart.
 on it no longer builds itself, so it misses every card a later release adds,
 such as the Radar setup card, **LD2450 Controls** (Zone Type and Multi
 Target Tracking) and the Device card, and nothing on it says so. While the
-dashboard the integration created is such a saved copy, still made of
-Apollo mmWave cards, Home Assistant lists the repair "The Apollo mmWave
-dashboard is a saved copy" under Settings → System → Repairs, and the
+dashboard the integration created is such a saved copy, still made of the
+integration's cards, Home Assistant lists the repair "The dashboard at
+/apollo-mmwave is a saved copy" under Settings → System → Repairs, and the
 integration's options offer **Restore the automatic dashboard**.
 
 [![Open your Home Assistant instance and show your repairs.](https://my.home-assistant.io/badges/repairs.svg)](https://my.home-assistant.io/redirect/repairs/)
 
 Both say what they do and change nothing until you press **Submit**. Then:
 
-1. Your copy is saved as a new dashboard named **Apollo mmWave (saved
-   copy)**, at `/apollo-mmwave-saved` (or `/apollo-mmwave-saved-2` and so on
-   when that is taken). It is not in the sidebar, so open it from Settings →
-   Dashboards, and it is admin-only if your dashboard was.
+1. Your copy is saved as a new dashboard named **Apollo mmWave Dashboard
+   (saved copy)**, at `/apollo-mmwave-saved` (or `/apollo-mmwave-saved-2`
+   and so on when that is taken). It is not in the sidebar, so open it from
+   Settings → Dashboards, and it is admin-only if your dashboard was.
 2. Only once the copy is saved, `/apollo-mmwave` gets the automatic dashboard
    back, with the devices chosen in the options. Its title, icon, sidebar
    and admin settings stay as they are.
@@ -122,10 +129,10 @@ why, and the repair stays so you can try again. Each try keeps another copy,
 which you can delete in Settings → Dashboards.
 
 The integration checks each time it starts and whenever its options change.
-A dashboard you rebuilt with no Apollo mmWave cards on it is yours and gets
-no repair. The check only looks at the dashboard the integration recorded as
-the one it created, so a copy it no longer knows gets no repair either; see
-[Troubleshooting](#troubleshooting). Deleting that dashboard makes the
+A dashboard you rebuilt with none of the integration's cards on it is yours
+and gets no repair. The check only looks at the dashboard the integration
+recorded as the one it created, so a copy it no longer knows gets no repair
+either; see [Troubleshooting](#troubleshooting). Deleting that dashboard makes the
 integration forget it, so one you make on `/apollo-mmwave` later gets no
 repair, unless you deleted it while the integration was not running (see
 [Use your own dashboards instead](#use-your-own-dashboards-instead)).
@@ -171,25 +178,26 @@ from that row and once from the URL the integration adds itself; a duplicate
 
 After an update, a browser tab or the Home Assistant app can keep running the
 cards it loaded before, and the new files can be on disk before Home
-Assistant restarts into them. The cards ask Home Assistant which Apollo
-mmWave it runs, when the page opens and again each time the page reconnects
-to Home Assistant, and compare that with their own version. Any signed-in
-user can ask, so the check works for everyone. When the two differ, the card
-says so (the versions here are examples):
+Assistant restarts into them. The cards ask Home Assistant which version of
+Apollo mmWave Dashboard it runs, when the page opens and again each time the
+page reconnects to Home Assistant, and compare that with their own version.
+Any signed-in user can ask, so the check works for everyone. When the two
+differ, the card says so (the versions here are examples):
 
-- **The page runs older cards:** "Apollo mmWave was updated to 2.4.1, but
-  this page still runs 2.4.0." with a **Reload** button, and under it "In
-  the Home Assistant app, if Reload does not help, close the app fully and
-  open it again." If the app still shows the old cards after that, reset its
-  cache:
+- **The page runs older cards:** "Apollo mmWave Dashboard was updated to
+  2.4.2, but this page still runs 2.4.1." (a page from 2.4.1 or earlier
+  says "Apollo mmWave was updated to ...") with a **Reload** button, and
+  under it "In the Home Assistant app, if Reload does not help, close the
+  app fully and open it again." If the app still shows the old cards after
+  that, reset its cache:
   - Android: **Settings → Companion app → Troubleshooting → Reset frontend
     cache**.
   - iPhone and iPad: **Settings → Companion app → Debugging → Clear web view
     cache**.
-- **The page runs newer cards:** "Apollo mmWave 2.4.1 is installed, but
-  Home Assistant still runs 2.4.0. Restart Home Assistant to finish
-  updating." There is no button: restart Home Assistant (Settings → System,
-  the power icon in the top right).
+- **The page runs newer cards:** "Apollo mmWave Dashboard 2.4.2 is
+  installed, but Home Assistant still runs 2.4.1. Restart Home Assistant to
+  finish updating." There is no button: restart Home Assistant (Settings →
+  System, the power icon in the top right).
 
 If Home Assistant restarted into another version while the page was open,
 also after going back to an older release, the card asks for a reload.
@@ -201,7 +209,7 @@ cards shows no notice, so no notice does not mean the page is current:
 reload it anyway (Ctrl/Cmd+Shift+R in a browser, or close the Home
 Assistant app fully and open it again).
 
-One card per page shows the notice: on the Apollo mmWave dashboard that is
+One card per page shows the notice: on the dashboard at /apollo-mmwave that is
 the **Radar setup** card near the top of the tab, above its checks. The zone
 map card shows it under its title, also as a view-only map and on its error
 screen, when it is the first card on the page that checks, as on a
@@ -219,16 +227,17 @@ reflashed hardware shows the same way until you delete the old device in
 Settings → Devices & services. A device without an Apollo model in the
 registry (DIY builds) is only picked up while one of its radar entities is
 live. To control the list yourself, open the integration's options (Settings
-→ Devices & services → Apollo mmWave → Configure), pick **Choose the
+→ Devices & services → Apollo mmWave Dashboard → Configure), pick **Choose the
 dashboard's devices** and select devices under **Dashboard devices**: the
 dashboard then shows exactly those devices and hides the rest. Leave the
 selection empty to go back to automatic detection. Changes apply immediately.
 
 [![Open your Home Assistant instance and show an integration.](https://my.home-assistant.io/badges/integration.svg)](https://my.home-assistant.io/redirect/integration/?domain=apollo_mmwave)
 
-The selection is written only into the Apollo mmWave dashboard the integration
-created, and only while it still uses the strategy. Without that dashboard the
-selection is kept and used if you add the dashboard from the options later.
+The selection is written only into the dashboard at /apollo-mmwave that the
+integration created, and only while it still uses the strategy. Without that
+dashboard the selection is kept and used if you add the dashboard from the
+options later.
 Once you take control of it, the integration no longer writes to it, so add or
 remove devices in the dashboard itself; the selection is kept and used if you
 restore the automatic dashboard (see
@@ -255,10 +264,10 @@ strategy:
 
 A strategy can also take a single `device_id`, which takes precedence: when
 both are set, only `device_id` is shown and `devices` is ignored. The
-integration's own Apollo mmWave dashboard keeps any strategy option you type
-into its raw configuration editor (saving **Dashboard devices** rewrites only
-`type` and `devices`), so a `device_id` added there overrides the **Dashboard
-devices** option. See
+integration's own dashboard at /apollo-mmwave keeps any strategy option you
+type into its raw configuration editor (saving **Dashboard devices**
+rewrites only `type` and `devices`), so a `device_id` added there overrides
+the **Dashboard devices** option. See
 [Strategy options](#strategy-options) for the full list.
 
 ## What each tab shows
@@ -528,7 +537,8 @@ On the R PRO-1, radar tuning needs the optional LD2412. Every R PRO-1 has the
 LD2450 for the zone map, and the LD2412 is an add-on. Without it the tab still
 shows the Auto-calibrate card and the LD2412 charts, but the Auto-calibrate card
 says the radar is offline and its buttons stay disabled, and the charts say
-"Apollo mmWave: device not found". Use the zone map on that tab instead.
+"Apollo mmWave Dashboard: device not found". Use the zone map on that tab
+instead.
 
 Rules for a good run:
 
@@ -958,8 +968,8 @@ turned or mounted in a corner, set **Cone rotation** under **Map settings**
 first (see [Map units and size](#map-units-and-size)). Then press **Add
 zone**: it adds "Zone 1", picks it and gets the map ready to draw it, with
 the banner "Drawing Zone 1" in the map's top left corner. Drag on the map to draw
-it as a rectangle, or first choose Ellipse or Polygon from the drawing-mode
-menu (✎) on the map, or walk the zone's corners with 🚶 (see
+it as a rectangle, or first choose Ellipse or Polygon from **Shapes** (the
+shapes icon at the map's bottom left), or walk the zone's corners with 🚶 (see
 [Mark corners by walking](#mark-corners-by-walking)). The zone's editor
 under the chips says how to draw it in the mode you chose. Naming,
 **Type**, **Hold** and deleting are under
@@ -1103,7 +1113,7 @@ three parts:
     on the map change as you save.
   - The zone's size, such as "Size 2.0 m × 0.9 m", or "Not drawn yet".
   - **Restore previous shape**, with when the shape was replaced, such as
-    "Replaced 5 min ago", while Apollo mmWave keeps an earlier shape for
+    "Replaced 5 min ago", while the integration keeps an earlier shape for
     the zone (see [Undo a shape change](#undo-a-shape-change)).
   - **Type** and **Hold** (see
     [Ignore zones and hold time](#ignore-zones-and-hold-time)), with a line
@@ -1114,15 +1124,15 @@ three parts:
     ignores targets", a zone with no shape "Turns on once the zone is
     drawn", and a zone whose sensor is not there yet "No presence sensor
     yet".
-  - How to draw the zone in the drawing mode chosen on the map, with
+  - How to draw the zone in the drawing mode chosen with **Shapes**, with
     **Draw shape** (**Redraw shape** once the zone has a shape), such as
     "Press Redraw shape, then drag on the map to give this zone a new
-    rectangle. ✎ on the map offers an ellipse or a polygon. A tap on a zone
-    on the map picks it. Expand, at the map's top right, fills the window
-    with the map." While you draw it reads "Drag on the map to draw this
-    zone as a rectangle. Cancel drawing or Esc stops without a change.",
-    beside **Cancel drawing**. While the map is locked, the lock note with
-    **Unlock** shows instead.
+    rectangle. Shapes, at the map's bottom left, offers an ellipse or a
+    polygon. A tap on a zone on the map picks it. Expand, at the map's top
+    right, fills the window with the map." While you draw it reads "Drag on
+    the map to draw this zone as a rectangle. Cancel drawing or Esc stops
+    without a change.", beside **Cancel drawing**. While the map is locked,
+    the lock note with **Unlock** shows instead.
   - **Delete zone** asks first, for example "Delete Couch? Its sensors
     leave Home Assistant, so automations that use them stop working. This
     cannot be undone." **Delete** deletes the zone, and **Keep it** or
@@ -1180,7 +1190,7 @@ A shape change can be put back, also after the page reloads:
   right corner, does the same for the last shape change made in this card,
   until you undo it or make another. It is grayed out while there is
   nothing to undo.
-- **Restore previous shape.** Apollo mmWave keeps the shape each zone had
+- **Restore previous shape.** The integration keeps the shape each zone had
   before its last shape change, and when it was replaced, in its zone store
   in Home Assistant. While that was a real shape, the picked zone's editor
   shows **Restore previous shape** under the zone's size, with when, such
@@ -1220,12 +1230,12 @@ its corners where you stand. You need to be an administrator, the map must be
 unlocked (on a locked map 🚶 says "Unlock the map to draw zones."), and you
 must be the only person the radar sees.
 
-1. Pick the zone with its chip under **Zones**. Open the drawing-mode menu
-   (✎) and press 🚶 (**Mark corners by walking**). On a phone or tablet you
-   can press the **🚶 Mark corners by walking** chip beside **Coverage**
-   under the map instead. A panel opens under the map, the chip hides
-   until you leave Walk, and a banner in the map's top left corner reads "Marking
-   Couch by walking", with **Cancel**.
+1. Pick the zone with its chip under **Zones**. Open **Shapes** (the shapes
+   icon at the map's bottom left) and press 🚶 (**Mark corners by walking**).
+   On a phone or tablet you can press the **🚶 Mark corners by walking** chip
+   beside **Coverage** under the map instead. A panel opens under the map,
+   the chip hides until you leave Walk, and a banner in the map's top left
+   corner reads "Marking Couch by walking", with **Cancel**.
 2. Stand still in one corner of the area for about 3 seconds and press
    **Corner here**.
 3. Walk along the edge to the next corner, stand still for about 3 seconds,
@@ -1290,7 +1300,7 @@ this. Zones match the room only while the sensor stays mounted that way."
 Nothing on the radar tells the map how it is mounted, so a sensor that is
 turned or picked up after you drew zones moves the room under them.
 
-The map fills the card's width, and on the Apollo mmWave dashboard its
+The map fills the card's width, and on the dashboard at /apollo-mmwave its
 column is twice as wide on a wide screen. It is never taller than the
 browser window less about 200 px: where the window is too short for the map
 at the card's width, the map gets narrower and sits in the middle of the
@@ -1324,17 +1334,17 @@ a Y for each of the LD2450's three targets. The radar reports them in mm.
 Home Assistant picks the unit a distance sensor shows on its own, and on US
 customary units (Settings → System → General) it picks inches.
 
-Apollo mmWave reads these sensors in any length unit, so the zone map and
-zone presence work either way. The radar's built-in zone corners and
-Apollo's zone guides are in mm, though, so since 2.4.0 Apollo mmWave shows
+Apollo mmWave Dashboard reads these sensors in any length unit, so the zone
+map and zone presence work either way. The radar's built-in zone corners and
+Apollo's zone guides are in mm, though, so since 2.4.0 the integration shows
 the Target X and Y of Apollo R PRO-1 and MTR-1 radars in mm:
 
 - **A new radar** that you add while Home Assistant runs shows mm about 2
   seconds after its sensors appear, with no message.
 - **A radar you already had** is switched once, after Home Assistant has
   started with 2.4.0, or when the integration is reloaded. A notification,
-  "Apollo mmWave: Target X and Y now in mm", names each radar and the
-  sensors it switched, and says "Nothing was written to the radar."
+  "Apollo mmWave Dashboard: Target X and Y now in mm", names each radar and
+  the sensors it switched, and says "Nothing was written to the radar."
 - **Left as they are.** Only the unit Home Assistant picked on its own is
   switched. These keep their unit:
   - a sensor whose unit you picked in its settings;
@@ -1343,25 +1353,25 @@ the Target X and Y of Apollo R PRO-1 and MTR-1 radars in mm:
     notification then adds "Sensors that an automation, a script or a
     helper uses were left as they were. The Radar setup card above the zone
     map can switch them.";
-  - the sensors of a metric install, which show mm already. Apollo mmWave
+  - the sensors of a metric install, which show mm already. The integration
     does not look at them again, so if the install later moves to US
     customary units and Home Assistant updates existing sensors, they show
     inches (see [Troubleshooting](#troubleshooting));
   - DIY radars, other devices, and the radar's other sensors, such as
     Target Distance, Speed and Resolution.
-- **Once only.** Apollo mmWave decides each sensor once and keeps that in
+- **Once only.** The integration decides each sensor once and keeps that in
   the sensor's own settings, so it never changes a sensor again, also one
   it left alone because an automation used it. A disabled sensor is decided
   after you enable it, at the next start or reload.
 
 To go back to inches, open the sensor on the radar's device page, open its
 settings (⚙), choose **in** under **Unit of measurement** and select
-**Update**. Apollo mmWave leaves it that way.
+**Update**. The integration leaves it that way.
 
 After the switch, automations, templates and history graphs read these
 sensors in mm. A number an automation compares X or Y to in inches needs to
 be in mm, 25.4 times as large, and a history graph that spans the switch
-shows a step of 25.4 times. Anything Apollo mmWave cannot see, such as a
+shows a step of 25.4 times. Anything the integration cannot see, such as a
 YAML template sensor, a dashboard card or a tool such as Node-RED, also
 reads mm from then on.
 
@@ -1539,9 +1549,11 @@ is inside the zone, or while the zone is held (see
   editor saves a cleared name as the default "Zone 1", which does the same for
   entities that were named and leaves entities that never were as they are.
   The card's own zone labels are not affected.
+- You can change a zone entity's entity id in its settings. The zone map,
+  zone presence and a running hold follow the new id.
 - **Add zone** takes the lowest free zone number, up to 32, so after you
   delete a zone its number can come back. A zone number used before starts
-  with fresh entity names: names Apollo mmWave gave the old zone, such as
+  with fresh entity names: names the integration gave the old zone, such as
   "Zone 1 presence - Couch", are cleared, and names you typed in the entity
   settings stay. An `update_zone` call that creates a zone with no name, or
   with its default name, does the same. Home Assistant brings the entity id
@@ -1681,21 +1693,21 @@ To delete it:
   the file is removed.
 - Removing a radar from Home Assistant deletes its history. If the same
   radar comes back with its old device id, recording starts again.
-- Deleting Apollo mmWave deletes the file (see
-  [Removing Apollo mmWave](#removing-apollo-mmwave)).
+- Deleting Apollo mmWave Dashboard deletes the file (see
+  [Removing Apollo mmWave Dashboard](#removing-apollo-mmwave)).
 - While the integration is disabled nothing runs, so the file keeps what it
   had until the next start drops anything older than 24 hours.
 
 ## Use your own dashboards instead
 
-Prefer to lay things out yourself? Untick **Add the Apollo mmWave dashboard to
-the sidebar** during setup, or remove the dashboard later from the
-integration's options (**Remove the Apollo mmWave dashboard**) or in Settings →
-Dashboards. The cards and strategies stay available:
+Prefer to lay things out yourself? Untick **Add the Apollo mmWave Dashboard
+to the sidebar** during setup, or remove the dashboard later from the
+integration's options (**Remove the dashboard at /apollo-mmwave**) or in
+Settings → Dashboards. The cards and strategies stay available:
 
 - **Dashboard strategy**: a whole dashboard with one tab per device, like the
   integration's own. In Settings → Dashboards, press **Add dashboard** and pick
-  **Apollo Radar Tuning** under **Community dashboards**.
+  **Apollo mmWave Dashboard** under **Community dashboards**.
 
   [![Open your Home Assistant instance and show your dashboards.](https://my.home-assistant.io/badges/lovelace_dashboards.svg)](https://my.home-assistant.io/redirect/lovelace_dashboards/)
 
@@ -1713,8 +1725,8 @@ Dashboards. The cards and strategies stay available:
   make on that URL later is yours. It cannot forget a dashboard you deleted
   while it was not running, for example while it was disabled. Then a
   dashboard you make on `apollo-mmwave` is taken for its own if its
-  configuration is exactly the strategy above, and if it holds Apollo mmWave
-  cards, it is offered the restore of
+  configuration is exactly the strategy above, and if it holds the
+  integration's cards, it is offered the restore of
   [A saved copy misses new cards](#a-saved-copy-misses-new-cards). Either
   way nothing changes until you press **Submit**. While a dashboard of yours
   holds `apollo-mmwave`, the integration cannot add its own there and says
@@ -1807,10 +1819,10 @@ The **distance** and **gate-energy** cards take:
   option.
 
 A distance or gate-energy card that cannot find its device, or whose device has
-no gate radar (an MTR-1, say), shows "Apollo mmWave: device not found. Check
-the card's device configuration." The Gate Energy chart shows "Radar
-unavailable" while the radar is offline, and a button that turns on Radar
-Engineering Mode while the radar is online with the mode off.
+no gate radar (an MTR-1, say), shows "Apollo mmWave Dashboard: device not
+found. Check the card's device configuration." The Gate Energy chart shows
+"Radar unavailable" while the radar is offline, and a button that turns on
+Radar Engineering Mode while the radar is online with the mode off.
 
 The calibrate, Radar setup and zone map cards take a `device_id`; `title` is
 display only. The Radar setup card also takes `radar`: `ld2450` (the default)
@@ -1840,7 +1852,7 @@ dots, trails, the "Radar offline" note and the flip. It has no drawing tools,
 lock, undo, unit switch, zoom, expand button, Zones panel, Coverage,
 History, Walk or Map settings, and a finger on it scrolls the page, which suits a phone dashboard.
 The card editor hides the lock setting while View only is ticked, since a
-view-only map has no lock. The Apollo mmWave dashboard keeps the full map.
+view-only map has no lock. The dashboard at /apollo-mmwave keeps the full map.
 
 ```yaml
 type: custom:apollo-radar-zone-map-card
@@ -1873,17 +1885,17 @@ locked. Neither row is in the card picker.
 ## Support file
 
 When you ask Apollo for help, send a support file. Open Settings → Devices &
-services → **Apollo mmWave**, open the ⋮ menu and choose **Download
-diagnostics**. The Device card at the bottom of each tab links to that page.
-Home Assistant offers the download to administrators only.
+services → **Apollo mmWave Dashboard**, open the ⋮ menu and choose
+**Download diagnostics**. The Device card at the bottom of each tab links to
+that page. Home Assistant offers the download to administrators only.
 
 [![Open your Home Assistant instance and show an integration.](https://my.home-assistant.io/badges/integration.svg)](https://my.home-assistant.io/redirect/integration/?domain=apollo_mmwave)
 
 Home Assistant adds its own system details and your custom integrations'
-versions. Apollo mmWave adds:
+versions. Apollo mmWave Dashboard adds:
 
-- The Apollo mmWave and Home Assistant versions, and Home Assistant's unit
-  system (which decides feet or meters on the cards).
+- The Apollo mmWave Dashboard and Home Assistant versions, and Home
+  Assistant's unit system (which decides feet or meters on the cards).
 - The integration's options: which dashboard it created, whether that
   dashboard is still its own, and the **Dashboard devices** selection.
 - The Lovelace resource mode and the `/apollo_mmwave/` resource rows.
@@ -1896,7 +1908,7 @@ versions. Apollo mmWave adds:
   - the gate radar's thresholds by gate;
   - the LD2450's Zone Type, Multi Target Tracking and the target X/Y sensors
     the zones track, with their readings and units, whether each unit was
-    picked in the sensor's settings, and whether Apollo mmWave switched it
+    picked in the sensor's settings, and whether the integration switched it
     to mm or left it as it was;
   - its zones as stored, with each zone's type, hold time and the shape
     its last shape change replaced, the radar's rotation, units, flip and
@@ -1921,23 +1933,24 @@ characters of the device's MAC address (for example `apollo_msr_2_7a711c`).
 Downloading the file changes nothing: no setting, zone, movement history,
 dashboard or resource is written.
 
-## Removing Apollo mmWave
+## <a id="removing-apollo-mmwave"></a>Removing Apollo mmWave Dashboard
 
-Deleting Apollo mmWave in Settings → Devices & services (the ⋮ menu on the
-entry, then **Delete**) removes what it made: the Apollo mmWave dashboard it
-created (unless you took control of it; dashboards you made yourself are never
-touched), every zone and its two entities, the saved calibration values that
-**Undo** uses, and the movement history file
+Deleting Apollo mmWave Dashboard in Settings → Devices & services (the ⋮ menu
+on the entry, then **Delete**) removes what it made: the dashboard at
+/apollo-mmwave that it created (unless you took control of it; dashboards you
+made yourself are never touched), every zone and its two entities, the saved
+calibration values that **Undo** uses, and the movement history file
 (`.storage/apollo_mmwave.movement`) if any radar had history on, though
 backups made before keep their copy. From 2.2.5 it also removes its two
 Lovelace resources, so dashboards stop asking for files that are gone.
-The thresholds a calibration wrote stay on the radars. Setting Apollo mmWave
-up again starts from nothing.
+The thresholds a calibration wrote stay on the radars. Setting the
+integration up again starts from nothing.
 
 Deleting the entry leaves the integration's files in place. On Home Assistant
-2026.11 or later, if Apollo mmWave came from HACS or the Marketplace, Home
-Assistant then asks **Also uninstall Apollo mmWave?**: **Uninstall** removes
-the files too, and **Keep** leaves them. With HACS 2.0.5, open Apollo mmWave
+2026.11 or later, if Apollo mmWave Dashboard came from HACS or the
+Marketplace, Home Assistant then asks
+**Also uninstall Apollo mmWave Dashboard?**: **Uninstall** removes the files
+too, and **Keep** leaves them. With HACS 2.0.5, open Apollo mmWave Dashboard
 in HACS and choose **Remove** from the menu (⋮). Restart Home Assistant after
 removing the files.
 
@@ -1959,7 +1972,7 @@ the two rows yourself under Settings → Dashboards → ⋮ → **Resources**.
   module resources from the log warning (see
   [Lovelace resources](#lovelace-resources)). A resource row you deleted comes
   back at the next Home Assistant restart, not on an integration reload.
-- **A card says this page still runs an older Apollo mmWave.** The page
+- **A card says this page still runs an older version.** The page
   loaded its cards before the update. Press **Reload**. In the Home
   Assistant app, if that does not help, close the app fully and open it
   again, then reset its cache as in the item above. **A card says to restart
@@ -1969,8 +1982,8 @@ the two rows yourself under Settings → Dashboards → ⋮ → **Resources**.
 - **The dashboard misses newer cards**, such as Radar setup, **LD2450
   Controls** or the Device card, while their sensors exist. The dashboard is
   a saved copy from an older release: someone used **Take control** on it.
-  Open Settings → System → Repairs and press "The Apollo mmWave dashboard is
-  a saved copy", or choose **Restore the automatic dashboard** in the
+  Open Settings → System → Repairs and press "The dashboard at /apollo-mmwave
+  is a saved copy", or choose **Restore the automatic dashboard** in the
   integration's options, then press **Submit** (see
   [A saved copy misses new cards](#a-saved-copy-misses-new-cards)). If
   neither shows up, the integration no longer knows that dashboard as its
@@ -1979,17 +1992,18 @@ the two rows yourself under Settings → Dashboards → ⋮ → **Resources**.
   (see [Use your own dashboards instead](#use-your-own-dashboards-instead)),
   or delete the old one in Settings → Dashboards, after copying anything you
   want to keep from its raw configuration editor, and add it again from the
-  integration's options with **Add the Apollo mmWave dashboard**.
+  integration's options with **Add the Apollo mmWave Dashboard to the
+  sidebar**.
 - **Where are a zone's name, Type and Hold?** In the **Zones** panel right
   under the map: press the zone's chip, or tap the zone on the map, and its
   editor opens under the chips. **Cone rotation**, the flip, movement
   history and **Clear all shapes** are under **Map settings** at the bottom
   of the card (see [The Zones panel](#the-zones-panel)).
-- **There is no Apollo mmWave dashboard in the sidebar.** It is only for
+- **The dashboard at /apollo-mmwave is not in the sidebar.** It is only for
   administrators unless you unticked that box, so sign in as one. If you
-  unticked **Add the Apollo mmWave dashboard to the sidebar**, or setup could
-  not create it (the log says why), add it from the integration's options; see
-  [The Apollo mmWave dashboard](#the-apollo-mmwave-dashboard).
+  unticked **Add the Apollo mmWave Dashboard to the sidebar**, or setup could
+  not create it (the log says why), add it from the integration's options;
+  see [The Apollo mmWave Dashboard](#the-apollo-mmwave-dashboard).
 - **The Gate Energy chart says "Radar unavailable".** The radar is offline; the
   chart fills in once it reconnects. "Turn on Radar Engineering Mode" means the
   radar is online and the mode is off.
@@ -2000,7 +2014,8 @@ the two rows yourself under Settings → Dashboards → ⋮ → **Resources**.
   The wiki section
   [The radar still triggers with nobody there](https://wiki.apolloautomation.com/products/general/setup/apollo-mmwave-dashboard/#the-radar-still-triggers-with-nobody-there)
   has more.
-- **A distance or gate-energy card says "Apollo mmWave: device not found".**
+- **A distance or gate-energy card says "Apollo mmWave Dashboard: device not
+  found".**
   Its `device_id` matches no device with gate-radar entities, for example an
   MTR-1, an R PRO-1 without the optional LD2412, or a radar that was removed.
   Point it at an MSR-1, MSR-2 or an R PRO-1 with the LD2412.
@@ -2010,9 +2025,9 @@ the two rows yourself under Settings → Dashboards → ⋮ → **Resources**.
   Radar setup card near the top of the tab. If neither offers it, open the
   radar's device page, press its Query Params button in the Diagnostic
   section, wait a few seconds and try again.
-- **The zone map card says Apollo mmWave is not loaded.** Right after a restart
-  the card retries on its own. If it still says so, reload the page once the
-  integration has loaded.
+- **The zone map card says Apollo mmWave Dashboard is not loaded.** Right
+  after a restart the card retries on its own. If it still says so, reload
+  the page once the integration has loaded.
 - **The zone map shows no dot at all.** Look at the **Radar setup** card
   above the map. The usual cause is Zone Type set to **Detection**: the radar
   then reports only people inside its own built-in zones, and with none set
@@ -2045,19 +2060,19 @@ the two rows yourself under Settings → Dashboards → ⋮ → **Resources**.
   **Unit of measurement** to **mm** and select **Update**. Either way, check
   zones you drew while the dots were in the wrong place. From 2.2.7, the
   card's `input_units` only applies to target sensors without a length unit,
-  such as DIY template sensors. From 2.4.0, Apollo mmWave shows an Apollo
+  such as DIY template sensors. From 2.4.0, the integration shows an Apollo
   radar's Target X and Y in mm itself (see
   [Target X and Y units](#target-x-and-y-units)).
 - **An automation or a history graph shows Target X or Y 25.4 times
-  larger.** Since 2.4.0, Apollo mmWave shows an Apollo radar's Target X and
-  Y in mm instead of the inches Home Assistant picked, and the notification
-  "Apollo mmWave: Target X and Y now in mm" names the sensors it switched.
-  Change the automation's numbers to mm. Or, to keep inches, open the
-  sensor's settings (⚙), choose **in** under **Unit of measurement** and
-  select **Update**; Apollo mmWave does not change it again. A history graph
-  shows the step only where it spans the switch. See
+  larger.** Since 2.4.0, the integration shows an Apollo radar's Target X
+  and Y in mm instead of the inches Home Assistant picked, and the
+  notification "Apollo mmWave Dashboard: Target X and Y now in mm" names the
+  sensors it switched. Change the automation's numbers to mm. Or, to keep
+  inches, open the sensor's settings (⚙), choose **in** under **Unit of
+  measurement** and select **Update**; the integration does not change it
+  again. A history graph shows the step only where it spans the switch. See
   [Target X and Y units](#target-x-and-y-units).
-- **Target X and Y still show inches.** Apollo mmWave left them as they
+- **Target X and Y still show inches.** The integration left them as they
   were: their unit was picked in their settings, an automation, a script or
   a helper uses them, the install was metric when they were decided, or a
   sensor was disabled then. As an administrator, press **Show Target X and Y
@@ -2129,7 +2144,7 @@ the two rows yourself under Settings → Dashboards → ⋮ → **Resources**.
   dashboard has opened.
 - **A repair says `apollo_mmwave.movement` is corrupt.** Home Assistant
   could not read the movement history file and set it aside, so the history
-  starts over. Apollo mmWave deletes the set-aside copy, because it holds
+  starts over. The integration deletes the set-aside copy, because it holds
   where people were. Dismiss the repair: nothing needs restoring, and
   recording carries on.
 - **Zones are missing after a restart.** If `.storage/apollo_mmwave.zones` was
@@ -2155,6 +2170,7 @@ the two rows yourself under Settings → Dashboards → ⋮ → **Resources**.
   ignores each zone's previous shape and drops it the next time it changes
   that zone's shape.
 - **Still stuck?** Send Apollo a support file with your question: Settings →
-  Devices & services → Apollo mmWave → ⋮ → **Download diagnostics**. It
+  Devices & services → Apollo mmWave Dashboard → ⋮ → **Download
+  diagnostics**. It
   leaves out MAC and IP addresses and Wi-Fi names; see
   [Support file](#support-file).
