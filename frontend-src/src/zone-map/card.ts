@@ -995,7 +995,7 @@ export class ZoneMapCard extends HTMLElement {
       throw new Error(
         'The Apollo Zone Map card needs a device_id. Set `device_id:` to the' +
           " Home Assistant device id of your radar (Settings > Devices, the id" +
-          ' in the URL), or add the card from the Apollo mmWave dashboard,' +
+          ' in the URL), or add the card from the dashboard at /apollo-mmwave,' +
           ' which fills it in for you.'
       );
     }

@@ -240,7 +240,7 @@ describe("setup card units reads", () => {
 
   it("shows no note when the integration cannot answer", async () => {
     const hass = fakeHass(() => IDS.map((id) => row(id)));
-    hass.callWS.mockRejectedValue({ code: "not_loaded", message: "Apollo mmWave is not loaded." });
+    hass.callWS.mockRejectedValue({ code: "not_loaded", message: "Apollo mmWave Dashboard is not loaded." });
     const el = await mount(hass);
 
     expect(text(el)).toContain(ALL_GOOD_LINE);
@@ -280,7 +280,7 @@ describe("setup card units button", () => {
 
   it.each([
     [{ code: "home_assistant_error", message: "Entity is read only" }, "Entity is read only."],
-    [{ code: "not_loaded", message: "Apollo mmWave is not loaded." }, UNITS_NOT_LOADED],
+    [{ code: "not_loaded", message: "Apollo mmWave Dashboard is not loaded." }, UNITS_NOT_LOADED],
     [{ code: "not_found", message: "No Home Assistant device with id rpro" }, NO_DEVICE_MESSAGE],
   ])("shows its own failure line for %o", async (error, reason) => {
     const hass = fakeHass(() => IDS.map((id) => row(id)));

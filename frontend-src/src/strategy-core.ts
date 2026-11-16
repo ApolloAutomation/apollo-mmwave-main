@@ -487,6 +487,7 @@ function noteCard(text: string): Record<string, any> {
   return { type: "markdown", content: text };
 }
 
+export const DASHBOARD_TITLE = "Apollo mmWave Dashboard";
 export const ZONE_PRESENCE_TITLE = "Zone presence";
 export const ZONE_PRESENCE_HINT =
   "Press **Add zone** under the zone map to get a presence sensor for a zone. Reload this page to see it here.";
@@ -533,7 +534,7 @@ export const WEAK_WIFI_NOTE =
   " drop out. Move the device or your Wi-Fi router closer, or add an access point.";
 export const SUPPORT_FILE_NOTE =
   "**Download a support file** for Apollo support: open" +
-  " [Apollo mmWave](/config/integrations/integration/apollo_mmwave), then pick" +
+  " [Apollo mmWave Dashboard](/config/integrations/integration/apollo_mmwave), then pick" +
   " **Download diagnostics** from the three dots menu.";
 
 /** The whole-device restart, named for what it takes down with it.

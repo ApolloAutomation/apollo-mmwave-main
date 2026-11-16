@@ -85,7 +85,7 @@ describe("setup card version notice", () => {
   it("asks for a restart, with no button, when Home Assistant runs an older version", async () => {
     const el = await mount(fakeHass(() => OLDER).hass);
     expect(text(notice(el)!)).toBe(
-      `Apollo mmWave ${CARD_VERSION} is installed, but Home Assistant still runs ${OLDER}.` +
+      `Apollo mmWave Dashboard ${CARD_VERSION} is installed, but Home Assistant still runs ${OLDER}.` +
         " Restart Home Assistant to finish updating."
     );
     expect(notice(el)!.querySelector("button")).toBeNull();
@@ -99,7 +99,7 @@ describe("setup card version notice", () => {
     expect(box).not.toBeNull();
     expect(box.getAttribute("role")).toBe("status");
     expect(text(box)).toBe(
-      `Apollo mmWave was updated to ${NEWER}, but this page still runs ${CARD_VERSION}.` +
+      `Apollo mmWave Dashboard was updated to ${NEWER}, but this page still runs ${CARD_VERSION}.` +
         " Reload" +
         " In the Home Assistant app, if Reload does not help, close the app fully and open it again."
     );

@@ -267,7 +267,7 @@ describe("describeError", () => {
 
   it("explains an unloaded integration", () => {
     expect(describeError({ code: "not_loaded" })).toBe(
-      "Apollo mmWave is not loaded, so calibration is unavailable."
+      "Apollo mmWave Dashboard is not loaded, so calibration is unavailable."
     );
   });
 

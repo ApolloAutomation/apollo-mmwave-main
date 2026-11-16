@@ -244,10 +244,10 @@ function describeError(error: any, deviceId: string, willRetry: boolean): string
     // return on their own and then never trying again is the same kind of lie
     // as a save toast for a save that did not happen.
     return willRetry
-      ? "Apollo mmWave is not loaded, so this radar's zones cannot be read." +
+      ? "Apollo mmWave Dashboard is not loaded, so this radar's zones cannot be read." +
           " They will come back on their own once the integration finishes loading."
-      : "Apollo mmWave is still not loaded, so this radar's zones cannot be" +
-          " read. Reload the page once the integration is back.";
+      : "Apollo mmWave Dashboard is still not loaded, so this radar's zones cannot" +
+          " be read. Reload the page once the integration is back.";
   }
   return error?.message
     ? String(error.message)

@@ -328,6 +328,14 @@ describe("connectZones", () => {
 
       const messages: string[] = onError.mock.calls.map((call: any[]) => call[0]);
       expect(messages).toHaveLength(RETRY_DELAYS_MS.length + 1);
+      expect(messages[0]).toBe(
+        "Apollo mmWave Dashboard is not loaded, so this radar's zones cannot be read." +
+          " They will come back on their own once the integration finishes loading."
+      );
+      expect(messages[messages.length - 1]).toBe(
+        "Apollo mmWave Dashboard is still not loaded, so this radar's zones cannot be read." +
+          " Reload the page once the integration is back."
+      );
       for (const message of messages.slice(0, -1)) {
         expect(message).toContain("come back on their own");
         expect(message).not.toContain("Reload the page");

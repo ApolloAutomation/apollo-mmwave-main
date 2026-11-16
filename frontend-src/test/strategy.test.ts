@@ -15,6 +15,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { shouldRegenerate } from "../src/strategy";
 import {
+  DASHBOARD_TITLE,
   generateCards,
   generateSections,
   strategyDevices,
@@ -110,7 +111,7 @@ describe("strategy elements", () => {
 
   it("dashboard strategy returns one sections view (tab) per device", async () => {
     const dashboard = await dashboardStrategy().generate(config, hassWithTwoRadars());
-    expect(dashboard.title).toBe("Apollo Radar Tuning");
+    expect(dashboard.title).toBe(DASHBOARD_TITLE);
     expect(dashboard.views.map((v: any) => [v.type, v.title])).toEqual([
       ["sections", "Living Room MSR-2"],
       ["sections", "Office R-PRO-1"],
@@ -119,6 +120,19 @@ describe("strategy elements", () => {
 });
 
 describe("dashboard strategy empty states", () => {
+  it("titles the dashboard and both empty views with the integration's name", async () => {
+    expect(DASHBOARD_TITLE).toBe("Apollo mmWave Dashboard");
+    const empty = await dashboardStrategy().generate({ type: TYPE } as StrategyConfig, emptyHass);
+    const stale = await dashboardStrategy().generate(
+      { type: TYPE, devices: ["gone"] } as StrategyConfig,
+      hassWithLiveRadar()
+    );
+    for (const dashboard of [empty, stale]) {
+      expect(dashboard.title).toBe(DASHBOARD_TITLE);
+      expect(dashboard.views[0].title).toBe(DASHBOARD_TITLE);
+    }
+  });
+
   it("explains a stale devices selection while a live radar exists", async () => {
     const hass = hassWithLiveRadar();
     // The radar is added and live: auto-detection would show it.
@@ -129,6 +143,9 @@ describe("dashboard strategy empty states", () => {
     );
     const content = markdownOf(dashboard);
     expect(content).toContain("device selection");
+    expect(content).toContain(
+      "Open Settings > Devices & Services > Apollo mmWave Dashboard > Configure"
+    );
     expect(content).toContain("Dashboard devices");
     expect(content).not.toContain("No Apollo mmWave devices found");
   });
@@ -185,7 +202,7 @@ describe("dashboard picker entry", () => {
     const entries = pickerEntries();
     expect(entries).toHaveLength(1);
     expect(entries[0].strategyType).toBe("dashboard");
-    expect(entries[0].name).toBe("Apollo Radar Tuning");
+    expect(entries[0].name).toBe(DASHBOARD_TITLE);
   });
 
   it("names every supported device family, including MTR-1", () => {

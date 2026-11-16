@@ -40,7 +40,8 @@ export const ERR_THRESHOLDS_NOT_NUMERIC = "thresholds_not_numeric";
 
 /** Sent for `not_loaded`, and for a service call HA could not find because
  *  the integration is unloaded or disabled. */
-export const NOT_LOADED_MESSAGE = "Apollo mmWave is not loaded, so calibration is unavailable.";
+export const NOT_LOADED_MESSAGE =
+  "Apollo mmWave Dashboard is not loaded, so calibration is unavailable.";
 export const NO_DEVICE_MESSAGE =
   "Home Assistant has no device with this id. The radar was probably removed and" +
   " re-added; reload the dashboard, or set device_id in the card YAML.";

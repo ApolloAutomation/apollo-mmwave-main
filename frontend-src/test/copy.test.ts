@@ -6,6 +6,9 @@
  * names that cannot trip the checks.
  */
 
+import { readdirSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, it, expect } from "vitest";
 import "../src/cards/distance-card";
 import "../src/cards/gate-energy-card";
@@ -199,6 +202,30 @@ describe("dashboard empty states and picker entries", () => {
     ]);
     expect(copyProblems(texts)).toEqual([]);
     for (const e of [...strategies, ...cards]) expect(e.description).toContain("R PRO");
+  });
+});
+
+describe("the integration's name", () => {
+  it("names the integration one way", () => {
+    // The hardware and help card phrases keep the short name.
+    const oldName =
+      /Apollo mmWave(?! Dashboard\b| sensors?\b| devices?\b| \(LD2450 tracking radar\)| with two radars)/;
+    const src = join(dirname(fileURLToPath(import.meta.url)), "..", "src");
+    const files = readdirSync(src, { recursive: true, encoding: "utf8" }).filter((f) =>
+      f.endsWith(".ts")
+    );
+    expect(files).toContain(join("zone-map", "card.ts"));
+    const problems: string[] = [];
+    for (const file of files) {
+      readFileSync(join(src, file), "utf8")
+        .split("\n")
+        .forEach((line, i) => {
+          const text = line.trim();
+          if (/^(\/\/|\*|\/\*)/.test(text)) return;
+          if (oldName.test(line)) problems.push(`${file}:${i + 1}: ${text}`);
+        });
+    }
+    expect(problems).toEqual([]);
   });
 });
 

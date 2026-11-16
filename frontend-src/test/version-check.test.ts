@@ -72,7 +72,7 @@ describe("versionNotice", () => {
     expect(versionNotice("2.4.0b3", "2.4.0b2")).toEqual({
       kind: "reload",
       lines: [
-        "Apollo mmWave was updated to 2.4.0b3, but this page still runs 2.4.0b2.",
+        "Apollo mmWave Dashboard was updated to 2.4.0b3, but this page still runs 2.4.0b2.",
         "In the Home Assistant app, if Reload does not help, close the app fully and open it again.",
       ],
     });
@@ -83,7 +83,7 @@ describe("versionNotice", () => {
     expect(versionNotice("2.4.0b2", "2.4.0b3")).toEqual({
       kind: "restart",
       lines: [
-        "Apollo mmWave 2.4.0b3 is installed, but Home Assistant still runs 2.4.0b2." +
+        "Apollo mmWave Dashboard 2.4.0b3 is installed, but Home Assistant still runs 2.4.0b2." +
           " Restart Home Assistant to finish updating.",
       ],
     });
@@ -121,7 +121,7 @@ describe("versionNotice", () => {
     expect(versionNotice("2.4.0", "2.4.0b3")).toEqual({
       kind: "reload",
       lines: [
-        "Apollo mmWave was updated to 2.4.0, but this page still runs 2.4.0b3.",
+        "Apollo mmWave Dashboard was updated to 2.4.0, but this page still runs 2.4.0b3.",
         "In the Home Assistant app, if Reload does not help, close the app fully and open it again.",
       ],
     });
@@ -185,7 +185,7 @@ describe("watchVersion", () => {
     await flush();
     expect(page.callWS).toHaveBeenCalledTimes(2);
     expect(w.notice?.lines[0]).toBe(
-      `Apollo mmWave was updated to ${NEWER}, but this page still runs ${CARD_VERSION}.`
+      `Apollo mmWave Dashboard was updated to ${NEWER}, but this page still runs ${CARD_VERSION}.`
     );
     expect(changes).toBe(1);
 
@@ -237,7 +237,7 @@ describe("watchVersion", () => {
     await flush();
     expect(w.notice?.kind).toBe("reload");
     expect(w.notice?.lines[0]).toBe(
-      `Apollo mmWave was updated to 0.0.1, but this page still runs ${CARD_VERSION}.`
+      `Apollo mmWave Dashboard was updated to 0.0.1, but this page still runs ${CARD_VERSION}.`
     );
     w.close();
   });
@@ -251,7 +251,7 @@ describe("watchVersion", () => {
     expect(w.notice).toEqual({
       kind: "restart",
       lines: [
-        `Apollo mmWave ${CARD_VERSION} is installed, but Home Assistant still runs ${OLDER}.` +
+        `Apollo mmWave Dashboard ${CARD_VERSION} is installed, but Home Assistant still runs ${OLDER}.` +
           " Restart Home Assistant to finish updating.",
       ],
     });
@@ -357,7 +357,7 @@ describe("the notice as DOM and the Reload button", () => {
     expect(box.getAttribute("role")).toBe("status");
     expect(Array.from(box.children).map((el) => el.tagName)).toEqual(["P", "BUTTON", "P"]);
     expect(box.children[0].textContent).toBe(
-      "Apollo mmWave was updated to 2.4.0b3, but this page still runs 2.4.0b2."
+      "Apollo mmWave Dashboard was updated to 2.4.0b3, but this page still runs 2.4.0b2."
     );
     expect(box.children[1].textContent).toBe("Reload");
     expect(box.children[2].textContent).toBe(vc.VERSION_APP_LINE);

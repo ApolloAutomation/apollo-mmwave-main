@@ -1920,7 +1920,9 @@ describe("plain help, labels and the Device card", () => {
       type: "markdown",
       content: `[All settings for this device →](/config/devices/device/msr)\n\n${SUPPORT_FILE_NOTE}`,
     });
-    expect(SUPPORT_FILE_NOTE).toContain("(/config/integrations/integration/apollo_mmwave)");
+    expect(SUPPORT_FILE_NOTE).toContain(
+      "[Apollo mmWave Dashboard](/config/integrations/integration/apollo_mmwave)"
+    );
     expect(SUPPORT_FILE_NOTE).toContain("**Download diagnostics**");
     // The forced-install button never appears anywhere on the tab.
     expect(JSON.stringify(cards)).not.toContain(`button.${MSR}_firmware_update`);

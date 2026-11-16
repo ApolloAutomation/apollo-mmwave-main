@@ -468,6 +468,9 @@ describe("zone map card config", () => {
   it("rejects a config with no device_id and says what to do about it", () => {
     const card = new ZoneMapCard();
     expect(() => card.setConfig({} as any)).toThrow(/device_id/);
+    expect(() => card.setConfig({} as any)).toThrow(
+      "or add the card from the dashboard at /apollo-mmwave, which fills it in for you."
+    );
   });
 
   it("still rejects the old location-only config", () => {
@@ -10260,8 +10263,8 @@ describe("zone map card movement history", () => {
     expect(card._replayShowing()).toBe(false);
     expect($(card, "replayBadge").hidden).toBe(true);
 
-    expect(await statusAfter(refuse({ code: "not_loaded", message: "Apollo mmWave is not loaded." }))).toBe(
-      "Could not load movement history: Apollo mmWave is not loaded."
+    expect(await statusAfter(refuse({ code: "not_loaded", message: "Apollo mmWave Dashboard is not loaded." }))).toBe(
+      "Could not load movement history: Apollo mmWave Dashboard is not loaded."
     );
     expect(await statusAfter(refuse({ code: "unknown_error" }))).toBe(
       "Could not load movement history: Home Assistant rejected it."
@@ -10547,7 +10550,7 @@ describe("zone map card movement history", () => {
     // So does the error screen when the store cannot answer, with nothing
     // playing behind it, and the map comes back live.
     $(card, "btnHistoryPlay").click();
-    card._setLoadError("Apollo mmWave is not loaded.");
+    card._setLoadError("Apollo mmWave Dashboard is not loaded.");
     expect([card._history.open, card._history.playing, card._history.timer]).toEqual([
       false,
       false,
