@@ -1,8 +1,14 @@
-# Apollo mmWave
+# Apollo mmWave Dashboard
 
 One Home Assistant integration for every Apollo mmWave sensor. It adds a
 dashboard where you calibrate each radar and, on sensors that support it,
 draw presence zones.
+
+Apollo mmWave Dashboard was called Apollo mmWave before 2.4.2. A setup from
+before then keeps its entry and its sidebar dashboard under the old name,
+Apollo mmWave, until you rename them: the entry from its ⋮ menu under
+**Settings → Devices & services**, the dashboard under
+**Settings → Dashboards**.
 
 ## Credits and thanks
 
@@ -30,8 +36,8 @@ draw presence zones.
 
 ## What you get
 
-- An **Apollo mmWave** dashboard in your sidebar with one tab per sensor. Add
-  or remove a sensor and its tab comes or goes on its own.
+- An **Apollo mmWave Dashboard** in your sidebar with one tab per sensor.
+  Add or remove a sensor and its tab comes or goes on its own.
 - **Auto-calibration.** Press one button and leave the room. The integration
   listens to the empty room and sets how sensitive the radar is at each
   distance. **Undo** puts your old values back.
@@ -90,11 +96,11 @@ You need:
 - Your sensor added to Home Assistant. Apollo sensors use ESPHome, so it
   shows up under **Settings → Devices & services → ESPHome**.
 
-This button opens Apollo mmWave in HACS or the Marketplace and adds the
-repository if it is not there yet, so it does steps 1 and 2 for you. If it
-shows an **Add custom repository** box, press **Add**. Then skip to step 3.
-Apollo mmWave was also accepted into the default HACS list (the
-Marketplace's **Community catalog**). Once a search in HACS or the
+This button opens Apollo mmWave Dashboard in HACS or the Marketplace and
+adds the repository if it is not there yet, so it does steps 1 and 2 for
+you. If it shows an **Add custom repository** box, press **Add**. Then skip
+to step 3. Apollo mmWave Dashboard was also accepted into the default HACS
+list (the Marketplace's **Community catalog**). Once a search in HACS or the
 Marketplace finds it, you can open it from there and skip to step 3.
 
 [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=ApolloAutomation&repository=apollo-mmwave-main&category=integration)
@@ -112,7 +118,7 @@ window opens, follow its steps, then press the button again.
    `https://github.com/ApolloAutomation/apollo-mmwave-main`. Set **Type** to
    **Integration**, press **Add**, then close the window. In the
    Marketplace, paste it in **GitHub link** and press **Add**. Search for
-   **Apollo mmWave** and open it.
+   **Apollo mmWave Dashboard** and open it.
 3. Press **Download** in the bottom right, then **Download** again in the
    window. In the Marketplace, press **Install**, then **Install** again in
    the window. Wait for it to finish.
@@ -122,15 +128,15 @@ window opens, follow its steps, then press the button again.
    [![Open your Home Assistant instance and show the system dashboard.](https://my.home-assistant.io/badges/system_dashboard.svg)](https://my.home-assistant.io/redirect/system_dashboard/)
 
 5. Go to **Settings → Devices & services**, press **Add Integration** and pick
-   **Apollo mmWave**. This button opens the same window:
+   **Apollo mmWave Dashboard**. This button opens the same window:
 
    [![Open your Home Assistant instance and start setting up a new integration.](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=apollo_mmwave)
 
-   Leave **Add the Apollo mmWave dashboard to the sidebar** and **Only
+   Leave **Add the Apollo mmWave Dashboard to the sidebar** and **Only
    administrators can see it** ticked and press **Submit**. The dashboard is
-   created once, now. Apollo mmWave does not recreate or change it later, and
-   you can edit or delete it like any other dashboard; see
-   [The Apollo mmWave dashboard](docs/configuration.md#the-apollo-mmwave-dashboard).
+   created once, now. The integration does not recreate or change it later,
+   and you can edit or delete it like any other dashboard; see
+   [The Apollo mmWave Dashboard](docs/configuration.md#the-apollo-mmwave-dashboard).
 
 To update later, make a full Home Assistant backup first. HACS and the
 Marketplace both list the update at the top of **Settings**; install it
@@ -146,10 +152,10 @@ the app still shows the old card, reset its cache:
 - iPhone and iPad: **Settings → Companion app → Debugging → Clear web view
   cache**.
 
-To install another version, such as a pre-release, open Apollo mmWave in
-HACS, choose **Redownload** from the menu (⋮) and open **Need a different
-version?**. In the Marketplace, choose **Install another version** from the
-menu (⋮).
+To install another version, such as a pre-release, open
+Apollo mmWave Dashboard in HACS, choose **Redownload** from the menu (⋮) and
+open **Need a different version?**. In the Marketplace, choose **Install
+another version** from the menu (⋮).
 
 Upgrading from 1.x or 2.0? Read [CHANGELOG.md](CHANGELOG.md) first. Some
 cards and automations need a change by hand.
@@ -178,26 +184,28 @@ delete anything.
 2. In HACS, open the menu (⋮) in the top right and choose
    **Custom repositories**. Press the trash can icon on the
    **bharvey88/apollo-mmwave (integration)** row. This only takes it off the
-   HACS list; the files stay and Apollo mmWave keeps running.
+   HACS list; the files stay and the integration keeps running.
 3. Add this repository and download it with steps 2 and 3 of
    [Install with HACS or the Marketplace](#install-with-hacs-or-the-marketplace),
    then restart Home Assistant.
 
-Keep your Apollo mmWave entry in **Settings → Devices & services**: deleting
+Keep the integration's entry in **Settings → Devices & services**: deleting
 it also deletes the dashboard, your zones and the values **Undo** uses. In
-HACS, leave **Remove** and **Redownload** alone on both Apollo mmWave
-entries (**Uninstall** and **Reinstall** in the Marketplace), because they
-can delete the `custom_components/apollo_mmwave` folder the two entries
-share. The
+HACS, leave **Remove** and **Redownload** alone on both entries,
+Apollo mmWave (the original repository) and Apollo mmWave Dashboard
+(**Uninstall** and **Reinstall** in the Marketplace), because they can
+delete the `custom_components/apollo_mmwave` folder the two entries share.
+The
 [wiki has every step](https://wiki.apolloautomation.com/products/general/setup/apollo-mmwave-dashboard-setup/#from-the-original-apollo-mmwave-repository),
 including what each HACS box says.
 
 ## First steps
 
-1. Open the **Apollo mmWave** dashboard in the sidebar. Each sensor has its own
-   tab. Only administrators see it, unless you unticked that box. No
-   dashboard? Add it from the integration's options
-   (**Settings → Devices & services → Apollo mmWave → Configure**).
+1. Open **Apollo mmWave Dashboard** in the sidebar (**Apollo mmWave** on
+   setups from before 2.4.2). Each sensor has its own tab. Only
+   administrators see it, unless you unticked that box. No dashboard? Add it
+   from the integration's options
+   (**Settings → Devices & services → Apollo mmWave Dashboard → Configure**).
 2. On an MSR-1 or MSR-2 tab, or an R PRO-1 tab if the sensor has the
    optional LD2412, look at the **Radar setup** card under Start here first
    and fix anything it flags (see
@@ -230,17 +238,17 @@ including what each HACS box says.
 7. Below it is the zone map: the grid that shows where the radar sees
    people, sized to what the radar can see (120 degrees, about 6 m or 20 ft).
    It is in feet or meters to match Home Assistant; the **m / ft** switch on
-   the map changes the map, never the sensors. Apollo mmWave shows the
-   radar's Target X and Y sensors in mm, the unit the radar reports, also
+   the map changes the map, never the sensors. Apollo mmWave Dashboard shows
+   the radar's Target X and Y sensors in mm, the unit the radar reports, also
    where Home Assistant picked inches for them (see
    [Target X and Y units](docs/configuration.md#target-x-and-y-units)). On
    a wide screen the map's column is twice as wide as the others. A new
    radar has no zones yet: press **Add zone** in the **Zones** panel under
-   the map, then drag on the map to draw the zone as a rectangle (✎ on the
-   map offers an ellipse or a polygon). Corners snap to round values, such
-   as every 10 cm at 1 m grid lines; hold Alt (Option on a Mac) to place one
-   freely. Each zone gets a presence sensor, listed on the **Zone presence**
-   card next to the map.
+   the map, then drag on the map to draw the zone as a rectangle (**Shapes**,
+   at the map's bottom left, offers an ellipse or a polygon). Corners snap to
+   round values, such as every 10 cm at 1 m grid lines; hold Alt (Option on a
+   Mac) to place one freely. Each zone gets a presence sensor, listed on the
+   **Zone presence** card next to the map.
 
    To pick a zone, tap its chip under **Zones** or tap it on the map. While
    you edit on an unlocked map, a picked zone that has a shape is drawn
@@ -304,7 +312,7 @@ including what each HACS box says.
   again. If the app still shows old cards, reset its cache as described
   under
   [Install with HACS or the Marketplace](#install-with-hacs-or-the-marketplace).
-- **A card says the page still runs an older Apollo mmWave:** press
+- **A card says the page still runs an older version:** press
   **Reload**. If it says to restart Home Assistant to finish updating,
   restart it. See
   [After an update](docs/configuration.md#after-an-update).
@@ -317,8 +325,8 @@ including what each HACS box says.
 - **Calibration says the radar has not reported its threshold values:** press
   **Read settings from the radar** on the card, or on the **Radar setup**
   card near the top of the tab.
-- **The zone map says Apollo mmWave is not loaded:** wait a moment after a
-  restart, then reload the page.
+- **The zone map says Apollo mmWave Dashboard is not loaded:** wait a moment
+  after a restart, then reload the page.
 - **The zone map stays empty, with no dot for you:** look at the **Radar
   setup** card above the map. Zone Type set to Detection makes the radar
   report only people inside its own built-in zones, and nobody when none are
@@ -327,21 +335,21 @@ including what each HACS box says.
 - **The dashboard has no LD2450 Controls, Radar setup or Device card:** it
   is probably a saved copy, made when someone used **Take control** on it
   under an older release. Open **Settings → System → Repairs**, press "The
-  Apollo mmWave dashboard is a saved copy" and press **Submit**. Your copy
-  is kept as the **Apollo mmWave (saved copy)** dashboard under
-  **Settings → Dashboards**. No repair? See
+  dashboard at /apollo-mmwave is a saved copy" and press **Submit**. Your
+  copy is kept as the **Apollo mmWave Dashboard (saved copy)** dashboard
+  under **Settings → Dashboards**. No repair? See
   [The dashboard misses newer cards](docs/configuration.md#troubleshooting).
 - **A sensor has no tab:** check that it is added through ESPHome, and that
   **Choose the dashboard's devices** in the integration's options
-  (**Settings → Devices & services → Apollo mmWave → Configure**) is empty or
-  lists it.
+  (**Settings → Devices & services → Apollo mmWave Dashboard → Configure**)
+  is empty or lists it.
 
   [![Open your Home Assistant instance and show an integration.](https://my.home-assistant.io/badges/integration.svg)](https://my.home-assistant.io/redirect/integration/?domain=apollo_mmwave)
 
 - **Still stuck? Send a support file.** Open
-  **Settings → Devices & services → Apollo mmWave**, choose **Download
-  diagnostics** from the ⋮ menu, and attach the file to your issue or your
-  email to Apollo support. It leaves out MAC and IP addresses and Wi-Fi
+  **Settings → Devices & services → Apollo mmWave Dashboard**, choose
+  **Download diagnostics** from the ⋮ menu, and attach the file to your issue
+  or your email to Apollo support. It leaves out MAC and IP addresses and Wi-Fi
   names. The **Device** card at the bottom of each tab links there too; see
   [Support file](docs/configuration.md#support-file).
 
@@ -354,10 +362,10 @@ more.
   [setup](https://wiki.apolloautomation.com/products/general/setup/apollo-mmwave-dashboard-setup/)
   and
   [radar tuning](https://wiki.apolloautomation.com/products/general/setup/apollo-mmwave-dashboard/).
-- [docs/configuration.md](docs/configuration.md): the Apollo mmWave
-  dashboard, which devices appear, auto-calibration and its services, zones in
-  automations, your own dashboards, card options and the full troubleshooting
-  list.
+- [docs/configuration.md](docs/configuration.md): the
+  Apollo mmWave Dashboard, which devices appear, auto-calibration and its
+  services, zones in automations, your own dashboards, card options and the
+  full troubleshooting list.
 - [CHANGELOG.md](CHANGELOG.md): what changed in each release, with upgrade
   notes.
 - [CONTRIBUTING.md](CONTRIBUTING.md): how to build, test and send a change.

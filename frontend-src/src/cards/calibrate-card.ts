@@ -106,8 +106,8 @@ const NO_DEVICE_HINT =
   "Add device_id to this card's configuration to enable auto-calibration.";
 const OFFLINE_LINE =
   "Radar is offline. Calibration needs the radar online and its gate entities enabled.";
-const STILL_LOADING = "Apollo mmWave is still loading...";
-const NOT_LOADED = "Apollo mmWave is not loaded, so calibration is unavailable.";
+const STILL_LOADING = "Apollo mmWave Dashboard is still loading...";
+const NOT_LOADED = "Apollo mmWave Dashboard is not loaded, so calibration is unavailable.";
 const PREVIEW_HELPER =
   "Computes new thresholds without changing any of them. Radar Engineering Mode is still turned on for the listen.";
 const FACTORY_HINT = "These look like factory thresholds. Calibrating sets them for your room.";

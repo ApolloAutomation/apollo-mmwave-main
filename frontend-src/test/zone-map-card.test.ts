@@ -25,8 +25,9 @@ import {
   FULL_WINDOW_CLOSE_TITLE,
   FULL_WINDOW_OPEN_LABEL,
   FULL_WINDOW_OPEN_TITLE,
+  SHAPES_MENU_TITLE,
 } from "../src/zone-map/copy";
-import { ICON_COLLAPSE, ICON_EXPAND } from "../src/zone-map/full-window";
+import { ICON_COLLAPSE, ICON_EXPAND, ICON_SHAPES } from "../src/zone-map/full-window";
 import { backingStore } from "../src/zone-map/resolution";
 
 type Handler = (message: any) => void;
@@ -467,6 +468,9 @@ describe("zone map card config", () => {
   it("rejects a config with no device_id and says what to do about it", () => {
     const card = new ZoneMapCard();
     expect(() => card.setConfig({} as any)).toThrow(/device_id/);
+    expect(() => card.setConfig({} as any)).toThrow(
+      "or add the card from the dashboard at /apollo-mmwave, which fills it in for you."
+    );
   });
 
   it("still rejects the old location-only config", () => {
@@ -10259,8 +10263,8 @@ describe("zone map card movement history", () => {
     expect(card._replayShowing()).toBe(false);
     expect($(card, "replayBadge").hidden).toBe(true);
 
-    expect(await statusAfter(refuse({ code: "not_loaded", message: "Apollo mmWave is not loaded." }))).toBe(
-      "Could not load movement history: Apollo mmWave is not loaded."
+    expect(await statusAfter(refuse({ code: "not_loaded", message: "Apollo mmWave Dashboard is not loaded." }))).toBe(
+      "Could not load movement history: Apollo mmWave Dashboard is not loaded."
     );
     expect(await statusAfter(refuse({ code: "unknown_error" }))).toBe(
       "Could not load movement history: Home Assistant rejected it."
@@ -10546,7 +10550,7 @@ describe("zone map card movement history", () => {
     // So does the error screen when the store cannot answer, with nothing
     // playing behind it, and the map comes back live.
     $(card, "btnHistoryPlay").click();
-    card._setLoadError("Apollo mmWave is not loaded.");
+    card._setLoadError("Apollo mmWave Dashboard is not loaded.");
     expect([card._history.open, card._history.playing, card._history.timer]).toEqual([
       false,
       false,
@@ -11157,7 +11161,7 @@ describe("zone map card zones panel", () => {
     const EXPAND = " Expand, at the map's top right, fills the window with the map.";
 
     expect(draw()).toBe(
-      "Press Redraw shape, then drag on the map to give this zone a new rectangle. ✎ on the map offers an ellipse or a polygon. A tap on a zone on the map picks it." +
+      "Press Redraw shape, then drag on the map to give this zone a new rectangle. Shapes, at the map's bottom left, offers an ellipse or a polygon. A tap on a zone on the map picks it." +
         EXPAND
     );
     expect($(card, "btnZoneDraw").textContent).toBe("Redraw shape");
@@ -11168,7 +11172,7 @@ describe("zone map card zones panel", () => {
 
     $(card, "btnModeEllipse").click();
     expect(draw()).toBe(
-      "Press Redraw shape, then drag on the map to give this zone a new ellipse. ✎ on the map offers a rectangle or a polygon. A tap on a zone on the map picks it." +
+      "Press Redraw shape, then drag on the map to give this zone a new ellipse. Shapes, at the map's bottom left, offers a rectangle or a polygon. A tap on a zone on the map picks it." +
         EXPAND
     );
     $(card, "btnModePolygon").click();
@@ -14571,6 +14575,44 @@ describe("zone map card arming drawing", () => {
     card.renderZoneButtons();
     expect(card.shadowRoot.querySelectorAll("#zone-buttons .chip-draw")).toHaveLength(1);
     expect(pencil.previousElementSibling).toBe(chipOf(card, 2));
+  });
+
+  it("the Shapes button has its own icon and says when it is open", async () => {
+    const { card } = await armCard();
+    const button = $(card, "btnModeMenu");
+    expect(button.querySelector("svg path").getAttribute("d")).toBe(ICON_SHAPES);
+    expect(button.textContent).not.toContain("✎");
+    expect(button.getAttribute("aria-label")).toBe("Shapes");
+    expect(button.title).toBe(SHAPES_MENU_TITLE);
+    expect(button.getAttribute("aria-controls")).toBe("modeGroup");
+    expect(button.getAttribute("aria-expanded")).toBe("false");
+    expect($(card, "modeGroup").style.display).toBe("none");
+
+    button.click();
+    expect(button.getAttribute("aria-expanded")).toBe("true");
+    expect($(card, "modeGroup").style.display).toBe("flex");
+    // A rebuilt card keeps the menu open, and says so.
+    card.render();
+    expect($(card, "btnModeMenu").getAttribute("aria-expanded")).toBe("true");
+    expect($(card, "modeGroup").style.display).toBe("flex");
+
+    $(card, "btnModeMenu").click();
+    expect($(card, "btnModeMenu").getAttribute("aria-expanded")).toBe("false");
+    expect($(card, "modeGroup").style.display).toBe("none");
+  });
+
+  it("✎ means Draw shape only", async () => {
+    const { card } = await armCard();
+    expect(card.selectedZone).toBe(1);
+    $(card, "btnModeMenu").click();
+    const pencils = Array.from(card.shadowRoot.querySelectorAll("*") as NodeListOf<Element>).filter(
+      (el) => el.children.length === 0 && el.textContent?.trim() === "✎"
+    );
+    expect(pencils.map((el) => el.id)).toContain("btnChipDraw");
+    for (const el of pencils) {
+      expect(["btnChipDraw", "btnStripDraw"]).toContain(el.id);
+      expect(el.getAttribute("aria-label")).toMatch(/^(Draw|Redraw) /);
+    }
   });
 
   it("hides every way to arm on a locked map, in Walk and from a viewer", async () => {

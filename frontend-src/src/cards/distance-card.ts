@@ -105,7 +105,7 @@ export class ApolloLd2410DistanceCard extends LitElement {
     return html`
       <ha-card .header=${this._config?.title ?? `${label} Distances`}>
         <div class="not-found">
-          Apollo mmWave: device not found. Check the card's device
+          Apollo mmWave Dashboard: device not found. Check the card's device
           configuration.
         </div>
       </ha-card>

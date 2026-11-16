@@ -655,7 +655,7 @@ describe("calibrate card idle state", () => {
     button(card, "Calibrate with empty room")!.click();
     await settle(card);
     expect(text(card)).toContain(
-      "Calibration failed: Apollo mmWave is not loaded, so calibration is unavailable."
+      "Calibration failed: Apollo mmWave Dashboard is not loaded, so calibration is unavailable."
     );
     expect(text(card)).not.toContain("no device with this id");
   });
@@ -1531,7 +1531,7 @@ describe("calibrate card subscription lifecycle", () => {
     hass.subscribeError = { code: "not_loaded", message: "not loaded" };
     const card = await mount(hass, { device_id: "dev1" }, { expectSubscribe: false });
     expect(calSubscribes(hass)).toBe(1);
-    expect(text(card)).toContain("Apollo mmWave is still loading...");
+    expect(text(card)).toContain("Apollo mmWave Dashboard is still loading...");
     expect(buttons(card)).toHaveLength(0);
 
     // HA comes back: the library's own re-subscribe would be refused and
@@ -1539,7 +1539,7 @@ describe("calibrate card subscription lifecycle", () => {
     hass.listeners.ready[0]();
     await settle(card);
     expect(calSubscribes(hass)).toBe(2);
-    expect(text(card)).toContain("Apollo mmWave is still loading...");
+    expect(text(card)).toContain("Apollo mmWave Dashboard is still loading...");
 
     hass.subscribeError = undefined;
     hass.listeners.ready[0]();
@@ -1558,7 +1558,7 @@ describe("calibrate card subscription lifecycle", () => {
     expect(calSubscribes(hass)).toBe(1);
 
     for (let i = 0; i < CALIBRATION_RETRY_DELAYS_MS.length; i++) {
-      expect(text(card)).toContain("Apollo mmWave is still loading...");
+      expect(text(card)).toContain("Apollo mmWave Dashboard is still loading...");
       expect(button(card, "Retry")).toBeUndefined();
       await vi.advanceTimersByTimeAsync(CALIBRATION_RETRY_DELAYS_MS[i] - 1);
       expect(calSubscribes(hass)).toBe(i + 1);
@@ -1566,7 +1566,7 @@ describe("calibrate card subscription lifecycle", () => {
       await settle(card);
       expect(calSubscribes(hass)).toBe(i + 2);
     }
-    expect(text(card)).toContain("Apollo mmWave is not loaded, so calibration is unavailable.");
+    expect(text(card)).toContain("Apollo mmWave Dashboard is not loaded, so calibration is unavailable.");
     const retry = button(card, "Retry")!;
     expect(retry).toBeTruthy();
 
@@ -1650,7 +1650,7 @@ describe("calibrate card subscription lifecycle", () => {
     const card = await mount(hass, { device_id: "dev1" }, { expectSubscribe: false });
     for (const delay of CALIBRATION_RETRY_DELAYS_MS) await vi.advanceTimersByTimeAsync(delay);
     await settle(card);
-    expect(text(card)).toContain("Apollo mmWave is not loaded, so calibration is unavailable.");
+    expect(text(card)).toContain("Apollo mmWave Dashboard is not loaded, so calibration is unavailable.");
     hass.subscribeError = undefined;
     hass.entryHandlers[0]([{ type: "updated", entry: { domain: "apollo_mmwave", state: "loaded" } }]);
     await settle(card);

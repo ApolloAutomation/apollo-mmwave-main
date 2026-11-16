@@ -30,7 +30,7 @@ const ZONE_PAYLOAD = {
 };
 
 const RELOAD_TEXT =
-  `Apollo mmWave was updated to ${NEWER}, but this page still runs ${CARD_VERSION}.` +
+  `Apollo mmWave Dashboard was updated to ${NEWER}, but this page still runs ${CARD_VERSION}.` +
   " Reload" +
   " In the Home Assistant app, if Reload does not help, close the app fully and open it again.";
 
@@ -108,7 +108,7 @@ describe("zone map card version notice", () => {
   it("asks for a restart, with no button, when Home Assistant runs an older version", async () => {
     const card = await mount(fakeHass(() => OLDER).hass);
     expect(text(notice(card)!)).toBe(
-      `Apollo mmWave ${CARD_VERSION} is installed, but Home Assistant still runs ${OLDER}.` +
+      `Apollo mmWave Dashboard ${CARD_VERSION} is installed, but Home Assistant still runs ${OLDER}.` +
         " Restart Home Assistant to finish updating."
     );
     expect(notice(card)!.querySelector("button")).toBeNull();
