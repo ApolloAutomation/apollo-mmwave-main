@@ -1,0 +1,4 @@
+# Core's harness pins homeassistant; bump these three together.
+homeassistant==2026.11.1
+pytest-homeassistant==2026.11.1
+home-assistant-frontend==20261028.5

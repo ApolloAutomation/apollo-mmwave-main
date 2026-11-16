@@ -40,6 +40,34 @@ jobs:
           --cov=custom_components/apollo_mmwave
           --cov-report=term-missing
 
+  # Core's own harness; tests/compat_2026_11 keeps old imports working.
+  pytest-ha-2026-11:
+    name: "pytest (HA 2026.11)"
+    runs-on: "ubuntu-latest"
+    steps:
+      - name: Checkout the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.9.3"
+
+      - name: Install test requirements
+        run: |
+          uv venv
+          uv pip install -r requirements-test-2026.11.txt
+
+      - name: Run pytest
+        env:
+          PYTHONPATH: ${{ github.workspace }}/tests/compat_2026_11
+        run: uv run --no-project pytest tests/ -q
+
   frontend:
     name: "vitest + bundle sync"
     runs-on: "ubuntu-latest"
