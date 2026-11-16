@@ -107,8 +107,8 @@ tick **I understand the risks and agree** and press **Continue**.
 
 1. Open **HACS** in the sidebar. On 2026.11 or later, open
    **Settings → Marketplace** instead. Search for **Apollo mmWave** and open
-   **Apollo mmWave Dashboard**. Until 2.4.2 is out, the listing still says
-   **Apollo mmWave**.
+   **Apollo mmWave Dashboard**. For a short while after the rename, the
+   listing may still say **Apollo mmWave**.
 2. Press **Download** in the bottom right, then **Download** again in the
    window. In the Marketplace, press **Install**, then **Install** again in
    the window. Wait for it to finish.
