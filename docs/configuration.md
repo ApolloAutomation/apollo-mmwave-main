@@ -185,7 +185,7 @@ Any signed-in user can ask, so the check works for everyone. When the two
 differ, the card says so (the versions here are examples):
 
 - **The page runs older cards:** "Apollo mmWave Dashboard was updated to
-  2.4.2, but this page still runs 2.4.1." (a page from 2.4.1 or earlier
+  2.4.3, but this page still runs 2.4.2." (a page from 2.4.1 or earlier
   says "Apollo mmWave was updated to ...") with a **Reload** button, and
   under it "In the Home Assistant app, if Reload does not help, close the
   app fully and open it again." If the app still shows the old cards after

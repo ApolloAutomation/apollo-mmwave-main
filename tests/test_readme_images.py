@@ -24,8 +24,8 @@ IMAGE_URL = re.compile(
     r"([^/)\s]+)/docs/images/([^)\s]+)"
 )
 
-# Every image the README of a published release (2.2.6, 2.2.7, 2.3.0, 2.4.0
-# and 2.4.1) links, with the SHA-256 of the file as those releases were tagged.
+# Every image the README of a published release (2.2.6, 2.2.7, 2.3.0, 2.4.0,
+# 2.4.1 and 2.4.2) links, with the SHA-256 of the file as those releases were tagged.
 # The pull request that makes a release adds the images its README links that
 # are not here yet.
 PUBLISHED_IMAGES = {
@@ -67,7 +67,24 @@ PUBLISHED_IMAGES = {
     "apollo-mmwave-zone-map-zones-2.4.1.png": (
         "d286a555c9de79fcb2848940d845e91a9457ac9feb77d13d650cbf4d38874151"
     ),
+    # 2.4.2
+    "apollo-mmwave-zone-map-expand-2.4.2.gif": (
+        "f3e05a80bdf5459ed483f92675c6f15755d2624b6f01fd77a39914a4c40158de"
+    ),
+    "apollo-mmwave-zone-map-live-2.4.2.gif": (
+        "d40ef2c875d102b6a7fd06ad726198a365cac0773536040ef254719e2102b318"
+    ),
+    "apollo-mmwave-zone-map-redraw-2.4.2.gif": (
+        "191cc9050c400925280c8811ccce65a4038a224f370f0261494f24252501a1f3"
+    ),
+    "apollo-mmwave-zone-map-zones-2.4.2.png": (
+        "a54015d3add458436f416ccc3f1cc56c94efc4042855801375b7c2db01d68b5c"
+    ),
 }
+
+# 2.4.2 gave the map's mode menu the Shapes icon in place of ✎.
+SHAPES_BUTTON_RELEASE = (2, 4, 2)
+ZONE_MAP_IMAGE = re.compile(r"apollo-mmwave-zone-map-[a-z-]+-(\d+)\.(\d+)\.(\d+)\.")
 
 
 @pytest.mark.parametrize(("name", "digest"), sorted(PUBLISHED_IMAGES.items()))
@@ -87,3 +104,17 @@ def test_readme_images_load_from_main_and_exist() -> None:
     for ref, name in links:
         assert ref == "main", f"{name} loads from {ref}, not main"
         assert (IMAGES_DIR / name).is_file(), f"README.md links missing {name}"
+
+
+def test_readme_zone_map_images_show_the_shapes_button() -> None:
+    """The README's zone map images are renders from 2.4.2 on."""
+    names = [name for _, name in IMAGE_URL.findall(README.read_text(encoding="utf-8"))]
+    zone_map = [name for name in names if name.startswith("apollo-mmwave-zone-map")]
+    assert zone_map, "README.md links no zone map images"
+    for name in zone_map:
+        match = ZONE_MAP_IMAGE.fullmatch(name.rsplit(".", 1)[0] + ".")
+        assert match, f"{name} has no release in its name"
+        release = tuple(int(part) for part in match.groups())
+        assert release >= SHAPES_BUTTON_RELEASE, (
+            f"{name} shows ✎ as the mode menu: link a 2.4.2 or later render"
+        )
