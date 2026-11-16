@@ -36,6 +36,11 @@ resources are managed in YAML (replace both `?v=` URLs; see
 - **Tested on Home Assistant 2026.11.** Every change now runs the full
   test suite on Home Assistant 2026.11.1 as well as 2026.10.0. The oldest
   supported release is still 2026.8.1.
+- **Install with a search.** Apollo mmWave Dashboard is in the default
+  HACS list, so the README's install steps start with a search in HACS or
+  the Marketplace. Adding it as a custom repository is now a fallback for
+  when the search does not find it; see
+  [Install with HACS or the Marketplace](README.md#install-with-hacs-or-the-marketplace).
 
 ## What changed in 2.4.1
 

@@ -96,38 +96,28 @@ You need:
 - Your sensor added to Home Assistant. Apollo sensors use ESPHome, so it
   shows up under **Settings → Devices & services → ESPHome**.
 
-This button opens Apollo mmWave Dashboard in HACS or the Marketplace and
-adds the repository if it is not there yet, so it does steps 1 and 2 for
-you. If it shows an **Add custom repository** box, press **Add**. Then skip
-to step 3. Apollo mmWave Dashboard was also accepted into the default HACS
-list (the Marketplace's **Community catalog**). Once a search in HACS or the
-Marketplace finds it, you can open it from there and skip to step 3.
+Apollo mmWave Dashboard is in the default HACS list (the Marketplace's
+**Community catalog**), so a search finds it. This button opens it in HACS
+or the Marketplace and does step 1 for you:
 
 [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=ApolloAutomation&repository=apollo-mmwave-main&category=integration)
 
 On Home Assistant 2026.11 or later, the Marketplace may first show a warning:
-tick **I understand the risks and agree** and press **Continue**. Adding a
-custom repository there needs a GitHub account. If a **Connect GitHub**
-window opens, follow its steps, then press the button again.
+tick **I understand the risks and agree** and press **Continue**.
 
-1. Open **HACS** in the sidebar. Open the menu (⋮) in the top right and
-   choose **Custom repositories**. On 2026.11 or later, open
-   **Settings → Marketplace** and press **Add from link** (a link icon on a
-   narrow screen) instead.
-2. In **Repository**, paste
-   `https://github.com/ApolloAutomation/apollo-mmwave-main`. Set **Type** to
-   **Integration**, press **Add**, then close the window. In the
-   Marketplace, paste it in **GitHub link** and press **Add**. Search for
-   **Apollo mmWave Dashboard** and open it.
-3. Press **Download** in the bottom right, then **Download** again in the
+1. Open **HACS** in the sidebar. On 2026.11 or later, open
+   **Settings → Marketplace** instead. Search for **Apollo mmWave** and open
+   **Apollo mmWave Dashboard**. Until 2.4.2 is out, the listing still says
+   **Apollo mmWave**.
+2. Press **Download** in the bottom right, then **Download** again in the
    window. In the Marketplace, press **Install**, then **Install** again in
    the window. Wait for it to finish.
-4. Restart Home Assistant: go to **Settings → System** and press the power
+3. Restart Home Assistant: go to **Settings → System** and press the power
    icon in the top right.
 
    [![Open your Home Assistant instance and show the system dashboard.](https://my.home-assistant.io/badges/system_dashboard.svg)](https://my.home-assistant.io/redirect/system_dashboard/)
 
-5. Go to **Settings → Devices & services**, press **Add Integration** and pick
+4. Go to **Settings → Devices & services**, press **Add Integration** and pick
    **Apollo mmWave Dashboard**. This button opens the same window:
 
    [![Open your Home Assistant instance and start setting up a new integration.](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=apollo_mmwave)
@@ -137,6 +127,21 @@ window opens, follow its steps, then press the button again.
    created once, now. The integration does not recreate or change it later,
    and you can edit or delete it like any other dashboard; see
    [The Apollo mmWave Dashboard](docs/configuration.md#the-apollo-mmwave-dashboard).
+
+If the search does not find it, add it as a custom repository, then go on
+with step 2. If the button above shows an **Add custom repository** box,
+press **Add**; that does the same. Adding a custom repository in the
+Marketplace needs a GitHub account. If a **Connect GitHub** window opens,
+follow its steps, then try again.
+
+- In HACS, open the menu (⋮) in the top right and choose
+  **Custom repositories**. In **Repository**, paste
+  `https://github.com/ApolloAutomation/apollo-mmwave-main`, set **Type** to
+  **Integration**, press **Add** and close the window. Search for
+  **Apollo mmWave** again and open it.
+- In the Marketplace, press **Add from link** (a link icon on a narrow
+  screen), paste the same link in **GitHub link** and press **Add**. Search
+  for **Apollo mmWave** and open it.
 
 To update later, make a full Home Assistant backup first. HACS and the
 Marketplace both list the update at the top of **Settings**; install it
@@ -185,7 +190,7 @@ delete anything.
    **Custom repositories**. Press the trash can icon on the
    **bharvey88/apollo-mmwave (integration)** row. This only takes it off the
    HACS list; the files stay and the integration keeps running.
-3. Add this repository and download it with steps 2 and 3 of
+3. Find Apollo mmWave Dashboard and download it with steps 1 and 2 of
    [Install with HACS or the Marketplace](#install-with-hacs-or-the-marketplace),
    then restart Home Assistant.
 
