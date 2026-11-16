@@ -5,6 +5,9 @@ __pycache__
 */build/*
 */dist/*
 .venv
+.venv-*
+# HA 2026.11 test harness writes blueprints here.
+tests/testing_config/
 
 # frontend build tooling (source lives in frontend-src/, the built bundles in
 # custom_components/apollo_mmwave/www/ ARE committed so the integration ships them)

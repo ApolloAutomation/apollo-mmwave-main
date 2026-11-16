@@ -121,8 +121,9 @@ Windows npm runs scripts with `cmd.exe`, even from Git Bash, so run
 
 ### Python backend
 
-The Python backend has a pytest suite (`pytest-homeassistant-custom-component`)
-and is linted with Ruff (see
+The Python backend has a pytest suite (`pytest-homeassistant-custom-component`,
+and Home Assistant's own `pytest-homeassistant` on 2026.11) and is linted with
+Ruff (see
 [Use a Consistent Coding Style](#use-a-consistent-coding-style)). Steps 2 and 3
 above set up `.venv` and uv. The Python 3.14.2 floor from step 2 is
 `requires-python` in `pyproject.toml`. The full command list:
@@ -151,6 +152,25 @@ there with ".venv/bin/ruff not found: run scripts/bootstrap first". The coverage
 flags work locally too (`pytest-cov` comes with
 `pytest-homeassistant-custom-component`); CI prints the table and enforces no
 threshold.
+
+CI runs the suite twice, in two jobs: `pytest` on the Home Assistant release
+`requirements-test.txt` pins, and `pytest (HA 2026.11)` on Home Assistant
+2026.11. From 2026.11, Home Assistant publishes its own test harness,
+`pytest-homeassistant`, which `requirements-test-2026.11.txt` pins with the
+matching `homeassistant` and `home-assistant-frontend`. The tests still import
+`pytest_homeassistant_custom_component`, so `tests/compat_2026_11` maps those
+imports onto the new package; it goes on `PYTHONPATH` for this run only. To run
+it locally, use a second venv:
+
+```bash
+uv venv --python 3.14 .venv-2026.11
+uv pip install --python .venv-2026.11 -r requirements-test-2026.11.txt
+PYTHONPATH=tests/compat_2026_11 .venv-2026.11/bin/python -m pytest tests/
+```
+
+That harness brings no `pytest-cov`, so the 2026.11 job runs without coverage.
+It writes `tests/testing_config/` on every run; `.gitignore` leaves that out,
+along with `.venv-2026.11`.
 
 ### Versions
 
@@ -218,7 +238,8 @@ This custom component is based on [integration_blueprint template](https://githu
 
 Before opening a pull request, run what CI runs:
 
-- Python: `uv run --no-project pytest tests/` and `scripts/lint-check`.
+- Python: `uv run --no-project pytest tests/` and `scripts/lint-check`. CI also
+  runs the suite on Home Assistant 2026.11 (see [Python backend](#python-backend)).
 - Frontend, when you changed anything in `frontend-src/`: the four CI steps
   under [Frontend](#frontend), run with Node 22, then commit the rebuilt files
   under `custom_components/apollo_mmwave/www/`.
@@ -249,11 +270,18 @@ Notes for maintainers:
   the bundle check when the update changes the build output. Check it out, run
   `npm ci && npm run build` in `frontend-src`, and commit
   `custom_components/apollo_mmwave/www/` to that pull request.
-- Dependabot does not bump `homeassistant`, `pytest-homeassistant-custom-component`
-  or `home-assistant-frontend`. Move them by hand in one commit:
-  `homeassistant==` in `requirements.txt`, the
+- Dependabot does not bump `homeassistant`, `pytest-homeassistant-custom-component`,
+  `pytest-homeassistant` or `home-assistant-frontend`. For `requirements-test.txt`,
+  move them by hand in one commit: `homeassistant==` in `requirements.txt`, the
   `pytest-homeassistant-custom-component` release that pins that same Home
   Assistant, and a `home-assistant-frontend` whose YYYYMMDD prefix matches it.
+- `requirements-test-2026.11.txt` moves on its own, also by hand: give
+  `homeassistant` and `pytest-homeassistant` the same version, and pin the
+  `home-assistant-frontend` that release names in
+  `homeassistant/components/frontend/manifest.json`. `tests/test_ha_harnesses.py`
+  fails if the three disagree (the frontend check runs in the 2026.11 job), and
+  when a test imports a `pytest_homeassistant_custom_component` module that has
+  no alias under `tests/compat_2026_11`.
 - A version bump touches five files, all listed under [Versions](#versions).
 
 ## License
