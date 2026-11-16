@@ -47,7 +47,7 @@ update_zone:
         object: {}
     name:
       name: Zone Name
-      description: "Optional friendly name for the zone. Naming a zone that already exists also renames its entities: naming zone 1 'Couch' makes them 'Zone 1 - Couch' and 'Zone 1 presence - Couch'. Once a zone is named, the radar name is no longer part of those entity friendly names. An entity you renamed yourself in its settings keeps your name. An empty name sets them back to 'Zone 1' and 'Zone 1 presence', still without the radar name, and so does the zone's default name, such as 'Zone 1' for zone 1, except that it leaves entities that were never named alone. A call that creates a zone with no name, or with its default name, clears the names Apollo mmWave gave an earlier zone with that number, and keeps names set in the entity settings."
+      description: "Optional friendly name for the zone. Naming a zone that already exists also renames its entities: naming zone 1 'Couch' makes them 'Zone 1 - Couch' and 'Zone 1 presence - Couch'. Once a zone is named, the radar name is no longer part of those entity friendly names. An entity you renamed yourself in its settings keeps your name. An empty name sets them back to 'Zone 1' and 'Zone 1 presence', still without the radar name, and so does the zone's default name, such as 'Zone 1' for zone 1, except that it leaves entities that were never named alone. A call that creates a zone with no name, or with its default name, clears the names this integration gave an earlier zone with that number, and keeps names set in the entity settings."
       required: false
       selector:
         text: {}

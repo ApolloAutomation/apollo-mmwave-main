@@ -64,15 +64,15 @@ INCHES = {ATTR_UNIT_OF_MEASUREMENT: "in"}
 MILLIMETERS = {ATTR_UNIT_OF_MEASUREMENT: "mm"}
 
 NOTIFICATION_RPRO = (
-    "Apollo mmWave switched these sensors from inches to mm, the unit the radar"
-    " reports and its built-in zone corners use. Home Assistant had picked"
-    " inches on its own. Nothing was written to the radar.\n\n"
+    "Apollo mmWave Dashboard switched these sensors from inches to mm, the unit"
+    " the radar reports and its built-in zone corners use. Home Assistant had"
+    " picked inches on its own. Nothing was written to the radar.\n\n"
     "- Office R PRO-1: LD2450 Target-1 X, LD2450 Target-1 Y, LD2450 Target-2 X,"
     " LD2450 Target-2 Y, LD2450 Target-3 X, LD2450 Target-3 Y\n\n"
     "Automations, templates and history graphs now read these sensors in mm."
     " The zone map and zone presence work in either unit.\n\n"
     'To go back, open a sensor\'s settings and choose "in" under Unit of'
-    " measurement. Apollo mmWave will not change it again."
+    " measurement. Apollo mmWave Dashboard will not change it again."
 )
 
 
@@ -506,7 +506,7 @@ async def test_existing_sensors_switch_once_started_with_one_notification(
         assert _unit(entity_registry, entity_id) == "mm"
         assert _decision(entity_registry, entity_id) == "mm"
     notification = _notification(hass)
-    assert notification["title"] == "Apollo mmWave: Target X and Y now in mm"
+    assert notification["title"] == "Apollo mmWave Dashboard: Target X and Y now in mm"
     assert notification["message"] == NOTIFICATION_RPRO
     assert (
         f"Showing {targets[0]} in mm, the unit the radar reports, instead of in"

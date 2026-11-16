@@ -1,7 +1,7 @@
 """
 Diagnostics: the support file an administrator downloads for Apollo support.
 
-Settings > Devices & services > Apollo mmWave > three dots > Download
+Settings > Devices & services > Apollo mmWave Dashboard > three dots > Download
 diagnostics. Home Assistant wraps what ``async_get_config_entry_diagnostics``
 returns with its own system details, the custom integrations and their
 versions, and this integration's manifest. This adds what answering a support
