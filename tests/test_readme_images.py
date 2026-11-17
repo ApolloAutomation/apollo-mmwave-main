@@ -84,7 +84,10 @@ PUBLISHED_IMAGES = {
 
 # 2.4.2 gave the map's mode menu the Shapes icon in place of ✎.
 SHAPES_BUTTON_RELEASE = (2, 4, 2)
-ZONE_MAP_IMAGE = re.compile(r"apollo-mmwave-zone-map-[a-z-]+-(\d+)\.(\d+)\.(\d+)\.")
+# A letter after the release marks a later render, such as 2.4.2b.
+ZONE_MAP_IMAGE = re.compile(
+    r"apollo-mmwave-zone-map-[a-z-]+-(\d+)\.(\d+)\.(\d+)[a-z]?\."
+)
 
 
 @pytest.mark.parametrize(("name", "digest"), sorted(PUBLISHED_IMAGES.items()))
