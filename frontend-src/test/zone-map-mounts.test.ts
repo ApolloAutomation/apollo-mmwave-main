@@ -293,6 +293,52 @@ describe("High and Ceiling settings", () => {
     expect(card._storedMountHeightMm).toBeNull();
   });
 
+  it("lets only the latest mount save settle the choice", async () => {
+    const hass = hassOf();
+    const pending: Array<{ resolve: () => void; reject: (e: Error) => void }> = [];
+    hass.callService = vi.fn(() => new Promise<void>((resolve, reject) => pending.push({ resolve, reject })));
+    const card = await mount(hass);
+    const high = card._chooseMount("high");
+    const ceiling = card._chooseMount("ceiling");
+    pending[1].resolve();
+    await ceiling;
+    pending[0].reject(new Error("Refused"));
+    await high;
+    expect(card._storedMount).toBe("ceiling");
+  });
+
+  it("falls back to the confirmed height when every pending save fails", async () => {
+    const hass = hassOf({ payload: CEILING });
+    const pending: Array<(e: Error) => void> = [];
+    hass.callService = vi.fn(() => new Promise<void>((_resolve, reject) => pending.push(reject)));
+    const card = await mount(hass);
+    const first = card._chooseCeilingHeight("2.8");
+    const second = card._chooseCeilingHeight("2.9");
+    expect(card._storedHeightMm).toBe(2900);
+    pending[0](new Error("Refused"));
+    await first;
+    pending[1](new Error("Refused"));
+    await second;
+    expect(card._storedHeightMm).toBeNull();
+    expect(card._heightSave.state).toBe("failed");
+  });
+
+  it("never lets an old radar's failed save touch a new save", async () => {
+    const hass = hassOf({ payload: HIGH });
+    const pending: Array<(e: Error) => void> = [];
+    hass.callService = vi.fn(() => new Promise<void>((_resolve, reject) => pending.push(reject)));
+    const card = await mount(hass);
+    const old = card._chooseMountNumber("mount_height_mm", "3");
+    card._resetDeviceState();
+    push(card, hass, HIGH);
+    card._chooseMountNumber("mount_height_mm", "2.5");
+    expect(card._storedMountHeightMm).toBe(2500);
+    pending[0](new Error("Refused"));
+    await old;
+    expect(card._storedMountHeightMm).toBe(2500);
+    expect(card._fieldSaves.mount_height_mm.state).toBe("saving");
+  });
+
   it("reads a stored default, a wrong type or a value out of range as the default", async () => {
     const card = await mount(
       hassOf({
@@ -348,6 +394,15 @@ describe("where targets are drawn", () => {
     expect(card._walkTargets()).toEqual([]);
     push(card, hass, { mount: null });
     expect(card._walkTargets()).toHaveLength(1);
+  });
+
+  it("spaces Walk's corners on the floor, not by raw y", async () => {
+    const hass = hassOf({ payload: CEILING });
+    const card = await mount(hass);
+    card._walk = { corners: [{ x: 0, y: 1700 }] };
+    at(card, hass, [[0, raw(600, 1700)]]);
+    card._walkCorner();
+    expect(card._walk.corners).toHaveLength(2);
   });
 
   it("finishes Walk's corners on the floor", async () => {
@@ -518,6 +573,17 @@ describe("Test near and far edge, and Test wall line and edge", () => {
     at(card, hass, [[2600, raw(1000, 1200)]]);
     expect($(card, "testMessage").textContent).toBe(TEST_SIDE);
     expect($(card, "testCheckCenter").textContent).toBe(`✓ ${TEST_CHECK_NEAR}`);
+    expect($(card, "testCheckEdge").textContent).toBe(`✓ ${TEST_CHECK_FAR}`);
+  });
+
+  it("ticks High's far edge only at the far edge, not at a side", async () => {
+    const hass = hassOf({ payload: HIGH });
+    const card = await mount(hass);
+    $(card, "btnTestChip").click();
+    at(card, hass, [[2600, raw(1000, 1200)]]);
+    expect($(card, "testMessage").textContent).toBe(TEST_SIDE);
+    expect($(card, "testCheckEdge").textContent).toBe(TEST_CHECK_FAR);
+    at(card, hass, [[0, raw(5800, 1200)]]);
     expect($(card, "testCheckEdge").textContent).toBe(`✓ ${TEST_CHECK_FAR}`);
   });
 

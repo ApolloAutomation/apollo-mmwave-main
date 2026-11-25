@@ -243,13 +243,21 @@ describe("an LD2460 device's tab", () => {
     expect(live.cards[2].content).toBe(LD2460_MOUNT_NOTE);
   });
 
-  it("leaves out the mount note and the setup card without an installation mode", () => {
+  it("leaves out the mount note without an installation mode", () => {
     const hass = radarHass();
     const [dev] = detectRadarDevices(hass);
     const cards = buildDeviceCards(hass, dev);
-    expect(cards.some((c) => c.radar === "ld2460")).toBe(false);
     const live = cards.find((c) => c.cards?.[0]?.title === "LD2460 Live")!;
     expect(live.cards).toHaveLength(2);
+  });
+
+  it("keeps the setup card for the target count check alone", () => {
+    const hass = radarHass();
+    const [dev] = detectRadarDevices(hass);
+    expect(buildDeviceCards(hass, dev).some((c) => c.radar === "ld2460")).toBe(true);
+    const bare = radarHass({ drop: /target_count/ });
+    const [alone] = detectRadarDevices(bare);
+    expect(buildDeviceCards(bare, alone).some((c) => c.radar === "ld2460")).toBe(false);
   });
 
   it("has nothing of the LD2450's", () => {

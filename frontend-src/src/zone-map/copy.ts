@@ -289,6 +289,8 @@ export const WALK_TOO_CLOSE_TOAST =
 export const WALK_CLOSED_TOAST = "That is where you started. Press Finish to save the zone.";
 export const WALK_FLAT_TOAST =
   "Those corners make a zone too thin to use. Mark corners on opposite sides of the area.";
+export const WALK_CROSSED_TOAST =
+  "Those corners make a zone that crosses itself. Undo the last corner, or mark corners around the edge of the area.";
 export const COVERAGE_LABEL = "Coverage";
 export const COVERAGE_TITLE =
   "Paint where targets have been since this page opened (this browser only)";

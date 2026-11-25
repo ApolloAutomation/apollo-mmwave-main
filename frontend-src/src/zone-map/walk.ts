@@ -20,7 +20,7 @@ export const WALK_MIN_AREA_MM2 = 90000;
 export type WalkShape =
   | { shape: "rect"; data: { x_min: number; x_max: number; y_min: number; y_max: number } }
   | { shape: "polygon"; points: { x: number; y: number }[] }
-  | { error: "flat" | "few" };
+  | { error: "flat" | "few" | "crossed" };
 
 type Point = { x: number; y: number };
 
@@ -94,24 +94,16 @@ export function walkOrder(points: Point[], aroundCenter: boolean): Point[] {
 }
 
 /**
- * The zone that `mapCorners` (map frame mm, in walking order) describe.
- *
- * Each corner is clamped with `clamp` (the card's map extents) and rounded,
- * and a corner equal to the one before it is dropped. Fewer than 2 corners
- * left is "few". Two make a rectangle from their min and max, "flat" when
- * it is narrower or shallower than WALK_MIN_CORNER_GAP_MM. Three or more
- * make a polygon of the first `maxPoints`, "flat" when its area is under
- * WALK_MIN_AREA_MM2 (corners in a line, or nearly). With `aroundCenter`,
- * a polygon whose walking order crosses itself is put in order around its
- * centroid first, as corners walked around a ceiling radar can come in
- * any order.
+ * The corners as the zone saves them: each clamped with `clamp`, rounded,
+ * a repeat of the one before dropped, and, past two, the first
+ * `maxPoints` in walkOrder. Walk's preview draws these too.
  */
-export function walkShape(
+export function walkCorners(
   mapCorners: Point[],
   clamp: (p: Point) => Point,
   maxPoints: number,
-  { aroundCenter = false }: { aroundCenter?: boolean } = {}
-): WalkShape {
+  aroundCenter: boolean
+): Point[] {
   const corners: Point[] = [];
   for (const corner of mapCorners) {
     const clamped = clamp(corner);
@@ -122,6 +114,32 @@ export function walkShape(
     if (previous && previous.x === p.x && previous.y === p.y) continue;
     corners.push(p);
   }
+  if (corners.length <= 2) return corners;
+  // A cap under 3 leaves no polygon.
+  const capped = corners.slice(0, maxPoints);
+  return capped.length < 3 ? [] : walkOrder(capped, aroundCenter);
+}
+
+/**
+ * The zone that `mapCorners` (map frame mm, in walking order) describe.
+ *
+ * Each corner is clamped with `clamp` (the card's map extents) and rounded,
+ * and a corner equal to the one before it is dropped. Fewer than 2 corners
+ * left is "few". Two make a rectangle from their min and max, "flat" when
+ * it is narrower or shallower than WALK_MIN_CORNER_GAP_MM. Three or more
+ * make a polygon of the first `maxPoints`, "flat" when its area is under
+ * WALK_MIN_AREA_MM2 (corners in a line, or nearly). With `aroundCenter`,
+ * a polygon whose walking order crosses itself is put in order around its
+ * centroid first, as corners walked around a ceiling radar can come in
+ * any order, and one that still crosses itself is "crossed".
+ */
+export function walkShape(
+  mapCorners: Point[],
+  clamp: (p: Point) => Point,
+  maxPoints: number,
+  { aroundCenter = false }: { aroundCenter?: boolean } = {}
+): WalkShape {
+  const corners = walkCorners(mapCorners, clamp, maxPoints, aroundCenter);
   if (corners.length < 2) return { error: "few" };
   if (corners.length === 2) {
     const [a, b] = corners;
@@ -135,9 +153,8 @@ export function walkShape(
     if (thinnest < WALK_MIN_CORNER_GAP_MM) return { error: "flat" };
     return { shape: "rect", data };
   }
-  // Walked around a ceiling radar, corners may come in any order.
-  const points = walkOrder(corners.slice(0, maxPoints), aroundCenter);
-  if (points.length < 3) return { error: "few" };
+  const points = corners;
   if (shoelaceArea(points) < WALK_MIN_AREA_MM2) return { error: "flat" };
+  if (aroundCenter && selfIntersects(points)) return { error: "crossed" };
   return { shape: "polygon", points };
 }

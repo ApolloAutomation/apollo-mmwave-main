@@ -107,9 +107,11 @@ def test_ld2450_target_regexes_match_the_frontend() -> None:
     """
     source = _read(FRONTEND_SRC / "ld2450.ts")
     for python in (ld2450.TARGET_X.pattern, ld2450.TARGET_Y.pattern):
-        typescript = python.replace("(?:_ld24[56]0)?", "(?<!_ld2460)(?:_ld2450)?")
+        typescript = python.replace("(?:_ld24[56]0)?", "(?:_ld2450)?")
         assert typescript != python
         assert f" = /{typescript}/;" in source
+    assert "!LD2460_X.test(oid)" in source
+    assert "!LD2460_Y.test(oid)" in source
 
     ld2460 = _read(FRONTEND_SRC / "ld2460.ts")
     assert f"const LD2460_X = /{trackers.LD2460_X.pattern}/;" in ld2460
@@ -564,3 +566,12 @@ def test_update_zone_documents_flip_room_side() -> None:
     spec = services["update_zone"]["fields"]["flip_room_side"]
     assert spec["selector"] == {"boolean": {}}
     assert "flip_room_side" in services["update_zone"]["description"]
+
+
+def test_no_bundle_uses_a_regexp_lookbehind() -> None:
+    """Safari 14, a build target, throws on one and loads nothing."""
+    www = REPO_ROOT / "custom_components" / "apollo_mmwave" / "www"
+    for bundle in sorted(www.glob("*.js")):
+        text = bundle.read_text(encoding="utf-8")
+        assert "(?<!" not in text, bundle.name
+        assert "(?<=" not in text, bundle.name

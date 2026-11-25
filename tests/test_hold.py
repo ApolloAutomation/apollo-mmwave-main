@@ -977,3 +977,16 @@ def test_a_way_on_past_the_wall_line_folds_back_into_view() -> None:
     for index, point in enumerate(walk):
         tracker.step(float(index), [_floor_reading(0, point, 1700)], [], "rect", zone)
     assert tracker.step(5.0, [], [], "rect", zone, coverage=coverage) is True
+
+
+def test_a_walk_toward_the_line_under_a_ceiling_ld2450_is_held() -> None:
+    """Lost heading across the wall line, 50 mm short of it: no exit."""
+    geom = mounts.mount_geometry("ld2450", None, {"mount": "ceiling"})
+    zone = {"x_min": -3000, "x_max": 3000, "y_min": -3000, "y_max": 3000}
+    walk = [(100, 1100 - 150 * step) for step in range(8)]
+    tracker = HoldTracker()
+    for index, point in enumerate(walk):
+        reading = _floor_reading(0, point, 1700)
+        tracker.step(index * STEP_S, [reading], [], "rect", zone)
+    coverage = mounts.coverage_for(geom)
+    assert tracker.step(len(walk) * STEP_S, [], [], "rect", zone, coverage=coverage)

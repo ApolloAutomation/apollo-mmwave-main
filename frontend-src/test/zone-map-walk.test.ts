@@ -10,6 +10,7 @@ import {
   WALK_MIN_CORNER_GAP_MM,
   orderAroundCentroid,
   selfIntersects,
+  walkCorners,
   walkOrder,
   walkShape,
 } from "../src/zone-map/walk";
@@ -298,5 +299,45 @@ describe("corners walked around a ceiling radar", () => {
       points: square,
     });
     expect(walkOrder(square, true)).toBe(square);
+  });
+});
+
+describe("a walk around a ceiling radar that still crosses itself", () => {
+  it("is refused, not saved, when ordering around the center cannot fix it", () => {
+    const corners = [
+      { x: 3000, y: 0 },
+      { x: 1000, y: 0 },
+      { x: 2000, y: 0 },
+      { x: -3000, y: 1500 },
+      { x: -3000, y: -1500 },
+    ];
+    expect(walkShape(corners, onMap, 32, { aroundCenter: true })).toEqual({ error: "crossed" });
+  });
+
+  it("still saves a bow-tie the ordering fixes", () => {
+    const bowtie = [
+      { x: -2000, y: -2000 },
+      { x: 2000, y: 2000 },
+      { x: 2000, y: -2000 },
+      { x: -2000, y: 2000 },
+    ];
+    const result = walkShape(bowtie, onMap, 32, { aroundCenter: true });
+    expect("points" in result && selfIntersects(result.points)).toBe(false);
+  });
+});
+
+describe("walkCorners, the preview's corners", () => {
+  it("drops corners the clamp makes repeats, as Finish does", () => {
+    const clamp = clampTo(-2000, 2000, -2000, 2000);
+    const walked = [
+      { x: 2500, y: 2500 },
+      { x: 3000, y: 2800 },
+      { x: -2000, y: 2000 },
+      { x: 0, y: -2000 },
+    ];
+    const preview = walkCorners(walked, clamp, 32, true);
+    expect(preview).toHaveLength(3);
+    const saved = walkShape(walked, clamp, 32, { aroundCenter: true });
+    expect("points" in saved && saved.points).toEqual(preview);
   });
 });

@@ -473,3 +473,20 @@ async def test_the_support_file_shows_the_radars_report_winning(
     assert section["ld2460"]["mount"]["effective"] == "ceiling"
     assert section["ld2460"]["mount"]["source"] == "radar"
     assert section["ld2460"]["mount"]["coverage_radius_mm"] == 4000.0
+
+
+async def test_the_support_file_survives_cleared_pairs_on_a_saved_ceiling(
+    hass, hass_client, ld2460_radar
+) -> None:
+    """No tracked pairs read as an LD2450 footprint, which has no radius."""
+    entry = make_entry()
+    await setup_integration(hass, entry)
+    get_store(hass).device(ld2460_radar.id).update({"mount": "ceiling", "entities": []})
+
+    result = await get_diagnostics_for_config_entry(hass, hass_client, entry)
+    section = next(
+        item for item in result["devices"] if item["device_id"] == ld2460_radar.id
+    )
+
+    assert section["ld2460"]["mount"]["effective"] == "ceiling"
+    assert section["ld2460"]["mount"]["coverage_radius_mm"] is None

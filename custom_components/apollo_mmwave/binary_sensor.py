@@ -25,6 +25,7 @@ radar's device page where automations are built from, and renaming it is safe.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import time
@@ -63,7 +64,7 @@ from .targets import (
     radar_offline,
     shape_tester,
 )
-from .trackers import SIDE_COVERAGE, effective_mount, timing_for
+from .trackers import SIDE_COVERAGE, effective_geometry, effective_mount, timing_for
 from .zone_entities import ZoneEntityMixin, async_setup_zone_platform
 
 if TYPE_CHECKING:
@@ -215,10 +216,13 @@ class ZonePresenceBinarySensor(ZoneEntityMixin, BinarySensorEntity):
     def _hold_fingerprint(self) -> str:
         """Return what turns this zone's readings into presence, as one string."""
         # This zone's geometry and type, the radar's rotation and input units,
-        # the tracked pairs and every ignore zone. Not the name, the hold time,
-        # other detect zones or display settings, which leave a hold standing.
+        # the tracked pairs, its mount and every ignore zone. Not the name,
+        # the hold time, other detect zones or display settings, which leave
+        # a hold standing.
         device = self._store.devices.get(self._device_id) or {}
         zone_def = self._store.zone(self._device_id, self._zone_id) or {}
+        pairs = self._tracked_pairs()
+        geom = effective_geometry(self.hass, self._device_id, pairs, device)
         ignore_zones = sorted(
             (
                 [str(zone_id), zone.get(ATTR_SHAPE), zone.get(ATTR_DATA)]
@@ -234,7 +238,8 @@ class ZonePresenceBinarySensor(ZoneEntityMixin, BinarySensorEntity):
                 zone_type_of(zone_def),
                 device.get(ATTR_ROTATION_DEG),
                 device.get(STORE_INPUT_UNITS),
-                self._tracked_pairs(),
+                pairs,
+                dataclasses.astuple(geom),
                 ignore_zones,
             ],
             sort_keys=True,

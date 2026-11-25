@@ -1034,9 +1034,11 @@ function cardMap(
   if (dev.ld2460) {
     cards.zoneHeader = dev.profile ? { type: "heading", heading: "Zone Map" } : undefined;
     l60 = ld2460Entities(hass, dev.deviceId);
-    cards.ld2450Setup = exists(hass, l60.installation_mode)
-      ? { type: "custom:apollo-radar-setup-card", device_id: dev.deviceId, radar: "ld2460" }
-      : undefined;
+    // Only the mode and the target count have checks.
+    cards.ld2450Setup =
+      exists(hass, l60.installation_mode) || exists(hass, l60.target_count)
+        ? { type: "custom:apollo-radar-setup-card", device_id: dev.deviceId, radar: "ld2460" }
+        : undefined;
     cards.zoneMap = zoneMapCard(dev.deviceId, dev.name);
     cards.zonePresence = zonePresenceCard(hass, dev.deviceId);
     cards.ld2460Live = ld2460LiveCard(hass, l60);

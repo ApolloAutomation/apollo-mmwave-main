@@ -68,6 +68,7 @@ from .const import (
 )
 from .frontend import async_dashboard_owned
 from .gates import resolve_gate_entities
+from .hold import Coverage
 from .ld2450 import resolve_target_pairs
 
 # The model table moved to models.py, which target_units.py shares. The table
@@ -335,7 +336,7 @@ def _ld2460(
             "height_saved": STORE_CEILING_HEIGHT_MM in (zone_entry or {}),
             "coverage_radius_mm": (
                 round(mount.coverage.range_mm, 1)
-                if mount.mount == MOUNT_CEILING
+                if mount.mount == MOUNT_CEILING and isinstance(mount.coverage, Coverage)
                 else None
             ),
         },

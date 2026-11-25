@@ -175,6 +175,7 @@ import {
   WALK_CLOSED_TOAST,
   WALK_CORNER,
   WALK_FINISH,
+  WALK_CROSSED_TOAST,
   WALK_FLAT_TOAST,
   WALK_HINT_CROWD,
   WALK_HINT_FULL,
@@ -331,7 +332,7 @@ import {
   viewWindow,
   zoomAt,
 } from './view';
-import { WALK_AVERAGE_MS, WALK_MIN_CORNER_GAP_MM, walkOrder, walkShape } from './walk';
+import { WALK_AVERAGE_MS, WALK_MIN_CORNER_GAP_MM, walkCorners, walkShape } from './walk';
 
 const COLOR = Object.freeze({
   ui: {
@@ -1062,6 +1063,7 @@ export class ZoneMapCard extends HTMLElement {
     // The tracking radar and its mount, as _syncTracker last read them.
     this._tracker = undefined;
     this._mount = undefined;
+    this._mountSource = '';
     this._trackerKey = '';
     this._trackerReadFor = null;
     this._modeSensorPresent = false;
@@ -1081,6 +1083,10 @@ export class ZoneMapCard extends HTMLElement {
     // Each number field's save and range note.
     this._fieldSaves = {};
     this._fieldNotes = {};
+    this._saveBase = {};
+    this._saveLatest = {};
+    // Never reset, so no save token is reused.
+    this._saveTokens = 0;
     // Test center and edge, while it is on.
     this._test = null;
     // Drawing/UI
@@ -1211,6 +1217,7 @@ export class ZoneMapCard extends HTMLElement {
       this._armedZone = null;
       this._exitWalk();
       this._closeHistory();
+      this._setTest(false, { draw: false });
       this._resetView();
     }
     // Display only, so a user can call the card "Kitchen" and still share zone
@@ -1360,6 +1367,8 @@ export class ZoneMapCard extends HTMLElement {
     this._previewTiltDeg = null;
     this._fieldSaves = {};
     this._fieldNotes = {};
+    this._saveBase = {};
+    this._saveLatest = {};
     this._setTest(false, { draw: false });
     // The zones, their sensors and the device-wide flags are the old radar's
     // too, and the new one's first payload brings its own. A setting saved
@@ -1781,6 +1790,11 @@ export class ZoneMapCard extends HTMLElement {
     this._renderVersionNotice();
     // A trail that was fading when the card left the page fades on.
     this._kickTrailTimer();
+    // A loss message shown at the detach still expires.
+    if (this._test) {
+      this._updateTest();
+      this._renderTestPanel();
+    }
   }
 
   _connectZones() {
@@ -3544,9 +3558,10 @@ export class ZoneMapCard extends HTMLElement {
     if (this._mountInfo().source === 'radar') return;
     const current = tracker === 'ld2450' ? this._mountInfo().mount : (this._storedMount ?? 'wall');
     if (mount === current) return;
-    const before = this._storedMount;
     const deviceId = this.deviceId;
-    this._storedMount = mount === 'wall' ? null : mount;
+    const stored = mount === 'wall' ? null : mount;
+    const token = this._beginSave('mount', this._storedMount);
+    this._storedMount = stored;
     this._previewTiltDeg = null;
     this._trackerChanged();
     this._renderMapSettings();
@@ -3556,11 +3571,37 @@ export class ZoneMapCard extends HTMLElement {
       { withInputUnits: false },
     );
     // Another radar's map keeps its own mount.
-    if (!saved && this.deviceId === deviceId) {
-      this._storedMount = before;
+    const end = this._endSave('mount', token, deviceId, saved, stored);
+    if (end?.latest && !saved) {
+      this._storedMount = end.base;
       this._trackerChanged();
       this._renderMapSettings();
     }
+  }
+
+  /**
+   * Start a save of `key`: a token no other save shares, and the value
+   * last confirmed, kept while saves of it are pending.
+   */
+  _beginSave(key, current) {
+    this._saveTokens += 1;
+    if (!(key in this._saveLatest)) this._saveBase[key] = current;
+    this._saveLatest[key] = this._saveTokens;
+    return this._saveTokens;
+  }
+
+  /**
+   * End a save: null for another radar's, else whether it is the latest
+   * of `key` and, once it is, the confirmed value to fall back to.
+   */
+  _endSave(key, token, deviceId, saved, value) {
+    if (this.deviceId !== deviceId) return null;
+    if (saved) this._saveBase[key] = value;
+    if (this._saveLatest[key] !== token) return { latest: false, base: undefined };
+    const base = this._saveBase[key];
+    delete this._saveLatest[key];
+    delete this._saveBase[key];
+    return { latest: true, base };
   }
 
   /** Save a typed height in mm, rounded, clamped, default forgotten. */
@@ -3631,11 +3672,10 @@ export class ZoneMapCard extends HTMLElement {
       this._renderMountDetails();
       return;
     }
-    const before = this[storedField];
     const deviceId = this.deviceId;
+    const token = this._beginSave(key, this[storedField]);
     this[storedField] = stored;
-    const seq = (this._fieldSaves[key]?.seq ?? 0) + 1;
-    this._fieldSaves[key] = { seq, state: 'saving' };
+    this._fieldSaves[key] = { state: 'saving' };
     this._trackerChanged();
     this._renderMountDetails();
     const saved = await this._saveZoneUpdate(
@@ -3643,10 +3683,11 @@ export class ZoneMapCard extends HTMLElement {
       null,
       { withInputUnits: false },
     );
-    if (this.deviceId !== deviceId || this._fieldSaves[key]?.seq !== seq) return;
-    this._fieldSaves[key] = { seq, state: saved ? 'saved' : 'failed' };
+    const end = this._endSave(key, token, deviceId, saved, stored);
+    if (!end?.latest) return;
+    this._fieldSaves[key] = { state: saved ? 'saved' : 'failed' };
     if (!saved) {
-      this[storedField] = before;
+      this[storedField] = end.base;
       this._trackerChanged();
     }
     this._renderMountDetails();
@@ -3739,23 +3780,25 @@ export class ZoneMapCard extends HTMLElement {
     const rounded = Math.round((value * factor) / 10) * 10;
     const mm = Math.min(CEILING_HEIGHT.maxMm, Math.max(CEILING_HEIGHT.minMm, rounded));
     this._heightNote = mm !== rounded;
-    const before = this._storedHeightMm;
-    this._storedHeightMm = mm === CEILING_HEIGHT.defaultMm ? null : mm;
-    const seq = (this._heightSave?.seq ?? 0) + 1;
-    this._heightSave = { seq, state: 'saving' };
+    const deviceId = this.deviceId;
+    const stored = mm === CEILING_HEIGHT.defaultMm ? null : mm;
+    const token = this._beginSave('ceiling_height_mm', this._storedHeightMm);
+    this._storedHeightMm = stored;
+    this._heightSave = { state: 'saving' };
     const input = this.shadowRoot?.getElementById('ceilingHeightInput');
     if (input) input.value = this._heightInUnit(mm);
     this._trackerChanged();
     this._renderCeilingHeight();
     const saved = await this._saveZoneUpdate(
-      { device_id: this.deviceId, ceiling_height_mm: mm },
+      { device_id: deviceId, ceiling_height_mm: mm },
       null,
       { withInputUnits: false },
     );
-    if (this._heightSave?.seq !== seq) return;
-    this._heightSave = { seq, state: saved ? 'saved' : 'failed' };
+    const end = this._endSave('ceiling_height_mm', token, deviceId, saved, stored);
+    if (!end?.latest) return;
+    this._heightSave = { state: saved ? 'saved' : 'failed' };
     if (!saved) {
-      this._storedHeightMm = before;
+      this._storedHeightMm = end.base;
       this._trackerChanged();
     }
     this._renderCeilingHeight();
@@ -3842,7 +3885,9 @@ export class ZoneMapCard extends HTMLElement {
     let text;
     if (targets.length === 0) {
       const last = test.last;
-      const age = last ? now - last.at : Infinity;
+      // The loss counts from the first empty reading.
+      if (last && last.lostAt === undefined) last.lostAt = now;
+      const age = last ? now - last.lostAt : Infinity;
       if (age <= TEST_LOST_SHOW_MS) {
         kind = last.atEdge ? 'lost-edge' : 'lost';
         if (mode === 'circle') {
@@ -3868,7 +3913,8 @@ export class ZoneMapCard extends HTMLElement {
       const [{ x, y }] = targets;
       ({ kind, text } = mode === 'circle' ? this._testCircle(x, y, fmt) : this._testFootprint(mode, x, y, fmt));
       if (kind === 'center' || kind === 'near' || kind === 'wall') test.center = true;
-      if (kind === 'edge' || kind === 'far' || kind === 'side') test.edge = true;
+      // High's second pill is the far edge alone.
+      if (kind === 'far' || (mode !== 'high' && (kind === 'edge' || kind === 'side'))) test.edge = true;
     }
     test.kind = kind;
     test.text = text;
@@ -3953,7 +3999,8 @@ export class ZoneMapCard extends HTMLElement {
       this._drawTestFootprint(ctx, mode);
       return;
     }
-    const radius = Math.max(0, this.coneYMax);
+    // The radius _testCircle judges by, not a YAML cone.
+    const radius = Math.max(0, this._mountInfo().radiusMm);
     const cx = this.valueToPixels(0, 'x');
     const cy = this.valueToPixels(0, 'y');
     const px = (mm) => Math.abs(this.valueToPixels(mm, 'x') - cx);
@@ -4065,7 +4112,7 @@ export class ZoneMapCard extends HTMLElement {
    * of r, centered under the radar, through the commit a drawn shape takes.
    */
   _drawRoomShape(zoneId, shape) {
-    if (!this._isAdmin() || !this._isTopDown()) return;
+    if (!this._isAdmin() || !this._isTopDown() || this._replayShowing()) return;
     if (this.isLocked) {
       this._remindLocked(DRAW_LOCKED_TOAST);
       return;
@@ -4086,7 +4133,7 @@ export class ZoneMapCard extends HTMLElement {
 
   /** Give a zone the footprint's shape, turned with the map. */
   _drawCoverageShape(zoneId) {
-    if (!this._isAdmin() || !this._footprint()) return;
+    if (!this._isAdmin() || !this._footprint() || this._replayShowing()) return;
     if (this.isLocked) {
       this._remindLocked(DRAW_LOCKED_TOAST);
       return;
@@ -4289,8 +4336,12 @@ export class ZoneMapCard extends HTMLElement {
     const [target] = targets;
     const at = this._trails.average(target.slot, this._now(), WALK_AVERAGE_MS) || target;
     const corner = { x: at.x, y: at.y };
-    const near = (other) =>
-      Math.hypot(corner.x - other.x, corner.y - other.y) < WALK_MIN_CORNER_GAP_MM;
+    // Spaced on the floor; kept raw for the mount in use.
+    const here = this._toMap(corner.x, corner.y);
+    const near = (other) => {
+      const there = this._toMap(other.x, other.y);
+      return Math.hypot(here.x - there.x, here.y - there.y) < WALK_MIN_CORNER_GAP_MM;
+    };
     if (corners.length > 0 && near(corners[corners.length - 1])) {
       this._notifyThrottled(WALK_TOO_CLOSE_TOAST);
       return;
@@ -4351,7 +4402,8 @@ export class ZoneMapCard extends HTMLElement {
       aroundCenter: this._isCeiling(),
     });
     if (result.error) {
-      this._notifyThrottled(result.error === 'flat' ? WALK_FLAT_TOAST : POLY_TOO_FEW_TOAST);
+      const toast = { flat: WALK_FLAT_TOAST, crossed: WALK_CROSSED_TOAST }[result.error];
+      this._notifyThrottled(toast ?? POLY_TOO_FEW_TOAST);
       return;
     }
     if (result.shape === DRAW_MODES.RECT) {
@@ -4658,6 +4710,8 @@ export class ZoneMapCard extends HTMLElement {
    *  its time (_renderHistoryTime). */
   _renderHistoryPanel() {
     this._renderHistoryChip();
+    // The room buttons hide while a replay shows.
+    this._renderZoneDraw();
     const root = this.shadowRoot;
     const panel = root?.getElementById('historyPanel');
     if (panel) {
@@ -5910,12 +5964,14 @@ export class ZoneMapCard extends HTMLElement {
     }
     const { tracker, modeId } = this._trackerReadFor;
     const modeState = modeId ? hass.states?.[modeId]?.state : undefined;
-    // A restarting device keeps the mount it had.
+    // A restarting device keeps the mount it had; another radar does not.
+    const source = `${this.deviceId}|${modeId ?? ''}`;
     const mount =
-      modeState === 'unavailable' && tracker === this._tracker
+      modeState === 'unavailable' && tracker === this._tracker && source === this._mountSource
         ? this._mount
         : ld2460Mount(modeState);
     const key = [
+      source,
       tracker ?? '',
       mount ?? '',
       modeId ? 'mode' : '',
@@ -5932,6 +5988,7 @@ export class ZoneMapCard extends HTMLElement {
     const pairingChanged = (tracker === 'ld2460') !== (this._tracker === 'ld2460');
     this._tracker = tracker;
     this._mount = mount;
+    this._mountSource = source;
     this._modeSensorPresent = !!modeId;
     this._trackerKey = key;
     if (pairingChanged) {
@@ -8456,8 +8513,8 @@ export class ZoneMapCard extends HTMLElement {
    * on a phone.
    */
   _drawWalkPreview(ctx) {
-    // Ordered as Finish will save them.
-    const corners = walkOrder(this._walkMapCorners(), this._isCeiling());
+    // Clamped, deduplicated and ordered as Finish will save them.
+    const corners = walkCorners(this._walkMapCorners(), (p) => p, this.polyMaxPoints, this._isCeiling());
     if (corners.length < 2) return;
     const points = corners.map((c) => ({
       x: this.valueToPixels(c.x, 'x'),

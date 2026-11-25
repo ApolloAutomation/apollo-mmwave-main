@@ -114,6 +114,23 @@ describe("the LD2460 zone map, reviewed", () => {
     expect([card.coneYMax, card.coneFovDeg]).toEqual([6000, 120]);
   });
 
+  it("never hands one radar's reported mount to another", async () => {
+    const hass = hassWith("top");
+    const other = "dev2460b";
+    const ids = [X1, Y1, MODE].map((id) => id.replace(B, "other_radar"));
+    for (const id of ids) {
+      hass.entities[id] = { device_id: other, platform: "esphome" };
+      hass.states[id] = state(id, id === ids[2] ? "unavailable" : "1.0", id === ids[2] ? {} : FT);
+    }
+    hass.devices[other] = { ...hass.devices[DEV], id: other };
+    const card = await mount(hass);
+    expect(card.coneFovDeg).toBe(360);
+    card.setConfig({ device_id: other, unit_display: true });
+    card.hass = { ...hass };
+    await vi.waitFor(() => expect(card._zoneConfigPayload).toBeTruthy());
+    expect(card.coneFovDeg).toBe(120);
+  });
+
   it("starts as a wall cone when the mode is unavailable from the start", async () => {
     const card = await mount(hassWith("unavailable"));
     expect(card.coneFovDeg).toBe(120);

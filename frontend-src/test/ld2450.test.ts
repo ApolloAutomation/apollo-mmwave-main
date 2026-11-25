@@ -31,6 +31,21 @@ describe("hasLd2450Device", () => {
   });
 });
 
+describe("LD2460 targets are not LD2450 targets", () => {
+  it.each(["sensor.ld2460_target_1_x", "sensor.ceiling_radar_ld2460_target_1_x"])("%s", (x) => {
+    const y = x.replace(/_x$/, "_y");
+    const hass = hassWith([x, y]);
+    expect(hasLd2450Device(hass, "dev1")).toBe(false);
+    expect(ld2450EntityIds(hass, "dev1")).toEqual([]);
+  });
+
+  it("still counts bare and LD2450 spellings", () => {
+    const ids = ["sensor.office_target_1_x", "sensor.office_target_1_y", "sensor.office_ld2450_target_2_x"];
+    expect(ld2450EntityIds(hassWith(ids), "dev1")).toEqual(ids);
+    expect(hasLd2450Device(hassWith(["sensor.office_target_1_x"]), "dev1")).toBe(true);
+  });
+});
+
 describe("HA dedup tail and domain guard", () => {
   // HA appends `_2` when an entity id collides. Both firmware spellings must
   // still count, the same as `resolve_target_pairs` in ld2450.py.

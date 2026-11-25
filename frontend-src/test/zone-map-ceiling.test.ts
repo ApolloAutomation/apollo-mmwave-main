@@ -583,6 +583,19 @@ describe("whole-room zones", () => {
     return { card, hass };
   }
 
+  it("hides and refuses the room buttons while a replay shows", async () => {
+    const { card, hass } = await roomCard({ payload: { movement_history: true } });
+    expect($(card, "zoneRoom").hidden).toBe(false);
+    card._history.open = true;
+    card._history.series = { slots: [] };
+    card._renderHistoryPanel();
+    expect($(card, "zoneRoom").hidden).toBe(true);
+    card._drawRoomShape(1, "circle");
+    expect(writes(hass)).toEqual([]);
+    card._closeHistory();
+    expect($(card, "zoneRoom").hidden).toBe(false);
+  });
+
   it("gives the zone a square or a circle as big as the coverage", async () => {
     const { card, hass } = await roomCard();
     expect($(card, "zoneRoom").hidden).toBe(false);
@@ -833,6 +846,52 @@ describe("Test center and edge", () => {
     push(card, hass, { mount: null });
     expect(card._test).toBeNull();
     expect(draw()).toEqual([]);
+  });
+});
+
+describe("Test center and edge, timing and lifecycle", () => {
+  beforeEach(() => vi.useFakeTimers());
+
+  it("counts a loss from when the target goes, not its last move", async () => {
+    const hass = hassOf({ payload: { mount: "ceiling" } });
+    const card = await mount(hass);
+    $(card, "btnTestChip").click();
+    at(card, hass, [[0, 1200]]);
+    vi.advanceTimersByTime(TEST_LOST_SHOW_MS + 1000);
+    at(card, hass, []);
+    expect($(card, "testMessage").textContent).toBe(testLost("1.2 m"));
+  });
+
+  it("lets a loss message expire across a detach", async () => {
+    const hass = hassOf({ payload: { mount: "ceiling" } });
+    const card = await mount(hass);
+    $(card, "btnTestChip").click();
+    at(card, hass, [[0, 1200]]);
+    at(card, hass, []);
+    card.disconnectedCallback();
+    vi.advanceTimersByTime(TEST_LOST_SHOW_MS + 100);
+    card.connectedCallback();
+    expect($(card, "testMessage").textContent).toBe(TEST_NOBODY);
+  });
+
+  it("stops when the same card turns view-only", async () => {
+    const hass = hassOf({ payload: { mount: "ceiling" } });
+    const card = await mount(hass);
+    $(card, "btnTestChip").click();
+    expect(card._test).not.toBeNull();
+    card.setConfig({ device_id: DEV, start_locked: false, view_only: true });
+    expect(card._test).toBeNull();
+  });
+
+  it("draws the edge band from the radius it tests by, whatever the YAML cone", async () => {
+    const hass = hassOf({ payload: { mount: "ceiling" } });
+    const card = await mount(hass, { cone: { y_max: 2000 } });
+    $(card, "btnTestChip").click();
+    const calls = recordCalls(card, () => card._drawTestRings(card.ctx));
+    const radii = calls.filter(([name]) => name === "arc").map(([, args]) => args[2]);
+    const px = (mm: number) => Math.abs(card.valueToPixels(mm, "x") - card.valueToPixels(0, "x"));
+    expect(radii[0]).toBeCloseTo(px(card._mountInfo().radiusMm), 6);
+    expect(card._mountInfo().radiusMm).toBe(4000);
   });
 });
 
