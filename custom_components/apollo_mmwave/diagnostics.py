@@ -59,7 +59,11 @@ from .const import (
     STATIC_URL_BASE,
     STORE_CEILING_HEIGHT_MM,
     STORE_ENTITIES,
+    STORE_FLIP_ROOM_SIDE,
+    STORE_MOUNT_HEIGHT_MM,
     STORE_MOVEMENT_HISTORY,
+    STORE_TARGET_HEIGHT_MM,
+    STORE_TILT_DEG,
     STORE_ZONES,
 )
 from .frontend import async_dashboard_owned
@@ -74,7 +78,15 @@ from .models import (  # noqa: F401
     apollo_radars,
     device_radars,
 )
-from .store import device_flag, device_mount
+from .mounts import footprint, mount_geometry
+from .store import (
+    ceiling_height_mm,
+    device_flag,
+    device_mount,
+    mount_height_mm,
+    target_height_mm,
+    tilt_deg,
+)
 from .target_units import decision, unit_picked
 from .trackers import (
     INSTALLATION_MODE,
@@ -252,11 +264,45 @@ def _ld2450(
     # Pairs tracked from an LD2460 are its section's alone.
     if not found and (pairs["source"] == "detected" or tracker == LD2460):
         return None
-    return {
+    section = {
         "found": found,
         "zone_type": _found(hass, zone_type),
         "multi_target_tracking": _found(hass, tracking),
         "target_pairs": pairs,
+    }
+    if tracker == LD2450:
+        section["mount"] = _ld2450_mount(zone_entry)
+    return section
+
+
+def _ld2450_mount(zone_entry: dict[str, Any] | None) -> dict[str, Any]:
+    """Return an LD2450's mount and the settings in use, no readings."""
+    geom = mount_geometry(LD2450, None, zone_entry)
+    view = footprint(geom)
+    stored = zone_entry or {}
+    return {
+        "saved": device_mount(zone_entry),
+        "effective": geom.mount,
+        "source": geom.source,
+        "mount_height_mm": mount_height_mm(zone_entry),
+        "mount_height_saved": STORE_MOUNT_HEIGHT_MM in stored,
+        "ceiling_height_mm": ceiling_height_mm(zone_entry),
+        "ceiling_height_saved": STORE_CEILING_HEIGHT_MM in stored,
+        "tilt_deg": tilt_deg(zone_entry),
+        "tilt_saved": STORE_TILT_DEG in stored,
+        "target_height_mm": target_height_mm(zone_entry),
+        "target_height_saved": STORE_TARGET_HEIGHT_MM in stored,
+        "flip_room_side": device_flag(zone_entry, STORE_FLIP_ROOM_SIDE),
+        "flip_room_side_saved": STORE_FLIP_ROOM_SIDE in stored,
+        "dz_mm": geom.dz_mm,
+        "footprint": (
+            None
+            if view is None
+            else {
+                "y_near_mm": round(view.y_near, 1),
+                "y_far_mm": round(view.y_far, 1),
+            }
+        ),
     }
 
 

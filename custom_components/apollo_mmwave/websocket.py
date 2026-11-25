@@ -58,9 +58,9 @@ from .const import (
     SIGNAL_CALIBRATION_UPDATED,
     SIGNAL_ZONES_PAYLOAD,
     SIGNAL_ZONES_UPDATED,
-    STORE_CEILING_HEIGHT_MM,
     STORE_DISPLAY_UNITS,
     STORE_ENTITIES,
+    STORE_FLIP_ROOM_SIDE,
     STORE_HOLD_S,
     STORE_INPUT_UNITS,
     STORE_LABEL,
@@ -76,11 +76,13 @@ from .const import (
 from .ld2450 import resolve_target_pairs
 from .movement import _now_ms
 from .store import (
+    MOUNT_NUMBER_KEYS,
     device_flag,
     device_mount,
     make_previous_shape,
     previous_shape_of,
     shape_of,
+    stored_mount_settings,
     zone_hold_s,
     zone_type_of,
 )
@@ -190,6 +192,7 @@ def _payload(hass: HomeAssistant, device_id: str) -> dict[str, Any]:
     # of this task: configuration can exist before a zone does, and asking about
     # a radar is not configuring it.
     entry = get_store(hass).devices.get(device_id) or {}
+    settings = stored_mount_settings(entry)
     return {
         STORE_ZONES: _zones(hass, device_id, entry),
         # null means never configured, so the card offers the suggestions below;
@@ -212,9 +215,10 @@ def _payload(hass: HomeAssistant, device_id: str) -> dict[str, Any]:
         # flipped left to right, and whether movement history is kept.
         STORE_MIRROR_X: device_flag(entry, STORE_MIRROR_X),
         STORE_MOVEMENT_HISTORY: device_flag(entry, STORE_MOVEMENT_HISTORY),
-        # Saved mount and height; null means the default.
+        # Saved mount settings; null or false means the default.
         STORE_MOUNT: device_mount(entry),
-        STORE_CEILING_HEIGHT_MM: entry.get(STORE_CEILING_HEIGHT_MM),
+        **{key: settings.get(key) for key in MOUNT_NUMBER_KEYS},
+        STORE_FLIP_ROOM_SIDE: device_flag(entry, STORE_FLIP_ROOM_SIDE),
         # TODO(REVIEW_REPORT.md X53): resolved per subscriber.  # noqa: FIX002, TD003
         # Every subscriber re-resolves on every signal (about 66 us each). Low
         # priority now that zone edits send one signal; reusing DATA_PAIR_CACHE

@@ -909,6 +909,30 @@ async def test_points_are_unit_converted_and_not_rotated(hass, history_on) -> No
     assert _points(hass, device_id) == [(0, 254, 1270)]
 
 
+async def test_a_high_mount_records_raw_points_and_masks_by_floor(
+    hass, clock, history_on
+) -> None:
+    """The file keeps raw y 1562; the ignore zone tests the floor's 1000."""
+    device_id = history_on
+    await _update_zone(hass, {"device_id": device_id, "mount": "high"})
+    await _report(hass, TARGET_1, 100, 1562)
+    assert _points(hass, device_id) == [(0, 100, 1562)]
+    await _advance(hass, clock, 1)
+
+    await _update_zone(
+        hass,
+        {
+            "device_id": device_id,
+            "zone_id": 1,
+            "shape": "rect",
+            "data": {"x_min": -500, "x_max": 500, "y_min": 800, "y_max": 1200},
+            "zone_type": "ignore",
+        },
+    )
+    await _report(hass, TARGET_1, 150, 1600)
+    assert _records(hass, device_id)[-1][1:] == (-1, 0, 0)
+
+
 # ---------------------------------------------------------------------------
 # The file
 # ---------------------------------------------------------------------------

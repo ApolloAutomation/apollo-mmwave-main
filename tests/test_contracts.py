@@ -29,6 +29,7 @@ import yaml
 from custom_components.apollo_mmwave import (
     UPDATE_ZONE_SERVICE_SCHEMA,
     binary_sensor,
+    const,
     hold,
     ld2450,
     movement,
@@ -527,3 +528,39 @@ def test_update_zone_documents_the_mount_and_ceiling_height() -> None:
     )
     keys = {str(key) for key in UPDATE_ZONE_SERVICE_SCHEMA.validators[1].schema}
     assert {STORE_MOUNT, STORE_CEILING_HEIGHT_MM} <= keys
+
+
+@pytest.mark.parametrize(
+    ("field", "low", "high"),
+    [
+        ("ceiling_height_mm", "CEILING_HEIGHT_MIN_MM", "CEILING_HEIGHT_MAX_MM"),
+        ("mount_height_mm", "MOUNT_HEIGHT_MIN_MM", "MOUNT_HEIGHT_MAX_MM"),
+        ("tilt_deg", "TILT_MIN_DEG", "TILT_MAX_DEG"),
+        ("target_height_mm", "TARGET_HEIGHT_MIN_MM", "TARGET_HEIGHT_MAX_MM"),
+    ],
+)
+def test_update_zone_documents_each_mount_setting(field, low, high) -> None:
+    """services.yaml bounds match const.py; the schema takes the field."""
+    services = yaml.safe_load(
+        _read(REPO_ROOT / "custom_components" / DOMAIN / "services.yaml")
+    )
+    spec = services["update_zone"]["fields"][field]
+    number = spec["selector"]["number"]
+    assert (number["min"], number["max"]) == (
+        getattr(const, low),
+        getattr(const, high),
+    )
+    assert "not stored" in spec["description"]
+    assert field in services["update_zone"]["description"]
+    keys = {str(key) for key in UPDATE_ZONE_SERVICE_SCHEMA.validators[1].schema}
+    assert field in keys
+
+
+def test_update_zone_documents_flip_room_side() -> None:
+    """A boolean the service description lists as device-wide."""
+    services = yaml.safe_load(
+        _read(REPO_ROOT / "custom_components" / DOMAIN / "services.yaml")
+    )
+    spec = services["update_zone"]["fields"]["flip_room_side"]
+    assert spec["selector"] == {"boolean": {}}
+    assert "flip_room_side" in services["update_zone"]["description"]

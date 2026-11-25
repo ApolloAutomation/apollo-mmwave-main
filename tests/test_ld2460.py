@@ -189,7 +189,7 @@ MOUNT_CASES = json.loads(
         / "frontend-src"
         / "test"
         / "fixtures"
-        / "ld2460-mount-cases.json"
+        / "mount-cases.json"
     ).read_text()
 )
 
@@ -272,19 +272,22 @@ async def test_effective_mount_sizes_the_circle_from_the_saved_height(
     )
 
 
-async def test_ld2450_pairs_are_always_the_cone(
+async def test_ld2450_pairs_never_read_the_ld2460_mode(
     hass, entity_registry, ld2460_radar
 ) -> None:
-    """A top mode or a saved ceiling beside LD2450 pairs changes nothing."""
+    """A top mode beside LD2450 pairs changes nothing; their store decides."""
     mode = _register(
         entity_registry, ld2460_radar.id, "sensor", f"{BASE}_ld2460_installation_mode"
     )
     hass.states.async_set(mode, "top")
     pair = {"x": "sensor.r_ld2450_target_1_x", "y": "sensor.r_ld2450_target_1_y"}
-    entry = {"zones": {}, "mount": "ceiling"}
-    assert trackers.effective_mount(hass, ld2460_radar.id, [pair], entry) == (
+    assert trackers.effective_mount(hass, ld2460_radar.id, [pair], {}) == (
         trackers.Mount("wall", "default", 2700, trackers.SIDE_COVERAGE)
     )
+    entry = {"zones": {}, "mount": "high"}
+    mount = trackers.effective_mount(hass, ld2460_radar.id, [pair], entry)
+    assert (mount.mount, mount.source) == ("high", "saved")
+    assert isinstance(mount.coverage, trackers.Footprint)
 
 
 # ---------------------------------------------------------------------------
