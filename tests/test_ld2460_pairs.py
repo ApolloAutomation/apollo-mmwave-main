@@ -50,7 +50,7 @@ def _device(hass, device_registry, entity_registry, model: str, *chips: str) -> 
                     entity_registry,
                     device.id,
                     "sensor",
-                    f"room_{chip}_target_{target}_{axis}",
+                    f"ceiling_radar_{chip}_target_{target}_{axis}",
                 )
     return device
 
@@ -58,8 +58,8 @@ def _device(hass, device_registry, entity_registry, model: str, *chips: str) -> 
 def _ids(chip: str) -> list[dict[str, str]]:
     return [
         {
-            "x": f"sensor.room_{chip}_target_{n}_x",
-            "y": f"sensor.room_{chip}_target_{n}_y",
+            "x": f"sensor.ceiling_radar_{chip}_target_{n}_x",
+            "y": f"sensor.ceiling_radar_{chip}_target_{n}_y",
         }
         for n in (1, 2)
     ]
@@ -78,9 +78,9 @@ async def test_no_pair_mixes_an_ld2450_axis_with_an_ld2460_one(
 ) -> None:
     """A stale LD2450 Y never completes an LD2460 X."""
     device = _device(hass, device_registry, entity_registry, "XR-7")
-    _register(entity_registry, device.id, "sensor", "room_ld2450_target_1_y")
-    _register(entity_registry, device.id, "sensor", "room_ld2460_target_1_x")
-    _register(entity_registry, device.id, "sensor", "room_ld2460_target_1_y")
+    _register(entity_registry, device.id, "sensor", "ceiling_radar_ld2450_target_1_y")
+    _register(entity_registry, device.id, "sensor", "ceiling_radar_ld2460_target_1_x")
+    _register(entity_registry, device.id, "sensor", "ceiling_radar_ld2460_target_1_y")
     assert resolve_target_pairs(hass, device.id) == _ids("ld2460")[:1]
 
 
@@ -255,7 +255,7 @@ async def test_an_ld2450_reads_its_saved_ceiling_not_the_ld2460_mode(
     monkeypatch.setattr(binary_sensor, "effective_mount", spy)
     device = _device(hass, device_registry, entity_registry, "R_PRO-1", "ld2450")
     mode = _register(
-        entity_registry, device.id, "sensor", "room_ld2460_installation_mode"
+        entity_registry, device.id, "sensor", "ceiling_radar_ld2460_installation_mode"
     )
     hass.states.async_set(mode, "top")
     presence = await _with_wide_zone(

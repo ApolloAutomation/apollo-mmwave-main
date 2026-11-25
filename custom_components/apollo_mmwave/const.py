@@ -180,6 +180,8 @@ CEILING_TILT_DEG = 90
 FOOTPRINT_STEPS = 24
 # Fits POLYGON_MAX_POINTS: 2 * (15 + 1) points.
 COVERAGE_ZONE_STEPS = 15
+# A coverage zone reaches this far past the wall line.
+COVERAGE_ZONE_WALL_MARGIN_MM = 50
 
 # Attribute / data keys. Persisted coordinates are rounded to whole mm
 ATTR_SHAPE = "shape"

@@ -37,6 +37,8 @@ from .const import (
     CEILING_HEIGHT_MAX_MM,
     CEILING_HEIGHT_MIN_MM,
     CEILING_TILT_DEG,
+    COVERAGE_ZONE_STEPS,
+    COVERAGE_ZONE_WALL_MARGIN_MM,
     FOOTPRINT_STEPS,
     LD2450_AZIMUTH_HALF_DEG,
     LD2450_ELEVATION_HALF_DEG,
@@ -68,6 +70,8 @@ SOURCE_SAVED = "saved"
 SOURCE_DEFAULT = "default"
 # Manual's top mount limit, X and Y within 4 m.
 LD2460_TOP_RANGE_MM = 4000.0
+# How close to Y = 0 counts as on the wall line.
+WALL_LINE_MM = 1e-6
 # The antenna's own beam, 60 degrees either side, pointed down.
 LD2460_LOOK_DOWN_HALF_DEG = 60.0
 
@@ -189,6 +193,23 @@ def footprint_outline(
         # Mirrored, and reversed to stay counter-clockwise.
         return tuple((x, -y) for x, y in reversed(outline))
     return tuple(outline)
+
+
+def coverage_zone_outline(
+    geom: MountGeometry, steps: int = COVERAGE_ZONE_STEPS
+) -> tuple[tuple[float, float], ...]:
+    """
+    Return the card's coverage zone, floor frame; () for any other mount.
+
+    The outline with its wall line pushed COVERAGE_ZONE_WALL_MARGIN_MM away
+    from the room, so someone on the line is inside however the map turns
+    and rounds it.
+    """
+    out = COVERAGE_ZONE_WALL_MARGIN_MM if geom.flip else -COVERAGE_ZONE_WALL_MARGIN_MM
+    return tuple(
+        (x, float(out)) if abs(y) <= WALL_LINE_MM else (x, y)
+        for x, y in footprint_outline(geom, steps)
+    )
 
 
 def footprint(geom: MountGeometry) -> Footprint | None:

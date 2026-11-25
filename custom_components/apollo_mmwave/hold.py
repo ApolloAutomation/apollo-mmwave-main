@@ -26,7 +26,8 @@ left unaccounted for:
    covers from that report to the loss and 0.75 s more, and at most 1.2 m
    on. An edge behind or beside them counts only within 300 mm. Walking
    means two steps in a row of at least 250 mm between their own reports
-   0.9 s or more apart, or one step at 850 mm/s or more. The LD2450's jump
+   0.9 s or more apart, or one step at 850 mm/s or more, measured on the
+   radar's own readings, where its jitter is. The LD2450's jump
    of about 0.5 m in its last report before it loses someone sitting still
    is one slower step, so it holds. Someone first seen inside under 1.2 s
    before counts as moving too, but unless their steps show walking only
@@ -252,6 +253,10 @@ def half_vanished(prev: tuple[float, float] | None, raw: tuple[float, float]) ->
     return prev[0 if x_zero else 1] != 0.0
 
 
+# A report: when, then where in the map, floor and raw frames.
+Report = tuple[float, tuple[float, float], tuple[float, float], tuple[float, float]]
+
+
 @dataclass(slots=True)
 class Occupant:
     """A person inside the zone, as the readings of one slot showed them."""
@@ -262,12 +267,10 @@ class Occupant:
     last_map: tuple[float, float]
     last_raw: tuple[float, float]
     # Each report of this person, oldest first: when their reading changed,
-    # and where to in the map and floor frames, for as long as rule 2 can
-    # use it. Any write starts an evaluation, so an evaluation is no report of
-    # this person.
-    reports: list[tuple[float, tuple[float, float], tuple[float, float]]] = field(
-        default_factory=list
-    )
+    # and where to in the map, floor and raw frames, for as long as rule 2
+    # can use it. Any write starts an evaluation, so an evaluation is no
+    # report of this person.
+    reports: list[Report] = field(default_factory=list)
     # When a carried reading first stood for this person: the first half of
     # a vanish, which is when the zone emptied if the second half follows.
     carried_since: float | None = None
@@ -282,7 +285,7 @@ class Occupant:
             last_t=now,
             last_map=map_,
             last_raw=raw,
-            reports=[(reading.report_t(now), map_, reading.latest_floor)],
+            reports=[(reading.report_t(now), map_, reading.latest_floor, raw)],
         )
 
     @property
@@ -299,13 +302,13 @@ class Occupant:
                 for report in self.reports
                 if now - report[0] <= HOLD_MOTION_WINDOW_S
             ]
-            self.reports.append((reading.report_t(now), map_, reading.latest_floor))
+            self.reports.append(
+                (reading.report_t(now), map_, reading.latest_floor, raw)
+            )
         self.last_t, self.last_map, self.last_raw = now, map_, raw
         self.carried_since = None
 
-    def _report_by(
-        self, t: float
-    ) -> tuple[float, tuple[float, float], tuple[float, float]] | None:
+    def _report_by(self, t: float) -> Report | None:
         # The latest report at or before t.
         return next(
             (report for report in reversed(self.reports) if report[0] <= t), None
@@ -323,13 +326,15 @@ class Occupant:
         return self._walking()
 
     def _walking(self) -> bool:
-        # Whether this person's last reports show steps of walking.
-        seen_t, here, _raw = self.reports[-1]
+        # Whether this person's last reports show steps of walking. Raw
+        # frame: a High or Ceiling floor point blows a still person's
+        # jitter up near the wall line, where Y changes far more than y.
+        seen_t, _map, _floor, here = self.reports[-1]
         before = self._report_by(seen_t - HOLD_ANCHOR_STEP_S)
         if before is None or seen_t - before[0] > HOLD_MOTION_WINDOW_S:
             # Too sparse to measure a step: hold, the safe side.
             return False
-        step = math.dist(here, before[1])
+        step = math.dist(here, before[3])
         if step < HOLD_MOVE_MIN_MM:
             return False
         if step / (seen_t - before[0]) >= HOLD_BRISK_MM_PER_S:
@@ -340,11 +345,11 @@ class Occupant:
         earlier = self._report_by(before[0] - HOLD_ANCHOR_STEP_S)
         if earlier is None or seen_t - earlier[0] > HOLD_MOTION_WINDOW_S:
             return False
-        return math.dist(before[1], earlier[1]) >= HOLD_MOVE_MIN_MM
+        return math.dist(before[3], earlier[3]) >= HOLD_MOVE_MIN_MM
 
     def exit_margin_mm(self, t: float) -> float:
         """Return how near an edge ahead they had to be to walk out, lost at t."""
-        seen_t, here, _raw = self.reports[-1]
+        seen_t, here, _floor, _raw = self.reports[-1]
         before = self._report_by(seen_t - HOLD_ANCHOR_STEP_S)
         if before is None:
             return HOLD_EXIT_MARGIN_MM
@@ -360,7 +365,7 @@ class Occupant:
         self, t: float
     ) -> list[tuple[tuple[float, float], tuple[float, float]]]:
         """Return where this person may have walked to, lost at t: map and floor."""
-        seen_t, here, here_floor = self.reports[-1]
+        seen_t, here, here_floor, _raw = self.reports[-1]
         path = [(here, here_floor)]
         before = self._report_by(seen_t - HOLD_ANCHOR_STEP_S)
         if before is None or not self._walking():
@@ -368,7 +373,7 @@ class Occupant:
             # HOLD_FIRST_SEEN_S: their last step, jitter or someone walking
             # in to sit down, is no way to have walked on.
             return path
-        _before_t, before_map, before_floor = before
+        _before_t, before_map, before_floor, _before_raw = before
         step = math.dist(here, before_map)
         # On from their last report the way their last step went, not toward
         # an edge behind or beside them. Each frame moves along its own step,
@@ -531,13 +536,18 @@ def coverage_edge_distance_mm(
     hangs on, or the line under a ceiling one, which folds everyone onto
     the room side. Nobody walks out across it, so a point on it counts as
     inside and the distance is to the other sides. Someone standing right
-    under a ceiling radar is then far from the edge, not on it.
+    under a ceiling radar is then far from the edge, not on it, and a
+    point past it, where a walker's way on can lead, folds back across it.
     """
     if isinstance(coverage, Footprint):
         outline = coverage.outline
         if len(outline) < POLYGON_MIN_POINTS:
             return 0.0
         sides = list(zip(outline, (*outline[1:], outline[0]), strict=True))
+        if any(_wall_side(start, end) for start, end in sides):
+            # Fold onto the room side; flipped outlines lie below.
+            room = max(point[1] for point in outline) > _WALL_LINE_MM
+            y = abs(y) if room else -abs(y)
         on_wall = abs(y) <= _WALL_LINE_MM and any(
             _wall_side(start, end)
             and min(start[0], end[0]) <= x <= max(start[0], end[0])

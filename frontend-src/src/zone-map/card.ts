@@ -282,6 +282,7 @@ import {
 import { ld2460Entities } from '../ld2460-entities';
 import {
   COVERAGE_ZONE_STEPS,
+  coverageZoneOutline,
   MOUNT_HEIGHT_DEFAULT_MM,
   MOUNT_HEIGHT_MAX_MM,
   MOUNT_HEIGHT_MIN_MM,
@@ -4092,7 +4093,9 @@ export class ZoneMapCard extends HTMLElement {
     }
     if (zoneId === null || zoneId === undefined || this._walk) return;
     const points = [];
-    this._footprintMapPoints(COVERAGE_ZONE_STEPS).forEach((p) => {
+    const turn = this.coneAngleDeg || 0;
+    const outline = coverageZoneOutline(this._mountInfo().geom, COVERAGE_ZONE_STEPS);
+    outline.map((p) => rotateToMap(p.x, p.y, turn)).forEach((p) => {
       const point = {
         x: this._clampAndRound(p.x, this.xMin, this.xMax) + 0,
         y: this._clampAndRound(p.y, this.yMin, this.yMax) + 0,

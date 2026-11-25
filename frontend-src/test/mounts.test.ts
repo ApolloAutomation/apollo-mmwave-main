@@ -7,6 +7,7 @@ import {
   FOOTPRINT_STEPS,
   SIDE_COVERAGE,
   coverageEdgeDistanceMm,
+  coverageZoneOutline,
   coverageFor,
   floorPoint,
   footprint,
@@ -17,6 +18,7 @@ import {
   mountRule,
 } from "../src/mounts";
 import * as mounts from "../src/mounts";
+import { pointInPolygon, rotateToMap } from "../src/zone-map/geometry";
 import { ceilingRadiusMm, mountRule as ld2460MountRule } from "../src/ld2460";
 import type { MountGeometry } from "../src/mounts";
 
@@ -102,7 +104,7 @@ describe("the footprint", () => {
   });
 
   it.each(cases.coverage_zone.map((c) => [label(c), c] as const))("coverage zone %s", (_name, c) => {
-    const outline = footprintOutline(geom(c), c.steps);
+    const outline = coverageZoneOutline(geom(c), c.steps);
     expect(outline).toHaveLength(c.expect.length);
     outline.forEach((p, i) => {
       expect(Math.abs(p.x - c.expect[i][0])).toBeLessThanOrEqual(0.1);
@@ -144,5 +146,36 @@ describe("the distance to the edge of the view", () => {
     expect(coverageFor(mountGeometry("ld2460", "side", {}))).toBe(SIDE_COVERAGE);
     expect(coverageFor(mountGeometry("ld2460", "top", {}), 4000)).toEqual({ range_mm: 4000, half_fov_deg: 180 });
     expect("outline" in coverageFor(mountGeometry("ld2450", null, { mount: "high" }))).toBe(true);
+  });
+});
+
+describe("the coverage zone and the wall line", () => {
+  const spots = [
+    [0, 1600],
+    [1000, 1700],
+    [-2000, 1500],
+  ];
+  it.each([false, true].flatMap((flip) => [0, 30, 90, 180, -45].map((turn) => [flip, turn] as const)))(
+    "takes in someone on the line, flip %s, turned %s",
+    (flip, turn) => {
+      const g = mountGeometry("ld2450", null, { mount: "ceiling", flip_room_side: flip });
+      const zone = coverageZoneOutline(g).map((p) => {
+        const m = rotateToMap(p.x, p.y, turn);
+        return { x: Math.round(m.x) + 0, y: Math.round(m.y) + 0 };
+      });
+      for (const [x, y] of spots) {
+        const floor = floorPoint(g, x, y);
+        const at = rotateToMap(floor.x, floor.y, turn);
+        expect(pointInPolygon(at.x, at.y, { points: zone })).toBe(true);
+      }
+    }
+  );
+
+  it("folds a point past the line back onto the room side", () => {
+    const room = coverageFor(mountGeometry("ld2450", null, { mount: "ceiling" }));
+    const flipped = coverageFor(mountGeometry("ld2450", null, { mount: "ceiling", flip_room_side: true }));
+    expect(coverageEdgeDistanceMm(0, -100, room)).toBeCloseTo(coverageEdgeDistanceMm(0, 100, room), 6);
+    expect(coverageEdgeDistanceMm(0, 100, flipped)).toBeCloseTo(coverageEdgeDistanceMm(0, -100, flipped), 6);
+    expect(coverageEdgeDistanceMm(0, -100, room)).toBeGreaterThan(1000);
   });
 });

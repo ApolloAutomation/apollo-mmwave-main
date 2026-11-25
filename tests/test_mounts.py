@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from custom_components.apollo_mmwave import const, hold, mounts
+from custom_components.apollo_mmwave import const, hold, mounts, targets
 
 CASES = json.loads(
     (
@@ -121,7 +121,7 @@ def test_coverage_edge_distance(case) -> None:
 @pytest.mark.parametrize("case", CASES["coverage_zone"])
 def test_coverage_zone_outline(case) -> None:
     """The card's coverage zone: 15 steps a side is 32 points."""
-    outline = mounts.footprint_outline(_geom(case["geometry"]), case["steps"])
+    outline = mounts.coverage_zone_outline(_geom(case["geometry"]), case["steps"])
     assert len(outline) == const.POLYGON_MAX_POINTS
     for point, expected in zip(outline, case["expect"], strict=True):
         assert point == pytest.approx(tuple(expected), abs=0.1)
@@ -173,3 +173,23 @@ def test_ld2460_coverage_is_the_ported_view() -> None:
     assert mounts.coverage_for(top) == hold.Coverage(
         mounts.ceiling_radius_mm(2000), 180.0
     )
+
+
+@pytest.mark.parametrize("flip", [False, True])
+@pytest.mark.parametrize("turn", [0, 30, 90, 180, -45])
+def test_someone_on_the_wall_line_is_in_the_coverage_zone(flip, turn) -> None:
+    """The card's zone, turned and rounded, takes in the line under the radar."""
+    geom = mounts.mount_geometry(
+        "ld2450", None, {"mount": "ceiling", "flip_room_side": flip}
+    )
+    rotate = targets.build_point_rotator(turn)
+    zone = {
+        "points": [
+            {"x": math.floor(mx + 0.5), "y": math.floor(my + 0.5)}
+            for mx, my in (rotate(x, y) for x, y in mounts.coverage_zone_outline(geom))
+        ]
+    }
+    inside = targets.shape_tester({"shape": "polygon"})
+    assert inside is not None
+    for raw in [(0, 1600), (1000, 1700), (-2000, 1500)]:
+        assert inside(*rotate(*mounts.floor_point(geom, *raw)), zone)

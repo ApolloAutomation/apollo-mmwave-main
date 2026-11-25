@@ -636,7 +636,12 @@ def test_a_write_that_waits_for_its_other_axis_is_a_report_from_when_it_landed()
         written_at=1.0,
     )
     assert tracker.step(1.2, [waiting], [], "rect", RECT)
-    assert tracker.occupants[0].reports[-1] == (1.0, (900, 1000), (900, 1000))
+    assert tracker.occupants[0].reports[-1] == (
+        1.0,
+        (900, 1000),
+        (900, 1000),
+        (900, 1000),
+    )
     assert tracker.occupants[0].last_map == (900, 1000)
 
     # Lost then: 900 mm/s is walking, 100 mm from the edge. They walked out.
@@ -914,3 +919,61 @@ def test_someone_under_a_ceiling_ld2450_is_held(flip) -> None:
 def test_a_footprint_with_too_few_points_is_no_view() -> None:
     """A degenerate outline measures 0, like a point outside."""
     assert coverage_edge_distance_mm(0, 100, Footprint(0, 0, ((0, 0), (1, 1)))) == 0
+
+
+def _ceiling_wobble(geom: mounts.MountGeometry) -> list[Reading]:
+    """Return a still person under the radar: raw y wobbles 20 mm."""
+    readings = []
+    for index in range(7):
+        raw = (0.0, 1720.0 if index % 2 else 1700.0)
+        floor = mounts.floor_point(geom, *raw)
+        readings.append(Reading(0, raw, floor, floor=floor))
+    return readings
+
+
+def _held_after(readings: list[Reading], shape: str, zone: dict, coverage) -> bool:
+    tracker = HoldTracker()
+    for index, reading in enumerate(readings):
+        assert tracker.step(float(index), [reading], [], shape, zone)
+    return tracker.step(float(len(readings)), [], [], shape, zone, coverage=coverage)
+
+
+def test_jitter_under_a_ceiling_ld2450_is_no_walk_out() -> None:
+    """Floor Y swings 0 to 262 mm on 20 mm of raw jitter: still held."""
+    geom = mounts.mount_geometry("ld2450", None, {"mount": "ceiling"})
+    readings = _ceiling_wobble(geom)
+    assert readings[-1].floor == (0.0, 0.0)
+    zone = {"x_min": -2000, "x_max": 2000, "y_min": -2000, "y_max": 2500}
+    assert _held_after(readings, "rect", zone, mounts.coverage_for(geom)) is True
+
+
+@pytest.mark.parametrize("flip", [False, True])
+def test_jitter_under_a_ceiling_ld2450_holds_its_coverage_zone(flip) -> None:
+    """The coverage zone's wall side is no exit for someone sitting there."""
+    geom = mounts.mount_geometry(
+        "ld2450", None, {"mount": "ceiling", "flip_room_side": flip}
+    )
+    zone = {
+        "points": [
+            {"x": round(x), "y": round(y)}
+            for x, y in mounts.coverage_zone_outline(geom)
+        ]
+    }
+    readings = _ceiling_wobble(geom)
+    assert _held_after(readings, "polygon", zone, mounts.coverage_for(geom)) is True
+
+
+def test_a_way_on_past_the_wall_line_folds_back_into_view() -> None:
+    """A walker heading across the line under the radar stays in view."""
+    geom = mounts.mount_geometry("ld2450", None, {"mount": "ceiling"})
+    coverage = mounts.coverage_for(geom)
+    assert coverage_edge_distance_mm(0, -100, coverage) == pytest.approx(
+        coverage_edge_distance_mm(0, 100, coverage)
+    )
+    zone = {"x_min": -3000, "x_max": 3000, "y_min": -3000, "y_max": 3000}
+    # Walking toward the line at 600 mm a second.
+    walk = [(0, 3000 - 600 * step) for step in range(5)]
+    tracker = HoldTracker()
+    for index, point in enumerate(walk):
+        tracker.step(float(index), [_floor_reading(0, point, 1700)], [], "rect", zone)
+    assert tracker.step(5.0, [], [], "rect", zone, coverage=coverage) is True

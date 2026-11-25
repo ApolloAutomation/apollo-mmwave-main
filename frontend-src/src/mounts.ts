@@ -37,6 +37,8 @@ export const LD2450_ELEVATION_HALF_DEG = 35;
 export const FOOTPRINT_STEPS = 24;
 /** Rows in a coverage zone: 32 points, the limit. */
 export const COVERAGE_ZONE_STEPS = 15;
+/** A coverage zone reaches this far past the wall line. */
+export const COVERAGE_ZONE_WALL_MARGIN_MM = 50;
 /** An LD2450 ceiling looks straight down. */
 export const CEILING_TILT_DEG = 90;
 
@@ -184,6 +186,8 @@ export function footprintHalfWidth(geom: MountGeometry, y: number): number {
 }
 
 const rad = (deg: number) => (deg * Math.PI) / 180;
+/** How close to Y = 0 counts as on the wall line. */
+const WALL_LINE_MM = 1e-6;
 
 /** Near and far edge out from the radar's foot. */
 function footprintBand(geom: MountGeometry): { near: number; far: number } {
@@ -207,6 +211,16 @@ export function footprintOutline(geom: MountGeometry, steps = FOOTPRINT_STEPS): 
   const left = [...rows].reverse().map((y) => ({ x: -footprintHalfWidth(geom, y), y }));
   const outline = [...right, ...left];
   return geom.flip ? outline.reverse().map((p) => ({ x: p.x, y: -p.y })) : outline;
+}
+
+/**
+ * The card's coverage zone: the outline, its wall line pushed
+ * COVERAGE_ZONE_WALL_MARGIN_MM away from the room, so someone on the
+ * line is inside however the map turns and rounds it.
+ */
+export function coverageZoneOutline(geom: MountGeometry, steps = COVERAGE_ZONE_STEPS): Point[] {
+  const out = geom.flip ? COVERAGE_ZONE_WALL_MARGIN_MM : -COVERAGE_ZONE_WALL_MARGIN_MM;
+  return footprintOutline(geom, steps).map((p) => (Math.abs(p.y) <= WALL_LINE_MM ? { x: p.x, y: out } : p));
 }
 
 /** What an LD2450 on High or Ceiling covers; undefined otherwise. */
@@ -254,18 +268,25 @@ export function outlineDistanceMm(points: Point[], x: number, y: number): number
   return best;
 }
 
-const WALL_LINE_MM = 1e-6;
 const wallSide = (a: Point, b: Point) => Math.abs(a.y) <= WALL_LINE_MM && Math.abs(b.y) <= WALL_LINE_MM;
 
 /**
  * Distance to the view's edge in mm, 0 outside. A footprint side on
  * Y = 0 is the wall line, which nobody walks out across: a point on it
- * is inside, and only the other sides count, as in hold.py.
+ * is inside, a point past it folds back across it, and only the other
+ * sides count, as in hold.py.
  */
-export function coverageEdgeDistanceMm(x: number, y: number, coverage: Coverage): number {
+export function coverageEdgeDistanceMm(x: number, yIn: number, coverage: Coverage): number {
+  let y = yIn;
   if ("outline" in coverage) {
     const points = coverage.outline;
+    if (points.length < 3) return 0;
     const sides = points.map((a, i) => [a, points[(i + 1) % points.length]] as const);
+    if (sides.some(([a, b]) => wallSide(a, b))) {
+      // Fold onto the room side; flipped outlines lie below.
+      const room = Math.max(...points.map((p) => p.y)) > WALL_LINE_MM;
+      y = room ? Math.abs(y) : -Math.abs(y);
+    }
     const onWall =
       Math.abs(y) <= WALL_LINE_MM &&
       sides.some(([a, b]) => wallSide(a, b) && Math.min(a.x, b.x) <= x && x <= Math.max(a.x, b.x));

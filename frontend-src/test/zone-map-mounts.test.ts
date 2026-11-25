@@ -4,9 +4,9 @@ import { describe, expect, it, vi } from "vitest";
 import { ZoneMapCard } from "../src/zone-map/card";
 import { ZONES_GET } from "../src/zone-map/api";
 import { CELL_MM, CellGrid } from "../src/zone-map/cells";
-import { rotateToMap } from "../src/zone-map/geometry";
+import { pointInPolygon, rotateToMap } from "../src/zone-map/geometry";
 import { formatDistance } from "../src/zone-map/format";
-import { COVERAGE_ZONE_STEPS, footprintOutline, mountGeometry } from "../src/mounts";
+import { COVERAGE_ZONE_STEPS, floorPoint, footprintOutline, mountGeometry } from "../src/mounts";
 import {
   ADMIN_ONLY_TITLE,
   CEILING_SIDE_EXPLAIN,
@@ -475,6 +475,23 @@ describe("the room tools on High and Ceiling", () => {
       expect(Math.abs(p.x - want[i].x)).toBeLessThanOrEqual(0.5);
       expect(Math.abs(p.y - want[i].y)).toBeLessThanOrEqual(0.5);
     });
+  });
+
+  it.each([0, 30])("puts someone under a flipped ceiling radar in its coverage zone, turned %s", async (turn) => {
+    const payload = { ...CEILING, flip_room_side: true, rotation_deg: turn };
+    const card = await mount(hassOf({ payload }));
+    $(card, "btnRoomZoneAdd").click();
+    await settle();
+    const zone = card.zones.find((z: any) => z.shape === "polygon");
+    const g = mountGeometry("ld2450", null, payload);
+    for (const [x, y] of [
+      [0, 1600],
+      [1000, 1700],
+    ]) {
+      const floor = floorPoint(g, x, y);
+      const at = rotateToMap(floor.x, floor.y, turn);
+      expect(pointInPolygon(at.x, at.y, zone.data)).toBe(true);
+    }
   });
 
   it("keeps the LD2460's whole-room button for its circle", async () => {

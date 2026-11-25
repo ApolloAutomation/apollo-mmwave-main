@@ -21,6 +21,7 @@
   "LD2450_ELEVATION_HALF_DEG": 35,
   "FOOTPRINT_STEPS": 24,
   "COVERAGE_ZONE_STEPS": 15,
+  "COVERAGE_ZONE_WALL_MARGIN_MM": 50,
   "CEILING_TILT_DEG": 90
  },
  "mount": [
@@ -2043,8 +2044,8 @@
    "x": 0,
    "y": -200,
    "expect": {
-    "inside": false,
-    "edge_mm": 0.0
+    "inside": true,
+    "edge_mm": 990.4
    }
   },
   {
@@ -2097,8 +2098,8 @@
    "x": 0,
    "y": 300,
    "expect": {
-    "inside": false,
-    "edge_mm": 0.0
+    "inside": true,
+    "edge_mm": 890.4
    }
   },
   {
@@ -2475,8 +2476,8 @@
    "x": 0,
    "y": -300,
    "expect": {
-    "inside": false,
-    "edge_mm": 0.0
+    "inside": true,
+    "edge_mm": 890.4
    }
   },
   {
@@ -2511,8 +2512,62 @@
    "x": 0,
    "y": 600,
    "expect": {
-    "inside": false,
-    "edge_mm": 0.0
+    "inside": true,
+    "edge_mm": 590.4
+   }
+  },
+  {
+   "geometry": {
+    "tracker": "ld2450",
+    "mount": "ceiling",
+    "source": "saved",
+    "height_mm": 2700,
+    "tilt_deg": 90,
+    "target_height_mm": 1000,
+    "dz_mm": 1700,
+    "flip": false
+   },
+   "x": 0,
+   "y": -100,
+   "expect": {
+    "inside": true,
+    "edge_mm": 1090.4
+   }
+  },
+  {
+   "geometry": {
+    "tracker": "ld2450",
+    "mount": "ceiling",
+    "source": "saved",
+    "height_mm": 2700,
+    "tilt_deg": 90,
+    "target_height_mm": 1000,
+    "dz_mm": 1700,
+    "flip": false
+   },
+   "x": 500,
+   "y": -262,
+   "expect": {
+    "inside": true,
+    "edge_mm": 928.4
+   }
+  },
+  {
+   "geometry": {
+    "tracker": "ld2450",
+    "mount": "ceiling",
+    "source": "saved",
+    "height_mm": 2700,
+    "tilt_deg": 90,
+    "target_height_mm": 1000,
+    "dz_mm": 1700,
+    "flip": true
+   },
+   "x": 0,
+   "y": 100,
+   "expect": {
+    "inside": true,
+    "edge_mm": 1090.4
    }
   }
  ],
@@ -2675,7 +2730,7 @@
    "expect": [
     [
      -2944.5,
-     -0.0
+     50.0
     ],
     [
      -2947.7,
@@ -2799,7 +2854,7 @@
     ],
     [
      2944.5,
-     -0.0
+     50.0
     ]
    ]
   }
