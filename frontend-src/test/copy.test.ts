@@ -93,6 +93,7 @@ describe("help card builders", () => {
     name: "Den",
     profile: LD2410_PROFILE,
     ld2450: false,
+    ld2460: false,
     online: true,
   };
   const ld2412: RadarDevice = {
@@ -101,6 +102,7 @@ describe("help card builders", () => {
     name: "Office",
     profile: LD2412_PROFILE,
     ld2450: true,
+    ld2460: false,
     online: true,
   };
   const zoneOnly: RadarDevice = {
@@ -108,6 +110,7 @@ describe("help card builders", () => {
     base: "apollo_mtr_1_abc123",
     name: "Hall",
     ld2450: true,
+    ld2460: false,
     online: true,
   };
   const nothingDetected: RadarDevice = {
@@ -115,6 +118,7 @@ describe("help card builders", () => {
     base: "garage_sensor",
     name: "Garage",
     ld2450: false,
+    ld2460: false,
     online: false,
   };
   const DEVICES: [string, RadarDevice][] = [
@@ -209,7 +213,7 @@ describe("the integration's name", () => {
   it("names the integration one way", () => {
     // The hardware and help card phrases keep the short name.
     const oldName =
-      /Apollo mmWave(?! Dashboard\b| sensors?\b| devices?\b| \(LD2450 tracking radar\)| with two radars)/;
+      /Apollo mmWave(?! Dashboard\b| sensors?\b| devices?\b| \(LD24[56]0 tracking radar\)| with two radars)/;
     const src = join(dirname(fileURLToPath(import.meta.url)), "..", "src");
     const files = readdirSync(src, { recursive: true, encoding: "utf8" }).filter((f) =>
       f.endsWith(".ts")
@@ -413,6 +417,19 @@ describe("zone map card copy module", () => {
    *  checked with: every case it words differently. */
   const CALLS: Record<string, unknown[][]> = {
     walkHintNext: [[1], [2], [5]],
+    lockOnToast: [[false], [true]],
+    lockOffToast: [[false], [true]],
+    lockTitle: [[false], [true]],
+    unlockTitle: [[false], [true]],
+    mountSavedToast: [["wall"], ["ceiling"]],
+    ceilingCoverageLine: [["3.5 m", false, "4.0 m"], ["13.1 ft", true, "13.1 ft"]],
+    ceilingHighNote: [["3 m"], ["9.8 ft"]],
+    ceilingRangeNote: [["2.0 m", "4.0 m"]],
+    ceilingRangeLabel: [["4 m", "13 ft"]],
+    testEdge: [["4.0 m"]],
+    testBetween: [["1.2 m", "2.8 m"]],
+    testLostEdge: [["3.9 m"]],
+    testLost: [["2.0 m"]],
     historyError: [["Home Assistant is restarting"]],
     historyClearError: [["Home Assistant is restarting"]],
     replayBadge: [["10:24:05 AM"]],

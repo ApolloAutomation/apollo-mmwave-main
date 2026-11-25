@@ -77,13 +77,59 @@ import {
   HISTORY_UNAUTHORIZED,
   HISTORY_UNREADABLE,
   HISTORY_WALK_TITLE,
+  CEILING_HEIGHT_LABEL,
+  CEILING_MIRROR_HINT,
+  CEILING_ROTATION_HINT,
+  CONE_LOCKED_HINT,
+  CONE_LOCKED_TOAST,
+  CONE_ROTATION_LABEL,
+  MAP_ROTATION_LABEL,
+  MAP_ROTATION_LOCKED_HINT,
+  MAP_ROTATION_LOCKED_TOAST,
+  MOUNT_CEILING,
+  MOUNT_CONFLICT,
+  MOUNT_LABEL,
+  MOUNT_RADAR_TITLE,
+  MOUNT_STATUS_DEFAULT,
+  MOUNT_STATUS_RADAR_CEILING,
+  MOUNT_STATUS_RADAR_WALL,
+  MOUNT_STATUS_SAVED,
+  MOUNT_STATUS_SAVED_SILENT,
+  MOUNT_WALL,
+  ROOM_CIRCLE_LABEL,
+  ROOM_SQUARE_LABEL,
+  ROOM_TOOLS_HINT,
+  ROOM_TOOLS_LABEL,
+  ROOM_ZONE_ADD_LABEL,
+  TEST_CENTER,
+  TEST_CHECK_CENTER,
+  TEST_CHECK_EDGE,
+  TEST_CROWD,
+  TEST_LABEL,
+  TEST_NOBODY,
+  TEST_TITLE,
+  TEST_WALK_TITLE,
+  WALK_HINT_NOBODY_CEILING,
+  WALK_HINT_START_CEILING,
+  ZONES_EMPTY_ROTATION_CEILING,
+  ceilingCoverageLine,
+  ceilingHighNote,
+  ceilingRangeLabel,
+  ceilingRangeNote,
+  lockOffToast,
+  lockOnToast,
+  lockTitle,
+  mountSavedToast,
+  testBetween,
+  testEdge,
+  testLost,
+  testLostEdge,
+  unlockTitle,
   HOLD_HINT,
   HOLD_IGNORE_HINT,
   HOLD_LABEL,
   HOLD_OPTIONS,
   IGNORED_SUFFIX,
-  LOCK_OFF_TOAST,
-  LOCK_ON_TOAST,
   LOCK_TITLE,
   MAP_SETTINGS_LABEL,
   MIRROR_HINT,
@@ -121,7 +167,6 @@ import {
   UNDO_LOCKED_TOAST,
   UNDO_TITLE,
   UNLOCK_LABEL,
-  UNLOCK_TITLE,
   WALK_BUTTON_TITLE,
   WALK_CANCEL,
   WALK_CANCEL_CONFIRM,
@@ -179,8 +224,19 @@ import {
   zonesFullNote,
   zoomReadout,
 } from './copy';
-import { ZONE_MAP_EDITOR_TAG, firstLd2450DeviceId } from './editor';
-import { formatHold, formatSize, zoneSize } from './format';
+import { ZONE_MAP_EDITOR_TAG, firstTrackerDeviceId } from './editor';
+import {
+  CEILING_HEIGHT,
+  LD2460_TOP_RANGE_MM,
+  ceilingRadiusMm,
+  hasLd2460Device,
+  isLd2460Pair,
+  ld2460Mount,
+  mountRule,
+  trackerOf,
+} from '../ld2460';
+import { ld2460Entities } from '../ld2460-entities';
+import { formatDistance, formatHold, formatSize, zoneSize } from './format';
 import {
   FULL_WINDOW_BACK_MS,
   FULL_WINDOW_HEADER_PX,
@@ -192,13 +248,14 @@ import {
   iconSvg,
   insideDialog,
 } from './full-window';
+import { TEST_CENTER_MM, TEST_EDGE_BAND_MM, TEST_LOST_SHOW_MS } from './ceiling';
 import { pointInZone, rotateToMap } from './geometry';
 import { decodeMovement, heatCells, positionAt, sparkBuckets, trailAt } from './history';
 import { layOutZoneLabels, placementBox } from './labels';
 import { fallbackPresenceId, presenceLook } from './presence';
 import { backingStore, logicalWidth } from './resolution';
 import { snapDecimals, snapMm, snapStepMm } from './snap';
-import { TRAIL_GAP_MS, TRAIL_MS, TrailBuffer } from './trails';
+import { LD2460_TRAIL_PAIR_MS, TRAIL_GAP_MS, TRAIL_MS, TrailBuffer } from './trails';
 import {
   ZOOM_MAX,
   ZOOM_STEP,
@@ -211,7 +268,7 @@ import {
   viewWindow,
   zoomAt,
 } from './view';
-import { WALK_AVERAGE_MS, WALK_MIN_CORNER_GAP_MM, walkShape } from './walk';
+import { WALK_AVERAGE_MS, WALK_MIN_CORNER_GAP_MM, walkOrder, walkShape } from './walk';
 
 const COLOR = Object.freeze({
   ui: {
@@ -263,6 +320,12 @@ const COLOR = Object.freeze({
     drawStrokeDark: 'rgba(255,255,255,0.75)',
     deviceConeFill: 'rgba(128, 233, 31, 0.06)',
     deviceConeStroke: 'rgba(117, 243, 33, 0.6)',
+    // Test center and edge: the edge band, alpha added when drawn.
+    testEdgeLight: '230, 145, 0',
+    testEdgeDark: '255, 193, 7',
+    testCenter: '76, 175, 80',
+    // The ceiling unit: the cone's green, opaque over the axes.
+    ceilingPuck: 'rgb(96, 196, 40)',
     // Hue says which zone it is; the fill's alpha (and the stroke's dash)
     // says whether its presence sensor is on.
     zonePalette: [
@@ -502,11 +565,13 @@ const HISTORY_SKEW_REFETCH_MS = 60000;
 // in a viewBox this many units tall.
 const HISTORY_SPARK_BUCKETS = 120;
 const HISTORY_SPARK_HEIGHT = 24;
+// Above this ceiling height (mm), the height note warns.
+const CEILING_HIGH_MM = 3000;
+// The ceiling unit drawn at the center, in CSS px.
+const PUCK_RADIUS_CSS_PX = 7;
+const PUCK_TICK_CSS_PX = 10;
 // Why a refused call failed, when Home Assistant gave no message.
 const REJECTED_REASON = 'Home Assistant rejected it.';
-
-const CONE_LOCKED_HINT = 'Locked with the map. Press Locked on the map to change it.';
-const CONE_LOCKED_TOAST = 'Cone rotation is locked. Press Locked on the map to change it.';
 
 const LOCK_STORAGE_PREFIX = 'apollo-mmwave.zone-map.lock';
 
@@ -903,6 +968,23 @@ export class ZoneMapCard extends HTMLElement {
     this.coneFovDeg = DEFAULT_CONE.fovDeg;
     this.coneAngleDeg = DEFAULT_CONE.angleDeg;
     this.coneAngleDefault = DEFAULT_CONE.angleDeg;
+    // Which cone keys the YAML sets; the others follow the radar (_syncTracker).
+    this._coneFromConfig = { yMax: false, fovDeg: false };
+    // The tracking radar and its mount, as _syncTracker last read them.
+    this._tracker = undefined;
+    this._mount = undefined;
+    this._trackerKey = '';
+    this._trackerReadFor = null;
+    this._modeSensorPresent = false;
+    // The mount and ceiling height saved under Map settings, null for none.
+    this._storedMount = null;
+    this._storedHeightMm = null;
+    // The last effective mount, so a change resets the view.
+    this._shownMount = 'wall';
+    this._heightSave = null;
+    this._heightNote = false;
+    // Test center and edge, while it is on.
+    this._test = null;
     // Drawing/UI
     this.polyMaxPoints = POLYGON_MAX_POINTS;
     this.drawMode = DRAW_MODES.RECT;
@@ -950,7 +1032,8 @@ export class ZoneMapCard extends HTMLElement {
 
   // Default stub config
   static getStubConfig(hass) {
-    return {
+    const deviceId = firstTrackerDeviceId(hass) ?? '';
+    const stub = {
       type: 'custom:apollo-radar-zone-map-card',
       // Deliberately no dark_mode key: an explicit key here would ship every
       // manually added card as a light-mode override, following the theme
@@ -970,7 +1053,7 @@ export class ZoneMapCard extends HTMLElement {
       // "device_id required" error while this was blank. Empty when no device
       // has registered LD2450 target sensors, which includes a radar whose
       // sensors are not in yet even though the editor's picker offers it.
-      device_id: firstLd2450DeviceId(hass) ?? '',
+      device_id: deviceId,
       title: '',
       // Units support: 'mm', 'cm', 'm', 'in', 'ft' converts to millimeters internally
       // Zones can be managed in-card; you can optionally pre-seed a list here:
@@ -986,6 +1069,9 @@ export class ZoneMapCard extends HTMLElement {
         angle_deg: 0,
       },
     };
+    // An LD2460's cone follows its installation mode, which a YAML cone pins.
+    if (deviceId && hasLd2460Device(hass, deviceId)) delete stub.cone;
+    return stub;
   }
 
   setConfig(config) {
@@ -1082,6 +1168,8 @@ export class ZoneMapCard extends HTMLElement {
     }
 
     this._applyGridConfig(config.grid);
+    this._syncTracker();
+    this._shownMount = this._isCeiling() ? 'ceiling' : 'wall';
     this._applyConeConfig(config.cone);
     // After the cone, which a fitted grid is drawn around. render() fits it
     // again over the zones and rotation of the last payload.
@@ -1162,6 +1250,12 @@ export class ZoneMapCard extends HTMLElement {
     // switch flipped on one radar's map says nothing about another's.
     this._storedDisplayUnits = null;
     this._viewDisplayUnits = null;
+    // Mount and height are the old radar's too.
+    this._storedMount = null;
+    this._storedHeightMm = null;
+    this._heightNote = false;
+    this._heightSave = null;
+    this._setTest(false, { draw: false });
     // The zones, their sensors and the device-wide flags are the old radar's
     // too, and the new one's first payload brings its own. A setting saved
     // on the old radar settles nothing on the new one's rows.
@@ -1205,6 +1299,7 @@ export class ZoneMapCard extends HTMLElement {
     // saves for everyone) and which controls can be used.
     const adminBefore = this._isAdmin();
     this._hass = hass;
+    this._trackerChanged();
     // The version check asks again on a new connection (version-check.ts).
     this._version?.update(hass);
     // hass is set repeatedly, several times a second while the LD2450 pushes
@@ -1356,7 +1451,9 @@ export class ZoneMapCard extends HTMLElement {
         return;
       }
       this._trails.push(slot, now, x, y);
-      readings.set(slot, { x, y, halfVanished: halfVanished(last, x, y) });
+      // The LD2460 reports a lost target as unknown, so its 0 is real.
+      const half = this._tracker !== 'ld2460' && halfVanished(last, x, y);
+      readings.set(slot, { x, y, halfVanished: half });
     });
     // A target gone right after one coordinate turned 0 left a point nobody
     // stood at, (0, old y) or (old x, 0), where its X and Y writes came in
@@ -1381,6 +1478,10 @@ export class ZoneMapCard extends HTMLElement {
     // Walk's hint and Corner here follow who is in view, and a zoomed
     // view follows the walker. The repaint after this shows both.
     this._renderWalkPanel();
+    if (this._test) {
+      this._updateTest();
+      this._renderTestPanel();
+    }
     this._followWalker();
     this._kickTrailTimer();
   }
@@ -1508,7 +1609,9 @@ export class ZoneMapCard extends HTMLElement {
    * Each live target with a reading, in mm in the radar's own frame (unit
    * converted, not rotated): `{ slot, x, y }`, where `slot` is the pair's
    * index in the tracked list. A reading that is not a number, or the (0, 0)
-   * an LD2450 reports for an empty slot, is no target.
+   * an LD2450 reports for an empty slot, is no target. An LD2460 reports an
+   * empty slot as unknown, so its (0, 0) is someone under or in front of
+   * it, as `read_point` in targets.py reads it.
    */
   _currentTargets() {
     const states = this._hass?.states;
@@ -1522,7 +1625,7 @@ export class ZoneMapCard extends HTMLElement {
       const xRaw = parseFloat(stateX.state);
       const yRaw = parseFloat(stateY.state);
       if (Number.isNaN(xRaw) || Number.isNaN(yRaw)) return;
-      if (Math.abs(xRaw) < 1e-6 && Math.abs(yRaw) < 1e-6) return;
+      if (Math.abs(xRaw) < 1e-6 && Math.abs(yRaw) < 1e-6 && !isLd2460Pair(pair)) return;
       targets.push({
         slot,
         x: xRaw * this._readingUnitFactor(stateX),
@@ -1627,6 +1730,7 @@ export class ZoneMapCard extends HTMLElement {
     this._applyRotation(config);
     this._applyMirror(config);
     this._applyDisplayUnits(config);
+    this._applyMountConfig(config);
     this._applyTrackedEntities(config);
     this._movementHistory = config.movement_history === true;
     this._deviceLabel = typeof config.label === 'string' ? config.label : null;
@@ -2049,6 +2153,34 @@ export class ZoneMapCard extends HTMLElement {
         .walk-row button { flex: 1; min-height: 48px; }
         .walk-row button:disabled { opacity: 0.5; cursor: not-allowed; }
         .walk-panel[hidden], .walk-panel [hidden] { display: none; }
+        /* Test center and edge: two pills and one line of what it sees. */
+        .test-panel { display: flex; flex-direction: column; gap: var(--zm-gap); margin: 12px 0; }
+        .test-panel[hidden] { display: none; }
+        .test-checks { display: flex; flex-wrap: wrap; gap: var(--zm-gap); }
+        .test-check { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 4px 12px; border-radius: 999px; border: 1px solid var(--divider-color); font-size: 14px; }
+        .test-check.done { border-color: var(--success-color, #4caf50); }
+        .test-message { font-size: 14px; }
+        /* Map settings' Mounted on: a segmented pair at panel size. */
+        .mount-option, .ceiling-height-option { display: flex; flex-direction: column; gap: 6px; padding: 8px 0 4px; }
+        .mount-option[hidden], .ceiling-height-option[hidden], .mount-option [hidden], .ceiling-height-option [hidden] { display: none; }
+        .mount-label { font-weight: 500; }
+        .mount-switch { display: flex; width: 100%; }
+        .mount-switch button { flex: 1; min-height: 44px; border-radius: 0; background: var(--zm-chip-bg); color: var(--zm-chip-color); border: 1px solid var(--divider-color); }
+        .mount-switch button:first-child { border-radius: 6px 0 0 6px; }
+        .mount-switch button:last-child { border-radius: 0 6px 6px 0; border-left: 0; }
+        .mount-switch button[aria-checked="true"] { background: var(--primary-color); color: ${COLOR.ui.primaryButtonText}; border-color: var(--primary-color); }
+        .container.dark .mount-switch button { background: ${COLOR.ui.darkZoneButtonBg}; color: ${COLOR.ui.darkZoneButtonText}; border-color: ${COLOR.ui.darkZoneButtonBorder}; }
+        .container.dark .mount-switch button[aria-checked="true"] { background: ${COLOR.ui.darkPrimaryButton}; color: ${COLOR.ui.overlayButtonText}; }
+        .mount-switch button:disabled { opacity: 0.6; cursor: not-allowed; }
+        @container map-side (min-width: 480px) { .mount-switch { width: auto; align-self: flex-start; } .mount-switch button { min-width: 120px; } }
+        .mount-conflict { opacity: 1; }
+        .ceiling-height-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+        #ceilingHeightInput { width: 7em; min-height: 44px; box-sizing: border-box; font-size: 16px; padding: 4px 8px; }
+        /* Whole room, under Draw shape on a ceiling map. */
+        .zone-room { display: flex; flex-wrap: wrap; align-items: center; gap: var(--zm-gap); }
+        .zone-room[hidden] { display: none; }
+        .zone-room .zone-hint { flex-basis: 100%; }
+        button.room-btn, .zone-room button { min-height: 44px; }
         /* The History chip, disabled while Walk is on. */
         #viewTools button:disabled { opacity: 0.5; cursor: not-allowed; }
         /* Walk's labeled chip, for a phone or a tablet, where 🚶 alone among
@@ -2256,6 +2388,7 @@ export class ZoneMapCard extends HTMLElement {
         <!-- Shown while expanded with the panel under the map. -->
         <div class="zone-strip" id="zoneStrip" role="group" aria-label="${ZONES_TITLE}" hidden></div>
         ${this._walkPanelTemplate()}
+        ${this._testPanelTemplate()}
         ${this._viewToolsTemplate()}
         ${this._historyPanelTemplate()}
         ${this._zonePanelTemplate()}
@@ -2265,8 +2398,29 @@ export class ZoneMapCard extends HTMLElement {
             <span class="config-caret" aria-hidden="true">${this.showConfig ? '▾' : '▸'}</span>
           </button>
           <div id="configContent" class="config-content" ${this.showConfig ? '' : 'hidden'}>
+            <!-- A radar that can go on a ceiling: _renderMapSettings shows it. -->
+            <div class="mount-option" id="mountOption" hidden>
+              <div class="mount-label" id="mountLabel">${MOUNT_LABEL}</div>
+              <div class="mount-switch" id="mountSwitch" role="radiogroup" aria-labelledby="mountLabel">
+                <button type="button" id="btnMountWall" role="radio" data-mount="wall" aria-checked="false">${MOUNT_WALL}</button>
+                <button type="button" id="btnMountCeiling" role="radio" data-mount="ceiling" aria-checked="false">${MOUNT_CEILING}</button>
+              </div>
+              <div class="map-option-hint" id="mountStatus" role="status"></div>
+              <div class="map-option-hint mount-conflict" id="mountConflict" hidden>${MOUNT_CONFLICT}</div>
+            </div>
+            <div class="ceiling-height-option" id="ceilingHeightOption" hidden>
+              <div class="ceiling-height-row">
+                <label for="ceilingHeightInput">${CEILING_HEIGHT_LABEL}</label>
+                <input type="number" id="ceilingHeightInput" inputmode="decimal" />
+                <span id="ceilingHeightUnit"></span>
+                <span class="zone-save-status" id="ceilingHeightStatus" role="status"></span>
+              </div>
+              <div class="map-option-hint" id="ceilingCoverageLine"></div>
+              <div class="map-option-hint" id="ceilingHighNote" hidden></div>
+              <div class="map-option-hint mount-conflict" id="ceilingRangeNote" hidden></div>
+            </div>
             <div class="controls" id="cone-controls">
-              <label for="coneAngleSlider">Cone rotation: </label>
+              <label for="coneAngleSlider" id="coneRotationLabel">${CONE_ROTATION_LABEL}</label>
               <input type="range" id="coneAngleSlider" min="-180" max="180" step="1" value="${this.coneAngleDeg}" />
               <span id="coneAngleLabel">${this.coneAngleDeg}°</span>
               <span id="coneMountHint" class="cone-hint">${CONE_MOUNT_HINT}</span>
@@ -2278,7 +2432,7 @@ export class ZoneMapCard extends HTMLElement {
                 <input type="checkbox" id="mirrorToggle" />
                 <span>${MIRROR_LABEL}</span>
               </label>
-              <div class="map-option-hint">${MIRROR_HINT}</div>
+              <div class="map-option-hint" id="mirrorHint">${MIRROR_HINT}</div>
               <div class="map-option-hint" id="mapOptionsNote" hidden>${ADMIN_ONLY_NOTE}</div>
               <!-- Administrators only: _renderMovementOption shows it. -->
               <div class="movement-option" id="movementOption" hidden>
@@ -2379,6 +2533,8 @@ export class ZoneMapCard extends HTMLElement {
           <button id="btnCoverage" class="zone-btn" aria-pressed="false">${COVERAGE_LABEL}</button>
           <button id="btnCoverageClear" class="zone-btn" hidden>${COVERAGE_CLEAR}</button>
           <button id="btnHistory" class="zone-btn" aria-expanded="false" aria-controls="historyPanel" hidden>${HISTORY_LABEL}</button>
+          <!-- A ceiling map's: _renderTestChip shows it. -->
+          <button id="btnTestChip" class="zone-btn" aria-pressed="false" aria-controls="testPanel" title="${TEST_TITLE}" hidden>${TEST_LABEL}</button>
         </div>
     `;
   }
@@ -2403,6 +2559,8 @@ export class ZoneMapCard extends HTMLElement {
           <div class="zone-empty" id="zoneEmpty" hidden>
             <div id="zoneEmptyText"></div>
             <div class="zone-hint" id="zoneEmptyRotation" hidden>${ZONES_EMPTY_ROTATION}</div>
+            <!-- A ceiling map's: _renderZonePanel shows it. -->
+            <button id="btnRoomZoneAdd" class="zone-btn room-btn" type="button" hidden>${ROOM_ZONE_ADD_LABEL}</button>
           </div>
           <div class="zone-hint" id="zonesFull" hidden></div>
           <div class="controls" id="zone-buttons" role="group" aria-label="${ZONES_TITLE}"></div>
@@ -2683,8 +2841,15 @@ export class ZoneMapCard extends HTMLElement {
     if (emptyBox) emptyBox.hidden = !empty;
     const emptyText = root.getElementById('zoneEmptyText');
     if (emptyText) emptyText.textContent = admin ? ZONES_EMPTY : ZONES_EMPTY_VIEWER;
+    const ceiling = this._isCeiling();
     const rotation = root.getElementById('zoneEmptyRotation');
-    if (rotation) rotation.hidden = !admin;
+    if (rotation) {
+      rotation.hidden = !admin;
+      const text = ceiling ? ZONES_EMPTY_ROTATION_CEILING : ZONES_EMPTY_ROTATION;
+      if (rotation.textContent !== text) rotation.textContent = text;
+    }
+    const room = root.getElementById('btnRoomZoneAdd');
+    if (room) room.hidden = !(admin && ceiling && empty && !full && !this.isLocked && !this._walk);
     this._renderClearAll();
   }
 
@@ -2795,6 +2960,8 @@ export class ZoneMapCard extends HTMLElement {
     this._attachConfigEvents();
     this._attachMapOptions();
     this._attachWalkPanel();
+    this._attachMountControls();
+    this._attachTest();
     this._attachViewTools();
     this._attachHistoryPanel();
     this._attachFullWindow();
@@ -2826,6 +2993,8 @@ export class ZoneMapCard extends HTMLElement {
   _attachViewTools() {
     const walk = this.shadowRoot.getElementById('btnWalkChip');
     if (walk) walk.addEventListener('click', () => this._enterWalk());
+    const room = this.shadowRoot.getElementById('btnRoomZoneAdd');
+    if (room) room.addEventListener('click', () => this._addRoomZone());
     const coverage = this.shadowRoot.getElementById('btnCoverage');
     if (coverage) coverage.addEventListener('click', () => this._setCoverage(!this._coverageOn));
     const clear = this.shadowRoot.getElementById('btnCoverageClear');
@@ -2972,6 +3141,7 @@ export class ZoneMapCard extends HTMLElement {
     }
     this._renderMovementOption();
     this._renderHistoryChip();
+    this._renderMapSettings();
   }
 
   /** Map settings' Movement history option: shown to administrators only,
@@ -3030,6 +3200,470 @@ export class ZoneMapCard extends HTMLElement {
       { withInputUnits: false },
     );
     if (!saved) this._renderMovementOption();
+  }
+
+  /** Map settings' Mounted on and Ceiling height: their wiring. */
+  _attachMountControls() {
+    ['btnMountWall', 'btnMountCeiling'].forEach((id) => {
+      const button = this.shadowRoot.getElementById(id);
+      if (button) button.addEventListener('click', () => this._chooseMount(button.dataset.mount));
+    });
+    const input = this.shadowRoot.getElementById('ceilingHeightInput');
+    if (input) input.addEventListener('change', () => this._chooseCeilingHeight(input.value));
+  }
+
+  /**
+   * Map settings as the mount in effect sets them: on an LD2460 map the
+   * Mounted on switch, what is in use and why, and on a ceiling the
+   * height; the rotation's label and hints and the flip's hint for
+   * either mount. Runs on every mount, height, unit or viewer change.
+   */
+  _renderMapSettings() {
+    const root = this.shadowRoot;
+    if (!root) return;
+    const info = this._mountInfo();
+    const ceiling = info.mount === 'ceiling';
+    const admin = this._isAdmin();
+    const option = root.getElementById('mountOption');
+    const switchable = this._tracker === 'ld2460';
+    if (option) option.hidden = !switchable;
+    if (switchable) {
+      const fromRadar = info.source === 'radar';
+      const shown = fromRadar ? info.mount : (this._storedMount ?? 'wall');
+      [
+        ['btnMountWall', 'wall'],
+        ['btnMountCeiling', 'ceiling'],
+      ].forEach(([id, mount]) => {
+        const button = root.getElementById(id);
+        if (!button) return;
+        button.setAttribute('aria-checked', shown === mount ? 'true' : 'false');
+        button.disabled = fromRadar || !admin;
+        button.title = fromRadar ? MOUNT_RADAR_TITLE : admin ? '' : ADMIN_ONLY_TITLE;
+      });
+      const status = root.getElementById('mountStatus');
+      if (status) status.textContent = this._mountStatusText(info);
+      const conflict = root.getElementById('mountConflict');
+      if (conflict) {
+        conflict.hidden = !(fromRadar && info.mount === 'wall' && this._storedMount === 'ceiling');
+      }
+    }
+    this._renderCeilingHeight(info, admin);
+    const label = root.getElementById('coneRotationLabel');
+    const labelText = ceiling ? MAP_ROTATION_LABEL : CONE_ROTATION_LABEL;
+    if (label && label.textContent !== labelText) label.textContent = labelText;
+    const hint = root.getElementById('coneMountHint');
+    if (hint) hint.textContent = ceiling ? CEILING_ROTATION_HINT : CONE_MOUNT_HINT;
+    const lockHint = root.getElementById('coneLockHint');
+    if (lockHint) lockHint.textContent = ceiling ? MAP_ROTATION_LOCKED_HINT : CONE_LOCKED_HINT;
+    const mirrorHint = root.getElementById('mirrorHint');
+    if (mirrorHint) mirrorHint.textContent = ceiling ? CEILING_MIRROR_HINT : MIRROR_HINT;
+  }
+
+  /** The line under Mounted on: what is in use, and who chose it. */
+  _mountStatusText(info) {
+    if (info.source === 'radar') {
+      return info.mount === 'ceiling' ? MOUNT_STATUS_RADAR_CEILING : MOUNT_STATUS_RADAR_WALL;
+    }
+    if (info.source === 'saved') {
+      return info.sensorPresent ? MOUNT_STATUS_SAVED_SILENT : MOUNT_STATUS_SAVED;
+    }
+    return MOUNT_STATUS_DEFAULT;
+  }
+
+  /** A length in the map's m / ft family: "2.70" m or "8.9" ft. */
+  _heightInUnit(mm) {
+    return this._unitFamily(this._displayUnit()) === 'ft'
+      ? (mm / LENGTH_UNITS.ft).toFixed(1)
+      : (mm / LENGTH_UNITS.m).toFixed(2);
+  }
+
+  /** Ceiling height: shown on a ceiling, in the map's unit, with how far
+   *  the radar sees from there and a word on a height out of range. */
+  _renderCeilingHeight(info = this._mountInfo(), admin = this._isAdmin()) {
+    const root = this.shadowRoot;
+    const box = root?.getElementById('ceilingHeightOption');
+    if (!box) return;
+    const ceiling = info.mount === 'ceiling';
+    box.hidden = !ceiling;
+    if (!ceiling) return;
+    const family = this._unitFamily(this._displayUnit());
+    const input = root.getElementById('ceilingHeightInput');
+    if (input) {
+      input.step = family === 'ft' ? '0.1' : '0.05';
+      input.min = this._heightInUnit(CEILING_HEIGHT.minMm);
+      input.max = this._heightInUnit(CEILING_HEIGHT.maxMm);
+      input.disabled = !admin;
+      input.title = admin ? '' : ADMIN_ONLY_TITLE;
+      // Someone typing keeps what they typed.
+      const value = this._heightInUnit(info.heightMm);
+      if (root.activeElement !== input && input.value !== value) input.value = value;
+    }
+    const unit = root.getElementById('ceilingHeightUnit');
+    if (unit) unit.textContent = family;
+    const status = root.getElementById('ceilingHeightStatus');
+    if (status) {
+      const save = this._heightSave;
+      status.textContent = !save
+        ? ''
+        : save.state === 'saving'
+          ? ZONE_SAVING
+          : save.state === 'saved'
+            ? ZONE_SAVED
+            : ZONE_NOT_SAVED;
+    }
+    const capped = info.radiusMm >= LD2460_TOP_RANGE_MM - 0.05;
+    const line = root.getElementById('ceilingCoverageLine');
+    if (line) {
+      line.textContent = ceilingCoverageLine(
+        formatDistance(info.radiusMm, family),
+        capped,
+        formatDistance(LD2460_TOP_RANGE_MM, family),
+      );
+    }
+    const high = root.getElementById('ceilingHighNote');
+    if (high) {
+      high.hidden = !(info.heightMm > CEILING_HIGH_MM);
+      high.textContent = ceilingHighNote(family === 'ft' ? '9.8 ft' : '3 m');
+    }
+    const range = root.getElementById('ceilingRangeNote');
+    if (range) {
+      range.hidden = !this._heightNote;
+      range.textContent = ceilingRangeNote(
+        formatDistance(CEILING_HEIGHT.minMm, family),
+        formatDistance(CEILING_HEIGHT.maxMm, family),
+      );
+    }
+  }
+
+  /**
+   * Mounted on, pressed by an administrator: save the mount for this
+   * radar's map. The map follows at once and goes back if the save is
+   * refused. A radar that reports its own mount disables the switch.
+   */
+  async _chooseMount(mount) {
+    if (mount !== 'wall' && mount !== 'ceiling') return;
+    if (!this._isAdmin() || this._tracker !== 'ld2460') return;
+    if (this._mountInfo().source === 'radar') return;
+    if (mount === (this._storedMount ?? 'wall')) return;
+    const before = this._storedMount;
+    const deviceId = this.deviceId;
+    this._storedMount = mount === 'ceiling' ? 'ceiling' : null;
+    this._trackerChanged();
+    this._renderMapSettings();
+    const saved = await this._saveZoneUpdate(
+      { device_id: deviceId, mount },
+      mountSavedToast(mount),
+      { withInputUnits: false },
+    );
+    // Another radar's map keeps its own mount.
+    if (!saved && this.deviceId === deviceId) {
+      this._storedMount = before;
+      this._trackerChanged();
+      this._renderMapSettings();
+    }
+  }
+
+  /**
+   * Ceiling height, entered by an administrator in the map's unit: saved
+   * in mm, rounded to 10 mm and clamped to the bounds, which says so. Not
+   * a number saves nothing and says what to enter.
+   */
+  async _chooseCeilingHeight(text) {
+    if (!this._isAdmin() || !this._isCeiling()) {
+      this._renderCeilingHeight();
+      return;
+    }
+    const value = parseFloat(String(text).replace(',', '.'));
+    if (!Number.isFinite(value)) {
+      this._heightNote = true;
+      this._renderCeilingHeight();
+      return;
+    }
+    const factor = this._unitFamily(this._displayUnit()) === 'ft' ? LENGTH_UNITS.ft : LENGTH_UNITS.m;
+    const rounded = Math.round((value * factor) / 10) * 10;
+    const mm = Math.min(CEILING_HEIGHT.maxMm, Math.max(CEILING_HEIGHT.minMm, rounded));
+    this._heightNote = mm !== rounded;
+    const before = this._storedHeightMm;
+    this._storedHeightMm = mm === CEILING_HEIGHT.defaultMm ? null : mm;
+    const seq = (this._heightSave?.seq ?? 0) + 1;
+    this._heightSave = { seq, state: 'saving' };
+    const input = this.shadowRoot?.getElementById('ceilingHeightInput');
+    if (input) input.value = this._heightInUnit(mm);
+    this._trackerChanged();
+    this._renderCeilingHeight();
+    const saved = await this._saveZoneUpdate(
+      { device_id: this.deviceId, ceiling_height_mm: mm },
+      null,
+      { withInputUnits: false },
+    );
+    if (this._heightSave?.seq !== seq) return;
+    this._heightSave = { seq, state: saved ? 'saved' : 'failed' };
+    if (!saved) {
+      this._storedHeightMm = before;
+      this._trackerChanged();
+    }
+    this._renderCeilingHeight();
+  }
+
+  /**
+   * Test center and edge's panel, under Walk's: a pill for each place to
+   * reach, ticked once reached, and one line saying what the radar sees,
+   * read out as it changes. _renderTestPanel fills it.
+   */
+  _testPanelTemplate() {
+    return `
+        <div class="test-panel" id="testPanel" hidden>
+          <div class="test-checks">
+            <span class="test-check" id="testCheckCenter"></span>
+            <span class="test-check" id="testCheckEdge"></span>
+          </div>
+          <div class="test-message" id="testMessage" role="status" aria-live="polite"></div>
+        </div>
+    `;
+  }
+
+  _attachTest() {
+    const chip = this.shadowRoot.getElementById('btnTestChip');
+    if (chip) chip.addEventListener('click', () => this._setTest(!this._test));
+  }
+
+  /** Turn Test center and edge on or off. Off forgets the ticks. */
+  _setTest(on, { draw = true } = {}) {
+    const next = on && this._isCeiling() && !this._viewOnly && !this._walk && !this._history?.open;
+    if (!!next === !!this._test) return;
+    clearTimeout(this._testTimer);
+    this._testTimer = null;
+    this._test = next ? { center: false, edge: false, last: null, kind: null, key: null } : null;
+    if (this._test) this._updateTest();
+    this._renderTestChip();
+    this._renderTestPanel();
+    if (draw) this.drawGrid();
+  }
+
+  /** The chip: a ceiling map's, gone while History is open and
+   *  disabled while Walk is on. */
+  _renderTestChip() {
+    const chip = this.shadowRoot?.getElementById('btnTestChip');
+    if (!chip) return;
+    const walking = !!this._walk;
+    chip.hidden = !this._isCeiling() || !!this._history?.open;
+    chip.disabled = walking;
+    chip.title = walking ? TEST_WALK_TITLE : TEST_TITLE;
+    const on = !!this._test;
+    chip.classList.toggle('active', on);
+    chip.setAttribute('aria-pressed', on ? 'true' : 'false');
+  }
+
+  /**
+   * Work out what the test says from the live targets outside the ignore
+   * zones, as presence and Walk see them, by each one's raw distance
+   * from (0, 0), which no rotation changes: nobody, a crowd,
+   * right under the radar, at the edge, in between, or lost a moment ago
+   * at the edge or inside the circle. Reaching the center or the edge
+   * ticks it for as long as the test is on.
+   */
+  _updateTest() {
+    const test = this._test;
+    if (!test) return;
+    const now = this._now();
+    const radius = this._mountInfo().radiusMm;
+    const edgeFrom = radius - TEST_EDGE_BAND_MM;
+    // Ignore zones hide targets here, as from presence.
+    const targets = this._walkTargets();
+    const family = this._unitFamily(this._displayUnit());
+    clearTimeout(this._testTimer);
+    this._testTimer = null;
+    let kind;
+    let text;
+    if (targets.length === 0) {
+      const last = test.last;
+      const age = last ? now - last.at : Infinity;
+      if (age <= TEST_LOST_SHOW_MS) {
+        const atEdge = last.d >= edgeFrom;
+        kind = atEdge ? 'lost-edge' : 'lost';
+        text = atEdge ? testLostEdge(formatDistance(last.d, family)) : testLost(formatDistance(last.d, family));
+        // Back to nobody once the loss is old news.
+        this._testTimer = setTimeout(() => {
+          this._testTimer = null;
+          this._updateTest();
+          this._renderTestPanel();
+        }, TEST_LOST_SHOW_MS - age + 50);
+      } else {
+        kind = 'nobody';
+        text = TEST_NOBODY;
+      }
+    } else if (targets.length >= 2) {
+      test.last = null;
+      kind = 'crowd';
+      text = TEST_CROWD;
+    } else {
+      const [{ x, y }] = targets;
+      const d = Math.hypot(x, y);
+      test.last = { d, at: now };
+      if (d <= TEST_CENTER_MM) {
+        kind = 'center';
+        text = TEST_CENTER;
+        test.center = true;
+      } else if (d >= edgeFrom) {
+        kind = 'edge';
+        text = testEdge(formatDistance(radius, family));
+        test.edge = true;
+      } else {
+        kind = 'between';
+        text = testBetween(formatDistance(d, family), formatDistance(radius - d, family));
+      }
+    }
+    test.kind = kind;
+    test.text = text;
+  }
+
+  /** The panel, touched only when its words or ticks changed. */
+  _renderTestPanel() {
+    const panel = this.shadowRoot?.getElementById('testPanel');
+    if (!panel) return;
+    const test = this._test;
+    if (!test) {
+      panel.hidden = true;
+      return;
+    }
+    panel.hidden = false;
+    const key = `${test.text}|${test.center}|${test.edge}`;
+    if (key === test.key && panel.dataset.filled === 'true') return;
+    test.key = key;
+    panel.dataset.filled = 'true';
+    [
+      ['testCheckCenter', TEST_CHECK_CENTER, test.center],
+      ['testCheckEdge', TEST_CHECK_EDGE, test.edge],
+    ].forEach(([id, label, done]) => {
+      const pill = this.shadowRoot.getElementById(id);
+      if (!pill) return;
+      pill.textContent = done ? `✓ ${label}` : label;
+      pill.classList.toggle('done', done);
+      pill.setAttribute('aria-label', done ? `${label}: done` : label);
+    });
+    const message = this.shadowRoot.getElementById('testMessage');
+    if (message && message.textContent !== test.text) message.textContent = test.text;
+  }
+
+  /**
+   * While the test is on: a dashed ring TEST_CENTER_MM around the spot
+   * under the radar, filled while someone stands in it, and the edge band
+   * from TEST_EDGE_BAND_MM inside the circle out to it, stronger while
+   * someone is in it. Drawn over the cone and under the zones.
+   */
+  _drawTestRings(ctx) {
+    const test = this._test;
+    if (!test || !this._isCeiling()) return;
+    const radius = Math.max(0, this.coneYMax);
+    const cx = this.valueToPixels(0, 'x');
+    const cy = this.valueToPixels(0, 'y');
+    const px = (mm) => Math.abs(this.valueToPixels(mm, 'x') - cx);
+    const scale = this._frameScale || 1;
+    const edge = this.darkMode ? COLOR.canvas.testEdgeDark : COLOR.canvas.testEdgeLight;
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, cy, px(radius), 0, Math.PI * 2);
+    ctx.arc(cx, cy, px(Math.max(0, radius - TEST_EDGE_BAND_MM)), 0, Math.PI * 2, true);
+    ctx.fillStyle = `rgba(${edge}, ${test.kind === 'edge' ? 0.35 : 0.18})`;
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(cx, cy, px(TEST_CENTER_MM), 0, Math.PI * 2);
+    if (test.kind === 'center') {
+      ctx.fillStyle = `rgba(${COLOR.canvas.testCenter}, 0.25)`;
+      ctx.fill();
+    }
+    ctx.setLineDash([6 * scale, 4 * scale]);
+    ctx.lineWidth = 2 * scale;
+    ctx.strokeStyle = COLOR.canvas.deviceConeStroke;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /**
+   * The ceiling unit at (0, 0): a disc ringed in the canvas color, with a
+   * tick toward the radar's +Y, turned with the rotation and the flip, so
+   * which way the map is turned stays in view. Sized in CSS px.
+   */
+  _drawCeilingPuck(ctx) {
+    const scale = this._frameScale || 1;
+    const { x: cx, y: cy, dirX, dirY } = this._puckFrame();
+    const r = PUCK_RADIUS_CSS_PX * scale;
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = COLOR.canvas.ceilingPuck;
+    ctx.lineWidth = 3 * scale;
+    ctx.beginPath();
+    ctx.moveTo(cx + dirX * r, cy + dirY * r);
+    ctx.lineTo(cx + dirX * (r + PUCK_TICK_CSS_PX * scale), cy + dirY * (r + PUCK_TICK_CSS_PX * scale));
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fillStyle = COLOR.canvas.ceilingPuck;
+    ctx.fill();
+    ctx.lineWidth = 2 * scale;
+    ctx.strokeStyle = this.darkMode ? COLOR.ui.darkCanvasBackground : COLOR.ui.lightCanvasBackground;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /** The puck's center in backing px and its tick's unit direction. */
+  _puckFrame() {
+    const x = this.valueToPixels(0, 'x');
+    const y = this.valueToPixels(0, 'y');
+    const facing = (this.coneAngleDeg * Math.PI) / 180;
+    // valueToPixels carries the flip and the axis directions.
+    let dirX = this.valueToPixels(1000 * Math.sin(facing), 'x') - x;
+    let dirY = this.valueToPixels(1000 * Math.cos(facing), 'y') - y;
+    const length = Math.hypot(dirX, dirY) || 1;
+    dirX /= length;
+    dirY /= length;
+    return { x, y, dirX, dirY };
+  }
+
+  /** The puck and its tick as a box (backing px), for the zone labels. */
+  _puckBox() {
+    const scale = this._frameScale || 1;
+    const { x, y } = this._puckFrame();
+    const reach = (PUCK_RADIUS_CSS_PX + PUCK_TICK_CSS_PX) * scale;
+    return { left: x - reach, right: x + reach, top: y - reach, bottom: y + reach };
+  }
+
+  /**
+   * Whole room: give zone `zoneId` the radar's whole view, as a square of
+   * ±r (the box the radar reports, which takes in the circle) or a circle
+   * of r, centered under the radar, through the commit a drawn shape takes.
+   */
+  _drawRoomShape(zoneId, shape) {
+    if (!this._isAdmin() || !this._isCeiling()) return;
+    if (this.isLocked) {
+      this._remindLocked(DRAW_LOCKED_TOAST);
+      return;
+    }
+    if (zoneId === null || zoneId === undefined || this._walk) return;
+    const r = Math.round(this._mountInfo().radiusMm);
+    const x = (v) => this._clampAndRound(v, this.xMin, this.xMax);
+    const y = (v) => this._clampAndRound(v, this.yMin, this.yMax);
+    const payload =
+      shape === 'circle'
+        ? { shape: DRAW_MODES.ELLIPSE, data: { cx: x(0), cy: y(0), rx: r, ry: r } }
+        : {
+            shape: DRAW_MODES.RECT,
+            data: { x_min: x(-r), x_max: x(r), y_min: y(-r), y_max: y(r) },
+          };
+    this._commitZoneShape(zoneId, payload);
+  }
+
+  /** Add whole-room zone: Add zone, then a circle over the room. */
+  _addRoomZone() {
+    if (!this._isAdmin() || !this._isCeiling() || this._walk) return;
+    if (this.isLocked) {
+      this._remindLocked(DRAW_LOCKED_TOAST);
+      return;
+    }
+    const next = this._nextZoneId();
+    if (next > MAX_ZONE_ID) return;
+    this._handleAddZone();
+    this._drawRoomShape(next, 'circle');
   }
 
   _attachWalkPanel() {
@@ -3106,11 +3740,12 @@ export class ZoneMapCard extends HTMLElement {
     this._walkVisible = { visible, corners, confirm };
     panel.hidden = false;
     const full = corners >= this.polyMaxPoints;
+    const ceiling = this._isCeiling();
     let hint;
     if (full) hint = WALK_HINT_FULL;
-    else if (visible === 0) hint = WALK_HINT_NOBODY;
+    else if (visible === 0) hint = ceiling ? WALK_HINT_NOBODY_CEILING : WALK_HINT_NOBODY;
     else if (visible >= 2) hint = WALK_HINT_CROWD;
-    else if (corners === 0) hint = WALK_HINT_START;
+    else if (corners === 0) hint = ceiling ? WALK_HINT_START_CEILING : WALK_HINT_START;
     else hint = walkHintNext(corners);
     const set = (id, apply) => {
       const element = this.shadowRoot.getElementById(id);
@@ -3149,6 +3784,7 @@ export class ZoneMapCard extends HTMLElement {
       return;
     }
     this._closeHistory();
+    this._setTest(false, { draw: false });
     this._disarm({ draw: false });
     this._modeBeforeWalk = this.drawMode;
     this._walk = { corners: [] };
@@ -3255,7 +3891,9 @@ export class ZoneMapCard extends HTMLElement {
       x: this._clampAndRound(p.x, this.xMin, this.xMax),
       y: this._clampAndRound(p.y, this.yMin, this.yMax),
     });
-    const result = walkShape(mapCorners, clamp, this.polyMaxPoints);
+    const result = walkShape(mapCorners, clamp, this.polyMaxPoints, {
+      aroundCenter: this._isCeiling(),
+    });
     if (result.error) {
       this._notifyThrottled(result.error === 'flat' ? WALK_FLAT_TOAST : POLY_TOO_FEW_TOAST);
       return;
@@ -3304,6 +3942,7 @@ export class ZoneMapCard extends HTMLElement {
     const open = this._history.open;
     chip.classList.toggle('active', open);
     chip.setAttribute('aria-expanded', open ? 'true' : 'false');
+    this._renderTestChip();
   }
 
   /**
@@ -3314,6 +3953,7 @@ export class ZoneMapCard extends HTMLElement {
   _openHistory() {
     const h = this._history;
     if (h.open || this._walk || !this._historyAllowed()) return;
+    this._setTest(false, { draw: false });
     this._disarm();
     h.open = true;
     this._fetchHistory();
@@ -3828,6 +4468,11 @@ export class ZoneMapCard extends HTMLElement {
     this._renderUnitSwitch();
     this._renderInfo();
     this._renderZoneSizes();
+    this._renderCeilingHeight();
+    if (this._test) {
+      this._updateTest();
+      this._renderTestPanel();
+    }
     this.drawGrid();
   }
 
@@ -3856,11 +4501,16 @@ export class ZoneMapCard extends HTMLElement {
    * other in parentheses, since the spec sheet says 6 m, then its width.
    */
   _rangeText() {
+    const [first, second] = this._rangeParts();
+    if (this._isCeiling()) return `${first} (${second}) around the radar`;
+    return `${first} (${second}), ${Math.round(this.coneFovDeg)}°`;
+  }
+
+  /** The cone's range in the map's unit, then in the other. */
+  _rangeParts() {
     const meters = `${Number((this.coneYMax / LENGTH_UNITS.m).toFixed(1))} m`;
     const feet = `${Math.round(this.coneYMax / LENGTH_UNITS.ft)} ft`;
-    const [first, second] =
-      this._unitFamily(this._displayUnit()) === 'ft' ? [feet, meters] : [meters, feet];
-    return `${first} (${second}), ${Math.round(this.coneFovDeg)}°`;
+    return this._unitFamily(this._displayUnit()) === 'ft' ? [feet, meters] : [meters, feet];
   }
 
   _attachZoneListEvents() {
@@ -4201,18 +4851,25 @@ export class ZoneMapCard extends HTMLElement {
       const dx = Math.abs(e.clientX - press.x);
       if (dx > CONE_TRY_PX && dx > Math.abs(e.clientY - press.y)) {
         press.tried = true;
-        this._remindLocked(CONE_LOCKED_TOAST);
+        this._remindLocked(this._coneLockedToast());
       }
     });
     row.addEventListener('pointerup', (e) => {
       if (!press || e.pointerId !== press.id) return;
       const { tried, y } = press;
       press = null;
-      if (!tried && Math.abs(e.clientY - y) <= CONE_TRY_PX) this._remindLocked(CONE_LOCKED_TOAST);
+      if (!tried && Math.abs(e.clientY - y) <= CONE_TRY_PX) {
+        this._remindLocked(this._coneLockedToast());
+      }
     });
     row.addEventListener('pointercancel', () => {
       press = null;
     });
+  }
+
+  /** What a try on the locked rotation slider says. */
+  _coneLockedToast() {
+    return this._isCeiling() ? MAP_ROTATION_LOCKED_TOAST : CONE_LOCKED_TOAST;
   }
 
   /**
@@ -4230,9 +4887,9 @@ export class ZoneMapCard extends HTMLElement {
       this._disarm();
       // Walk saves a zone too, so the lock ends it, corners and all.
       this._exitWalk();
-      this._notify(LOCK_ON_TOAST);
+      this._notify(lockOnToast(this._isCeiling()));
     } else {
-      this._notify(LOCK_OFF_TOAST);
+      this._notify(lockOffToast(this._isCeiling()));
     }
   }
 
@@ -4311,7 +4968,8 @@ export class ZoneMapCard extends HTMLElement {
         btnLock.innerHTML = this.isLocked
           ? '<span>Locked</span><span class="icon">🔒</span>'
           : '<span>Unlocked</span><span class="icon">🔓</span>';
-        btnLock.title = this.isLocked ? UNLOCK_TITLE : LOCK_TITLE;
+        const ceiling = this._isCeiling();
+        btnLock.title = this.isLocked ? unlockTitle(ceiling) : lockTitle(ceiling);
         this._updateCanvasCursor();
         const angleSlider = this.shadowRoot.getElementById('coneAngleSlider');
         if (angleSlider) angleSlider.disabled = this.isLocked;
@@ -4319,7 +4977,8 @@ export class ZoneMapCard extends HTMLElement {
         if (coneControls) coneControls.classList.toggle('locked', this.isLocked);
         const hint = this.shadowRoot.getElementById('coneLockHint');
         if (hint) hint.hidden = !this.isLocked;
-        this._renderClearAll();
+        // The whole-room button follows the lock.
+        this._renderZonePanel();
         this._updateCanvasTouchMode();
         // The editor's drawing hint says whether the map can be drawn on,
         // and the selected zone stands out on the map only while it can.
@@ -4486,6 +5145,11 @@ export class ZoneMapCard extends HTMLElement {
       box.yMin = Math.min(box.yMin, y);
       box.yMax = Math.max(box.yMax, y);
     });
+    if (this._isCeiling()) {
+      // A square centered on the ceiling radar, whatever the zones.
+      const half = Math.max(-box.xMin, box.xMax, -box.yMin, box.yMax);
+      Object.assign(box, { xMin: -half, xMax: half, yMin: -half, yMax: half });
+    }
     const unit = this._displayUnit();
     const facing = (this.coneAngleDeg * Math.PI) / 180;
     const stepFor = (fitted) => {
@@ -4597,11 +5261,17 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   _applyConeConfig(cone) {
-    // Same as the grid: a removed cone block or sub-key reverts to the default.
-    // The drawn angle is reset with the rest, and render() lays the store's
-    // rotation_deg back over it from the last payload.
-    this.coneYMax = DEFAULT_CONE.yMax;
-    this.coneFovDeg = DEFAULT_CONE.fovDeg;
+    // Same as the grid: a removed cone block or sub-key reverts to the default,
+    // which is the radar's own (_radarCone). The drawn angle is reset with the
+    // rest, and render() lays the store's rotation_deg back over it from the
+    // last payload.
+    const radar = this._radarCone();
+    this.coneYMax = radar.yMax;
+    this.coneFovDeg = radar.fovDeg;
+    this._coneFromConfig = {
+      yMax: !!cone && typeof cone === 'object' && cone.y_max !== undefined,
+      fovDeg: !!cone && typeof cone === 'object' && cone.fov_deg !== undefined,
+    };
     this.coneAngleDefault = DEFAULT_CONE.angleDeg;
     this.coneAngleDeg = DEFAULT_CONE.angleDeg;
     if (!cone || typeof cone !== 'object') return;
@@ -4627,6 +5297,135 @@ export class ZoneMapCard extends HTMLElement {
     }
 
     this._invalidateConeCache();
+  }
+
+  /**
+   * The cone the radar sees: a ceiling mount sees a circle as wide as its
+   * height allows (ceilingRadiusMm). A YAML cone.y_max or fov_deg pins
+   * the drawing only; zone holds use the backend's radius either way.
+   */
+  _radarCone() {
+    const info = this._mountInfo();
+    return info.mount === 'ceiling' ? { yMax: info.radiusMm, fovDeg: 360 } : DEFAULT_CONE;
+  }
+
+  /**
+   * The mount in effect, as mountRule reads it: which, who chose it
+   * (radar, saved or default), whether the radar has a mode sensor, and
+   * the ceiling height and the circle's radius in mm. While the mode
+   * sensor is unavailable the card keeps its last side or top (see
+   * _syncTracker), so a restart does not flicker; the backend has no such
+   * memory, but nothing is tracked while the radar is offline.
+   */
+  _mountInfo() {
+    const { mount, source } = mountRule(this._tracker, this._mount, this._storedMount);
+    const heightMm = this._storedHeightMm ?? CEILING_HEIGHT.defaultMm;
+    return {
+      mount,
+      source,
+      sensorPresent: this._tracker === 'ld2460' && this._modeSensorPresent,
+      heightMm,
+      radiusMm: ceilingRadiusMm(heightMm),
+    };
+  }
+
+  /** Whether the map is drawn from above. */
+  _isCeiling() {
+    return this._mountInfo().mount === 'ceiling';
+  }
+
+  /** Take the mount and ceiling height the store holds for this radar. */
+  _applyMountConfig(config) {
+    this._storedMount = config?.mount === 'ceiling' ? 'ceiling' : null;
+    const height = config?.ceiling_height_mm;
+    this._storedHeightMm =
+      Number.isInteger(height) &&
+      height >= CEILING_HEIGHT.minMm &&
+      height <= CEILING_HEIGHT.maxMm
+        ? height
+        : null;
+    this._trackerChanged();
+    this._renderMapSettings();
+  }
+
+  /**
+   * Read which tracking radar the card shows and, for an LD2460, its mount.
+   * Return whether that, or the mount and height saved for it, changed.
+   * The radar is read again only when the entity registry or the device
+   * changes; the mount on every hass.
+   */
+  _syncTracker() {
+    const hass = this._hass;
+    if (!hass || !this.deviceId) return false;
+    const read = this._trackerReadFor;
+    if (!read || read.entities !== hass.entities || read.deviceId !== this.deviceId) {
+      const tracker = trackerOf(hass, this.deviceId);
+      const modeId =
+        tracker === 'ld2460' ? ld2460Entities(hass, this.deviceId).installation_mode : undefined;
+      this._trackerReadFor = { entities: hass.entities, deviceId: this.deviceId, tracker, modeId };
+    }
+    const { tracker, modeId } = this._trackerReadFor;
+    const modeState = modeId ? hass.states?.[modeId]?.state : undefined;
+    // A restarting device keeps the mount it had.
+    const mount =
+      modeState === 'unavailable' && tracker === this._tracker
+        ? this._mount
+        : ld2460Mount(modeState);
+    const key = [
+      tracker ?? '',
+      mount ?? '',
+      modeId ? 'mode' : '',
+      this._storedMount ?? '',
+      this._storedHeightMm ?? '',
+    ].join('|');
+    if (key === this._trackerKey) return false;
+    const pairingChanged = (tracker === 'ld2460') !== (this._tracker === 'ld2460');
+    this._tracker = tracker;
+    this._mount = mount;
+    this._modeSensorPresent = !!modeId;
+    this._trackerKey = key;
+    if (pairingChanged) {
+      // The LD2460 writes both axes of a frame together: nothing waits.
+      this._trails = new TrailBuffer(tracker === 'ld2460' ? LD2460_TRAIL_PAIR_MS : undefined);
+      this._trailReadings = new Map();
+    }
+    return true;
+  }
+
+  /**
+   * After a new hass or payload: follow a new radar, mount or ceiling
+   * height with the cone, and a new mount with the view, Map settings,
+   * the lock's wording and the tools only a ceiling map has.
+   */
+  _trackerChanged() {
+    if (!this._syncTracker()) return;
+    const ceiling = this._isCeiling();
+    const mountChanged = (ceiling ? 'ceiling' : 'wall') !== this._shownMount;
+    this._shownMount = ceiling ? 'ceiling' : 'wall';
+    const radar = this._radarCone();
+    const yMax = this._coneFromConfig.yMax ? this.coneYMax : radar.yMax;
+    const fovDeg = this._coneFromConfig.fovDeg ? this.coneFovDeg : radar.fovDeg;
+    const coneChanged = yMax !== this.coneYMax || fovDeg !== this.coneFovDeg;
+    this.coneYMax = yMax;
+    this.coneFovDeg = fovDeg;
+    if (coneChanged) this._invalidateConeCache();
+    if (mountChanged && !ceiling) this._setTest(false, { draw: false });
+    this._renderMapSettings();
+    if (!this.canvas) return;
+    if (mountChanged) {
+      this._resetView();
+      this._updateLockVisual?.();
+      this._renderZonePanel();
+      this._renderZoneManager();
+      this._walkVisible = null;
+      this._renderWalkPanel();
+    }
+    this._renderTestChip();
+    this._renderTestPanel();
+    if (!coneChanged && !mountChanged) return;
+    this._refitGrid();
+    this._renderInfo();
+    this.drawGrid();
   }
 
   _clampConeAngle(angle) {
@@ -5171,6 +5970,8 @@ export class ZoneMapCard extends HTMLElement {
     this._renderWalkPanel();
     this._renderWalkChip();
     this._renderHistoryChip();
+    // Add whole-room zone hides during Walk.
+    this._renderZonePanel();
     // Walk's banner, and the entry points it hides.
     this._renderDrawBanner();
     this._renderDrawControls();
@@ -6103,7 +6904,23 @@ export class ZoneMapCard extends HTMLElement {
     drawButton.type = 'button';
     drawButton.hidden = true;
     drawButton.addEventListener('click', () => this._toggleArm(zoneId));
-    draw.append(drawText, drawButton, unlock);
+    // Whole room, on a ceiling map; _renderZoneDraw shows it.
+    const room = make('div', 'zone-room', 'zoneRoom');
+    room.hidden = true;
+    const roomLabel = make('span', 'zone-room-label');
+    roomLabel.textContent = ROOM_TOOLS_LABEL;
+    const square = make('button', 'zone-btn', 'btnRoomSquare');
+    square.type = 'button';
+    square.textContent = ROOM_SQUARE_LABEL;
+    square.addEventListener('click', () => this._drawRoomShape(zoneId, 'square'));
+    const circle = make('button', 'zone-btn', 'btnRoomCircle');
+    circle.type = 'button';
+    circle.textContent = ROOM_CIRCLE_LABEL;
+    circle.addEventListener('click', () => this._drawRoomShape(zoneId, 'circle'));
+    const roomHint = make('span', 'zone-hint');
+    roomHint.textContent = ROOM_TOOLS_HINT;
+    room.append(roomLabel, square, circle, roomHint);
+    draw.append(drawText, drawButton, unlock, room);
 
     const nameField = make('div', 'zone-field');
     const nameLabel = make('label');
@@ -6306,6 +7123,23 @@ export class ZoneMapCard extends HTMLElement {
       if (drawButton.textContent !== label) drawButton.textContent = label;
       // Primary until armed; then a quiet Cancel.
       drawButton.className = armed ? 'zone-btn' : '';
+    }
+    const room = editor.querySelector('#zoneRoom');
+    if (room) {
+      const walking = this.drawMode === DRAW_MODES.WALK;
+      room.hidden = !(
+        admin &&
+        this._isCeiling() &&
+        !this._isIgnoreZone(zoneId) &&
+        !walking &&
+        !armed &&
+        !this._replayShowing()
+      );
+      // Dimmed, not disabled, so a press can say why.
+      room.querySelectorAll('button').forEach((button) => {
+        button.classList.toggle('locked-action', this.isLocked);
+        button.setAttribute('aria-disabled', this.isLocked ? 'true' : 'false');
+      });
     }
     const callout = admin && !drawn;
     box.classList.toggle('callout', callout);
@@ -6868,6 +7702,7 @@ export class ZoneMapCard extends HTMLElement {
 
     this.drawDeviceCone(gridMetrics, ringLabels);
     this._drawRangeLabel(ctx, rangeLabel);
+    this._drawTestRings(ctx);
 
     this.drawZones({ lit: replay?.lit ?? null, labels: zoneLabels });
     this._drawInProgress();
@@ -7024,7 +7859,8 @@ export class ZoneMapCard extends HTMLElement {
    * on a phone.
    */
   _drawWalkPreview(ctx) {
-    const corners = this._walkMapCorners();
+    // Ordered as Finish will save them.
+    const corners = walkOrder(this._walkMapCorners(), this._isCeiling());
     if (corners.length < 2) return;
     const points = corners.map((c) => ({
       x: this.valueToPixels(c.x, 'x'),
@@ -7214,6 +8050,13 @@ export class ZoneMapCard extends HTMLElement {
     return markers;
   }
 
+  /** What the range label says: a cone's range, or a ceiling's coverage. */
+  _rangeLabelText() {
+    return this._isCeiling()
+      ? ceilingRangeLabel(...this._rangeParts())
+      : `Radar range ${this._rangeText()}`;
+  }
+
   /**
    * Where the "Radar range 6 m (20 ft), 120°" label goes, in canvas px, or
    * null when the card shows no distance labels or no cone.
@@ -7230,7 +8073,7 @@ export class ZoneMapCard extends HTMLElement {
   _rangeLabel(buttons = this._overlayBoxes({ notes: false })) {
     if (!this.unitDisplay || !this.canvas || !(this.coneYMax > 0)) return null;
     const label = {
-      text: `Radar range ${this._rangeText()}`,
+      text: this._rangeLabelText(),
       x: 0,
       y: 0,
       align: 'center',
@@ -7241,7 +8084,8 @@ export class ZoneMapCard extends HTMLElement {
     const height = this._mapH;
     const halfWidth = label.width / 2;
     const halfHeight = this.unitLabelSize / 2;
-    const facing = (this.coneAngleDeg * Math.PI) / 180;
+    // A circle's caption stays below it, whatever the rotation.
+    const facing = this._isCeiling() ? 0 : (this.coneAngleDeg * Math.PI) / 180;
     const arcX = this.valueToPixels(this.coneYMax * Math.sin(facing), 'x');
     const arcY = this.valueToPixels(this.coneYMax * Math.cos(facing), 'y');
     // The facing direction in canvas px, where a YAML grid can scale X and Y
@@ -7669,6 +8513,7 @@ export class ZoneMapCard extends HTMLElement {
     const obstacles = [
       ...this._overlayBoxes({ notes: true, canvasRect }),
       ...(range ? [this._labelBox(range)] : []),
+      ...(this._isCeiling() ? [this._puckBox()] : []),
     ];
     const scale = this._frameScale || 1;
     return layOutZoneLabels(items, {
@@ -8234,16 +9079,22 @@ export class ZoneMapCard extends HTMLElement {
     const ly = this.valueToPixels(L.y, 'y');
 
     // Build filled sector: apex -> left ray -> arc -> right ray -> apex
-    const segments = 48;
+    const segments = this._arcSegments(thetaEnd - thetaStart);
     const step = (thetaEnd - thetaStart) / segments;
+    // A full circle has no edges to draw from the apex.
+    const circle = this.coneFovDeg >= 360;
 
     ctx.save();
     ctx.fillStyle = COLOR.canvas.deviceConeFill;
     ctx.strokeStyle = COLOR.canvas.deviceConeStroke;
     ctx.lineWidth = 1.5;
     ctx.beginPath();
-    ctx.moveTo(ax, ay);
-    ctx.lineTo(lx, ly);
+    if (circle) {
+      ctx.moveTo(lx, ly);
+    } else {
+      ctx.moveTo(ax, ay);
+      ctx.lineTo(lx, ly);
+    }
     for (let i = 1; i <= segments; i++) {
       const ang = thetaStart + step * i;
       const pt = pAt(ang);
@@ -8251,7 +9102,7 @@ export class ZoneMapCard extends HTMLElement {
       const py = this.valueToPixels(pt.y, 'y');
       ctx.lineTo(px, py);
     }
-    ctx.lineTo(ax, ay);
+    if (!circle) ctx.lineTo(ax, ay);
     ctx.closePath();
     ctx.fill();
     ctx.stroke();
@@ -8261,6 +9112,12 @@ export class ZoneMapCard extends HTMLElement {
     if (this.unitDisplay) {
       this._drawConeRings(thetaStart, thetaEnd, radius, gridMetrics, ringLabels);
     }
+    if (this._isCeiling()) this._drawCeilingPuck(ctx);
+  }
+
+  /** Straight pieces per arc: 48 per 120°, so a circle stays round. */
+  _arcSegments(span) {
+    return Math.max(48, Math.round((48 * Math.abs(span)) / ((2 * Math.PI) / 3)));
   }
 
   _getConeRingsRenderState(thetaStart, thetaEnd, radius, gridMetrics) {
@@ -8306,7 +9163,7 @@ export class ZoneMapCard extends HTMLElement {
     const rings = [];
     const labels = [];
 
-    const segments = 48;
+    const segments = this._arcSegments(angleSpan);
     const angStep = angleSpan / segments;
     const sinStep = Math.sin(angStep);
     const cosStep = Math.cos(angStep);
@@ -9501,6 +10358,8 @@ export class ZoneMapCard extends HTMLElement {
     this._endGesture();
     this._disconnectZones();
     this._stopTrailTimer();
+    clearTimeout(this._testTimer);
+    this._testTimer = null;
     // A replay nobody can see stops, and the card comes back live.
     this._closeHistory();
     // A card further down the page may show the notice now.
@@ -9623,5 +10482,5 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: 'apollo-radar-zone-map-card',
   name: 'Apollo Zone Map',
-  description: 'Draw occupancy zones over LD2450 tracking-radar targets',
+  description: 'Draw occupancy zones over LD2450 or LD2460 tracking-radar targets',
 });

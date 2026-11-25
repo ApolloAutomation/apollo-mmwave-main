@@ -41,6 +41,9 @@ from .const import (
     ATTR_X_MIN,
     ATTR_Y_MAX,
     ATTR_Y_MIN,
+    CEILING_HEIGHT_DEFAULT_MM,
+    CEILING_HEIGHT_MAX_MM,
+    CEILING_HEIGHT_MIN_MM,
     CONF_AUTO_CREATE_VIEW,
     CONF_DASHBOARD_ID,
     CONF_DASHBOARD_URL_PATH,
@@ -56,6 +59,8 @@ from .const import (
     INPUT_UNIT_FACTORS,
     ISSUE_DASHBOARD_SAVED_COPY,
     MAX_SAFE_INT,
+    MOUNT_CEILING,
+    MOUNTS,
     POLYGON_MAX_POINTS,
     POLYGON_MIN_POINTS,
     SERVICE_UPDATE_ZONE,
@@ -65,12 +70,14 @@ from .const import (
     SHAPE_RECT,
     SIGNAL_ZONES_UPDATED,
     STORE_ALIASES,
+    STORE_CEILING_HEIGHT_MM,
     STORE_DISPLAY_UNITS,
     STORE_ENTITIES,
     STORE_HOLD_S,
     STORE_INPUT_UNITS,
     STORE_LABEL,
     STORE_MIRROR_X,
+    STORE_MOUNT,
     STORE_MOVEMENT_HISTORY,
     STORE_PREVIOUS_SHAPE,
     STORE_ZONE_TYPE,
@@ -531,7 +538,7 @@ def _resolve_target_device(
 def _apply_device_settings(
     device: dict[str, Any], call: ServiceCall, rotation: int | None
 ) -> None:
-    """Write the device-wide rotation and units, when the call sets them."""
+    """Write the device-wide rotation, units, mount and ceiling height."""
     if rotation is not None:
         device[ATTR_ROTATION_DEG] = rotation
     input_units = call.data.get("input_units")
@@ -543,6 +550,17 @@ def _apply_device_settings(
         device.pop(STORE_DISPLAY_UNITS, None)
     elif display_units is not None:
         device[STORE_DISPLAY_UNITS] = display_units
+    # Defaults are never stored, so they pop.
+    mount = call.data.get(STORE_MOUNT)
+    if mount == MOUNT_CEILING:
+        device[STORE_MOUNT] = MOUNT_CEILING
+    elif mount is not None:
+        device.pop(STORE_MOUNT, None)
+    height = call.data.get(STORE_CEILING_HEIGHT_MM)
+    if height == CEILING_HEIGHT_DEFAULT_MM:
+        device.pop(STORE_CEILING_HEIGHT_MM, None)
+    elif height is not None:
+        device[STORE_CEILING_HEIGHT_MM] = height
 
 
 def _apply_entity_pairs(device: dict[str, Any], call: ServiceCall) -> None:
@@ -684,6 +702,33 @@ def _display_units_change_something(
     return STORE_DISPLAY_UNITS in (store.devices.get(device_id) or {})
 
 
+def _mount_change_something(
+    call: ServiceCall, store: ZoneStore, device_id: str
+) -> bool:
+    """Report whether the call's mount changes the radar."""
+    mount = call.data.get(STORE_MOUNT)
+    if mount is None:
+        return False
+    if mount == MOUNT_CEILING:
+        # Ceiling counts even when already stored.
+        return True
+    # Wall only forgets a mount already stored.
+    return STORE_MOUNT in (store.devices.get(device_id) or {})
+
+
+def _height_change_something(
+    call: ServiceCall, store: ZoneStore, device_id: str
+) -> bool:
+    """Report whether the call's ceiling_height_mm changes the radar."""
+    height = call.data.get(STORE_CEILING_HEIGHT_MM)
+    if height is None:
+        return False
+    if height != CEILING_HEIGHT_DEFAULT_MM:
+        return True
+    # The default only forgets a stored height.
+    return STORE_CEILING_HEIGHT_MM in (store.devices.get(device_id) or {})
+
+
 def _flag_changes_something(
     call: ServiceCall, store: ZoneStore, device_id: str, key: str
 ) -> bool:
@@ -737,6 +782,8 @@ def _call_changes_something(
         rotation is not None
         or call.data.get("input_units") is not None
         or _display_units_change_something(call, store, device_id)
+        or _mount_change_something(call, store, device_id)
+        or _height_change_something(call, store, device_id)
         or call.data.get("clear_entities")
         or _normalize_entities(call.data.get("entities")) is not None
         or _flag_changes_something(call, store, device_id, STORE_MIRROR_X)
@@ -891,6 +938,19 @@ def _hold_seconds(value: Any) -> Any:
     return value
 
 
+def _ceiling_height(value: Any) -> int:
+    """Return a ceiling height as whole mm, refusing a bool, nan and inf."""
+    # Coercing alone would read True as 1 mm.
+    if isinstance(value, bool):
+        msg = "ceiling_height_mm is a number of millimeters, not a boolean"
+        raise vol.Invalid(msg)
+    height = _finite_float(value)
+    if height is None:
+        msg = "ceiling_height_mm is not a finite number"
+        raise vol.Invalid(msg)
+    return round(height)
+
+
 UPDATE_ZONE_SERVICE_SCHEMA = vol.All(
     # `location` is the v1 spelling, kept for one release so existing automations
     # keep working. Exactly one of the two has to be there.
@@ -924,6 +984,12 @@ UPDATE_ZONE_SERVICE_SCHEMA = vol.All(
             ),
             vol.Optional(STORE_MIRROR_X): cv.boolean,
             vol.Optional(STORE_MOVEMENT_HISTORY): cv.boolean,
+            # Device-wide; only LD2460 pairs read them.
+            vol.Optional(STORE_MOUNT): vol.In(list(MOUNTS)),
+            vol.Optional(STORE_CEILING_HEIGHT_MM): vol.All(
+                _ceiling_height,
+                vol.Range(min=CEILING_HEIGHT_MIN_MM, max=CEILING_HEIGHT_MAX_MM),
+            ),
             vol.Optional("name"): cv.string,
             vol.Optional("delete"): cv.boolean,
             vol.Optional("entities"): vol.All(

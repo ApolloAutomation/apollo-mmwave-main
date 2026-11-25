@@ -92,6 +92,13 @@ export interface ZoneConfig {
   mirror_x?: boolean;
   /** An administrator turned movement history on for this radar. */
   movement_history?: boolean;
+  /**
+   * The saved mount, or null for a wall. A radar that reports its own mount
+   * wins over it. Absent from an older backend.
+   */
+  mount?: "ceiling" | null;
+  /** The saved ceiling height in mm, or null for the default. */
+  ceiling_height_mm?: number | null;
 }
 
 /** A zone's stored geometry; shape "none" has data null. */

@@ -58,12 +58,14 @@ from .const import (
     SIGNAL_CALIBRATION_UPDATED,
     SIGNAL_ZONES_PAYLOAD,
     SIGNAL_ZONES_UPDATED,
+    STORE_CEILING_HEIGHT_MM,
     STORE_DISPLAY_UNITS,
     STORE_ENTITIES,
     STORE_HOLD_S,
     STORE_INPUT_UNITS,
     STORE_LABEL,
     STORE_MIRROR_X,
+    STORE_MOUNT,
     STORE_MOVEMENT_HISTORY,
     STORE_PREVIOUS_SHAPE,
     STORE_ZONE_TYPE,
@@ -75,6 +77,7 @@ from .ld2450 import resolve_target_pairs
 from .movement import _now_ms
 from .store import (
     device_flag,
+    device_mount,
     make_previous_shape,
     previous_shape_of,
     shape_of,
@@ -209,6 +212,9 @@ def _payload(hass: HomeAssistant, device_id: str) -> dict[str, Any]:
         # flipped left to right, and whether movement history is kept.
         STORE_MIRROR_X: device_flag(entry, STORE_MIRROR_X),
         STORE_MOVEMENT_HISTORY: device_flag(entry, STORE_MOVEMENT_HISTORY),
+        # Saved mount and height; null means the default.
+        STORE_MOUNT: device_mount(entry),
+        STORE_CEILING_HEIGHT_MM: entry.get(STORE_CEILING_HEIGHT_MM),
         # TODO(REVIEW_REPORT.md X53): resolved per subscriber.  # noqa: FIX002, TD003
         # Every subscriber re-resolves on every signal (about 66 us each). Low
         # priority now that zone edits send one signal; reusing DATA_PAIR_CACHE

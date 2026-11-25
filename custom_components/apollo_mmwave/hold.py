@@ -54,6 +54,14 @@ come from their latest write all the same (``Reading.written``): an axis
 written alone is a real report of that axis, often the last one the radar
 sends before it loses someone walking out.
 
+The LD2460 runs the same rules with the same numbers. It reports more often
+than the LD2450, which only makes the steps sparser relative to its
+cadence, so it errs toward holding; retune once there are LD2460 captures.
+It reports a lost target as unknown, never 0/0, so a 0 on one axis is a
+real position there (``HoldTracker(zero_axis_vanish=False)``), and its view
+depends on how it is mounted (``Coverage``): the LD2450's cone on a wall,
+a 4 m circle on a ceiling.
+
 The rules work on ``Reading`` objects: one tracked target as presence and the
 movement recorder see it, with its slot in the radar's pair list, its position
 in millimeters in the raw sensor frame, and the same point rotated into the
@@ -144,6 +152,21 @@ HOLD_EXIT_SAMPLE_MM = 100.0
 # from the zone's edge holds for the full hold time.
 COVERAGE_RANGE_MM = 6000.0
 COVERAGE_HALF_FOV_DEG = 60.0
+
+
+@dataclass(frozen=True, slots=True)
+class Coverage:
+    """A radar's view: how far it sees, and how far either side of ahead."""
+
+    range_mm: float
+    # 180 or more is a full circle around the radar.
+    half_fov_deg: float
+
+
+# The LD2450, and an LD2460 mounted on a wall.
+SIDE_COVERAGE = Coverage(COVERAGE_RANGE_MM, COVERAGE_HALF_FOV_DEG)
+# An LD2460 on a ceiling: X and Y each from -4 to 4 m, all around.
+LD2460_TOP_COVERAGE = Coverage(4000.0, 180.0)
 # How long the same half-vanished reading stays one: the second half lands
 # about 0.45 s after the first, and someone who really stands on an axis
 # line counts after a second.
@@ -444,7 +467,9 @@ def edge_distance_mm(shape: Any, data: Any, x: float, y: float) -> float:
     return math.inf if measure is None else measure(data, x, y)
 
 
-def coverage_edge_distance_mm(x: float, y: float) -> float:
+def coverage_edge_distance_mm(
+    x: float, y: float, coverage: Coverage = SIDE_COVERAGE
+) -> float:
     """
     Return how far a point is from the edge of the radar's view, in mm.
 
@@ -452,20 +477,24 @@ def coverage_edge_distance_mm(x: float, y: float) -> float:
     radar's rotation. 0 for a point outside the view.
     """
     distance = math.hypot(x, y)
+    if coverage.half_fov_deg >= 180:  # noqa: PLR2004 - a full circle
+        return max(0.0, coverage.range_mm - distance)
     angle = math.degrees(math.atan2(abs(x), y))
-    if distance >= COVERAGE_RANGE_MM or angle >= COVERAGE_HALF_FOV_DEG:
+    if distance >= coverage.range_mm or angle >= coverage.half_fov_deg:
         return 0.0
     return min(
-        COVERAGE_RANGE_MM - distance,
-        distance * math.sin(math.radians(COVERAGE_HALF_FOV_DEG - angle)),
+        coverage.range_mm - distance,
+        distance * math.sin(math.radians(coverage.half_fov_deg - angle)),
     )
 
 
 class HoldTracker:
     """One zone's hold: who was inside, and who is not accounted for yet."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, zero_axis_vanish: bool = True) -> None:
         """Start with nobody inside and nothing held."""
+        # Whether one axis turning 0 can be half of a vanish (LD2450).
+        self.zero_axis_vanish = zero_axis_vanish
         # Who was inside at the last evaluation that found anyone inside.
         self.occupants: dict[int, Occupant] = {}
         # Who is not yet accounted for since the zone emptied.
@@ -530,7 +559,9 @@ class HoldTracker:
         for reading in readings:
             slot = reading.slot
             flag = self._flagged.get(slot)
-            if half_vanished(self._last_raw.get(slot), reading.raw):
+            if self.zero_axis_vanish and half_vanished(
+                self._last_raw.get(slot), reading.raw
+            ):
                 flagged[slot] = (reading.raw, now)
             elif (
                 flag is not None
@@ -550,13 +581,15 @@ class HoldTracker:
         self._last_raw = {reading.slot: reading.raw for reading in readings}
         return kept
 
-    def step(
+    def step(  # noqa: PLR0913 - the view rides along
         self,
         now: float,
         inside: list[Reading],
         outside: list[Reading],
         shape: Any,
         data: Any,
+        *,
+        coverage: Coverage = SIDE_COVERAGE,
     ) -> bool:
         """Run one evaluation and report whether the zone reads on."""
         if inside:
@@ -589,7 +622,8 @@ class HoldTracker:
             self.pending = [
                 person
                 for index, person in enumerate(people)
-                if index not in matched and not self._exited(person, shape, data)
+                if index not in matched
+                and not self._exited(person, shape, data, coverage)
             ]
             return bool(self.pending)
         if not self.pending:
@@ -662,12 +696,14 @@ class HoldTracker:
             self.used_slots.add(slot)
         return matched
 
-    def _exited(self, person: Occupant, shape: Any, data: Any) -> bool:
+    def _exited(
+        self, person: Occupant, shape: Any, data: Any, coverage: Coverage
+    ) -> bool:
         # Rule 2, read at the moment the zone emptied.
         if self.empty_since is None or not person.moving_at(self.empty_since):
             return False
         return any(
             edge_distance_mm(shape, data, *point) <= HOLD_EXIT_MARGIN_MM
-            or coverage_edge_distance_mm(*raw) <= HOLD_EXIT_MARGIN_MM
+            or coverage_edge_distance_mm(*raw, coverage) <= HOLD_EXIT_MARGIN_MM
             for point, raw in person.exit_path(self.empty_since)
         )

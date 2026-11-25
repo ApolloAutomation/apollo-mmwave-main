@@ -63,6 +63,7 @@ from .targets import (
     radar_offline,
     shape_tester,
 )
+from .trackers import SIDE_COVERAGE, effective_mount, timing_for
 from .zone_entities import ZoneEntityMixin, async_setup_zone_platform
 
 if TYPE_CHECKING:
@@ -249,12 +250,18 @@ class ZonePresenceBinarySensor(ZoneEntityMixin, BinarySensorEntity):
             self._unsub_state_listener = None
 
         # Each id once: pairs can share an entity (see `pair_ids`).
-        entity_ids = pair_ids(self._tracked_pairs())
+        pairs = self._tracked_pairs()
+        entity_ids = pair_ids(pairs)
         if entity_ids != self._paired_ids:
             # A slot is a position in the pair list, so under a new list the
             # same number can name another target.
             self._paired_ids = entity_ids
             self._pairer.reset()
+            timing = timing_for(pairs)
+            if timing != self._pairer.timing:
+                # Another radar's pairs: its own wait and vanish rule.
+                self._pairer = ReadingPairer(timing)
+                self._hold = HoldTracker(zero_axis_vanish=timing.zero_axis_vanish)
         if entity_ids:
             self._unsub_state_listener = async_track_state_change_event(
                 self.hass, entity_ids, self._handle_coordinate_update
@@ -374,8 +381,21 @@ class ZonePresenceBinarySensor(ZoneEntityMixin, BinarySensorEntity):
         outside: list[Reading] = []
         for reading in self._hold.usable(readings, now):
             (inside if tester(*reading.map, data) else outside).append(reading)
+        view = SIDE_COVERAGE
+        if not inside and self._hold.occupants:
+            from . import get_store  # noqa: PLC0415 - avoid a module import cycle
+
+            # Read afresh at each emptying, so changes need no reload.
+            view = effective_mount(
+                self.hass,
+                self._device_id,
+                self._tracked_pairs(),
+                get_store(self.hass).devices.get(self._device_id),
+            ).coverage
         return (
-            self._hold.step(now, inside, outside, zone_def.get(ATTR_SHAPE), data),
+            self._hold.step(
+                now, inside, outside, zone_def.get(ATTR_SHAPE), data, coverage=view
+            ),
             inside,
         )
 

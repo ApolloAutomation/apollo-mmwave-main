@@ -11,6 +11,9 @@ import pytest
 
 from custom_components.apollo_mmwave.hold import (
     HOLD_FIRST_SEEN_S,
+    LD2460_TOP_COVERAGE,
+    SIDE_COVERAGE,
+    Coverage,
     HoldTracker,
     Occupant,
     Reading,
@@ -18,6 +21,7 @@ from custom_components.apollo_mmwave.hold import (
     edge_distance_mm,
     half_vanished,
 )
+from custom_components.apollo_mmwave.trackers import ceiling_radius_mm
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -776,3 +780,72 @@ def test_reset_forgets_everyone() -> None:
     # No good reading is left to carry for half of a vanish, and none to
     # judge the next reading by: (500, 0) is half of an appearance.
     assert tracker.usable([_reading(0, 500, 0)], 10.5) == []
+
+
+@pytest.mark.parametrize(
+    ("point", "expected"),
+    [
+        ((0, 1000), 3000),
+        ((0, -1000), 3000),
+        ((-3000, 0), 1000),
+        ((2000, -2000), 4000 - math.hypot(2000, 2000)),
+        ((0, 4000), 0),
+        ((3000, -3000), 0),
+    ],
+)
+def test_a_ceiling_ld2460_sees_a_circle(point, expected) -> None:
+    """Top mount: the view's edge is 4 m from the radar, behind it too."""
+    assert coverage_edge_distance_mm(*point, LD2460_TOP_COVERAGE) == pytest.approx(
+        expected, abs=1e-6
+    )
+
+
+@pytest.mark.parametrize(
+    "point", [(0, 1000), _polar(2000, 75), (0, 6500), (300, -200), _polar(3000, 30)]
+)
+def test_the_side_coverage_is_the_ld2450_view(point) -> None:
+    """The default view, and an LD2460 on a wall, measure as 2.4.2 did."""
+    assert coverage_edge_distance_mm(*point, SIDE_COVERAGE) == (
+        coverage_edge_distance_mm(*point)
+    )
+
+
+def test_an_ld2460_tracker_keeps_a_reading_on_an_axis_line() -> None:
+    """No half-vanish filter: the LD2460 never empties a slot as 0/0."""
+    tracker = HoldTracker(zero_axis_vanish=False)
+    first = _reading(0, 300, 1000)
+    on_axis = _reading(0, 0, 1000)
+    assert tracker.usable([first], 10.0) == [first]
+    assert tracker.usable([on_axis], 10.2) == [on_axis]
+    assert tracker.flag_expiry() is None
+    # The LD2450's tracker carries the old reading in its place.
+    ld2450 = HoldTracker()
+    ld2450.usable([first], 10.0)
+    assert ld2450.usable([on_axis], 10.2) == [dataclasses.replace(first, carried=True)]
+
+
+def test_a_ceiling_ld2460_has_no_cone_edge_to_walk_out_of() -> None:
+    """Rule 2 measures the view's edge by the coverage passed in."""
+    # Toward the wall view's right edge, far from the zone's and a ceiling's.
+    walk = [(-200 + 150 * step, 600) for step in range(8)]
+    zone = {"x_min": -3000, "x_max": 3000, "y_min": -3000, "y_max": 3000}
+
+    def held(coverage) -> bool:
+        tracker = HoldTracker(zero_axis_vanish=False)
+        for index, point in enumerate(walk):
+            tracker.step(index * STEP_S, [_reading(0, *point)], [], "rect", zone)
+        return tracker.step(len(walk) * STEP_S, [], [], "rect", zone, coverage=coverage)
+
+    assert held(SIDE_COVERAGE) is False
+    assert held(LD2460_TOP_COVERAGE) is True
+
+
+@pytest.mark.parametrize(("height_mm", "held"), [(2000, False), (2700, True)])
+def test_a_low_ceiling_brings_the_circles_edge_in(height_mm, held) -> None:
+    """At 2 m the edge is 3464 mm out, so leaving from 3.3 m is leaving."""
+    # Just seen counts as moving, from that spot.
+    zone = {"x_min": -6000, "x_max": 6000, "y_min": -6000, "y_max": 6000}
+    coverage = Coverage(ceiling_radius_mm(height_mm), 180.0)
+    tracker = HoldTracker(zero_axis_vanish=False)
+    tracker.step(0.0, [_reading(0, 0, 3300)], [], "rect", zone)
+    assert tracker.step(STEP_S, [], [], "rect", zone, coverage=coverage) is held

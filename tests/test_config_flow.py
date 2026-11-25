@@ -13,12 +13,17 @@ from homeassistant.components.lovelace.const import LOVELACE_DATA
 from homeassistant.components.lovelace.dashboard import LovelaceStorage
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers import selector
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.apollo_mmwave import frontend as apollo_frontend
-from custom_components.apollo_mmwave.config_flow import MMWAVE_MODELS
+from custom_components.apollo_mmwave.config_flow import (
+    _LISTED_PREFIXES,
+    MMWAVE_MODELS,
+)
 from custom_components.apollo_mmwave.const import (
     CONF_CREATE_DASHBOARD,
     CONF_DASHBOARD_ADMIN_ONLY,
@@ -713,3 +718,76 @@ def test_mmwave_models_match_frontend_prefixes() -> None:
         assert any(m.lower().startswith(prefix) for m in MMWAVE_MODELS), (
             f"profiles.ts prefix {prefix!r} has no MMWAVE_MODELS entry"
         )
+
+
+async def _picker_models_with(hass, config_entry) -> list[str]:
+    """Open the device picker; return the models its filter lists."""
+    await setup_integration(hass, config_entry)
+    result = await _choose(
+        hass,
+        await _open_options(hass, config_entry, OWNS_NONE_MENU),
+        "dashboard_devices",
+    )
+    fields = {str(key): value for key, value in result["data_schema"].schema.items()}
+    return [item["model"] for item in fields[CONF_DASHBOARD_DEVICES].config["filter"]]
+
+
+def _esphome_device(hass, maker: str, model: str, ids: list[str]) -> None:
+    """Register an ESPHome device and its entities."""
+    esphome_entry = MockConfigEntry(domain="esphome", title=model)
+    esphome_entry.add_to_hass(hass)
+    device = dr.async_get(hass).async_get_or_create(
+        config_entry_id=esphome_entry.entry_id,
+        identifiers={("esphome", f"{maker}-{model}")},
+        manufacturer=maker,
+        model=model,
+    )
+    for entity_id in ids:
+        domain, _, object_id = entity_id.partition(".")
+        er.async_get(hass).async_get_or_create(
+            domain,
+            "esphome",
+            f"uid_{model}_{object_id}",
+            device_id=device.id,
+            suggested_object_id=object_id,
+        )
+
+
+LD2460_IDS = [
+    "sensor.radar_ld2460_target_1_x",
+    "sensor.radar_ld2460_target_1_y",
+    "switch.radar_ld2412_engineering_mode",
+]
+
+
+async def test_the_picker_lists_an_unlisted_apollo_radar(hass, config_entry) -> None:
+    """Its model joins the listed ones, found by its radar entities."""
+    _esphome_device(hass, "ApolloAutomation", "XR-7", LD2460_IDS)
+    models = await _picker_models_with(hass, config_entry)
+    assert models == [*EXPECTED_PICKER_MODELS, "XR-7"]
+
+
+async def test_the_picker_leaves_out_non_radars_and_other_makers(
+    hass, config_entry
+) -> None:
+    """Another maker's radar and an Apollo device with no radar stay out."""
+    _esphome_device(hass, "Espressif", "esp32dev", LD2460_IDS)
+    _esphome_device(
+        hass,
+        "ApolloAutomation",
+        "AIR-1",
+        ["sensor.air_temperature"],
+    )
+    # A listed variant is never added twice.
+    _esphome_device(hass, "ApolloAutomation", "MSR-2", [])
+    models = await _picker_models_with(hass, config_entry)
+    assert models == list(EXPECTED_PICKER_MODELS)
+
+
+def test_listed_prefixes_match_the_frontend() -> None:
+    """The picker skips exactly the models profiles.ts lists."""
+    source = PROFILES_TS.read_text(encoding="utf-8")
+    block = re.search(r"const APOLLO_MODELS\b.*?\];", source, re.DOTALL)
+    assert block is not None
+    prefixes = re.findall(r'prefix:\s*"([^"]+)"', block.group(0))
+    assert tuple(prefixes) == _LISTED_PREFIXES

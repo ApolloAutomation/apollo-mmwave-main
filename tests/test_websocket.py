@@ -758,6 +758,34 @@ async def test_zones_subscribe_pushes_a_flip(
     assert pushed["event"]["mirror_x"] is True
 
 
+async def test_zones_payload_carries_the_saved_mount_and_height(
+    hass, hass_ws_client, init_integration, device_id
+) -> None:
+    """Both are null until saved, and a subscriber hears each change."""
+    _ = init_integration
+    client = await hass_ws_client(hass)
+    result = await _get(client, device_id)
+    assert result["mount"] is None
+    assert result["ceiling_height_mm"] is None
+
+    await _subscribe_zones(client, device_id)
+    await hass.services.async_call(
+        DOMAIN,
+        "update_zone",
+        {"device_id": device_id, "mount": "ceiling", "ceiling_height_mm": 3100},
+        blocking=True,
+    )
+    pushed = await client.receive_json()
+    assert pushed["type"] == "event"
+    assert pushed["event"]["mount"] == "ceiling"
+    assert pushed["event"]["ceiling_height_mm"] == 3100
+
+    other = await hass_ws_client(hass)
+    result = await _get(other, device_id)
+    assert result["mount"] == "ceiling"
+    assert result["ceiling_height_mm"] == 3100
+
+
 @pytest.mark.parametrize("ending", ["unsubscribe", "close", "unload"])
 async def test_zones_subscription_end_drops_both_forwarders(
     hass, hass_ws_client, init_integration, device_id, ending

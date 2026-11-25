@@ -145,6 +145,16 @@ HOLD_S_MAX = 3600
 # administrator can replay.
 STORE_MIRROR_X = "mirror_x"
 STORE_MOVEMENT_HISTORY = "movement_history"
+# Device-wide; stored only as "ceiling", absent means wall.
+STORE_MOUNT = "mount"
+MOUNT_WALL = "wall"
+MOUNT_CEILING = "ceiling"
+MOUNTS = (MOUNT_WALL, MOUNT_CEILING)
+# Floor to radar in mm; the default is never stored.
+STORE_CEILING_HEIGHT_MM = "ceiling_height_mm"
+CEILING_HEIGHT_DEFAULT_MM = 2700
+CEILING_HEIGHT_MIN_MM = 2000
+CEILING_HEIGHT_MAX_MM = 4000
 
 # Attribute / data keys. Persisted coordinates are rounded to whole mm
 ATTR_SHAPE = "shape"

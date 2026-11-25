@@ -16,6 +16,28 @@ export const LOCK_OFF_TOAST = "Drawing and cone rotation unlocked. You can edit 
 // The Locked button's tooltip, which says what a press does.
 export const LOCK_TITLE = "Lock drawing and cone rotation";
 export const UNLOCK_TITLE = "Unlock drawing and cone rotation";
+// The same four on a ceiling map, which has a map rotation, not a cone.
+export const LOCK_ON_TOAST_CEILING =
+  "Drawing and map rotation locked. Unlock the map to change them.";
+export const LOCK_OFF_TOAST_CEILING = "Drawing and map rotation unlocked. You can edit zones now.";
+export const LOCK_TITLE_CEILING = "Lock drawing and map rotation";
+export const UNLOCK_TITLE_CEILING = "Unlock drawing and map rotation";
+
+export function lockOnToast(ceiling: boolean): string {
+  return ceiling ? LOCK_ON_TOAST_CEILING : LOCK_ON_TOAST;
+}
+
+export function lockOffToast(ceiling: boolean): string {
+  return ceiling ? LOCK_OFF_TOAST_CEILING : LOCK_OFF_TOAST;
+}
+
+export function lockTitle(ceiling: boolean): string {
+  return ceiling ? LOCK_TITLE_CEILING : LOCK_TITLE;
+}
+
+export function unlockTitle(ceiling: boolean): string {
+  return ceiling ? UNLOCK_TITLE_CEILING : UNLOCK_TITLE;
+}
 export const DRAW_LOCKED_TOAST = "Unlock the map to draw zones.";
 export const CLEAR_LOCKED_TOAST = "Unlock the map to clear zones.";
 export const SELECT_ZONE_TOAST = "Select a zone first.";
@@ -38,6 +60,10 @@ export const ADD_ZONE_LABEL = "Add zone";
 export const ZONES_EMPTY = "No zones yet. Press Add zone, then drag on the map to draw it.";
 export const ZONES_EMPTY_ROTATION =
   "Is the sensor turned, or mounted in a corner? Set Cone rotation under Map settings first.";
+export const ZONES_EMPTY_ROTATION_CEILING =
+  "Set Map rotation under Map settings first, so the map lines up with the room's walls.";
+// Under the empty text on a ceiling map: one tap adds a zone over the room.
+export const ROOM_ZONE_ADD_LABEL = "Add whole-room zone";
 export const ZONES_EMPTY_VIEWER = "No zones yet. An administrator can add them.";
 // A press on the map of a radar with no zones, where nothing can be drawn.
 export const ADD_ZONE_FIRST_TOAST = "Press Add zone under the map first.";
@@ -96,6 +122,12 @@ export const DRAW_HINT_WALKING =
 
 // A drag draws only once armed for one zone.
 export const DRAW_SHAPE_LABEL = "Draw shape";
+// Under Draw shape on a ceiling map: the radar's whole view as one zone.
+export const ROOM_TOOLS_LABEL = "Whole room";
+export const ROOM_SQUARE_LABEL = "Square";
+export const ROOM_CIRCLE_LABEL = "Circle";
+export const ROOM_TOOLS_HINT =
+  "Gives this zone a square or a circle as big as the radar's coverage, centered under the radar.";
 export const REDRAW_SHAPE_LABEL = "Redraw shape";
 export const CANCEL_DRAWING_LABEL = "Cancel drawing";
 export const BANNER_CANCEL = "Cancel";
@@ -238,6 +270,10 @@ export const WALK_HINT_CROWD =
 // 3 seconds of standing still before Corner here.
 export const WALK_HINT_START =
   "Stand still in one corner of the zone for about 3 seconds, then press Corner here.";
+// The same two under a ceiling radar, which sees all around it.
+export const WALK_HINT_START_CEILING =
+  "Stand still in one corner of the room or zone for about 3 seconds, then press Corner here. Corners can be on any side of the radar.";
+export const WALK_HINT_NOBODY_CEILING = "Nobody is on the map. Walk under the radar.";
 
 /** The Walk hint once `n` corners are marked (`n` is 1 or more). */
 export function walkHintNext(n: number): string {
@@ -259,6 +295,37 @@ export const COVERAGE_TITLE =
 export const COVERAGE_CLEAR = "Clear coverage";
 export const HISTORY_LABEL = "History";
 export const HISTORY_WALK_TITLE = "Finish or cancel the walk first.";
+// Test center and edge, a ceiling map's chip: where the radar sees you.
+export const TEST_LABEL = "Test center and edge";
+export const TEST_TITLE =
+  "Check where the radar sees you: right under it, and at the edge of its circle";
+export const TEST_WALK_TITLE = "Finish or cancel the walk first.";
+export const TEST_CHECK_CENTER = "Right under the radar";
+export const TEST_CHECK_EDGE = "At the edge";
+export const TEST_NOBODY = "Nobody is in view. Walk under the radar to start.";
+export const TEST_CROWD =
+  "More than one person is in view. Only the person testing should be in the room.";
+export const TEST_CENTER = "You are right under the radar. It sees you here.";
+
+/** At the circle's edge, `radius` out from under the radar. */
+export function testEdge(radius: string): string {
+  return `You are at the edge of what the radar sees, about ${radius} out. Leaving from here counts as leaving, so held zones turn off without waiting.`;
+}
+
+/** Between the center and the edge. */
+export function testBetween(distance: string, toEdge: string): string {
+  return `You are ${distance} from the spot under the radar, ${toEdge} from the edge.`;
+}
+
+/** The tester vanished at the edge. */
+export function testLostEdge(distance: string): string {
+  return `Lost you at ${distance}, at the edge. That is the end of the radar's view.`;
+}
+
+/** The tester vanished inside the circle. */
+export function testLost(distance: string): string {
+  return `Lost you at ${distance}, inside the circle. Something may block the view there, or you stood still too long.`;
+}
 // The zoom buttons over the map's lower right corner. A label is also its
 // button's tooltip, but for + (ZOOM_IN_TITLE, which names the gestures).
 // Fit's says what the next press does: fit the zones, or, once they fill
@@ -297,6 +364,63 @@ export function fullWindowLabel(title: string): string {
 }
 
 export const MIRROR_LABEL = "Flip the map left to right (display only)";
+// Map settings' first block on a radar that can go on a ceiling.
+export const MOUNT_LABEL = "Mounted on";
+export const MOUNT_WALL = "Wall";
+export const MOUNT_CEILING = "Ceiling";
+export const MOUNT_RADAR_TITLE = "The radar reports how it is mounted, so it sets this.";
+export const MOUNT_STATUS_RADAR_CEILING = "In use: Ceiling. The radar reports a ceiling mount.";
+export const MOUNT_STATUS_RADAR_WALL = "In use: Wall. The radar reports a wall mount.";
+export const MOUNT_STATUS_SAVED =
+  "In use: Ceiling, as chosen here. The radar does not report how it is mounted.";
+// The radar has the report but has not given it.
+export const MOUNT_STATUS_SAVED_SILENT =
+  "In use: Ceiling, as chosen here. The radar has not reported how it is mounted yet.";
+export const MOUNT_STATUS_DEFAULT =
+  "In use: Wall, the default. Choose Ceiling if the sensor is on the ceiling.";
+export const MOUNT_CONFLICT =
+  "Ceiling was chosen here, but the radar reports a wall mount, and the radar's report is used.";
+
+/** After the mount switch saved. */
+export function mountSavedToast(mount: string): string {
+  return `Map set to a ${mount === "ceiling" ? "ceiling" : "wall"} mount`;
+}
+
+export const CEILING_HEIGHT_LABEL = "Ceiling height";
+
+/** How far a ceiling radar sees at its height; `capped` once at its most. */
+export function ceilingCoverageLine(radius: string, capped: boolean, max: string): string {
+  return capped
+    ? `The radar covers up to ${radius} out from the spot under it, its most.`
+    : `At this height the radar covers about ${radius} out from the spot under it. Mounted higher, it covers up to ${max}.`;
+}
+
+/** Above 3 m; `unitText` is "3 m" or "9.8 ft". */
+export function ceilingHighNote(unitText: string): string {
+  return `Above ${unitText}, people far from the center may be missed. 2.5 to 3 m (8.2 to 9.8 ft) works best.`;
+}
+
+/** A height that is not a number, or out of bounds. */
+export function ceilingRangeNote(min: string, max: string): string {
+  return `Enter a height from ${min} to ${max}.`;
+}
+
+/** The range label on a ceiling map: "Coverage 4 m (13 ft) around the radar". */
+export function ceilingRangeLabel(first: string, second: string): string {
+  return `Coverage ${first} (${second}) around the radar`;
+}
+
+// The rotation slider's label: a cone on a wall, the map on a ceiling.
+export const CONE_ROTATION_LABEL = "Cone rotation: ";
+export const MAP_ROTATION_LABEL = "Map rotation: ";
+// Under the slider while the map is locked, and a try on it.
+export const CONE_LOCKED_HINT = "Locked with the map. Press Locked on the map to change it.";
+export const CONE_LOCKED_TOAST = "Cone rotation is locked. Press Locked on the map to change it.";
+export const MAP_ROTATION_LOCKED_HINT = "Locked with the map. Press Locked on the map to change it.";
+export const MAP_ROTATION_LOCKED_TOAST =
+  "Map rotation is locked. Press Locked on the map to change it.";
+export const CEILING_ROTATION_HINT =
+  "Turn the map until its grid lines up with the room's walls. Zones match the room only while the sensor stays mounted that way.";
 // Under Cone rotation. Nothing on the radar tells the map how it is
 // mounted, so a unit turned on its side or picked up moves the room under
 // the zones.
@@ -307,6 +431,8 @@ export const CONE_MOUNT_HINT =
 // unturned screen, and the radar is right.
 export const MIRROR_HINT =
   "Turn this on if, with the map turned the way the room is, a dot moves the opposite way from you.";
+export const CEILING_MIRROR_HINT =
+  "Turn this on if a dot moves the opposite way from you as you walk.";
 export const MOVEMENT_LABEL = "Movement history";
 export const MOVEMENT_HINT =
   "Keeps up to 24 hours of target positions so administrators can replay them here. Backups include them. Turning it off deletes them from Home Assistant.";

@@ -31,6 +31,8 @@ in-memory shape is::
             "display_units": "ft",  # optional, "m" or "ft"; display only
             "mirror_x": True,  # optional, only ever True; display only
             "movement_history": True,  # optional, only ever True
+            "mount": "ceiling",  # optional, only ever "ceiling"; absent is wall
+            "ceiling_height_mm": 3100,  # optional, 2000 to 4000, never 2700
         },
     }
 
@@ -40,7 +42,15 @@ off, off). Zone dicts load verbatim, so a hand edit can leave anything in
 ``zone_type`` or ``hold_s``; ``zone_type_of`` and ``zone_hold_s`` read what
 the service could not have written as the default, and every reader goes
 through them. The two radar flags load only when they are exactly ``True``,
-and ``device_flag`` reads them.
+and ``device_flag`` reads them. ``mount`` loads only as exactly "ceiling" and
+``ceiling_height_mm`` only as an int from 2000 to 4000 other than 2700;
+``device_mount`` and ``ceiling_height_mm`` read them.
+
+Neither ``mount`` nor ``ceiling_height_mm`` changed STORAGE_VERSION, and it
+must stay 2: a higher major version makes every older release fail setup.
+An older release rebuilds each entry from the keys it knows, so it loads
+this file cleanly and drops both keys at its next save, which leaves the
+radar reading as a wall at the default height.
 
 ``entities`` is three-valued on purpose. Absent means the user never picked
 coordinate sensors, and readers fall back to the device's own LD2450 targets.
@@ -78,16 +88,21 @@ from .const import (
     ATTR_DATA,
     ATTR_ROTATION_DEG,
     ATTR_SHAPE,
+    CEILING_HEIGHT_DEFAULT_MM,
+    CEILING_HEIGHT_MAX_MM,
+    CEILING_HEIGHT_MIN_MM,
     DISPLAY_UNITS,
     DOMAIN,
     HOLD_S_MAX,
     INPUT_UNIT_FACTORS,
+    MOUNT_CEILING,
     PREVIOUS_REPLACED_AT,
     SHAPE_ELLIPSE,
     SHAPE_NONE,
     SHAPE_POLYGON,
     SHAPE_RECT,
     STORE_ALIASES,
+    STORE_CEILING_HEIGHT_MM,
     STORE_DEVICES,
     STORE_DISPLAY_UNITS,
     STORE_ENTITIES,
@@ -95,6 +110,7 @@ from .const import (
     STORE_INPUT_UNITS,
     STORE_LABEL,
     STORE_MIRROR_X,
+    STORE_MOUNT,
     STORE_MOVEMENT_HISTORY,
     STORE_ORPHANS,
     STORE_PREVIOUS_SHAPE,
@@ -208,6 +224,33 @@ def make_previous_shape(shape: str, data: dict[str, Any] | None) -> dict[str, An
 def device_flag(entry: Any, key: str) -> bool:
     """Report whether a radar's flag is on: entry[key] is exactly True."""
     return isinstance(entry, dict) and entry.get(key) is True
+
+
+def device_mount(entry: Any) -> str | None:
+    """Return "ceiling" when the entry stores a ceiling mount, else None."""
+    if isinstance(entry, dict) and entry.get(STORE_MOUNT) == MOUNT_CEILING:
+        return MOUNT_CEILING
+    return None
+
+
+def _stored_height(value: Any) -> int | None:
+    """Return a ceiling height the service could have stored, else None."""
+    # True is an int, but no height.
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    if not CEILING_HEIGHT_MIN_MM <= value <= CEILING_HEIGHT_MAX_MM:
+        return None
+    return None if value == CEILING_HEIGHT_DEFAULT_MM else value
+
+
+def ceiling_height_mm(entry: Any) -> int:
+    """Return the entry's ceiling height in mm, or the default."""
+    value = (
+        _stored_height(entry.get(STORE_CEILING_HEIGHT_MM))
+        if isinstance(entry, dict)
+        else None
+    )
+    return CEILING_HEIGHT_DEFAULT_MM if value is None else value
 
 
 def resolve_device_id(hass: HomeAssistant, location: str, entities: Any) -> str | None:
@@ -452,6 +495,12 @@ def _parse_entry(raw: Any, device_id: str | None = None) -> dict[str, Any] | Non
     for flag in (STORE_MIRROR_X, STORE_MOVEMENT_HISTORY):
         if raw.get(flag) is True:
             entry[flag] = True
+    # Keep only values the service could write.
+    if device_mount(raw) is not None:
+        entry[STORE_MOUNT] = MOUNT_CEILING
+    height = _stored_height(raw.get(STORE_CEILING_HEIGHT_MM))
+    if height is not None:
+        entry[STORE_CEILING_HEIGHT_MM] = height
     return entry
 
 

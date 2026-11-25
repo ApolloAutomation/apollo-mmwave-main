@@ -1,6 +1,6 @@
 update_zone:
   name: Update Zone
-  description: "Create, update, clear, or delete a zone. Geometry is in millimeters (Y-down). To clear a zone set shape: none (data may be omitted or null); data without a shape is ignored. Set delete: true to remove the zone and its entities. Rotation, tracked entities, map units, mirror_x and movement_history are device-wide and can be updated without zone_id."
+  description: "Create, update, clear, or delete a zone. Geometry is in millimeters (Y-down). To clear a zone set shape: none (data may be omitted or null); data without a shape is ignored. Set delete: true to remove the zone and its entities. Rotation, tracked entities, map units, mirror_x, movement_history, mount and ceiling_height_mm are device-wide and can be updated without zone_id."
   fields:
     device_id:
       name: Radar Device
@@ -112,6 +112,26 @@ update_zone:
       required: false
       selector:
         boolean: {}
+    mount:
+      name: Mounted On
+      description: "wall (the default) or ceiling. Sets how this radar's zone map is drawn and how zone hold times find the edge of its view. Only radars that can be mounted on a ceiling use it, and a radar that reports its own mount overrides it. Device-wide."
+      required: false
+      selector:
+        select:
+          options:
+            - wall
+            - ceiling
+    ceiling_height_mm:
+      name: Ceiling Height
+      description: "Floor to radar, in millimeters, 2000 to 4000. It sizes the ceiling view's circle. 2700 is the default and is not stored. Device-wide."
+      required: false
+      example: 2700
+      selector:
+        number:
+          min: 2000
+          max: 4000
+          step: 10
+          unit_of_measurement: mm
     rotation_deg:
       name: Rotation Angle (deg)
       description: "Optional device rotation angle (-180..180). Positive degrees swing the device's facing direction toward its right (+X): 90 maps (x, y) to (y, -x), so a target straight ahead at (0, d) lands at (d, 0). Device-wide; if provided without zone fields, only the angle is updated for the device."

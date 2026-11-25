@@ -12,8 +12,10 @@ prefix does not break detection, and the optional trailing ``_2`` absorbs Home
 Assistant's dedup suffix. The target number sits before those dedup digits, so
 it cannot be misread as one.
 
-This is the Python twin of ``frontend-src/src/ld2450.ts``. The two regexes are
-shared, so change both together.
+This is the Python twin of ``frontend-src/src/ld2450.ts``, except that this
+side also pairs the LD2460's ``_ld2460_target_<n>_x`` / ``_y``: zones track
+either radar's targets. The TypeScript keeps them apart (``ld2460.ts``), and
+so does ``trackers.py`` here, for what differs between the two chips.
 
 The pairing rule (an X is only offered with the Y of the same target number)
 and the disabled-entity filter live only on this side. The TypeScript uses its
@@ -46,6 +48,7 @@ from .const import (
     SIGNAL_ZONES_UPDATED,
     STORE_ENTITIES,
 )
+from .trackers import LD2460_X, LD2460_Y
 
 if TYPE_CHECKING:
     from homeassistant.core import CALLBACK_TYPE, Event, HomeAssistant
@@ -54,9 +57,11 @@ if TYPE_CHECKING:
 
 # The R_PRO-1 firmware names its targets "LD2450 Target-1 X"; the MTR-1 firmware
 # names the same sensors "Target-1 X", with no chip prefix. Both end in
-# `_target_<n>_x`, so the prefix is optional rather than assumed.
-TARGET_X = re.compile(r"(?:_ld2450)?_target_(\d+)_x(?:_\d+)?$")
-TARGET_Y = re.compile(r"(?:_ld2450)?_target_(\d+)_y(?:_\d+)?$")
+# `_target_<n>_x`, so the prefix is optional rather than assumed. ESPHome's
+# ld2460 component names them "LD2460 Target-1 X": zones track those the same
+# way, and trackers.py tells the two radars apart.
+TARGET_X = re.compile(r"(?:_ld24[56]0)?_target_(\d+)_x(?:_\d+)?$")
+TARGET_Y = re.compile(r"(?:_ld24[56]0)?_target_(\d+)_y(?:_\d+)?$")
 
 
 def _is_target_sensor(entity_id: str) -> bool:
@@ -68,9 +73,16 @@ def _is_target_sensor(entity_id: str) -> bool:
 
 
 def resolve_target_pairs(hass: HomeAssistant, device_id: str) -> list[dict[str, str]]:
-    """Return the device's LD2450 X/Y sensor pairs, ordered by target number."""
-    xs: dict[int, str] = {}
-    ys: dict[int, str] = {}
+    """
+    Return the device's tracking radar X/Y pairs, ordered by target number.
+
+    One radar's alone: an LD2460's when it has any, as the card decides, so
+    stale LD2450 sensors left from an earlier build neither take a target
+    number nor pair with an LD2460 axis.
+    """
+    # Keyed by whether the id is the LD2460's.
+    xs: dict[bool, dict[int, str]] = {False: {}, True: {}}
+    ys: dict[bool, dict[int, str]] = {False: {}, True: {}}
     for entry in er.async_entries_for_device(
         er.async_get(hass), device_id, include_disabled_entities=False
     ):
@@ -80,12 +92,22 @@ def resolve_target_pairs(hass: HomeAssistant, device_id: str) -> list[dict[str, 
         if match := TARGET_X.search(object_id):
             # First writer wins: a duplicate target number is a misnamed entity,
             # and the registry's own order is the closest thing to canonical.
-            xs.setdefault(int(match.group(1)), entry.entity_id)
+            chip = LD2460_X.search(object_id) is not None
+            xs[chip].setdefault(int(match.group(1)), entry.entity_id)
         elif match := TARGET_Y.search(object_id):
-            ys.setdefault(int(match.group(1)), entry.entity_id)
+            chip = LD2460_Y.search(object_id) is not None
+            ys[chip].setdefault(int(match.group(1)), entry.entity_id)
     # A half-present target (Y disabled, say) has no drawable position, so it is
     # dropped rather than returned incomplete.
-    return [{"x": xs[n], "y": ys[n]} for n in sorted(xs) if n in ys]
+    by_chip = {
+        chip: [
+            {"x": xs[chip][n], "y": ys[chip][n]}
+            for n in sorted(xs[chip])
+            if n in ys[chip]
+        ]
+        for chip in (True, False)
+    }
+    return by_chip[True] or by_chip[False]
 
 
 def effective_target_pairs(

@@ -55,6 +55,7 @@ from custom_components.apollo_mmwave.const import (
     SERVICE_RESTORE_GATE_THRESHOLDS,
     SERVICE_UPDATE_ZONE,
     SIGNAL_ZONES_UPDATED,
+    STORE_CEILING_HEIGHT_MM,
     STORE_DEVICES,
     STORE_DISPLAY_UNITS,
     STORE_ENTITIES,
@@ -62,6 +63,7 @@ from custom_components.apollo_mmwave.const import (
     STORE_INPUT_UNITS,
     STORE_LABEL,
     STORE_MIRROR_X,
+    STORE_MOUNT,
     STORE_MOVEMENT_HISTORY,
     STORE_ORPHANS,
     STORE_ZONE_TYPE,
@@ -3061,3 +3063,84 @@ async def test_rejected_geometry_records_the_previous_shape(
         "data": None,
         "previous_shape": previous("rect", RECT, replaced_at),
     }
+
+
+async def _changes(hass, device_id: str, fields: dict[str, Any]) -> tuple[int, int]:
+    """Call update_zone; return how many events and zone signals it sent."""
+    events = []
+    signals = []
+    hass.bus.async_listen(EVENT_ZONE_UPDATED, events.append)
+    unsub = async_dispatcher_connect(hass, SIGNAL_ZONES_UPDATED, signals.append)
+    await _update_zone(hass, {"device_id": device_id, **fields})
+    unsub()
+    return len(events), len(signals)
+
+
+async def test_a_ceiling_mount_is_stored_and_wall_forgets_it(
+    hass, init_integration, device_id
+) -> None:
+    """Ceiling stores the key and counts every time; wall pops it."""
+    _ = init_integration
+    assert await _changes(hass, device_id, {STORE_MOUNT: "ceiling"}) == (1, 1)
+    assert get_store(hass).devices[device_id][STORE_MOUNT] == "ceiling"
+    assert await _changes(hass, device_id, {STORE_MOUNT: "ceiling"}) == (1, 1)
+
+    assert await _changes(hass, device_id, {STORE_MOUNT: "wall"}) == (1, 1)
+    assert STORE_MOUNT not in get_store(hass).devices[device_id]
+
+
+async def test_wall_with_nothing_saved_changes_nothing(
+    hass, init_integration, device_id, caplog
+) -> None:
+    """Forgetting a mount that was never saved mints no store entry."""
+    _ = init_integration
+    assert await _changes(hass, device_id, {STORE_MOUNT: "wall"}) == (0, 0)
+    assert device_id not in get_store(hass).devices
+    assert "carried nothing to change" in caplog.text
+
+
+async def test_a_ceiling_height_is_stored_and_the_default_forgets_it(
+    hass, init_integration, device_id, caplog
+) -> None:
+    """2700 is never stored: it pops a height, or changes nothing."""
+    _ = init_integration
+    assert await _changes(hass, device_id, {STORE_CEILING_HEIGHT_MM: 2700}) == (0, 0)
+    assert device_id not in get_store(hass).devices
+    assert "carried nothing to change" in caplog.text
+
+    assert await _changes(hass, device_id, {STORE_CEILING_HEIGHT_MM: 3100}) == (1, 1)
+    assert get_store(hass).devices[device_id][STORE_CEILING_HEIGHT_MM] == 3100
+
+    assert await _changes(hass, device_id, {STORE_CEILING_HEIGHT_MM: 2700}) == (1, 1)
+    assert STORE_CEILING_HEIGHT_MM not in get_store(hass).devices[device_id]
+
+    await _update_zone(hass, {"device_id": device_id, STORE_CEILING_HEIGHT_MM: 2345.6})
+    assert get_store(hass).devices[device_id][STORE_CEILING_HEIGHT_MM] == 2346
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(2000, 2000), (4000, 4000), ("3100", 3100), (2345.6, 2346), (1999.6, 2000)],
+)
+def test_ceiling_height_schema_accepts(value, expected) -> None:
+    """Whole mm from 2000 to 4000, rounded before the range check."""
+    validated = UPDATE_ZONE_SERVICE_SCHEMA(
+        {"device_id": "abc", STORE_CEILING_HEIGHT_MM: value}
+    )
+    assert validated[STORE_CEILING_HEIGHT_MM] == expected
+
+
+@pytest.mark.parametrize(
+    "value", [1999, 4001, True, False, float("nan"), float("inf"), "high", None]
+)
+def test_ceiling_height_schema_rejects(value) -> None:
+    """A bool, nan, inf or a height out of range is no ceiling height."""
+    with pytest.raises(vol.Invalid):
+        UPDATE_ZONE_SERVICE_SCHEMA({"device_id": "abc", STORE_CEILING_HEIGHT_MM: value})
+
+
+@pytest.mark.parametrize("mount", ["Ceiling", "top", "side", "", 1, True])
+def test_mount_schema_rejects(mount) -> None:
+    """Only wall or ceiling, not the radar's own side or top."""
+    with pytest.raises(vol.Invalid):
+        UPDATE_ZONE_SERVICE_SCHEMA({"device_id": "abc", STORE_MOUNT: mount})

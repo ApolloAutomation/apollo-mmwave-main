@@ -227,6 +227,28 @@ async def test_support_file_describes_an_r_pro_1(
     )
 
 
+async def test_an_ld2450_with_a_saved_ceiling_has_no_mount_section(
+    hass, hass_client, init_integration, rpro
+) -> None:
+    """The keys show in the store dump only; nothing reads them."""
+    await hass.services.async_call(
+        DOMAIN,
+        "update_zone",
+        {"device_id": rpro.id, "mount": "ceiling", "ceiling_height_mm": 3100},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+
+    section = _section(
+        await _support_file(hass, hass_client, init_integration), rpro.id
+    )
+
+    assert "ld2460" not in section
+    assert "ld2460" not in section["radars"]
+    assert section["zone_store"]["mount"] == "ceiling"
+    assert section["zone_store"]["ceiling_height_mm"] == 3100
+
+
 async def test_support_file_never_carries_addresses_or_network_names(
     hass, hass_client, init_integration, rpro
 ) -> None:
@@ -585,10 +607,14 @@ def test_model_radars_match_the_frontend() -> None:
             continue
         profile = re.search(r"profile:\s*(LD24\d\d)_PROFILE", row)
         ld2450 = re.search(r"ld2450:\s*(true|false)", row)
+        ld2460 = re.search(r"ld2460:\s*(true|false)", row)
         assert ld2450 is not None, row
+        assert ld2460 is not None, row
         radars = [profile.group(1).lower()] if profile else []
         if ld2450.group(1) == "true":
             radars.append("ld2450")
+        if ld2460.group(1) == "true":
+            radars.append("ld2460")
         frontend[prefix.group(1)] = radars
     assert frontend
 

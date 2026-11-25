@@ -19,9 +19,11 @@ import { entitiesForDevice } from "./entity-index";
 // dedup suffix don't break detection. The target number sits before the dedup
 // digits, so it can't be misread. The R-PRO-1 firmware names the sensors
 // "LD2450 Target-1 X"; the MTR-1 firmware names them "Target-1 X" with no chip
-// prefix, so the prefix is optional. Keep in sync with ld2450.py.
-const TARGET_X = /(?:_ld2450)?_target_(\d+)_x(?:_\d+)?$/;
-const TARGET_Y = /(?:_ld2450)?_target_(\d+)_y(?:_\d+)?$/;
+// prefix, so the prefix is optional. ld2450.py pairs the LD2460's
+// `_ld2460_target_<n>_x` too; here the lookbehind leaves those to ld2460.ts,
+// and tests/test_contracts.py keeps the rest of the two patterns equal.
+const TARGET_X = /(?<!_ld2460)(?:_ld2450)?_target_(\d+)_x(?:_\d+)?$/;
+const TARGET_Y = /(?<!_ld2460)(?:_ld2450)?_target_(\d+)_y(?:_\d+)?$/;
 
 /** Every LD2450 target coordinate entity of a device, paired or not (a lone
  *  X with its Y disabled still counts as radar evidence). */

@@ -55,7 +55,9 @@ from .const import (
     DATA_RESOURCE_URLS,
     DATA_STORE,
     DOMAIN,
+    MOUNT_CEILING,
     STATIC_URL_BASE,
+    STORE_CEILING_HEIGHT_MM,
     STORE_ENTITIES,
     STORE_MOVEMENT_HISTORY,
     STORE_ZONES,
@@ -66,9 +68,22 @@ from .ld2450 import resolve_target_pairs
 
 # The model table moved to models.py, which target_units.py shares. The table
 # is still read here too, by tests/test_diagnostics.py.
-from .models import APOLLO_MANUFACTURER, MODEL_RADARS, apollo_radars  # noqa: F401
-from .store import device_flag
+from .models import (  # noqa: F401
+    APOLLO_MANUFACTURER,
+    MODEL_RADARS,
+    apollo_radars,
+    device_radars,
+)
+from .store import device_flag, device_mount
 from .target_units import decision, unit_picked
+from .trackers import (
+    INSTALLATION_MODE,
+    LD2450,
+    LD2460,
+    mount_for,
+    pair_tracker,
+    pairs_tracker,
+)
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -120,6 +135,8 @@ _VERSION_SENSORS = {
 _ZONE_TYPE = _suffix("zone_type")
 _MULTI_TARGET_TRACKING = _suffix("multi_target_tracking")
 _RSSI = _suffix("rssi")
+# "LD2460 Presence Target Count", or the component's own name.
+_LD2460_TARGET_COUNT = re.compile(r"(?:^|_)ld2460_(?:presence_)?target_count(?:_\d+)?$")
 
 
 def _find(
@@ -184,16 +201,21 @@ def _pairs(hass: HomeAssistant, pairs: Any) -> list[dict[str, Any]]:
 
 
 def _target_pairs(
-    hass: HomeAssistant, device_id: str, zone_entry: dict[str, Any] | None
+    hass: HomeAssistant,
+    device_id: str,
+    zone_entry: dict[str, Any] | None,
+    tracker: str = LD2450,
 ) -> dict[str, Any]:
     """
     Return the pairs the radar offers and the pairs its zones track.
 
     ``tracked`` is what ``effective_target_pairs`` answers: the configured list
     when there is one (empty means the user cleared it), else the cached pairs,
-    else the radar's own. It reads the cache without filling it.
+    else the radar's own. It reads the cache without filling it. ``detected`` holds
+    ``tracker``'s pairs alone, the LD2450's or the LD2460's.
     """
-    detected = resolve_target_pairs(hass, device_id)
+    resolved = resolve_target_pairs(hass, device_id)
+    detected = [pair for pair in resolved if pair_tracker(pair) == tracker]
     configured = (zone_entry or {}).get(STORE_ENTITIES)
     if configured is not None:
         source = "configured" if configured else "cleared"
@@ -201,8 +223,10 @@ def _target_pairs(
     else:
         source = "detected"
         cache = hass.data.get(DOMAIN, {}).get(DATA_PAIR_CACHE) or {}
-        tracked = cache.get(device_id, detected)
+        tracked = cache.get(device_id, resolved)
     return {
+        # Popped by the caller: which radar the tracked pairs are.
+        "tracker": pairs_tracker(tracked),
         "source": source,
         "tracked": _pairs(hass, tracked),
         "detected": _pairs(hass, detected),
@@ -223,14 +247,52 @@ def _ld2450(
     zone_type = _find(entries, "select", _ZONE_TYPE)
     tracking = _find(entries, "switch", _MULTI_TARGET_TRACKING)
     pairs = _target_pairs(hass, device_id, zone_entry)
+    tracker = pairs.pop("tracker")
     found = bool(zone_type or tracking or pairs["detected"])
-    if not found and pairs["source"] == "detected":
+    # Pairs tracked from an LD2460 are its section's alone.
+    if not found and (pairs["source"] == "detected" or tracker == LD2460):
         return None
     return {
         "found": found,
         "zone_type": _found(hass, zone_type),
         "multi_target_tracking": _found(hass, tracking),
         "target_pairs": pairs,
+    }
+
+
+def _ld2460(
+    hass: HomeAssistant,
+    device_id: str,
+    entries: list[er.RegistryEntry],
+    zone_entry: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Return the LD2460's installation mode, target count and pairs, or None."""
+    mode = _find(entries, "sensor", INSTALLATION_MODE)
+    count = _find(entries, "sensor", _LD2460_TARGET_COUNT)
+    pairs = _target_pairs(hass, device_id, zone_entry, LD2460)
+    tracker = pairs.pop("tracker")
+    if not (mode or count or pairs["detected"]):
+        return None
+    state = hass.states.get(mode) if mode is not None else None
+    firmware = state.state if state is not None else None
+    mount = mount_for(tracker, firmware, zone_entry)
+    return {
+        "installation_mode": _found(hass, mode),
+        "target_count": _found(hass, count),
+        "target_pairs": pairs,
+        "mount": {
+            "saved": device_mount(zone_entry),
+            "firmware": firmware,
+            "effective": mount.mount,
+            "source": mount.source,
+            "ceiling_height_mm": mount.height_mm,
+            "height_saved": STORE_CEILING_HEIGHT_MM in (zone_entry or {}),
+            "coverage_radius_mm": (
+                round(mount.coverage.range_mm, 1)
+                if mount.mount == MOUNT_CEILING
+                else None
+            ),
+        },
     }
 
 
@@ -340,20 +402,30 @@ def _device(
     ld2450 = _ld2450(hass, device_id, entries, zone_entry)
     # A section can exist for configured pairs alone, on a radar without one.
     ld2450_found = bool(ld2450 and ld2450.pop("found"))
+    expected = device_radars(hass, device)
+    ld2460 = _ld2460(hass, device_id, entries, zone_entry)
+    # Only on a device with an LD2460, so every other section is unchanged.
+    ld2460_keys = (
+        {"ld2460": ld2460 is not None}
+        if ld2460 is not None or LD2460 in (expected or [])
+        else {}
+    )
     return {
         "device_id": device_id,
         "registered": device is not None,
         **(_device_info(hass, device) if device is not None else {}),
         "selected_for_dashboard": device_id in dashboard_devices,
         "radars": {
-            "expected": apollo_radars(device),
+            "expected": expected,
             "gate_radar": gate_radar["profile"] if gate_radar else None,
             "ld2450": ld2450_found,
+            **ld2460_keys,
         },
         "firmware": _firmware(hass, entries),
         "wifi_signal": _found(hass, _find(entries, "sensor", _RSSI)),
         "gate_radar": gate_radar,
         "ld2450": ld2450,
+        **({"ld2460": ld2460} if ld2460_keys else {}),
         "calibration": calibration_payload(hass, device_id),
         "zone_store": _zone_entry(zone_entry),
         # Whether history is kept and how much, never what: the count is read
@@ -396,7 +468,7 @@ def _device_ids(
         for device in dr.async_entries_for_config_entry(
             registry, esphome_entry.entry_id
         )
-        if apollo_radars(device) is not None
+        if device_radars(hass, device) is not None
     }
     if store is not None:
         ids.update(store.devices)
