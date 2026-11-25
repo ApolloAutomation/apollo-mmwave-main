@@ -68,7 +68,8 @@ from .const import DATA_MOVEMENT, DOMAIN, SIGNAL_ZONES_UPDATED, STORE_MOVEMENT_H
 from .hold import HALF_VANISH_MAX_S, half_vanished
 from .ld2450 import effective_target_pairs
 from .store import device_flag
-from .targets import AxisPairing, masked_readings, pair_ids
+from .targets import LD2450_TIMING, AxisPairing, masked_readings, pair_ids
+from .trackers import timing_for
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -460,6 +461,8 @@ class _Recorder:
         self._unsub: CALLBACK_TYPE | None = None
         self._pending: asyncio.Handle | None = None
         self._slots: dict[int, _SlotState] = {}
+        # How the radar's X and Y writes make a reading (trackers.py).
+        self._timing = LD2450_TIMING
         self._tick: CALLBACK_TYPE | None = None
         self._tick_due: int | None = None
 
@@ -469,9 +472,11 @@ class _Recorder:
 
     def retrack(self) -> None:
         """Follow the radar's pair list; a new list closes every slot first."""
-        ids = pair_ids(self._pairs())
+        pairs = self._pairs()
+        ids = pair_ids(pairs)
         if ids == self._ids and self._unsub is not None:
             return
+        self._timing = timing_for(pairs)
         # A slot is a position in the pair list, so under a new list the same
         # number can name another target.
         self._close_slots(_now_ms())
@@ -537,13 +542,20 @@ class _Recorder:
             x, y = round(reading.raw[0]), round(reading.raw[1])
             if abs(x) > MOVEMENT_MAX_ABS_MM or abs(y) > MOVEMENT_MAX_ABS_MM:
                 continue
-            state = self._slots.setdefault(reading.slot, _SlotState())
+            state = self._slots.get(reading.slot)
+            if state is None:
+                state = self._slots[reading.slot] = _SlotState(
+                    split=AxisPairing(window_ms=self._timing.window_ms)
+                )
             previous, state.seen_raw = state.seen_raw, reading.raw
             seen.add(reading.slot)
             held_since = state.half_since if reading.raw == state.half_raw else None
-            if half_vanished(previous, reading.raw) or (
-                held_since is not None
-                and mono - held_since < MOVEMENT_HALF_VANISH_MAX_MS
+            if self._timing.zero_axis_vanish and (
+                half_vanished(previous, reading.raw)
+                or (
+                    held_since is not None
+                    and mono - held_since < MOVEMENT_HALF_VANISH_MAX_MS
+                )
             ):
                 # The first of the two writes of a target vanishing (or
                 # appearing): a point nobody occupied, and not yet gone

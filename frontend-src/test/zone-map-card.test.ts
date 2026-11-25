@@ -9620,7 +9620,10 @@ describe("zone map card movement history", () => {
       "btnCoverage",
       "btnCoverageClear",
       "btnHistory",
+      "btnTestChip",
     ]);
+    // A ceiling map's chip, hidden here.
+    expect($(card, "btnTestChip").hidden).toBe(true);
     expect($(card, "viewTools").nextElementSibling.id).toBe("historyPanel");
     // Configure says it is on.
     expect($(card, "movementOption").hidden).toBe(false);

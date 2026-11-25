@@ -131,7 +131,7 @@ export interface CalibrationOptions {
 
 /** Which radar of a device the "Radar setup" card checks: its LD2450, or its
  *  gate radar (the LD2410 or LD2412, whichever its profile names). */
-export type SetupRadar = "ld2450" | "gate";
+export type SetupRadar = "ld2450" | "gate" | "ld2460";
 
 /** The "Radar setup" card: checks one device's radar settings. */
 export interface SetupCardConfig {

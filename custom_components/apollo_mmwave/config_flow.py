@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import callback
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import selector
 
 from .const import (
@@ -47,9 +48,11 @@ from .frontend import (
     async_restore_saved_copy,
     async_set_dashboard_devices,
 )
+from .models import device_radars
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
+    from homeassistant.core import HomeAssistant
 
 # The device selector matches `model` exactly, and each firmware image carries
 # its own project name (`MSR-2_BLE`, `MSR-2_Factory`), so every variant has to
@@ -69,6 +72,30 @@ MMWAVE_MODELS = (
     "R-PRO-1-W",
     "R-PRO-1-ETH",
 )
+
+
+# Lower-cased prefixes of the models listed above.
+_LISTED_PREFIXES = ("msr-1", "msr-2", "mtr-1", "r-pro-1")
+
+
+def _picker_models(hass: HomeAssistant) -> list[str]:
+    """
+    Return the models the device picker offers.
+
+    The listed models, plus the model of every ESPHome device whose radar
+    entities make it an Apollo radar (``device_radars``) though its model is
+    not listed, so new hardware can be picked as soon as it reports in.
+    """
+    registry = dr.async_get(hass)
+    found = {
+        device.model
+        for entry in hass.config_entries.async_entries("esphome")
+        for device in dr.async_entries_for_config_entry(registry, entry.entry_id)
+        if device.model
+        and not device.model.lower().startswith(_LISTED_PREFIXES)
+        and device_radars(hass, device) is not None
+    }
+    return [*MMWAVE_MODELS, *sorted(found)]
 
 
 def _ownership(dashboard_id: str | None) -> dict[str, str | None]:
@@ -295,7 +322,7 @@ class ApolloMmwaveOptionsFlow(config_entries.OptionsFlow):
                                 manufacturer="ApolloAutomation",
                                 model=model,
                             )
-                            for model in MMWAVE_MODELS
+                            for model in _picker_models(self.hass)
                         ],
                     )
                 ),
