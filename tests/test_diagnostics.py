@@ -227,17 +227,45 @@ async def test_support_file_describes_an_r_pro_1(
     )
 
 
-async def test_an_ld2450_with_a_saved_ceiling_has_no_mount_section(
+async def test_an_ld2450_shows_its_mount_and_the_settings_in_use(
     hass, hass_client, init_integration, rpro
 ) -> None:
-    """The keys show in the store dump only; nothing reads them."""
+    """Values in use with a saved flag each, and never a target reading."""
+    section = _section(
+        await _support_file(hass, hass_client, init_integration), rpro.id
+    )
+    assert section["ld2450"]["mount"] == {
+        "saved": None,
+        "effective": "wall",
+        "source": "default",
+        "mount_height_mm": 2200,
+        "mount_height_saved": False,
+        "ceiling_height_mm": 2700,
+        "ceiling_height_saved": False,
+        "tilt_deg": 30,
+        "tilt_saved": False,
+        "target_height_mm": 1000,
+        "target_height_saved": False,
+        "flip_room_side": False,
+        "flip_room_side_saved": False,
+        "dz_mm": None,
+        "footprint": None,
+    }
+
     await hass.services.async_call(
         DOMAIN,
         "update_zone",
-        {"device_id": rpro.id, "mount": "ceiling", "ceiling_height_mm": 3100},
+        {
+            "device_id": rpro.id,
+            "mount": "ceiling",
+            "ceiling_height_mm": 3100,
+            "flip_room_side": True,
+        },
         blocking=True,
     )
     await hass.async_block_till_done()
+    tracked = section["ld2450"]["target_pairs"]["tracked"][0]
+    hass.states.async_set(tracked["y"]["entity_id"], "4321")
 
     section = _section(
         await _support_file(hass, hass_client, init_integration), rpro.id
@@ -245,6 +273,18 @@ async def test_an_ld2450_with_a_saved_ceiling_has_no_mount_section(
 
     assert "ld2460" not in section
     assert "ld2460" not in section["radars"]
+    mount = section["ld2450"]["mount"]
+    assert (mount["saved"], mount["effective"], mount["source"]) == (
+        "ceiling",
+        "ceiling",
+        "saved",
+    )
+    assert mount["ceiling_height_mm"] == 3100
+    assert mount["ceiling_height_saved"] is True
+    assert mount["flip_room_side_saved"] is True
+    assert mount["dz_mm"] == 2100
+    assert mount["footprint"] == {"y_near_mm": 0.0, "y_far_mm": 1470.4}
+    assert "4321" not in json.dumps(mount)
     assert section["zone_store"]["mount"] == "ceiling"
     assert section["zone_store"]["ceiling_height_mm"] == 3100
 

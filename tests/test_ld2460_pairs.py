@@ -19,6 +19,7 @@ from pytest_homeassistant_custom_component.components.diagnostics import (
 )
 
 from custom_components.apollo_mmwave import binary_sensor, get_store, hold, trackers
+from custom_components.apollo_mmwave import mounts as mounts_module
 from custom_components.apollo_mmwave.const import (
     DOMAIN,
     SERVICE_UPDATE_ZONE,
@@ -241,10 +242,10 @@ async def test_a_new_ceiling_height_applies_at_the_next_emptying(
     assert await _leave_from(hass, presence, 0, 3300) == "off"
 
 
-async def test_an_ld2450_ignores_a_saved_ceiling(
+async def test_an_ld2450_reads_its_saved_ceiling_not_the_ld2460_mode(
     hass, device_registry, entity_registry, monkeypatch
 ) -> None:
-    """Its zones measure the cone's edge whatever the store says."""
+    """Its zones measure its own ceiling strip; a top mode changes nothing."""
     mounts: list[trackers.Mount] = []
 
     def spy(*args: Any) -> trackers.Mount:
@@ -271,6 +272,9 @@ async def test_an_ld2450_ignores_a_saved_ceiling(
     hass.states.async_set(pair["y"], STATE_UNKNOWN, mm)
     await hass.async_block_till_done()
     assert mounts
+    geom = mounts_module.mount_geometry(
+        "ld2450", None, {"mount": "ceiling", "ceiling_height_mm": 2000}
+    )
     assert set(mounts) == {
-        trackers.Mount("wall", "default", 2000, trackers.SIDE_COVERAGE)
+        trackers.Mount("ceiling", "saved", 2000, mounts_module.coverage_for(geom))
     }

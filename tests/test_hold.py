@@ -9,11 +9,13 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from custom_components.apollo_mmwave import mounts
 from custom_components.apollo_mmwave.hold import (
     HOLD_FIRST_SEEN_S,
     LD2460_TOP_COVERAGE,
     SIDE_COVERAGE,
     Coverage,
+    Footprint,
     HoldTracker,
     Occupant,
     Reading,
@@ -849,3 +851,50 @@ def test_a_low_ceiling_brings_the_circles_edge_in(height_mm, held) -> None:
     tracker = HoldTracker(zero_axis_vanish=False)
     tracker.step(0.0, [_reading(0, 0, 3300)], [], "rect", zone)
     assert tracker.step(STEP_S, [], [], "rect", zone, coverage=coverage) is held
+
+
+def _floor_reading(slot: int, floor: tuple[float, float], dz: float) -> Reading:
+    """Return a High LD2450 reading: raw y is sqrt(Y^2 + dz^2)."""
+    raw = (floor[0], math.hypot(floor[1], dz))
+    return Reading(slot, raw, floor, floor=floor)
+
+
+def test_a_high_mount_releases_someone_walking_under_its_view() -> None:
+    """The footprint's near edge, measured on the floor, is an exit."""
+    geom = mounts.mount_geometry("ld2450", None, {"mount": "high"})
+    footprint = mounts.coverage_for(geom)
+    # Toward the radar: near edge 560 mm, last seen 750.
+    walk = [(0, 1800 - 150 * step) for step in range(8)]
+    zone = {"x_min": -3000, "x_max": 3000, "y_min": -3000, "y_max": 5000}
+
+    def held(coverage, *, floor: bool) -> bool:
+        tracker = HoldTracker()
+        for index, point in enumerate(walk):
+            reading = _floor_reading(0, point, 1200)
+            if not floor:
+                reading = dataclasses.replace(reading, floor=None)
+            tracker.step(index * STEP_S, [reading], [], "rect", zone)
+        return tracker.step(len(walk) * STEP_S, [], [], "rect", zone, coverage=coverage)
+
+    assert held(footprint, floor=True) is False
+    # Raw y keeps them a meter inside the view.
+    assert held(footprint, floor=False) is True
+    # As a wall mount, raw in the cone, they hold.
+    assert held(SIDE_COVERAGE, floor=False) is True
+
+
+@pytest.mark.parametrize(("point", "held"), [((2900, 600), False), ((1500, 600), True)])
+def test_a_ceiling_strip_ends_along_the_wall(point, held) -> None:
+    """2.7 m up, the strip reaches 2.94 m either way along the wall."""
+    geom = mounts.mount_geometry("ld2450", None, {"mount": "ceiling"})
+    zone = {"x_min": -6000, "x_max": 6000, "y_min": -6000, "y_max": 6000}
+    tracker = HoldTracker()
+    # Just seen counts as moving, from that spot.
+    tracker.step(0.0, [_floor_reading(0, point, 1700)], [], "rect", zone)
+    coverage = mounts.coverage_for(geom)
+    assert tracker.step(STEP_S, [], [], "rect", zone, coverage=coverage) is held
+
+
+def test_a_footprint_with_too_few_points_is_no_view() -> None:
+    """A degenerate outline measures 0, like a point outside."""
+    assert coverage_edge_distance_mm(0, 100, Footprint(0, 0, ((0, 0), (1, 1)))) == 0

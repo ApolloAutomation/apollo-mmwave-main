@@ -44,6 +44,7 @@ from .const import (
     ZONE_TYPE_IGNORE,
 )
 from .hold import Reading, half_vanished
+from .mounts import LD2450, LD2460, floor_point, mount_geometry
 from .store import zone_type_of
 
 if TYPE_CHECKING:
@@ -105,6 +106,22 @@ def is_ld2460_pair(pair: Any) -> bool:
         and LD2460_X.search(x_id.partition(".")[2]) is not None
         and LD2460_Y.search(y_id.partition(".")[2]) is not None
     )
+
+
+def pair_tracker(pair: Any) -> str:
+    """Return which radar one X/Y pair belongs to."""
+    return LD2460 if is_ld2460_pair(pair) else LD2450
+
+
+def pairs_tracker(pairs: Any) -> str:
+    """Return the radar a pair list belongs to: LD2460 only when all are."""
+    if (
+        isinstance(pairs, list)
+        and pairs
+        and all(pair_tracker(pair) == LD2460 for pair in pairs)
+    ):
+        return LD2460
+    return LD2450
 
 
 @dataclass(slots=True)
@@ -525,8 +542,9 @@ def masked_readings(
     """
     Return the radar's readings that no ignore zone masks.
 
-    Each is unit converted and rotated into the map frame, where zones are
-    drawn. A target inside any ignore zone of the radar is left out, so no
+    Each is unit converted, placed on the floor for a High or Ceiling
+    LD2450 (``mounts.floor_point``), and rotated into the map frame, where
+    zones are drawn. A target inside any ignore zone of the radar is left out, so no
     detect zone and no recorder sees it. With pairing, a pairer and the time
     in ms, each slot's reading is its whole one then, paired before it is
     masked, so the point between a target's X and Y writes cannot vanish
@@ -535,6 +553,19 @@ def masked_readings(
     """
     device = store.devices.get(device_id) or {}
     rotate = build_point_rotator(device.get(ATTR_ROTATION_DEG))
+    # An LD2460's mode never moves a point: no registry read.
+    geom = mount_geometry(pairs_tracker(pairs), None, device)
+    corrects = geom.dz_mm is not None
+
+    def place(
+        raw: tuple[float, float],
+    ) -> tuple[tuple[float, float], tuple[float, float] | None]:
+        # Map point, and the floor point when it differs from raw.
+        if not corrects:
+            return rotate(*raw), None
+        floor = floor_point(geom, *raw)
+        return rotate(*floor), floor
+
     ignore = [
         (tester, zone_def.get(ATTR_DATA))
         for zone_def in (device.get(STORE_ZONES) or {}).values()
@@ -547,29 +578,44 @@ def masked_readings(
     seen: set[int] = set()
     for slot, x_mm, y_mm in iter_slot_points(hass, pairs, fallback):
         raw = (x_mm, y_mm)
-        written = written_at = None
+        written = written_at = written_floor = None
         if pairer is not None:
             seen.add(slot)
             whole = pairer.pair(slot, raw, at)
             if whole != raw:
                 # The hold still reads the write that waits as a report.
-                written = (raw, rotate(*raw))
+                written_map, written_floor = place(raw)
+                written = (raw, written_map)
                 raw = whole
             if (changed_at := pairer.written_at(slot)) is not None:
                 written_at = changed_at / 1000
-        map_x, map_y = rotate(*raw)
+        (map_x, map_y), floor = place(raw)
         if any(inside(map_x, map_y, data) for inside, data in ignore):
             continue
         readings.append(
-            Reading(slot, raw, (map_x, map_y), written=written, written_at=written_at)
+            Reading(
+                slot,
+                raw,
+                (map_x, map_y),
+                written=written,
+                written_at=written_at,
+                floor=floor,
+                written_floor=written_floor,
+            )
         )
     if pairer is not None:
         pairer.lost = []
         for slot, raw, changed_at in pairer.keep(seen):
-            map_x, map_y = rotate(*raw)
+            (map_x, map_y), floor = place(raw)
             if not any(inside(map_x, map_y, data) for inside, data in ignore):
                 pairer.lost.append(
-                    Reading(slot, raw, (map_x, map_y), written_at=changed_at / 1000)
+                    Reading(
+                        slot,
+                        raw,
+                        (map_x, map_y),
+                        written_at=changed_at / 1000,
+                        floor=floor,
+                    )
                 )
     return readings
 

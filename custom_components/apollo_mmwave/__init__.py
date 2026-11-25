@@ -60,6 +60,11 @@ from .const import (
     ISSUE_DASHBOARD_SAVED_COPY,
     MAX_SAFE_INT,
     MOUNT_CEILING,
+    MOUNT_HEIGHT_DEFAULT_MM,
+    MOUNT_HEIGHT_MAX_MM,
+    MOUNT_HEIGHT_MIN_MM,
+    MOUNT_HIGH,
+    MOUNT_WALL,
     MOUNTS,
     POLYGON_MAX_POINTS,
     POLYGON_MIN_POINTS,
@@ -73,16 +78,26 @@ from .const import (
     STORE_CEILING_HEIGHT_MM,
     STORE_DISPLAY_UNITS,
     STORE_ENTITIES,
+    STORE_FLIP_ROOM_SIDE,
     STORE_HOLD_S,
     STORE_INPUT_UNITS,
     STORE_LABEL,
     STORE_MIRROR_X,
     STORE_MOUNT,
+    STORE_MOUNT_HEIGHT_MM,
     STORE_MOVEMENT_HISTORY,
     STORE_PREVIOUS_SHAPE,
+    STORE_TARGET_HEIGHT_MM,
+    STORE_TILT_DEG,
     STORE_ZONE_TYPE,
     STORE_ZONES,
     SUPPORTED_SHAPES,
+    TARGET_HEIGHT_DEFAULT_MM,
+    TARGET_HEIGHT_MAX_MM,
+    TARGET_HEIGHT_MIN_MM,
+    TILT_DEFAULT_DEG,
+    TILT_MAX_DEG,
+    TILT_MIN_DEG,
     WARN_ELLIPSE_INVALID,
     WARN_ELLIPSE_NON_POSITIVE,
     WARN_POLY_INSUFFICIENT,
@@ -538,7 +553,7 @@ def _resolve_target_device(
 def _apply_device_settings(
     device: dict[str, Any], call: ServiceCall, rotation: int | None
 ) -> None:
-    """Write the device-wide rotation, units, mount and ceiling height."""
+    """Write the device-wide rotation, units and mount settings."""
     if rotation is not None:
         device[ATTR_ROTATION_DEG] = rotation
     input_units = call.data.get("input_units")
@@ -552,15 +567,21 @@ def _apply_device_settings(
         device[STORE_DISPLAY_UNITS] = display_units
     # Defaults are never stored, so they pop.
     mount = call.data.get(STORE_MOUNT)
-    if mount == MOUNT_CEILING:
-        device[STORE_MOUNT] = MOUNT_CEILING
+    if mount in (MOUNT_HIGH, MOUNT_CEILING):
+        device[STORE_MOUNT] = mount
     elif mount is not None:
         device.pop(STORE_MOUNT, None)
-    height = call.data.get(STORE_CEILING_HEIGHT_MM)
-    if height == CEILING_HEIGHT_DEFAULT_MM:
-        device.pop(STORE_CEILING_HEIGHT_MM, None)
-    elif height is not None:
-        device[STORE_CEILING_HEIGHT_MM] = height
+    for key, default in _MOUNT_NUMBER_DEFAULTS.items():
+        value = call.data.get(key)
+        if value == default:
+            device.pop(key, None)
+        elif value is not None:
+            device[key] = value
+    flip = call.data.get(STORE_FLIP_ROOM_SIDE)
+    if flip:
+        device[STORE_FLIP_ROOM_SIDE] = True
+    elif flip is not None:
+        device.pop(STORE_FLIP_ROOM_SIDE, None)
 
 
 def _apply_entity_pairs(device: dict[str, Any], call: ServiceCall) -> None:
@@ -709,30 +730,32 @@ def _mount_change_something(
     mount = call.data.get(STORE_MOUNT)
     if mount is None:
         return False
-    if mount == MOUNT_CEILING:
-        # Ceiling counts even when already stored.
+    if mount != MOUNT_WALL:
+        # High or ceiling counts even when already stored.
         return True
     # Wall only forgets a mount already stored.
     return STORE_MOUNT in (store.devices.get(device_id) or {})
 
 
-def _height_change_something(
+def _mount_numbers_change_something(
     call: ServiceCall, store: ZoneStore, device_id: str
 ) -> bool:
-    """Report whether the call's ceiling_height_mm changes the radar."""
-    height = call.data.get(STORE_CEILING_HEIGHT_MM)
-    if height is None:
-        return False
-    if height != CEILING_HEIGHT_DEFAULT_MM:
-        return True
-    # The default only forgets a stored height.
-    return STORE_CEILING_HEIGHT_MM in (store.devices.get(device_id) or {})
+    """Report whether the call's heights or tilt change the radar."""
+    stored = store.devices.get(device_id) or {}
+    for key, default in _MOUNT_NUMBER_DEFAULTS.items():
+        value = call.data.get(key)
+        if value is None:
+            continue
+        # A default only forgets a stored value.
+        if value != default or key in stored:
+            return True
+    return False
 
 
 def _flag_changes_something(
     call: ServiceCall, store: ZoneStore, device_id: str, key: str
 ) -> bool:
-    """Report whether the call's mirror_x or movement_history changes the radar."""
+    """Report whether the call's flag (mirror_x and the like) changes the radar."""
     value = call.data.get(key)
     if value is None:
         return False
@@ -783,7 +806,8 @@ def _call_changes_something(
         or call.data.get("input_units") is not None
         or _display_units_change_something(call, store, device_id)
         or _mount_change_something(call, store, device_id)
-        or _height_change_something(call, store, device_id)
+        or _mount_numbers_change_something(call, store, device_id)
+        or _flag_changes_something(call, store, device_id, STORE_FLIP_ROOM_SIDE)
         or call.data.get("clear_entities")
         or _normalize_entities(call.data.get("entities")) is not None
         or _flag_changes_something(call, store, device_id, STORE_MIRROR_X)
@@ -938,17 +962,37 @@ def _hold_seconds(value: Any) -> Any:
     return value
 
 
-def _ceiling_height(value: Any) -> int:
-    """Return a ceiling height as whole mm, refusing a bool, nan and inf."""
-    # Coercing alone would read True as 1 mm.
-    if isinstance(value, bool):
-        msg = "ceiling_height_mm is a number of millimeters, not a boolean"
-        raise vol.Invalid(msg)
-    height = _finite_float(value)
-    if height is None:
-        msg = "ceiling_height_mm is not a finite number"
-        raise vol.Invalid(msg)
-    return round(height)
+def _whole(field: str, unit: str) -> Callable[[Any], int]:
+    """Return a coercer to a whole number, refusing a bool, nan and inf."""
+
+    def coerce(value: Any) -> int:
+        # Coercing alone would read True as 1.
+        if isinstance(value, bool):
+            msg = f"{field} is a number of {unit}, not a boolean"
+            raise vol.Invalid(msg)
+        number = _finite_float(value)
+        if number is None:
+            msg = f"{field} is not a finite number"
+            raise vol.Invalid(msg)
+        return round(number)
+
+    return coerce
+
+
+def _whole_mm(field: str) -> Callable[[Any], int]:
+    return _whole(field, "millimeters")
+
+
+def _whole_deg(field: str) -> Callable[[Any], int]:
+    return _whole(field, "degrees")
+
+
+_MOUNT_NUMBER_DEFAULTS = {
+    STORE_CEILING_HEIGHT_MM: CEILING_HEIGHT_DEFAULT_MM,
+    STORE_MOUNT_HEIGHT_MM: MOUNT_HEIGHT_DEFAULT_MM,
+    STORE_TILT_DEG: TILT_DEFAULT_DEG,
+    STORE_TARGET_HEIGHT_MM: TARGET_HEIGHT_DEFAULT_MM,
+}
 
 
 UPDATE_ZONE_SERVICE_SCHEMA = vol.All(
@@ -984,12 +1028,25 @@ UPDATE_ZONE_SERVICE_SCHEMA = vol.All(
             ),
             vol.Optional(STORE_MIRROR_X): cv.boolean,
             vol.Optional(STORE_MOVEMENT_HISTORY): cv.boolean,
-            # Device-wide; only LD2460 pairs read them.
+            # Device-wide mount settings (mounts.py).
             vol.Optional(STORE_MOUNT): vol.In(list(MOUNTS)),
             vol.Optional(STORE_CEILING_HEIGHT_MM): vol.All(
-                _ceiling_height,
+                _whole_mm(STORE_CEILING_HEIGHT_MM),
                 vol.Range(min=CEILING_HEIGHT_MIN_MM, max=CEILING_HEIGHT_MAX_MM),
             ),
+            vol.Optional(STORE_MOUNT_HEIGHT_MM): vol.All(
+                _whole_mm(STORE_MOUNT_HEIGHT_MM),
+                vol.Range(min=MOUNT_HEIGHT_MIN_MM, max=MOUNT_HEIGHT_MAX_MM),
+            ),
+            vol.Optional(STORE_TILT_DEG): vol.All(
+                _whole_deg(STORE_TILT_DEG),
+                vol.Range(min=TILT_MIN_DEG, max=TILT_MAX_DEG),
+            ),
+            vol.Optional(STORE_TARGET_HEIGHT_MM): vol.All(
+                _whole_mm(STORE_TARGET_HEIGHT_MM),
+                vol.Range(min=TARGET_HEIGHT_MIN_MM, max=TARGET_HEIGHT_MAX_MM),
+            ),
+            vol.Optional(STORE_FLIP_ROOM_SIDE): cv.boolean,
             vol.Optional("name"): cv.string,
             vol.Optional("delete"): cv.boolean,
             vol.Optional("entities"): vol.All(

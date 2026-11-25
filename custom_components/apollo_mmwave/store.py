@@ -31,8 +31,12 @@ in-memory shape is::
             "display_units": "ft",  # optional, "m" or "ft"; display only
             "mirror_x": True,  # optional, only ever True; display only
             "movement_history": True,  # optional, only ever True
-            "mount": "ceiling",  # optional, only ever "ceiling"; absent is wall
+            "mount": "ceiling",  # optional, "high" or "ceiling"; absent is wall
             "ceiling_height_mm": 3100,  # optional, 2000 to 4000, never 2700
+            "mount_height_mm": 2500,  # optional, 1200 to 4000, never 2200
+            "tilt_deg": 40,  # optional, 0 to 60, never 30
+            "target_height_mm": 800,  # optional, 0 to 2000, never 1000
+            "flip_room_side": True,  # optional, only ever True
         },
     }
 
@@ -42,15 +46,17 @@ off, off). Zone dicts load verbatim, so a hand edit can leave anything in
 ``zone_type`` or ``hold_s``; ``zone_type_of`` and ``zone_hold_s`` read what
 the service could not have written as the default, and every reader goes
 through them. The two radar flags load only when they are exactly ``True``,
-and ``device_flag`` reads them. ``mount`` loads only as exactly "ceiling" and
-``ceiling_height_mm`` only as an int from 2000 to 4000 other than 2700;
-``device_mount`` and ``ceiling_height_mm`` read them.
+and ``device_flag`` reads them, ``flip_room_side`` among them. ``mount`` loads
+only as exactly "high" or "ceiling", and each mount number only as an int in
+its range other than its default; ``device_mount`` and ``mount_number`` (with
+``ceiling_height_mm``, ``mount_height_mm``, ``tilt_deg`` and
+``target_height_mm``) read them.
 
-Neither ``mount`` nor ``ceiling_height_mm`` changed STORAGE_VERSION, and it
-must stay 2: a higher major version makes every older release fail setup.
-An older release rebuilds each entry from the keys it knows, so it loads
-this file cleanly and drops both keys at its next save, which leaves the
-radar reading as a wall at the default height.
+None of the six mount keys changed STORAGE_VERSION, and it must stay 2: a
+higher major version makes every older release fail setup. 2.4.2 and older
+rebuild each entry from the keys they know, so they load this file cleanly
+and drop all six keys at their next save, which leaves every radar reading
+as a wall at the default heights.
 
 ``entities`` is three-valued on purpose. Absent means the user never picked
 coordinate sensors, and readers fall back to the device's own LD2450 targets.
@@ -96,6 +102,10 @@ from .const import (
     HOLD_S_MAX,
     INPUT_UNIT_FACTORS,
     MOUNT_CEILING,
+    MOUNT_HEIGHT_DEFAULT_MM,
+    MOUNT_HEIGHT_MAX_MM,
+    MOUNT_HEIGHT_MIN_MM,
+    MOUNT_HIGH,
     PREVIOUS_REPLACED_AT,
     SHAPE_ELLIPSE,
     SHAPE_NONE,
@@ -106,17 +116,27 @@ from .const import (
     STORE_DEVICES,
     STORE_DISPLAY_UNITS,
     STORE_ENTITIES,
+    STORE_FLIP_ROOM_SIDE,
     STORE_HOLD_S,
     STORE_INPUT_UNITS,
     STORE_LABEL,
     STORE_MIRROR_X,
     STORE_MOUNT,
+    STORE_MOUNT_HEIGHT_MM,
     STORE_MOVEMENT_HISTORY,
     STORE_ORPHANS,
     STORE_PREVIOUS_SHAPE,
+    STORE_TARGET_HEIGHT_MM,
+    STORE_TILT_DEG,
     STORE_ZONE_TYPE,
     STORE_ZONES,
     SUPPORTED_SHAPES,
+    TARGET_HEIGHT_DEFAULT_MM,
+    TARGET_HEIGHT_MAX_MM,
+    TARGET_HEIGHT_MIN_MM,
+    TILT_DEFAULT_DEG,
+    TILT_MAX_DEG,
+    TILT_MIN_DEG,
     ZONE_TYPE_DETECT,
     ZONE_TYPE_IGNORE,
 )
@@ -227,30 +247,83 @@ def device_flag(entry: Any, key: str) -> bool:
 
 
 def device_mount(entry: Any) -> str | None:
-    """Return "ceiling" when the entry stores a ceiling mount, else None."""
-    if isinstance(entry, dict) and entry.get(STORE_MOUNT) == MOUNT_CEILING:
-        return MOUNT_CEILING
-    return None
+    """Return the entry's stored "high" or "ceiling" mount, else None."""
+    mount = entry.get(STORE_MOUNT) if isinstance(entry, dict) else None
+    return mount if mount in (MOUNT_HIGH, MOUNT_CEILING) else None
 
 
-def _stored_height(value: Any) -> int | None:
-    """Return a ceiling height the service could have stored, else None."""
-    # True is an int, but no height.
+# Each mount setting: (store key, min, max, default).
+_MOUNT_NUMBERS = (
+    (
+        STORE_CEILING_HEIGHT_MM,
+        CEILING_HEIGHT_MIN_MM,
+        CEILING_HEIGHT_MAX_MM,
+        CEILING_HEIGHT_DEFAULT_MM,
+    ),
+    (
+        STORE_MOUNT_HEIGHT_MM,
+        MOUNT_HEIGHT_MIN_MM,
+        MOUNT_HEIGHT_MAX_MM,
+        MOUNT_HEIGHT_DEFAULT_MM,
+    ),
+    (STORE_TILT_DEG, TILT_MIN_DEG, TILT_MAX_DEG, TILT_DEFAULT_DEG),
+    (
+        STORE_TARGET_HEIGHT_MM,
+        TARGET_HEIGHT_MIN_MM,
+        TARGET_HEIGHT_MAX_MM,
+        TARGET_HEIGHT_DEFAULT_MM,
+    ),
+)
+MOUNT_NUMBER_KEYS = tuple(key for key, *_ in _MOUNT_NUMBERS)
+
+
+def _stored_number(entry: Any, key: str) -> int | None:
+    """Return a mount setting the service could have stored, else None."""
+    value = entry.get(key) if isinstance(entry, dict) else None
+    _key, low, high, default = next(row for row in _MOUNT_NUMBERS if row[0] == key)
+    # True is an int, but no setting.
     if isinstance(value, bool) or not isinstance(value, int):
         return None
-    if not CEILING_HEIGHT_MIN_MM <= value <= CEILING_HEIGHT_MAX_MM:
+    if not low <= value <= high:
         return None
-    return None if value == CEILING_HEIGHT_DEFAULT_MM else value
+    return None if value == default else value
+
+
+def mount_number(entry: Any, key: str) -> int:
+    """Return a mount setting in use: the stored value or its default."""
+    value = _stored_number(entry, key)
+    if value is not None:
+        return value
+    return next(row[3] for row in _MOUNT_NUMBERS if row[0] == key)
 
 
 def ceiling_height_mm(entry: Any) -> int:
     """Return the entry's ceiling height in mm, or the default."""
-    value = (
-        _stored_height(entry.get(STORE_CEILING_HEIGHT_MM))
-        if isinstance(entry, dict)
-        else None
-    )
-    return CEILING_HEIGHT_DEFAULT_MM if value is None else value
+    return mount_number(entry, STORE_CEILING_HEIGHT_MM)
+
+
+def mount_height_mm(entry: Any) -> int:
+    """Return the entry's high mount height in mm, or the default."""
+    return mount_number(entry, STORE_MOUNT_HEIGHT_MM)
+
+
+def tilt_deg(entry: Any) -> int:
+    """Return the entry's high mount tilt in degrees, or the default."""
+    return mount_number(entry, STORE_TILT_DEG)
+
+
+def target_height_mm(entry: Any) -> int:
+    """Return the entry's person height in mm, or the default."""
+    return mount_number(entry, STORE_TARGET_HEIGHT_MM)
+
+
+def stored_mount_settings(entry: Any) -> dict[str, int]:
+    """Return the mount settings stored in an entry, defaults left out."""
+    return {
+        key: value
+        for key in MOUNT_NUMBER_KEYS
+        if (value := _stored_number(entry, key)) is not None
+    }
 
 
 def resolve_device_id(hass: HomeAssistant, location: str, entities: Any) -> str | None:
@@ -496,11 +569,12 @@ def _parse_entry(raw: Any, device_id: str | None = None) -> dict[str, Any] | Non
         if raw.get(flag) is True:
             entry[flag] = True
     # Keep only values the service could write.
-    if device_mount(raw) is not None:
-        entry[STORE_MOUNT] = MOUNT_CEILING
-    height = _stored_height(raw.get(STORE_CEILING_HEIGHT_MM))
-    if height is not None:
-        entry[STORE_CEILING_HEIGHT_MM] = height
+    mount = device_mount(raw)
+    if mount is not None:
+        entry[STORE_MOUNT] = mount
+    entry.update(stored_mount_settings(raw))
+    if raw.get(STORE_FLIP_ROOM_SIDE) is True:
+        entry[STORE_FLIP_ROOM_SIDE] = True
     return entry
 
 
