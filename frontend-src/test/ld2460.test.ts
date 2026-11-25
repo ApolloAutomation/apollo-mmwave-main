@@ -7,7 +7,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import radar from "./fixtures/ld2460-ceiling-radar.json";
-import mountCases from "./fixtures/ld2460-mount-cases.json";
+import mountCases from "./fixtures/mount-cases.json";
 import type { HassEntity, HomeAssistant } from "../src/types";
 import { hasLd2450Device, ld2450EntityIds } from "../src/ld2450";
 import {
@@ -508,7 +508,7 @@ describe("the LD2460's mount and ceiling coverage", () => {
   it.each(mountCases.mount.map((c) => [JSON.stringify(c), c] as const))(
     "reads the mount in effect as trackers.py does: %s",
     (_name, c) => {
-      expect(mountRule(c.tracker, c.mode_state, c.saved)).toEqual(c.expect);
+      expect(mountRule(c.tracker, c.mode_state, c.saved as string | null)).toEqual(c.expect);
     }
   );
 

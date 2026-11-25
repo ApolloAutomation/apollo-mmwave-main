@@ -37,27 +37,8 @@ export const CEILING_HEIGHT = Object.freeze({ minMm: 2000, defaultMm: 2700, maxM
 
 export type Ld2460Mount = "side" | "top";
 
-/** How the zone map is drawn: from the side, or from above. */
-export type MapMount = "wall" | "ceiling";
-/** Who chose the mount in effect. */
-export type MountSource = "radar" | "saved" | "default";
-
-/**
- * The mount in effect, twin of mount_rule in trackers.py. Only an LD2460
- * can be on a ceiling. Its own report wins when it says side or top;
- * otherwise the mount saved under Map settings, else the wall.
- */
-export function mountRule(
-  tracker: string | undefined,
-  modeState: string | null | undefined,
-  saved: string | null | undefined
-): { mount: MapMount; source: MountSource } {
-  if (tracker !== "ld2460") return { mount: "wall", source: "default" };
-  if (modeState === "top") return { mount: "ceiling", source: "radar" };
-  if (modeState === "side") return { mount: "wall", source: "radar" };
-  if (saved === "ceiling") return { mount: "ceiling", source: "saved" };
-  return { mount: "wall", source: "default" };
-}
+export { mountRule } from "./mounts";
+export type { Mount as MapMount, MountSource } from "./mounts";
 
 /**
  * How far out from the spot under a ceiling radar it sees, in mm, twin of

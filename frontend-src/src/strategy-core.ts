@@ -27,6 +27,7 @@ import {
 } from "./panels/ld2450-rows";
 import { type RadarProfile } from "./profiles";
 import { apolloDeviceInfo } from "./apollo-device";
+import { FIRMWARE_ZONES_NOTE } from "./zone-map/copy";
 import { parseGateSizeMeters } from "./charts/geometry";
 import {
   aboutDistance,
@@ -459,7 +460,8 @@ function helpCardBody(dev: RadarDevice, ctx: HelpContext): Record<string, any> {
   if (!dev.profile || (dev.ld2450 && !ctx.gateRadar)) {
     const steps = [
       ...(ctx.ld2450Setup ? ["Fix anything the Radar setup card flags."] : []),
-      "Set **Cone rotation** (under Map settings on the zone map) to match how the sensor is mounted.",
+      LD2450_MOUNT_STEP,
+      LD2460_ROTATION_STEP,
       "Press **Add zone** under the zone map and drag on the map to draw the zone. Reload this" +
         " page, then walk into the zone and watch it turn on under Zone presence.",
     ];
@@ -503,8 +505,9 @@ function helpCardBody(dev: RadarDevice, ctx: HelpContext): Record<string, any> {
       `**Start here**\n` +
       numbered([
         ...gateSteps(p, ctx, true),
-        `For the LD2450, ${setup}set **Cone rotation** (under Map settings on the zone map) to` +
-          " match how the sensor is mounted, then press **Add zone**, draw the zone and walk into it.",
+        `For the LD2450, ${setup}choose **Wall**, **High** or **Ceiling** under Map settings on` +
+          " the zone map, set **Cone rotation** (**Map rotation** on a ceiling) to match how the" +
+          " sensor is mounted, then press **Add zone**, draw the zone and walk into it.",
       ]) +
       `\n\n${automations}\n\n` +
       links,
@@ -520,6 +523,12 @@ function ld2460Automations(ctx: HelpContext): string {
     : "**In automations**, use a zone's presence sensor. For the whole room, draw one" +
         " zone over it.";
 }
+
+/** The LD2450 help's mount step. */
+export const LD2450_MOUNT_STEP =
+  "Under Map settings on the zone map, choose **Wall**, **High** (high on a wall or in a" +
+  " ceiling corner, tilted down) or **Ceiling** (straight down), and fill in the heights it" +
+  " asks for.";
 
 /** The LD2460 help's mount and rotation steps. */
 export const LD2460_MOUNT_STEP =
@@ -779,6 +788,7 @@ function builtInZonesCard(
   if (entities.length) cards.push({ type: "entities", show_header_toggle: false, entities });
   // The counts as whole numbers: as entities rows they read "0.0".
   if (counts.length) cards.push({ type: "markdown", content: builtInZoneCountsText(counts) });
+  cards.push({ type: "markdown", content: FIRMWARE_ZONES_NOTE });
   return {
     type: "conditional",
     conditions: [

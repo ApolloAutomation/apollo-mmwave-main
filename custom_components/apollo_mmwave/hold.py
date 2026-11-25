@@ -498,6 +498,10 @@ def edge_distance_mm(shape: Any, data: Any, x: float, y: float) -> float:
     return math.inf if measure is None else measure(data, x, y)
 
 
+# How close to Y = 0 counts as on the wall line.
+_WALL_LINE_MM = 1e-6
+
+
 def _inside_outline(
     outline: tuple[tuple[float, float], ...], x: float, y: float
 ) -> bool:
@@ -506,6 +510,11 @@ def _inside_outline(
         if (ay > y) != (by > y) and x < (bx - ax) * (y - ay) / (by - ay) + ax:
             inside = not inside
     return inside
+
+
+def _wall_side(start: tuple[float, float], end: tuple[float, float]) -> bool:
+    # A side on Y = 0 is the wall line.
+    return abs(start[1]) <= _WALL_LINE_MM and abs(end[1]) <= _WALL_LINE_MM
 
 
 def coverage_edge_distance_mm(
@@ -517,14 +526,32 @@ def coverage_edge_distance_mm(
     Floor frame (``mounts.floor_point``), which is the raw sensor frame for
     a wall mount and every LD2460, so the view is straight ahead along +y
     whatever the radar's rotation. 0 for a point outside the view.
+
+    A footprint side on Y = 0 is the wall line: the wall a High LD2450
+    hangs on, or the line under a ceiling one, which folds everyone onto
+    the room side. Nobody walks out across it, so a point on it counts as
+    inside and the distance is to the other sides. Someone standing right
+    under a ceiling radar is then far from the edge, not on it.
     """
     if isinstance(coverage, Footprint):
         outline = coverage.outline
-        if len(outline) < POLYGON_MIN_POINTS or not _inside_outline(outline, x, y):
+        if len(outline) < POLYGON_MIN_POINTS:
+            return 0.0
+        sides = list(zip(outline, (*outline[1:], outline[0]), strict=True))
+        on_wall = abs(y) <= _WALL_LINE_MM and any(
+            _wall_side(start, end)
+            and min(start[0], end[0]) <= x <= max(start[0], end[0])
+            for start, end in sides
+        )
+        if not (on_wall or _inside_outline(outline, x, y)):
             return 0.0
         return min(
-            _segment_distance(x, y, start, end)
-            for start, end in zip(outline, (*outline[1:], outline[0]), strict=True)
+            (
+                _segment_distance(x, y, start, end)
+                for start, end in sides
+                if not _wall_side(start, end)
+            ),
+            default=0.0,
         )
     distance = math.hypot(x, y)
     if coverage.half_fov_deg >= 180:  # noqa: PLR2004 - a full circle

@@ -895,6 +895,22 @@ def test_a_ceiling_strip_ends_along_the_wall(point, held) -> None:
     assert tracker.step(STEP_S, [], [], "rect", zone, coverage=coverage) is held
 
 
+@pytest.mark.parametrize("flip", [False, True])
+def test_someone_under_a_ceiling_ld2450_is_held(flip) -> None:
+    """The wall line is no exit: right under the radar is mid view."""
+    geom = mounts.mount_geometry(
+        "ld2450", None, {"mount": "ceiling", "flip_room_side": flip}
+    )
+    zone = {"x_min": -6000, "x_max": 6000, "y_min": -6000, "y_max": 6000}
+    tracker = HoldTracker()
+    # Raw y under dz: floor Y is 0, on the wall line.
+    under = (0.0, -0.0 if flip else 0.0)
+    tracker.step(0.0, [Reading(0, (0, 1500), under, floor=under)], [], "rect", zone)
+    coverage = mounts.coverage_for(geom)
+    assert coverage_edge_distance_mm(*under, coverage) == pytest.approx(1190.4, abs=1)
+    assert tracker.step(STEP_S, [], [], "rect", zone, coverage=coverage) is True
+
+
 def test_a_footprint_with_too_few_points_is_no_view() -> None:
     """A degenerate outline measures 0, like a point outside."""
     assert coverage_edge_distance_mm(0, 100, Footprint(0, 0, ((0, 0), (1, 1)))) == 0
