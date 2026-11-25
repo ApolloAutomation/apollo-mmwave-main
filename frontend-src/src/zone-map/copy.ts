@@ -383,8 +383,107 @@ export const MOUNT_CONFLICT =
 
 /** After the mount switch saved. */
 export function mountSavedToast(mount: string): string {
-  return `Map set to a ${mount === "ceiling" ? "ceiling" : "wall"} mount`;
+  const name = mount === "ceiling" || mount === "high" ? mount : "wall";
+  return `Map set to a ${name} mount`;
 }
+
+// An LD2450's mounts: High and Ceiling place people corrected.
+export const MOUNT_HIGH = "High";
+export const MOUNT_WALL_TITLE = "On a wall at about chest height";
+export const MOUNT_HIGH_TITLE = "On a high wall or in a ceiling corner, tilted down";
+export const MOUNT_CEILING_TITLE_LD2450 = "On the ceiling, looking straight down";
+export const MOUNT_STATUS_SAVED_HIGH = "In use: High, as chosen here.";
+export const MOUNT_STATUS_SAVED_CEILING_LD2450 = "In use: Ceiling, as chosen here.";
+export const MOUNT_STATUS_DEFAULT_LD2450 =
+  "In use: Wall, the default. Choose High or Ceiling if the sensor is mounted up high.";
+export const MOUNT_HEIGHT_LABEL = "Mount height";
+export const TILT_LABEL = "Tilt down: ";
+export const TILT_HINT =
+  "How far the sensor points down from level. Tilt changes what it covers, not where it places people.";
+export const TILT_LOCKED_HINT = "Locked with the map. Press Locked on the map to change it.";
+export const TILT_LOCKED_TOAST = "Tilt is locked. Press Locked on the map to change it.";
+export const PERSON_HEIGHT_LABEL = "Person height";
+export const PERSON_HEIGHT_HINT =
+  "The height of a person's chest, where the radar sees them best. 1 m (3.3 ft) suits most adults standing.";
+
+/** High: how far out from the wall the radar sees. */
+export function highCoverageLine(near: string, far: string): string {
+  return `Covers from about ${near} to ${far} out from the wall.`;
+}
+
+export const HIGH_NEAR_NOTE =
+  "Closer than that, people are under the radar's view. Tilt it down more to see closer.";
+
+/** Ceiling: the strip a straight-down LD2450 sees. */
+export function ceilingStripLine(length: string, depth: string): string {
+  return `Covers a strip about ${length} along the wall and ${depth} into the room.`;
+}
+
+export const CEILING_SIDE_EXPLAIN =
+  "Looking straight down, this radar cannot tell which side of it someone is on, so it shows everyone on one side. Mount it near a wall, turned so walking along the wall moves your dot left and right. Everyone in the room is then on the room side. If people show up past the wall line, turn on Flip room side.";
+export const FLIP_ROOM_SIDE_LABEL = "Flip room side";
+export const FLIP_ROOM_SIDE_ZONES =
+  "Zones stay where they are, so redraw any zone drawn for the other side.";
+export const CEILING_STRIP_NOTE =
+  "A ceiling sensor of this kind sees a narrow strip. For a whole room, mount it high on a wall and choose High.";
+export const ACCURACY_NOTE =
+  "Positions are worked out from the mount height and person height. They are least accurate close under the radar and for people sitting or lying down.";
+export const FIRMWARE_ZONES_NOTE =
+  "The radar's built-in zones use its own uncorrected coordinates, so on a High or Ceiling mount they do not line up with this map. Draw zones here instead.";
+
+/** A height out of bounds, or not a number. */
+export function mountRangeNote(label: string, min: string, max: string): string {
+  return `Enter a ${label.toLowerCase()} from ${min} to ${max}.`;
+}
+
+// Add coverage zone: the footprint as one zone.
+export const COVERAGE_ZONE_LABEL = "Add coverage zone";
+export const COVERAGE_ZONE_HINT =
+  "Gives this zone the shape of everything the radar covers at this mount.";
+export const COVERAGE_SHAPE_LABEL = "Coverage";
+
+/** The range label over a High or Ceiling footprint. */
+export function footprintRangeLabel(near: string, far: string): string {
+  return `Coverage ${near} to ${far} out`;
+}
+
+// Test near and far edge, and Test wall line and edge.
+export const TEST_LABEL_HIGH = "Test near and far edge";
+export const TEST_LABEL_CEILING_LD2450 = "Test wall line and edge";
+export const TEST_TITLE_HIGH =
+  "Check where the radar sees you: at the near edge of its view and at the far edge";
+export const TEST_TITLE_CEILING_LD2450 =
+  "Check where the radar sees you: right under it, and at the edge of its strip";
+export const TEST_CHECK_NEAR = "Near edge";
+export const TEST_CHECK_FAR = "Far edge";
+export const TEST_CHECK_WALL_LINE = "Wall line";
+export const TEST_NOBODY_HIGH = "Nobody is in view. Walk into the room to start.";
+export const TEST_NEAR = "You are at the near edge. Any closer and the radar loses you.";
+export const TEST_WALL_LINE = "You are right under the radar, on the wall line.";
+export const TEST_SIDE =
+  "You are at the side edge of what the radar sees. Leaving from here counts as leaving.";
+
+/** At the far edge, `distance` out. */
+export function testFar(distance: string): string {
+  return `You are at the far edge, about ${distance} out.`;
+}
+
+/** Inside a footprint: how far out, and how far from its edge. */
+export function testOut(distance: string, toEdge: string): string {
+  return `You are ${distance} out, ${toEdge} from the edge of what the radar sees.`;
+}
+
+/** The tester vanished inside a footprint. */
+export function testLostInside(distance: string): string {
+  return `Lost you at ${distance} out, inside the view. Something may block the view there, or you stood still too long.`;
+}
+
+/** The tester vanished at a footprint's edge. */
+export function testLostAtEdge(distance: string): string {
+  return `Lost you at ${distance} out, at the edge. That is the end of the radar's view.`;
+}
+
+export const HISTORY_MOUNT_NOTE = "History is drawn with the mount settings in use now.";
 
 export const CEILING_HEIGHT_LABEL = "Ceiling height";
 

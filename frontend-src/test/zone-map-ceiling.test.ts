@@ -2,8 +2,8 @@
  * The ceiling zone map: the Wall / Ceiling switch under Map settings, the
  * ceiling height that sizes the circle, the top-down look, the whole-room
  * zones, Walk around a ceiling radar, and Test center and edge. The radar
- * is an LD2460 with made-up ids; an LD2450 and a gate-only device show none
- * of it.
+ * is an LD2460 with made-up ids; a gate-only device shows none of it, and
+ * an LD2450's mounts are in zone-map-mounts.test.ts.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -195,10 +195,8 @@ describe("the Wall / Ceiling switch", () => {
     expect($(card, "configContent").firstElementChild.id).toBe("mountOption");
   });
 
-  it.each([
-    ["an LD2450", "ld2450"],
-    ["a gate radar alone", "none"],
-  ] as const)("is nowhere on %s's map, even with a ceiling saved", async (_name, tracker) => {
+  it.each([["a gate radar alone", "none"]] as const)(
+    "is nowhere on %s's map, even with a ceiling saved", async (_name, tracker) => {
     const card = await mount(
       hassOf({ tracker, payload: { mount: "ceiling", ceiling_height_mm: 2000 } })
     );
@@ -209,6 +207,18 @@ describe("the Wall / Ceiling switch", () => {
     expect($(card, "coneRotationLabel").textContent).toBe("Cone rotation: ");
     expect($(card, "coneMountHint").textContent).toBe(CONE_MOUNT_HINT);
     expect(card._isCeiling()).toBe(false);
+  });
+
+  it("offers an LD2450 High as well, never the LD2460's circle", async () => {
+    const card = await mount(
+      hassOf({ tracker: "ld2450", payload: { mount: "ceiling", ceiling_height_mm: 2000 } })
+    );
+    expect($(card, "mountOption").hidden).toBe(false);
+    expect($(card, "btnMountHigh").hidden).toBe(false);
+    expect($(card, "btnTestChip").hidden).toBe(false);
+    expect([card.coneYMax, card.coneFovDeg]).toEqual([6000, 120]);
+    expect(card._isCeiling()).toBe(true);
+    expect(card._isTopDown()).toBe(false);
   });
 
   it("saves Ceiling for an administrator and draws the circle at once", async () => {

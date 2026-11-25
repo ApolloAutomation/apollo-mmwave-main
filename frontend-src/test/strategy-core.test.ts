@@ -1,3 +1,4 @@
+import { FIRMWARE_ZONES_NOTE } from "../src/zone-map/copy";
 import { describe, it, expect } from "vitest";
 import {
   detectRadarDevices,
@@ -1244,7 +1245,9 @@ describe("LD2450 cards beside the zone map", () => {
         line(3),
       ].join("\n"),
     });
-    expect(conditional.card.cards).toHaveLength(3);
+    expect(conditional.card.cards).toHaveLength(4);
+    // The radar's own zones never see the zone map's correction.
+    expect(conditional.card.cards[3]).toEqual({ type: "markdown", content: FIRMWARE_ZONES_NOTE });
     expect(JSON.stringify(rows)).not.toContain("target_count");
   });
 
@@ -1277,7 +1280,7 @@ describe("LD2450 cards beside the zone map", () => {
     const conditional = buildDeviceCards(countsOnly, deviceOf(countsOnly)).find(
       (c) => c.type === "conditional"
     )!;
-    expect(conditional.card.cards.map((c: any) => c.type)).toEqual(["markdown", "markdown"]);
+    expect(conditional.card.cards.map((c: any) => c.type)).toEqual(["markdown", "markdown", "markdown"]);
     expect(conditional.card.cards[1].content).toContain("| Zone 3 | ");
 
     const counts = Object.keys(radarIds(MTR, "")).filter((id) => /_zone_\d_\w+_target_count$/.test(id));
@@ -1285,7 +1288,7 @@ describe("LD2450 cards beside the zone map", () => {
     const plain = buildDeviceCards(cornersOnly, deviceOf(cornersOnly)).find(
       (c) => c.type === "conditional"
     )!;
-    expect(plain.card.cards.map((c: any) => c.type)).toEqual(["markdown", "entities"]);
+    expect(plain.card.cards.map((c: any) => c.type)).toEqual(["markdown", "entities", "markdown"]);
   });
 
   it("lists the zone presence sensors this integration made for the radar", () => {
@@ -1705,8 +1708,9 @@ describe("plain help, labels and the Device card", () => {
     expect(content).toContain("The **LD2450** tracks where people are");
     expect(content).toContain("1. Fix anything the LD2412's Radar setup card flags.");
     expect(content).toContain(
-      "6. For the LD2450, fix anything Radar setup flags above the zone map, set **Cone rotation**" +
-        " (under Map settings on the zone map) to match how the sensor is mounted, then press" +
+      "6. For the LD2450, fix anything Radar setup flags above the zone map, choose **Wall**," +
+        " **High** or **Ceiling** under Map settings on the zone map, set **Cone rotation**" +
+        " (**Map rotation** on a ceiling) to match how the sensor is mounted, then press" +
         " **Add zone**, draw the zone and walk into it."
     );
     expect(content).toContain("**In automations**, use **LD2412 Presence**");
@@ -1787,7 +1791,7 @@ describe("plain help, labels and the Device card", () => {
     expect(content).not.toContain("**LD2450 Presence**");
   });
 
-  it("gives a live MTR-1 three Start here steps, two without a setup card", () => {
+  it("gives a live MTR-1 four Start here steps, three without a setup card", () => {
     const mtr = "apollo_mtr_1_cbbdb4";
     const ids = {
       [`sensor.${mtr}_target_1_x`]: "0",
@@ -1797,12 +1801,16 @@ describe("plain help, labels and the Device card", () => {
     const steps = (content: string) => content.split("\n").filter((l) => /^\d\. /.test(l));
     expect(steps(help(hassOf("mtr", device, ids)))).toEqual([
       "1. Fix anything the Radar setup card flags.",
-      "2. Set **Cone rotation** (under Map settings on the zone map) to match how the sensor is mounted.",
-      "3. Press **Add zone** under the zone map and drag on the map to draw the zone. Reload this" +
+      "2. Under Map settings on the zone map, choose **Wall**, **High** (high on a wall or in a" +
+        " ceiling corner, tilted down) or **Ceiling** (straight down), and fill in the heights it" +
+        " asks for.",
+      "3. Set **Cone rotation** (**Map rotation** on a ceiling) under Map settings to match how the" +
+        " sensor is mounted.",
+      "4. Press **Add zone** under the zone map and drag on the map to draw the zone. Reload this" +
         " page, then walk into the zone and watch it turn on under Zone presence.",
     ]);
     const noSetup = hassOf("mtr", device, { [`sensor.${mtr}_target_1_x`]: "0" });
-    expect(steps(help(noSetup))).toHaveLength(2);
+    expect(steps(help(noSetup))).toHaveLength(3);
     expect(help(noSetup)).toContain("**LD2450 Presence** for anywhere the radar sees");
   });
 

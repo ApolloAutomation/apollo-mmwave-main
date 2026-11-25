@@ -1,0 +1,1198 @@
+{
+ "mount": [
+  {
+   "tracker": "ld2460",
+   "mode_state": "top",
+   "saved": null,
+   "expect": {
+    "mount": "ceiling",
+    "source": "radar"
+   }
+  },
+  {
+   "tracker": "ld2460",
+   "mode_state": "top",
+   "saved": "high",
+   "expect": {
+    "mount": "ceiling",
+    "source": "radar"
+   }
+  },
+  {
+   "tracker": "ld2460",
+   "mode_state": "side",
+   "saved": "ceiling",
+   "expect": {
+    "mount": "wall",
+    "source": "radar"
+   }
+  },
+  {
+   "tracker": "ld2460",
+   "mode_state": null,
+   "saved": "ceiling",
+   "expect": {
+    "mount": "ceiling",
+    "source": "saved"
+   }
+  },
+  {
+   "tracker": "ld2460",
+   "mode_state": "unknown",
+   "saved": "ceiling",
+   "expect": {
+    "mount": "ceiling",
+    "source": "saved"
+   }
+  },
+  {
+   "tracker": "ld2460",
+   "mode_state": "unavailable",
+   "saved": null,
+   "expect": {
+    "mount": "wall",
+    "source": "default"
+   }
+  },
+  {
+   "tracker": "ld2460",
+   "mode_state": "garbage",
+   "saved": "ceiling",
+   "expect": {
+    "mount": "ceiling",
+    "source": "saved"
+   }
+  },
+  {
+   "tracker": "ld2460",
+   "mode_state": null,
+   "saved": "high",
+   "expect": {
+    "mount": "wall",
+    "source": "default"
+   }
+  },
+  {
+   "tracker": "ld2460",
+   "mode_state": null,
+   "saved": null,
+   "expect": {
+    "mount": "wall",
+    "source": "default"
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "mode_state": null,
+   "saved": "high",
+   "expect": {
+    "mount": "high",
+    "source": "saved"
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "mode_state": null,
+   "saved": "ceiling",
+   "expect": {
+    "mount": "ceiling",
+    "source": "saved"
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "mode_state": "top",
+   "saved": null,
+   "expect": {
+    "mount": "wall",
+    "source": "default"
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "mode_state": "side",
+   "saved": "ceiling",
+   "expect": {
+    "mount": "ceiling",
+    "source": "saved"
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "mode_state": null,
+   "saved": null,
+   "expect": {
+    "mount": "wall",
+    "source": "default"
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "mode_state": null,
+   "saved": "HIGH",
+   "expect": {
+    "mount": "wall",
+    "source": "default"
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "mode_state": null,
+   "saved": "wall",
+   "expect": {
+    "mount": "wall",
+    "source": "default"
+   }
+  },
+  {
+   "tracker": null,
+   "mode_state": null,
+   "saved": "high",
+   "expect": {
+    "mount": "wall",
+    "source": "default"
+   }
+  },
+  {
+   "tracker": "ld2410",
+   "mode_state": "top",
+   "saved": "ceiling",
+   "expect": {
+    "mount": "wall",
+    "source": "default"
+   }
+  }
+ ],
+ "radius": [
+  {
+   "height_mm": 1500,
+   "radius_mm": 3464.1
+  },
+  {
+   "height_mm": 2000,
+   "radius_mm": 3464.1
+  },
+  {
+   "height_mm": 2200,
+   "radius_mm": 3810.5
+  },
+  {
+   "height_mm": 2300,
+   "radius_mm": 3983.7
+  },
+  {
+   "height_mm": 2310,
+   "radius_mm": 4000
+  },
+  {
+   "height_mm": 2700,
+   "radius_mm": 4000
+  },
+  {
+   "height_mm": 4000,
+   "radius_mm": 4000
+  },
+  {
+   "height_mm": 5000,
+   "radius_mm": 4000
+  }
+ ],
+ "geometry": [
+  {
+   "tracker": "ld2450",
+   "mode_state": null,
+   "entry": {},
+   "expect": {
+    "tracker": "ld2450",
+    "mount": "wall",
+    "source": "default",
+    "height_mm": null,
+    "tilt_deg": null,
+    "target_height_mm": null,
+    "dz_mm": null,
+    "flip": false
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "mode_state": null,
+   "entry": {
+    "mount": "high"
+   },
+   "expect": {
+    "tracker": "ld2450",
+    "mount": "high",
+    "source": "saved",
+    "height_mm": 2200,
+    "tilt_deg": 30,
+    "target_height_mm": 1000,
+    "dz_mm": 1200,
+    "flip": false
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "mode_state": null,
+   "entry": {
+    "mount": "high",
+    "mount_height_mm": 2700,
+    "tilt_deg": 45,
+    "target_height_mm": 800
+   },
+   "expect": {
+    "tracker": "ld2450",
+    "mount": "high",
+    "source": "saved",
+    "height_mm": 2700,
+    "tilt_deg": 45,
+    "target_height_mm": 800,
+    "dz_mm": 1900,
+    "flip": false
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "mode_state": null,
+   "entry": {
+    "mount": "high",
+    "mount_height_mm": 1200,
+    "target_height_mm": 2000
+   },
+   "expect": {
+    "tracker": "ld2450",
+    "mount": "high",
+    "source": "saved",
+    "height_mm": 1200,
+    "tilt_deg": 30,
+    "target_height_mm": 2000,
+    "dz_mm": 500,
+    "flip": false
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "mode_state": null,
+   "entry": {
+    "mount": "high",
+    "mount_height_mm": 5000,
+    "tilt_deg": 61,
+    "target_height_mm": -1
+   },
+   "expect": {
+    "tracker": "ld2450",
+    "mount": "high",
+    "source": "saved",
+    "height_mm": 2200,
+    "tilt_deg": 30,
+    "target_height_mm": 1000,
+    "dz_mm": 1200,
+    "flip": false
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "mode_state": null,
+   "entry": {
+    "mount": "high",
+    "mount_height_mm": "2500",
+    "tilt_deg": true,
+    "target_height_mm": 1000.5
+   },
+   "expect": {
+    "tracker": "ld2450",
+    "mount": "high",
+    "source": "saved",
+    "height_mm": 2200,
+    "tilt_deg": 30,
+    "target_height_mm": 1000,
+    "dz_mm": 1200,
+    "flip": false
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "mode_state": null,
+   "entry": {
+    "mount": "ceiling"
+   },
+   "expect": {
+    "tracker": "ld2450",
+    "mount": "ceiling",
+    "source": "saved",
+    "height_mm": 2700,
+    "tilt_deg": 90,
+    "target_height_mm": 1000,
+    "dz_mm": 1700,
+    "flip": false
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "mode_state": null,
+   "entry": {
+    "mount": "ceiling",
+    "ceiling_height_mm": 3000,
+    "flip_room_side": true
+   },
+   "expect": {
+    "tracker": "ld2450",
+    "mount": "ceiling",
+    "source": "saved",
+    "height_mm": 3000,
+    "tilt_deg": 90,
+    "target_height_mm": 1000,
+    "dz_mm": 2000,
+    "flip": true
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "mode_state": null,
+   "entry": {
+    "mount": "ceiling",
+    "flip_room_side": "true"
+   },
+   "expect": {
+    "tracker": "ld2450",
+    "mount": "ceiling",
+    "source": "saved",
+    "height_mm": 2700,
+    "tilt_deg": 90,
+    "target_height_mm": 1000,
+    "dz_mm": 1700,
+    "flip": false
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "mode_state": null,
+   "entry": {
+    "mount": "ceiling",
+    "ceiling_height_mm": 1999,
+    "mount_height_mm": 3000
+   },
+   "expect": {
+    "tracker": "ld2450",
+    "mount": "ceiling",
+    "source": "saved",
+    "height_mm": 2700,
+    "tilt_deg": 90,
+    "target_height_mm": 1000,
+    "dz_mm": 1700,
+    "flip": false
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "mode_state": null,
+   "entry": {
+    "mount": "HIGH",
+    "mount_height_mm": 3000
+   },
+   "expect": {
+    "tracker": "ld2450",
+    "mount": "wall",
+    "source": "default",
+    "height_mm": null,
+    "tilt_deg": null,
+    "target_height_mm": null,
+    "dz_mm": null,
+    "flip": false
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "mode_state": null,
+   "entry": {
+    "mount": "wall",
+    "flip_room_side": true
+   },
+   "expect": {
+    "tracker": "ld2450",
+    "mount": "wall",
+    "source": "default",
+    "height_mm": null,
+    "tilt_deg": null,
+    "target_height_mm": null,
+    "dz_mm": null,
+    "flip": false
+   }
+  },
+  {
+   "tracker": "ld2460",
+   "mode_state": null,
+   "entry": {
+    "mount": "ceiling",
+    "ceiling_height_mm": 3000,
+    "flip_room_side": true
+   },
+   "expect": {
+    "tracker": "ld2460",
+    "mount": "ceiling",
+    "source": "saved",
+    "height_mm": 3000,
+    "tilt_deg": null,
+    "target_height_mm": null,
+    "dz_mm": null,
+    "flip": false
+   }
+  },
+  {
+   "tracker": "ld2460",
+   "mode_state": "top",
+   "entry": {},
+   "expect": {
+    "tracker": "ld2460",
+    "mount": "ceiling",
+    "source": "radar",
+    "height_mm": 2700,
+    "tilt_deg": null,
+    "target_height_mm": null,
+    "dz_mm": null,
+    "flip": false
+   }
+  },
+  {
+   "tracker": "ld2460",
+   "mode_state": "side",
+   "entry": {
+    "mount": "ceiling"
+   },
+   "expect": {
+    "tracker": "ld2460",
+    "mount": "wall",
+    "source": "radar",
+    "height_mm": null,
+    "tilt_deg": null,
+    "target_height_mm": null,
+    "dz_mm": null,
+    "flip": false
+   }
+  },
+  {
+   "tracker": "ld2460",
+   "mode_state": null,
+   "entry": {
+    "mount": "high",
+    "mount_height_mm": 3000
+   },
+   "expect": {
+    "tracker": "ld2460",
+    "mount": "wall",
+    "source": "default",
+    "height_mm": null,
+    "tilt_deg": null,
+    "target_height_mm": null,
+    "dz_mm": null,
+    "flip": false
+   }
+  }
+ ],
+ "floor": [
+  {
+   "tracker": "ld2450",
+   "entry": {
+    "mount": "high",
+    "mount_height_mm": 2200,
+    "tilt_deg": 30,
+    "target_height_mm": 1000
+   },
+   "x": 300,
+   "y": 1300.0,
+   "expect": {
+    "x": 300,
+    "y": 500.0
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "entry": {
+    "mount": "high",
+    "mount_height_mm": 2200,
+    "tilt_deg": 30,
+    "target_height_mm": 1000
+   },
+   "x": 300,
+   "y": 1562.0,
+   "expect": {
+    "x": 300,
+    "y": 999.9
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "entry": {
+    "mount": "high",
+    "mount_height_mm": 2200,
+    "tilt_deg": 30,
+    "target_height_mm": 1000
+   },
+   "x": 300,
+   "y": 2332.4,
+   "expect": {
+    "x": 300,
+    "y": 2000.0
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "entry": {
+    "mount": "high",
+    "mount_height_mm": 2200,
+    "tilt_deg": 30,
+    "target_height_mm": 1000
+   },
+   "x": 300,
+   "y": 3231.1,
+   "expect": {
+    "x": 300,
+    "y": 3000.0
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "entry": {
+    "mount": "high",
+    "mount_height_mm": 2200,
+    "tilt_deg": 30,
+    "target_height_mm": 1000
+   },
+   "x": 300,
+   "y": 5142.0,
+   "expect": {
+    "x": 300,
+    "y": 5000.0
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "entry": {
+    "mount": "high",
+    "mount_height_mm": 2200,
+    "tilt_deg": 30,
+    "target_height_mm": 1000
+   },
+   "x": 0,
+   "y": 1562,
+   "expect": {
+    "x": 0,
+    "y": 999.9
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "entry": {
+    "mount": "high",
+    "mount_height_mm": 2200,
+    "tilt_deg": 30,
+    "target_height_mm": 1000
+   },
+   "x": 0,
+   "y": 1000,
+   "expect": {
+    "x": 0,
+    "y": 0.0
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "entry": {
+    "mount": "ceiling",
+    "ceiling_height_mm": 2700,
+    "target_height_mm": 1000
+   },
+   "x": 0,
+   "y": 1700,
+   "expect": {
+    "x": 0,
+    "y": 0.0
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "entry": {
+    "mount": "ceiling",
+    "ceiling_height_mm": 2700,
+    "target_height_mm": 1000
+   },
+   "x": 800,
+   "y": 2000,
+   "expect": {
+    "x": 800,
+    "y": 1053.6
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "entry": {
+    "mount": "ceiling",
+    "ceiling_height_mm": 2700,
+    "target_height_mm": 1000
+   },
+   "x": -1500,
+   "y": 2300,
+   "expect": {
+    "x": -1500,
+    "y": 1549.2
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "entry": {
+    "mount": "ceiling",
+    "ceiling_height_mm": 2700,
+    "target_height_mm": 1000
+   },
+   "x": 0,
+   "y": 1600,
+   "expect": {
+    "x": 0,
+    "y": 0.0
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "entry": {
+    "mount": "ceiling",
+    "ceiling_height_mm": 2700,
+    "target_height_mm": 1000,
+    "flip_room_side": true
+   },
+   "x": 800,
+   "y": 2000,
+   "expect": {
+    "x": 800,
+    "y": -1053.6
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "entry": {},
+   "x": 800,
+   "y": 2000,
+   "expect": {
+    "x": 800,
+    "y": 2000
+   }
+  },
+  {
+   "tracker": "ld2460",
+   "entry": {
+    "mount": "ceiling",
+    "ceiling_height_mm": 2700,
+    "target_height_mm": 1000
+   },
+   "x": 800,
+   "y": 2000,
+   "expect": {
+    "x": 800,
+    "y": 2000
+   }
+  },
+  {
+   "tracker": "ld2460",
+   "entry": {
+    "mount": "high"
+   },
+   "x": 800,
+   "y": 2000,
+   "expect": {
+    "x": 800,
+    "y": 2000
+   }
+  }
+ ],
+ "footprint": [
+  {
+   "tracker": "ld2450",
+   "entry": {
+    "mount": "high",
+    "mount_height_mm": 2200,
+    "tilt_deg": 0
+   },
+   "expect": {
+    "y_near": 1713.8,
+    "y_far": 5878.8,
+    "points": 50,
+    "half_width": [
+     {
+      "y": 1000,
+      "w": 2705.5
+     },
+     {
+      "y": 3000,
+      "w": 5055.7
+     }
+    ]
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "entry": {
+    "mount": "high",
+    "mount_height_mm": 2200,
+    "tilt_deg": 15
+   },
+   "expect": {
+    "y_near": 1006.9,
+    "y_far": 5878.8,
+    "points": 50,
+    "half_width": [
+     {
+      "y": 1000,
+      "w": 2705.5
+     },
+     {
+      "y": 3000,
+      "w": 5055.7
+     }
+    ]
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "entry": {
+    "mount": "high",
+    "mount_height_mm": 2200,
+    "tilt_deg": 30
+   },
+   "expect": {
+    "y_near": 559.6,
+    "y_far": 5878.8,
+    "points": 50,
+    "half_width": [
+     {
+      "y": 1000,
+      "w": 2705.5
+     },
+     {
+      "y": 3000,
+      "w": 5055.7
+     }
+    ]
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "entry": {
+    "mount": "high",
+    "mount_height_mm": 2200,
+    "tilt_deg": 45
+   },
+   "expect": {
+    "y_near": 211.6,
+    "y_far": 5878.8,
+    "points": 50,
+    "half_width": [
+     {
+      "y": 1000,
+      "w": 2705.5
+     },
+     {
+      "y": 3000,
+      "w": 5055.7
+     }
+    ]
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "entry": {
+    "mount": "high",
+    "mount_height_mm": 2200,
+    "tilt_deg": 60
+   },
+   "expect": {
+    "y_near": 0.0,
+    "y_far": 2573.4,
+    "points": 50,
+    "half_width": [
+     {
+      "y": 1000,
+      "w": 2705.5
+     },
+     {
+      "y": 3000,
+      "w": 5055.7
+     }
+    ]
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "entry": {
+    "mount": "high",
+    "mount_height_mm": 2700,
+    "tilt_deg": 30
+   },
+   "expect": {
+    "y_near": 792.7,
+    "y_far": 5754.1,
+    "points": 50,
+    "half_width": [
+     {
+      "y": 1000,
+      "w": 3416.1
+     },
+     {
+      "y": 3000,
+      "w": 4910.2
+     }
+    ]
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "entry": {
+    "mount": "high",
+    "mount_height_mm": 4000,
+    "tilt_deg": 0,
+    "target_height_mm": 500
+   },
+   "expect": {
+    "y_near": 4873.4,
+    "y_far": 4873.4,
+    "points": 50,
+    "half_width": [
+     {
+      "y": 1000,
+      "w": 4769.7
+     },
+     {
+      "y": 3000,
+      "w": 3840.6
+     }
+    ]
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "entry": {
+    "mount": "ceiling",
+    "ceiling_height_mm": 2400
+   },
+   "expect": {
+    "y_near": 0.0,
+    "y_far": 980.3,
+    "points": 50,
+    "half_width": [
+     {
+      "y": 0,
+      "w": 2424.9
+     },
+     {
+      "y": 1000,
+      "w": 2979.9
+     }
+    ]
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "entry": {
+    "mount": "ceiling",
+    "ceiling_height_mm": 2700
+   },
+   "expect": {
+    "y_near": 0.0,
+    "y_far": 1190.4,
+    "points": 50,
+    "half_width": [
+     {
+      "y": 0,
+      "w": 2944.5
+     },
+     {
+      "y": 1000,
+      "w": 3416.1
+     }
+    ]
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "entry": {
+    "mount": "ceiling",
+    "ceiling_height_mm": 3000
+   },
+   "expect": {
+    "y_near": 0.0,
+    "y_far": 1400.4,
+    "points": 50,
+    "half_width": [
+     {
+      "y": 0,
+      "w": 3464.1
+     },
+     {
+      "y": 1000,
+      "w": 3873.0
+     }
+    ]
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "entry": {
+    "mount": "ceiling",
+    "ceiling_height_mm": 2700,
+    "flip_room_side": true
+   },
+   "expect": {
+    "y_near": 0.0,
+    "y_far": 1190.4,
+    "points": 50,
+    "half_width": [
+     {
+      "y": 0,
+      "w": 2944.5
+     },
+     {
+      "y": 1000,
+      "w": 3416.1
+     }
+    ]
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "entry": {},
+   "expect": null
+  },
+  {
+   "tracker": "ld2460",
+   "entry": {
+    "mount": "ceiling"
+   },
+   "expect": null
+  }
+ ],
+ "edge": [
+  {
+   "tracker": "ld2450",
+   "entry": {
+    "mount": "high",
+    "mount_height_mm": 2200,
+    "tilt_deg": 30
+   },
+   "x": 0,
+   "y": 400,
+   "expect": {
+    "inside": false,
+    "edge_mm": 0.0
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "entry": {
+    "mount": "high",
+    "mount_height_mm": 2200,
+    "tilt_deg": 30
+   },
+   "x": 0,
+   "y": 700,
+   "expect": {
+    "inside": true,
+    "edge_mm": 140.43
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "entry": {
+    "mount": "high",
+    "mount_height_mm": 2200,
+    "tilt_deg": 30
+   },
+   "x": 0,
+   "y": 3000,
+   "expect": {
+    "inside": true,
+    "edge_mm": 2440.43
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "entry": {
+    "mount": "high",
+    "mount_height_mm": 2200,
+    "tilt_deg": 30
+   },
+   "x": 0,
+   "y": 5800,
+   "expect": {
+    "inside": true,
+    "edge_mm": 78.03
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "entry": {
+    "mount": "high",
+    "mount_height_mm": 2200,
+    "tilt_deg": 30
+   },
+   "x": 0,
+   "y": 5950,
+   "expect": {
+    "inside": false,
+    "edge_mm": 0.0
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "entry": {
+    "mount": "high",
+    "mount_height_mm": 2200,
+    "tilt_deg": 30
+   },
+   "x": 2600,
+   "y": 1000,
+   "expect": {
+    "inside": true,
+    "edge_mm": 73.62
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "entry": {
+    "mount": "high",
+    "mount_height_mm": 2200,
+    "tilt_deg": 30
+   },
+   "x": 2800,
+   "y": 1000,
+   "expect": {
+    "inside": false,
+    "edge_mm": 0.0
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "entry": {
+    "mount": "high",
+    "mount_height_mm": 2200,
+    "tilt_deg": 30
+   },
+   "x": -2000,
+   "y": 2000,
+   "expect": {
+    "inside": true,
+    "edge_mm": 1218.78
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "entry": {
+    "mount": "ceiling",
+    "ceiling_height_mm": 2700,
+    "target_height_mm": 1000
+   },
+   "x": 0,
+   "y": 100,
+   "expect": {
+    "inside": true,
+    "edge_mm": 100.0
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "entry": {
+    "mount": "ceiling",
+    "ceiling_height_mm": 2700,
+    "target_height_mm": 1000
+   },
+   "x": 0,
+   "y": 1100,
+   "expect": {
+    "inside": true,
+    "edge_mm": 90.35
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "entry": {
+    "mount": "ceiling",
+    "ceiling_height_mm": 2700,
+    "target_height_mm": 1000
+   },
+   "x": 0,
+   "y": 1300,
+   "expect": {
+    "inside": false,
+    "edge_mm": 0.0
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "entry": {
+    "mount": "ceiling",
+    "ceiling_height_mm": 2700,
+    "target_height_mm": 1000
+   },
+   "x": 2800,
+   "y": 300,
+   "expect": {
+    "inside": true,
+    "edge_mm": 183.15
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "entry": {
+    "mount": "ceiling",
+    "ceiling_height_mm": 2700,
+    "target_height_mm": 1000
+   },
+   "x": 3100,
+   "y": 300,
+   "expect": {
+    "inside": false,
+    "edge_mm": 0.0
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "entry": {
+    "mount": "ceiling",
+    "ceiling_height_mm": 2700,
+    "target_height_mm": 1000
+   },
+   "x": 0,
+   "y": -300,
+   "expect": {
+    "inside": false,
+    "edge_mm": 0.0
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "entry": {
+    "mount": "ceiling",
+    "ceiling_height_mm": 2700,
+    "target_height_mm": 1000,
+    "flip_room_side": true
+   },
+   "x": 0,
+   "y": -600,
+   "expect": {
+    "inside": true,
+    "edge_mm": 590.35
+   }
+  },
+  {
+   "tracker": "ld2450",
+   "entry": {
+    "mount": "ceiling",
+    "ceiling_height_mm": 2700,
+    "target_height_mm": 1000,
+    "flip_room_side": true
+   },
+   "x": 0,
+   "y": 600,
+   "expect": {
+    "inside": false,
+    "edge_mm": 0.0
+   }
+  }
+ ]
+}

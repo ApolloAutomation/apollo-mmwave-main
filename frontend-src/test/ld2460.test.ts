@@ -7,7 +7,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import radar from "./fixtures/ld2460-ceiling-radar.json";
-import mountCases from "./fixtures/ld2460-mount-cases.json";
+import mountCases from "./fixtures/mount-cases.json";
 import type { HassEntity, HomeAssistant } from "../src/types";
 import { hasLd2450Device, ld2450EntityIds } from "../src/ld2450";
 import {
