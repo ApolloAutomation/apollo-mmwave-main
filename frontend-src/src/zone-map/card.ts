@@ -2294,7 +2294,6 @@ export class ZoneMapCard extends HTMLElement {
         .mount-switch button + button { border-left: 0; }
         @container map-side (min-width: 480px) and (max-width: 599px) { .mount-switch.three { width: 100%; align-self: stretch; } }
         @container map-side (min-width: 600px) { .mount-input { flex: 0 1 auto; } .mount-input input { width: 7em; flex: none; } .mount-field-row label { flex-basis: auto; } }
-        #ceilingHeightInput { width: 7em; min-height: 44px; box-sizing: border-box; font-size: 16px; padding: 4px 8px; }
         /* Whole room, under Draw shape on a ceiling map. */
         .zone-room { display: flex; flex-wrap: wrap; align-items: center; gap: var(--zm-gap); }
         .zone-room[hidden], .zone-room [hidden] { display: none; }
@@ -2529,10 +2528,9 @@ export class ZoneMapCard extends HTMLElement {
               <div class="map-option-hint mount-conflict" id="mountConflict" hidden>${MOUNT_CONFLICT}</div>
             </div>
             <div class="ceiling-height-option" id="ceilingHeightOption" hidden>
-              <div class="ceiling-height-row">
+              <div class="ceiling-height-row mount-field-row">
                 <label for="ceilingHeightInput">${CEILING_HEIGHT_LABEL}</label>
-                <input type="number" id="ceilingHeightInput" inputmode="decimal" />
-                <span id="ceilingHeightUnit"></span>
+                <span class="mount-input"><input type="number" id="ceilingHeightInput" inputmode="decimal" /><span id="ceilingHeightUnit"></span></span>
                 <span class="zone-save-status" id="ceilingHeightStatus" role="status"></span>
               </div>
               <div class="map-option-hint" id="ceilingCoverageLine"></div>
@@ -4959,7 +4957,8 @@ export class ZoneMapCard extends HTMLElement {
   _rangeText() {
     const print = this._footprint();
     if (print) {
-      return this._footprintText(print, this._mountInfo(), this._unitFamily(this._displayUnit()));
+      // The coverage sentence ends in its own period.
+      return this._footprintText(print, this._mountInfo(), this._unitFamily(this._displayUnit())).replace(/\.$/, '');
     }
     const [first, second] = this._rangeParts();
     if (this._isTopDown()) return `${first} (${second}) around the radar`;
@@ -5644,7 +5643,10 @@ export class ZoneMapCard extends HTMLElement {
     return { ...fitted, step };
   }
 
-  /** The box around the radar and its footprint, grown by `grow`. */
+  /**
+   * The box around the radar and its footprint, grown by `grow`, with a
+   * margin on every side so the radar and wall line are not on the edge.
+   */
   _footprintBox(grow) {
     const box = { xMin: 0, xMax: 0, yMin: 0, yMax: 0 };
     this._footprintMapPoints().forEach(({ x, y }) => {
@@ -5653,7 +5655,8 @@ export class ZoneMapCard extends HTMLElement {
       box.yMin = Math.min(box.yMin, y * grow);
       box.yMax = Math.max(box.yMax, y * grow);
     });
-    return box;
+    const pad = (grow - 1) * Math.max(box.xMax - box.xMin, box.yMax - box.yMin);
+    return { xMin: box.xMin - pad, xMax: box.xMax + pad, yMin: box.yMin - pad, yMax: box.yMax + pad };
   }
 
   /** The box around a cone of `radius` mm at the card's width and rotation. */

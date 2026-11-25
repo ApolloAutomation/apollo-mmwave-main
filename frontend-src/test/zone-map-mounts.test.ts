@@ -540,4 +540,30 @@ describe("Map settings on a phone", () => {
     expect(css).not.toMatch(/\.mount-(?:details|field|explain)[^{]*\{[^}]*\bwidth: \d+px/);
     expect($(card, "mountHeightInput").closest(".mount-input")).not.toBeNull();
   });
+
+  it("gives Ceiling height the same full-width field", async () => {
+    const card = await mount(hassOf({ payload: CEILING }));
+    expect($(card, "ceilingHeightInput").closest(".mount-input")).not.toBeNull();
+    expect($(card, "ceilingHeightInput").closest(".mount-field-row")).not.toBeNull();
+  });
+});
+
+describe("the grid line under Map settings", () => {
+  it("ends the coverage sentence once on High and Ceiling", async () => {
+    for (const payload of [HIGH, CEILING]) {
+      const card = await mount(hassOf({ payload }));
+      const text = $(card, "gridInfo").textContent;
+      expect(text).toMatch(/Radar range: Covers /);
+      expect(text).not.toMatch(/[a-z]\.\./);
+    }
+  });
+});
+
+describe("the fitted map on High and Ceiling", () => {
+  it("keeps the radar and wall line off the map's edge", async () => {
+    for (const payload of [HIGH, CEILING]) {
+      const card = await mount(hassOf({ payload }));
+      expect(card._fittedGrid().yMin).toBeLessThan(0);
+    }
+  });
 });
