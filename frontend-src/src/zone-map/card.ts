@@ -5687,9 +5687,11 @@ export class ZoneMapCard extends HTMLElement {
       const spanX = Math.max(1, fitted.xMax - fitted.xMin);
       return this._chooseGridStep(CANVAS_WIDTH_PX / spanX, spanX, unit);
     };
-    const minAspect = this._fitMinAspect(box);
-    const fit = (step) =>
-      this._shapeFit(this._roundOut(box, step), step, Math.sin(facing), Math.cos(facing), minAspect);
+    const fit = (step) => {
+      const rounded = this._roundOut(box, step);
+      const minAspect = this._fitMinAspect(box, rounded);
+      return this._shapeFit(rounded, step, Math.sin(facing), Math.cos(facing), minAspect);
+    };
     let step = stepFor(box);
     let fitted = fit(step);
     const tried = [step];
@@ -5733,16 +5735,17 @@ export class ZoneMapCard extends HTMLElement {
    * FIT_MIN_ASPECT, or for an LD2450's ceiling strip as short as
    * CEILING_FIT_MIN_ASPECT while the map stays SHORT_MAP_MIN_PX tall, and
    * `box` (the strip and zones) has SHORT_MAP_BUTTONS_PX under it, at the
-   * width the map is shown at (_fitWidthPx).
+   * width the map is shown at (_fitWidthPx). `rounded` is `box` rounded out
+   * to the grid, whose top and width the map keeps.
    */
-  _fitMinAspect(box) {
+  _fitMinAspect(box, rounded = box) {
     if (!this._isCeiling() || !this._footprint()) {
       this._fitWidthSeen = 0;
       return FIT_MIN_ASPECT;
     }
     const width = this._fitWidthPx();
     this._fitWidthSeen = width;
-    const boxAspect = (box.yMax - box.yMin) / Math.max(1, box.xMax - box.xMin);
+    const boxAspect = (box.yMax - rounded.yMin) / Math.max(1, rounded.xMax - rounded.xMin);
     const shortest = Math.max(SHORT_MAP_MIN_PX / width, boxAspect + SHORT_MAP_BUTTONS_PX / width);
     return Math.min(FIT_MIN_ASPECT, Math.max(CEILING_FIT_MIN_ASPECT, shortest));
   }
@@ -5756,6 +5759,17 @@ export class ZoneMapCard extends HTMLElement {
     const stage = this._fullWindow ? 0 : this.shadowRoot?.getElementById('mapStage')?.clientWidth;
     const width = [full, stage, this._cssMapWidth].find((value) => value > 0);
     return width || CANVAS_WIDTH_PX;
+  }
+
+  /**
+   * Fit again when the width a ceiling strip's shape was fitted at
+   * (_fitMinAspect) is not the width shown now. Returns whether it moved.
+   */
+  _refitForWidth() {
+    if (!this._fitWidthSeen || this._fitWidthPx() === this._fitWidthSeen) return false;
+    if (!this._refitGrid()) return false;
+    this._renderInfo();
+    return true;
   }
 
   /** The box around a cone of `radius` mm at the card's width and rotation. */
@@ -10145,11 +10159,8 @@ export class ZoneMapCard extends HTMLElement {
     if (!(cssWidth > 0)) return;
     const moved = cssWidth !== this._cssMapWidth;
     this._cssMapWidth = cssWidth;
-    // A ceiling strip's shortest shape follows the width.
-    if (moved && this._fitWidthSeen && this._fitWidthPx() !== this._fitWidthSeen && this._refitGrid()) {
-      this._renderInfo();
-    }
-    if (this._sizeBackingStore() || moved) this.drawGrid();
+    const refit = this._refitForWidth();
+    if (this._sizeBackingStore() || moved || refit) this.drawGrid();
   }
 
   _watchResolution() {
@@ -10867,9 +10878,15 @@ export class ZoneMapCard extends HTMLElement {
     container.dataset.layout = layout.layout;
     container.style.setProperty('--zm-full-width', `${layout.mapWidth}px`);
     container.style.setProperty('--zm-side-width', `${layout.sideWidth}px`);
+    // A new window size refits; a refit's own reshape refits once.
+    if (force || box) this._fullRefits = 0;
+    let redraw = force;
+    if ((this._fullRefits ?? 0) < 2 && this._refitForWidth()) {
+      this._fullRefits = (this._fullRefits ?? 0) + 1;
+      redraw = true;
+    }
     // One layout read, after the width is set: the store follows it.
     const cssWidth = this.canvas?.getBoundingClientRect?.().width;
-    let redraw = force;
     if (cssWidth > 0 && cssWidth !== this._cssMapWidth) {
       this._cssMapWidth = cssWidth;
       redraw = true;
@@ -11025,6 +11042,7 @@ export class ZoneMapCard extends HTMLElement {
     // The card's 800 px logical width again, and the store for its width.
     const cssWidth = this.canvas?.getBoundingClientRect?.().width;
     if (cssWidth > 0) this._cssMapWidth = cssWidth;
+    this._refitForWidth();
     this._sizeCanvas();
     this.drawGrid();
     if (reason !== 'disconnect') {

@@ -684,4 +684,36 @@ describe("the fitted map on High and Ceiling", () => {
     push(card, hass, { ceiling_height_mm: 4000 });
     expect(card.yMax).toBeGreaterThan(tall.yMax);
   });
+
+  it("leaves the bottom buttons room under a zone that rounds out the top", async () => {
+    const zone = { shape: "rect", data: { x_min: -5000, x_max: 5000, y_min: -503, y_max: 2000 } };
+    const card = await mount(hassOf({ payload: { ...CEILING, zones: { "1": zone } } }));
+    const grid = card._fittedGrid();
+    const pxPerMm = 800 / (grid.xMax - grid.xMin);
+    expect((grid.yMax - grid.yMin) / (grid.xMax - grid.xMin)).toBeLessThan(0.75);
+    expect((grid.yMax - 2000) * pxPerMm).toBeGreaterThanOrEqual(76);
+  });
+
+  it("refits a ceiling strip for the card's width when Expand closes", async () => {
+    const hass = hassOf({ payload: CEILING });
+    const card = await mount(hass);
+    document.body.appendChild(card);
+    let shown = 386;
+    Object.defineProperty($(card, "mapStage"), "clientWidth", { configurable: true, get: () => shown });
+    vi.spyOn(card.canvas, "getBoundingClientRect").mockImplementation(() => ({ width: shown }) as DOMRect);
+    card._resizeCanvasTo(386);
+    card._openFullWindow();
+    expect(card._fullWindow).toBe(true);
+    shown = 1880;
+    card._layoutFullWindow({ box: { width: 1900, height: 900 } });
+    expect(card._fitWidthSeen).toBe(card._fullLayout.mapWidth);
+    push(card, hass, { ceiling_height_mm: 2701 });
+    shown = 386;
+    card._closeFullWindow({ reason: "user" });
+    expect(card._fitWidthSeen).toBe(386);
+    const pxPerMm = 386 / (card.xMax - card.xMin);
+    const far = Math.max(...card._footprintMapPoints().map((p: any) => p.y));
+    expect((card.yMax - far) * pxPerMm).toBeGreaterThanOrEqual(76 - 1);
+    card.remove();
+  });
 });

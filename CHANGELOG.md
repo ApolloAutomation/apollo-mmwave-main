@@ -12,8 +12,8 @@ and everyday use are in [README.md](README.md) and
   filled only its top part and the rest was empty. The map is now short and
   wide around the strip, with just enough room under it for the buttons in
   the map's bottom corners, on a phone and on a computer. It fits again
-  when the mount, the ceiling height or the person height changes, or when
-  the card's width does. Wall, High, the LD2460 and a grid set in YAML are
+  when the mount, the ceiling height or the person height changes, when
+  the card's width does, and when **Expand** opens or closes. Wall, High, the LD2460 and a grid set in YAML are
   unchanged.
 
 ## What changed in 2.5.0
