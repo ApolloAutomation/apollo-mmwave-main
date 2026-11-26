@@ -649,4 +649,39 @@ describe("the fitted map on High and Ceiling", () => {
       expect(card._fittedGrid().yMin).toBeLessThan(0);
     }
   });
+
+  it("hugs a ceiling strip with a short map, leaving Wall and High near square", async () => {
+    const shape = (g: any) => (g.yMax - g.yMin) / (g.xMax - g.xMin);
+    for (const feet of [false, true]) {
+      const card = await mount(hassOf({ payload: CEILING, feet }));
+      const grid = card._fittedGrid();
+      expect(shape(grid)).toBeLessThan(0.5);
+      card._footprintMapPoints().forEach((p: any) => {
+        expect(p.x).toBeGreaterThanOrEqual(grid.xMin);
+        expect(p.x).toBeLessThanOrEqual(grid.xMax);
+        expect(p.y).toBeGreaterThanOrEqual(grid.yMin);
+        expect(p.y).toBeLessThanOrEqual(grid.yMax);
+      });
+    }
+    for (const payload of [{}, HIGH]) {
+      const card = await mount(hassOf({ payload }));
+      expect(shape(card._fittedGrid())).toBeGreaterThanOrEqual(0.75);
+    }
+  });
+
+  it("keeps a short ceiling map tall enough for its buttons on a phone", async () => {
+    const hass = hassOf({ payload: CEILING });
+    const card = await mount(hass);
+    const wide = card._fittedGrid();
+    card._resizeCanvasTo(340);
+    const tall = { xMin: card.xMin, xMax: card.xMax, yMin: card.yMin, yMax: card.yMax };
+    const pxPerMm = 340 / (tall.xMax - tall.xMin);
+    expect((tall.yMax - tall.yMin) * pxPerMm).toBeGreaterThanOrEqual(128);
+    expect(tall.yMax - tall.yMin).toBeGreaterThan(wide.yMax - wide.yMin);
+    // The strip's far edge stays clear of the bottom buttons.
+    const far = Math.max(...card._footprintMapPoints().map((p: any) => p.y));
+    expect((tall.yMax - far) * pxPerMm).toBeGreaterThanOrEqual(76 - 1);
+    push(card, hass, { ceiling_height_mm: 4000 });
+    expect(card.yMax).toBeGreaterThan(tall.yMax);
+  });
 });

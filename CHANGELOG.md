@@ -4,6 +4,18 @@ What changed in each release of Apollo mmWave Dashboard, newest first. Setup
 and everyday use are in [README.md](README.md) and
 [docs/configuration.md](docs/configuration.md).
 
+## What changed in 2.5.1
+
+- **A ceiling LD2450's map fits its strip.** On **Mounted on: Ceiling**, an
+  LD2450 covers a strip about 5.9 m along the wall and 1.2 m into the room
+  (at a 2.7 m ceiling), but the zone map stayed nearly square, so the strip
+  filled only its top part and the rest was empty. The map is now short and
+  wide around the strip, with just enough room under it for the buttons in
+  the map's bottom corners, on a phone and on a computer. It fits again
+  when the mount, the ceiling height or the person height changes, or when
+  the card's width does. Wall, High, the LD2460 and a grid set in YAML are
+  unchanged.
+
 ## What changed in 2.5.0
 
 An LD2450 can now be mounted high on a wall or on the ceiling, and LD2460
