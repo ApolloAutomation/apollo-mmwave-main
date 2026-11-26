@@ -162,13 +162,13 @@ Copy the URLs from the warning exactly and add each one once, as a module:
 lovelace:
   resource_mode: yaml
   resources:
-    - url: /apollo_mmwave/apollo-radar-tuning.js?v=2.5.0
+    - url: /apollo_mmwave/apollo-radar-tuning.js?v=2.5.1
       type: module
-    - url: /apollo_mmwave/apollo-radar-zone-map-card.js?v=2.5.0
+    - url: /apollo_mmwave/apollo-radar-zone-map-card.js?v=2.5.1
       type: module
 ```
 
-The `?v=` is the integration version, such as `?v=2.5.0`, and nothing else,
+The `?v=` is the integration version, such as `?v=2.5.1`, and nothing else,
 so a bundle's URL changes only when the version does. After every upgrade,
 replace each row's URL with the new one from the warning instead of adding a
 second row. An out-of-date row makes the browser run the bundle twice, once
@@ -186,7 +186,7 @@ Any signed-in user can ask, so the check works for everyone. When the two
 differ, the card says so (the versions here are examples):
 
 - **The page runs older cards:** "Apollo mmWave Dashboard was updated to
-  2.5.1, but this page still runs 2.5.0." (a page from 2.4.1 or earlier
+  2.5.2, but this page still runs 2.5.1." (a page from 2.4.1 or earlier
   says "Apollo mmWave was updated to ...") with a **Reload** button, and
   under it "In the Home Assistant app, if Reload does not help, close the
   app fully and open it again." If the app still shows the old cards after
@@ -195,8 +195,8 @@ differ, the card says so (the versions here are examples):
     cache**.
   - iPhone and iPad: **Settings → Companion app → Debugging → Clear web view
     cache**.
-- **The page runs newer cards:** "Apollo mmWave Dashboard 2.5.0 is
-  installed, but Home Assistant still runs 2.4.2. Restart Home Assistant to
+- **The page runs newer cards:** "Apollo mmWave Dashboard 2.5.1 is
+  installed, but Home Assistant still runs 2.5.0. Restart Home Assistant to
   finish updating." There is no button: restart Home Assistant (Settings →
   System, the power icon in the top right).
 

@@ -491,6 +491,17 @@ const FIT_MARGIN_FRACTION = 0.05;
 // would be shorter still, but the drawing buttons open upward from the bottom
 // edge, up to six buttons tall in polygon mode, and need the height on a phone.
 const FIT_MIN_ASPECT = 0.75;
+// An LD2450 on a ceiling sees a strip along its wall, about 5.9 m by 1.2 m,
+// which a near-square map left mostly empty. Its map can be as short as
+// this share of its width, but never shorter on screen than
+// SHORT_MAP_MIN_PX, the height the corner buttons need: Expand at the top
+// right over the zoom row, and the shapes menu in columns at the left. It
+// also keeps SHORT_MAP_BUTTONS_PX under the strip for the bottom buttons
+// (the unit, undo and lock row and the zoom row over it), so they do not
+// cover the strip's far edge.
+const CEILING_FIT_MIN_ASPECT = 0.3;
+const SHORT_MAP_MIN_PX = 128;
+const SHORT_MAP_BUTTONS_PX = 76;
 // A fitted edge within this many mm of a grid step stays on that step. The
 // card saves zones in whole mm, rounded from a point clamped to the map, and a
 // feet edge is rarely a whole mm (22 ft is 6705.6 mm), so a zone drawn to the
@@ -5639,7 +5650,7 @@ export class ZoneMapCard extends HTMLElement {
    * out by FIT_MARGIN_FRACTION, grown to take in every stored zone so none is
    * cut off, then rounded out to whole grid steps of the map's unit so the
    * edges land on grid lines. Last, the short side is grown, in whole steps,
-   * to keep the canvas between FIT_MIN_ASPECT and square. It grows on the
+   * to keep the canvas between _fitMinAspect and square. It grows on the
    * side the radar faces, so a wall-mounted radar stays on the edge it is
    * mounted on, and evenly when the radar faces neither way along that axis.
    *
@@ -5676,8 +5687,11 @@ export class ZoneMapCard extends HTMLElement {
       const spanX = Math.max(1, fitted.xMax - fitted.xMin);
       return this._chooseGridStep(CANVAS_WIDTH_PX / spanX, spanX, unit);
     };
-    const fit = (step) =>
-      this._shapeFit(this._roundOut(box, step), step, Math.sin(facing), Math.cos(facing));
+    const fit = (step) => {
+      const rounded = this._roundOut(box, step);
+      const minAspect = this._fitMinAspect(box, rounded);
+      return this._shapeFit(rounded, step, Math.sin(facing), Math.cos(facing), minAspect);
+    };
     let step = stepFor(box);
     let fitted = fit(step);
     const tried = [step];
@@ -5714,6 +5728,48 @@ export class ZoneMapCard extends HTMLElement {
     });
     const pad = (grow - 1) * Math.max(box.xMax - box.xMin, box.yMax - box.yMin);
     return { xMin: box.xMin - pad, xMax: box.xMax + pad, yMin: box.yMin - pad, yMax: box.yMax + pad };
+  }
+
+  /**
+   * The shortest the fitted map may be, as a share of its width:
+   * FIT_MIN_ASPECT, or for an LD2450's ceiling strip as short as
+   * CEILING_FIT_MIN_ASPECT while the map stays SHORT_MAP_MIN_PX tall, and
+   * `box` (the strip and zones) has SHORT_MAP_BUTTONS_PX under it, at the
+   * width the map is shown at (_fitWidthPx). `rounded` is `box` rounded out
+   * to the grid, whose top and width the map keeps.
+   */
+  _fitMinAspect(box, rounded = box) {
+    if (!this._isCeiling() || !this._footprint()) {
+      this._fitWidthSeen = 0;
+      return FIT_MIN_ASPECT;
+    }
+    const width = this._fitWidthPx();
+    this._fitWidthSeen = width;
+    const boxAspect = (box.yMax - rounded.yMin) / Math.max(1, rounded.xMax - rounded.xMin);
+    const shortest = Math.max(SHORT_MAP_MIN_PX / width, boxAspect + SHORT_MAP_BUTTONS_PX / width);
+    return Math.min(FIT_MIN_ASPECT, Math.max(CEILING_FIT_MIN_ASPECT, shortest));
+  }
+
+  /**
+   * The CSS width the map has room for: the window's map while expanded,
+   * else the card's map area, else the canvas's last width, else 800 px.
+   */
+  _fitWidthPx() {
+    const full = this._fullWindow ? this._fullLayout?.mapWidth : 0;
+    const stage = this._fullWindow ? 0 : this.shadowRoot?.getElementById('mapStage')?.clientWidth;
+    const width = [full, stage, this._cssMapWidth].find((value) => value > 0);
+    return width || CANVAS_WIDTH_PX;
+  }
+
+  /**
+   * Fit again when the width a ceiling strip's shape was fitted at
+   * (_fitMinAspect) is not the width shown now. Returns whether it moved.
+   */
+  _refitForWidth() {
+    if (!this._fitWidthSeen || this._fitWidthPx() === this._fitWidthSeen) return false;
+    if (!this._refitGrid()) return false;
+    this._renderInfo();
+    return true;
   }
 
   /** The box around a cone of `radius` mm at the card's width and rotation. */
@@ -5771,11 +5827,11 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   /**
-   * `box` with its short side grown so its height is between FIT_MIN_ASPECT
+   * `box` with its short side grown so its height is between `minAspect`
    * of its width and its width, toward the side the radar faces along that
    * axis (`facingX`, `facingY`), or evenly when it faces neither way.
    */
-  _shapeFit(box, step, facingX, facingY) {
+  _shapeFit(box, step, facingX, facingY, minAspect = FIT_MIN_ASPECT) {
     const grow = (min, max, steps, facing) => {
       if (Math.abs(facing) < 1e-6) {
         const before = Math.floor(steps / 2);
@@ -5789,8 +5845,8 @@ export class ZoneMapCard extends HTMLElement {
     if (height > width) {
       const steps = Math.round((height - width) / step);
       [fitted.xMin, fitted.xMax] = grow(box.xMin, box.xMax, steps, facingX);
-    } else if (height < FIT_MIN_ASPECT * width) {
-      const steps = Math.ceil((FIT_MIN_ASPECT * width - height) / step - 1e-9);
+    } else if (height < minAspect * width) {
+      const steps = Math.ceil((minAspect * width - height) / step - 1e-9);
       [fitted.yMin, fitted.yMax] = grow(box.yMin, box.yMax, steps, facingY);
     }
     return fitted;
@@ -9991,7 +10047,7 @@ export class ZoneMapCard extends HTMLElement {
    * width every px size in the card (labels, lines, dots, the grid's 40 px
    * spacing) was made for. A YAML grid keeps the square 800 px it always
    * had. A fitted grid gets the grid's own shape (_shapeFit keeps it
-   * between FIT_MIN_ASPECT and square), and the container takes the same
+   * between _fitMinAspect and square), and the container takes the same
    * aspect ratio, so a meter is as long across as it is down and the cone
    * is not stretched. The aspect is the shape at 800 px, never what a
    * rounded store size makes of it, so it cannot move the layout that sizes
@@ -10103,7 +10159,8 @@ export class ZoneMapCard extends HTMLElement {
     if (!(cssWidth > 0)) return;
     const moved = cssWidth !== this._cssMapWidth;
     this._cssMapWidth = cssWidth;
-    if (this._sizeBackingStore() || moved) this.drawGrid();
+    const refit = this._refitForWidth();
+    if (this._sizeBackingStore() || moved || refit) this.drawGrid();
   }
 
   _watchResolution() {
@@ -10821,9 +10878,15 @@ export class ZoneMapCard extends HTMLElement {
     container.dataset.layout = layout.layout;
     container.style.setProperty('--zm-full-width', `${layout.mapWidth}px`);
     container.style.setProperty('--zm-side-width', `${layout.sideWidth}px`);
+    // A new window size refits; a refit's own reshape refits once.
+    if (force || box) this._fullRefits = 0;
+    let redraw = force;
+    if ((this._fullRefits ?? 0) < 2 && this._refitForWidth()) {
+      this._fullRefits = (this._fullRefits ?? 0) + 1;
+      redraw = true;
+    }
     // One layout read, after the width is set: the store follows it.
     const cssWidth = this.canvas?.getBoundingClientRect?.().width;
-    let redraw = force;
     if (cssWidth > 0 && cssWidth !== this._cssMapWidth) {
       this._cssMapWidth = cssWidth;
       redraw = true;
@@ -10979,6 +11042,7 @@ export class ZoneMapCard extends HTMLElement {
     // The card's 800 px logical width again, and the store for its width.
     const cssWidth = this.canvas?.getBoundingClientRect?.().width;
     if (cssWidth > 0) this._cssMapWidth = cssWidth;
+    this._refitForWidth();
     this._sizeCanvas();
     this.drawGrid();
     if (reason !== 'disconnect') {
