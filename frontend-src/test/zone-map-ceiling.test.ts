@@ -307,6 +307,17 @@ describe("the Wall / Ceiling switch", () => {
     expect([card.coneYMax, card.coneFovDeg]).toEqual([6000, 120]);
   });
 
+  it("keeps the radar's last report while it is unavailable", async () => {
+    const hass = hassOf({ mode: "side", payload: { mount: "ceiling" } });
+    const card = await mount(hass);
+    const states = { ...hass.states, [MODE]: { entity_id: MODE, state: "unavailable", attributes: {} } };
+    hass.states = states;
+    card.hass = { ...hass, states };
+    expect($(card, "mountConflict").hidden).toBe(false);
+    expect($(card, "btnMountWall").getAttribute("aria-checked")).toBe("true");
+    expect(writes(hass)).toEqual([]);
+  });
+
   it("tells how to use the saved Ceiling, and brings it back when the report goes", async () => {
     const hass = hassOf({ mode: "side", payload: { mount: "ceiling" } });
     const card = await mount(hass);
@@ -315,6 +326,7 @@ describe("the Wall / Ceiling switch", () => {
     expect(note).toContain("set on the radar itself and only read here, under LD2460 Live");
     expect(note).toContain("reports top (ceiling)");
     expect(note).toContain("Ceiling stays saved");
+    expect(note).toContain("While the radar is unavailable, its last report is kept");
     expect($(card, "btnMountCeiling").disabled).toBe(true);
     // The radar stops reporting: the saved Ceiling is used, unwritten.
     const states = { ...hass.states, [MODE]: { entity_id: MODE, state: "unknown", attributes: {} } };

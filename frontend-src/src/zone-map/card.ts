@@ -5765,8 +5765,9 @@ export class ZoneMapCard extends HTMLElement {
     // Wide enough that the strip and buttons fit the cap.
     const widest = needed / Math.max(CEILING_FIT_MIN_ASPECT, CEILING_FIT_MAX_ASPECT - buttons);
     const width0 = rounded.xMax - rounded.xMin;
-    if (width0 < widest) {
-      const steps = Math.ceil((widest - width0) / step - 1e-9);
+    const widen = (steps) => {
+      fitted.xMin = rounded.xMin;
+      fitted.xMax = rounded.xMax;
       if (Math.abs(facingX) < 1e-6) {
         const before = Math.floor(steps / 2);
         fitted.xMin -= before * step;
@@ -5776,15 +5777,23 @@ export class ZoneMapCard extends HTMLElement {
       } else {
         fitted.xMin -= steps * step;
       }
-    }
-    const width = fitted.xMax - fitted.xMin;
-    const minAspect = Math.min(
-      CEILING_FIT_MAX_ASPECT,
-      Math.max(CEILING_FIT_MIN_ASPECT, SHORT_MAP_MIN_PX / widthPx, needed / width + buttons),
-    );
+    };
+    let steps = width0 < widest ? Math.ceil((widest - width0) / step - 1e-9) : 0;
     const height = rounded.yMax - rounded.yMin;
-    if (height < minAspect * width) {
-      fitted.yMax += Math.ceil((minAspect * width - height) / step - 1e-9) * step;
+    // Rounding up can pass the cap: widen and recheck.
+    for (let pass = 0; pass < 8; pass += 1) {
+      widen(steps);
+      const width = fitted.xMax - fitted.xMin;
+      const minAspect = Math.min(
+        CEILING_FIT_MAX_ASPECT,
+        Math.max(CEILING_FIT_MIN_ASPECT, SHORT_MAP_MIN_PX / widthPx, needed / width + buttons),
+      );
+      fitted.yMax = rounded.yMax;
+      if (height < minAspect * width) {
+        fitted.yMax += Math.ceil((minAspect * width - height) / step - 1e-9) * step;
+      }
+      if (fitted.yMax - fitted.yMin <= CEILING_FIT_MAX_ASPECT * width + 1e-6) break;
+      steps += 1;
     }
     return fitted;
   }

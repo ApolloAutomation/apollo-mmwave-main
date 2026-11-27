@@ -768,6 +768,18 @@ describe("the fitted map on High and Ceiling", () => {
     });
   }
 
+  it("keeps a turned strip within 1.5 after rounding up its height", async () => {
+    const zone = { shape: "rect", data: { x_min: -7000, x_max: 7000, y_min: -10000, y_max: 8500 } };
+    for (const width of [320, 340, 800]) {
+      const card = await mount(hassOf({ payload: { ...CEILING, rotation_deg: 90, zones: { "1": zone } } }));
+      card._cssMapWidth = width;
+      const grid = card._fittedGrid();
+      const spanX = grid.xMax - grid.xMin;
+      expect((grid.yMax - grid.yMin) / spanX).toBeLessThanOrEqual(1.5 + 1e-9);
+      expect((grid.yMax - 8500) * (width / spanX)).toBeGreaterThanOrEqual(76 - 1);
+    }
+  });
+
   it("bounds a turned strip's fit at a tiny width", async () => {
     const card = await mount(hassOf({ payload: { ...CEILING, rotation_deg: 90 } }));
     card._cssMapWidth = 44;

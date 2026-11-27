@@ -67,6 +67,12 @@ describe("fullWindowLayout", () => {
     }
   });
 
+  it("puts a tall map beside the panel when it is tall enough there", () => {
+    const layout = fullWindowLayout({ width: 800, height: 350, aspect: 0.667, cardMapWidth: 293 });
+    expect(layout.layout).toBe("side");
+    expect(layout.mapWidth / 0.667).toBeGreaterThanOrEqual(240);
+  });
+
   // The zone map's fitted shape, the measured header and the card's map, in
   // content boxes inside the full window's 8 px padding.
   const PHONE_MAP = { aspect: 800 / 622, headerPx: 64, cardMapWidth: 310.7 };

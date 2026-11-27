@@ -24,7 +24,8 @@ and everyday use are in [README.md](README.md) and
   Wall is used, that Ceiling is used once the radar reports top (ceiling),
   that the **Installation Mode** is set on the radar itself and only read
   under **LD2460 Live**, and that the saved Ceiling is used again if the
-  radar stops reporting. The support file shows it as `overridden`.
+  radar reports no mode at all. While the radar is unavailable, the card
+  keeps its last report. The support file shows it as `overridden`.
 
 ## What changed in 2.5.1
 

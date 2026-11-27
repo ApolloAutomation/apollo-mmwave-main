@@ -96,7 +96,7 @@ export function fullWindowLayout({
     ),
   );
   // A tall map stays stacked rather than squeezed.
-  const tallSqueeze = shape < 1 && sideW < FULL_WINDOW_MAP_MIN_PX;
+  const tallSqueeze = shape < 1 && sideW / shape < FULL_WINDOW_MAP_MIN_PX;
   const cramped = !tallSqueeze && height - headerPx - stackW / shape < FULL_WINDOW_PANEL_MIN_PX;
   if ((room >= FULL_WINDOW_MAP_MIN_PX || (cramped && room > 0)) && (sideW >= stackW || cramped)) {
     return { layout: 'side', mapWidth: Math.max(0, Math.floor(sideW)), sideWidth: side };
