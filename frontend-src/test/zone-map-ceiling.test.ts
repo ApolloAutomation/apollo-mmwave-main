@@ -307,6 +307,43 @@ describe("the Wall / Ceiling switch", () => {
     expect([card.coneYMax, card.coneFovDeg]).toEqual([6000, 120]);
   });
 
+  it("keeps the radar's last report while it is unavailable", async () => {
+    const hass = hassOf({ mode: "side", payload: { mount: "ceiling" } });
+    const card = await mount(hass);
+    const states = { ...hass.states, [MODE]: { entity_id: MODE, state: "unavailable", attributes: {} } };
+    hass.states = states;
+    card.hass = { ...hass, states };
+    expect($(card, "mountConflict").hidden).toBe(false);
+    expect($(card, "btnMountWall").getAttribute("aria-checked")).toBe("true");
+    expect(writes(hass)).toEqual([]);
+  });
+
+  it("tells how to use the saved Ceiling, and brings it back when the report goes", async () => {
+    const hass = hassOf({ mode: "side", payload: { mount: "ceiling" } });
+    const card = await mount(hass);
+    const note = $(card, "mountConflict").textContent;
+    expect(note).toContain("so Wall is used");
+    expect(note).toContain("set on the radar itself and only read here, under LD2460 Live");
+    expect(note).toContain("reports top (ceiling)");
+    expect(note).toContain("Ceiling stays saved");
+    expect(note).toContain("While the radar is unavailable, its last report is kept");
+    expect($(card, "btnMountCeiling").disabled).toBe(true);
+    // The radar stops reporting: the saved Ceiling is used, unwritten.
+    const states = { ...hass.states, [MODE]: { entity_id: MODE, state: "unknown", attributes: {} } };
+    hass.states = states;
+    card.hass = { ...hass, states };
+    expect(card._mountInfo()).toMatchObject({ mount: "ceiling", source: "saved" });
+    expect($(card, "mountConflict").hidden).toBe(true);
+    expect($(card, "mountStatus").textContent).toBe(MOUNT_STATUS_SAVED_SILENT);
+    expect(card.coneFovDeg).toBe(360);
+    // Top agrees with the saved Ceiling: nothing to say.
+    const top = { ...states, [MODE]: { entity_id: MODE, state: "top", attributes: {} } };
+    hass.states = top;
+    card.hass = { ...hass, states: top };
+    expect($(card, "mountConflict").hidden).toBe(true);
+    expect(writes(hass)).toEqual([]);
+  });
+
   it.each([
     [null, null, MOUNT_STATUS_DEFAULT, 120],
     [null, "ceiling", MOUNT_STATUS_SAVED, 360],
@@ -665,6 +702,23 @@ describe("whole-room zones", () => {
       },
     ]);
     expect(card._getZone(1)).toBeFalsy();
+  });
+
+  it("closes a replay and adds a filled whole-room zone", async () => {
+    const hass = hassOf({ payload: { mount: "ceiling", movement_history: true } });
+    const card = await mount(hass);
+    card._history.open = true;
+    card._history.series = { slots: [] };
+    card._renderHistoryPanel();
+    expect(card._replayShowing()).toBe(true);
+    expect($(card, "btnRoomZoneAdd").hidden).toBe(false);
+    $(card, "btnRoomZoneAdd").click();
+    expect(card._history.open).toBe(false);
+    expect($(card, "historyPanel").hidden).toBe(true);
+    expect(writes(hass).map((w) => [w.zone_id, w.shape])).toEqual([
+      [1, "none"],
+      [1, "ellipse"],
+    ]);
   });
 
   it("offers no whole-room zone on a wall map or to a viewer", async () => {

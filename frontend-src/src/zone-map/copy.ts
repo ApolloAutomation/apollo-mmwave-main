@@ -380,8 +380,13 @@ export const MOUNT_STATUS_SAVED_SILENT =
   "In use: Ceiling, as chosen here. The radar has not reported how it is mounted yet.";
 export const MOUNT_STATUS_DEFAULT =
   "In use: Wall, the default. Choose Ceiling if the sensor is on the ceiling.";
+// A saved Ceiling the radar's side report overrides (overriddenMount).
 export const MOUNT_CONFLICT =
-  "Ceiling was chosen here, but the radar reports a wall mount, and the radar's report is used.";
+  "Ceiling is saved here, but the radar reports a side (wall) mount, so Wall is used. " +
+  "Its Installation Mode is set on the radar itself and only read here, under LD2460 Live. " +
+  "Ceiling is used when the radar reports top (ceiling), and again if it reports " +
+  "no mode at all, since Ceiling stays saved. While the radar is unavailable, its " +
+  "last report is kept.";
 
 /** After the mount switch saved. */
 export function mountSavedToast(mount: string): string {

@@ -162,13 +162,13 @@ Copy the URLs from the warning exactly and add each one once, as a module:
 lovelace:
   resource_mode: yaml
   resources:
-    - url: /apollo_mmwave/apollo-radar-tuning.js?v=2.5.1
+    - url: /apollo_mmwave/apollo-radar-tuning.js?v=2.5.2
       type: module
-    - url: /apollo_mmwave/apollo-radar-zone-map-card.js?v=2.5.1
+    - url: /apollo_mmwave/apollo-radar-zone-map-card.js?v=2.5.2
       type: module
 ```
 
-The `?v=` is the integration version, such as `?v=2.5.1`, and nothing else,
+The `?v=` is the integration version, such as `?v=2.5.2`, and nothing else,
 so a bundle's URL changes only when the version does. After every upgrade,
 replace each row's URL with the new one from the warning instead of adding a
 second row. An out-of-date row makes the browser run the bundle twice, once
@@ -186,7 +186,7 @@ Any signed-in user can ask, so the check works for everyone. When the two
 differ, the card says so (the versions here are examples):
 
 - **The page runs older cards:** "Apollo mmWave Dashboard was updated to
-  2.5.2, but this page still runs 2.5.1." (a page from 2.4.1 or earlier
+  2.5.3, but this page still runs 2.5.2." (a page from 2.4.1 or earlier
   says "Apollo mmWave was updated to ...") with a **Reload** button, and
   under it "In the Home Assistant app, if Reload does not help, close the
   app fully and open it again." If the app still shows the old cards after
@@ -195,8 +195,8 @@ differ, the card says so (the versions here are examples):
     cache**.
   - iPhone and iPad: **Settings → Companion app → Debugging → Clear web view
     cache**.
-- **The page runs newer cards:** "Apollo mmWave Dashboard 2.5.1 is
-  installed, but Home Assistant still runs 2.5.0. Restart Home Assistant to
+- **The page runs newer cards:** "Apollo mmWave Dashboard 2.5.2 is
+  installed, but Home Assistant still runs 2.5.1. Restart Home Assistant to
   finish updating." There is no button: restart Home Assistant (Settings →
   System, the power icon in the top right).
 
@@ -862,7 +862,15 @@ settings in use now, not the ones in use when it was recorded.
 A radar that uses ESPHome's ld2460 component offers **Wall** and
 **Ceiling**. It corrects its own readings for its mount, so it needs no
 mount or person height. When it reports its **Installation Mode** (side or
-top), that decides; otherwise the saved choice does. On a ceiling it sees a
+top), that decides, because the radar's own readings follow its mode;
+otherwise the saved choice does. Then **Wall** and **Ceiling** are grayed
+out, and if **Ceiling** was saved but the radar reports side, Map settings
+says so: Wall is used, and Ceiling is used once the radar reports top
+(ceiling). The Installation Mode is set on the radar itself; Home
+Assistant only reads it, under **LD2460 Live**. The saved Ceiling is kept,
+and is used again if the radar reports no mode at all. While the radar is
+unavailable (a restart, for example), the card keeps its last report. On a
+ceiling it sees a
 circle under it, up to 4 m out, set by **Ceiling height**; the map then
 puts the radar in the middle, turns with **Map rotation**, and offers **Add
 whole-room zone** (a square or a circle) and **Test center and edge**.

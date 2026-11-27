@@ -642,6 +642,42 @@ describe("the grid line under Map settings", () => {
   });
 });
 
+describe("Add coverage zone and History", () => {
+  it("closes a replay, then adds the zone filled with the footprint", async () => {
+    const hass = hassOf({ payload: { ...CEILING, movement_history: true } });
+    const card = await mount(hass);
+    card._history.open = true;
+    card._history.series = { slots: [] };
+    card._renderHistoryPanel();
+    const button = $(card, "btnRoomZoneAdd");
+    expect(button.hidden).toBe(false);
+    button.click();
+    await settle();
+    expect(card._history.open).toBe(false);
+    expect(card._replayShowing()).toBe(false);
+    expect($(card, "historyPanel").hidden).toBe(true);
+    expect(writes(hass).map((w) => [w.zone_id, w.shape])).toEqual([
+      [1, "none"],
+      [1, "polygon"],
+    ]);
+  });
+
+  it("closes History before the zone is added, not after", async () => {
+    const hass = hassOf({ payload: { ...CEILING, movement_history: true } });
+    const card = await mount(hass);
+    card._history.open = true;
+    card._history.series = { slots: [] };
+    const order: string[] = [];
+    const close = card._closeHistory.bind(card);
+    const add = card._handleAddZone.bind(card);
+    card._closeHistory = () => (order.push(card._history.open ? "close" : "noop"), close());
+    card._handleAddZone = () => (order.push("add"), add());
+    card._addRoomZone();
+    expect(order[0]).toBe("close");
+    expect(order).toContain("add");
+  });
+});
+
 describe("the fitted map on High and Ceiling", () => {
   it("keeps the radar and wall line off the map's edge", async () => {
     for (const payload of [HIGH, CEILING]) {
@@ -692,6 +728,129 @@ describe("the fitted map on High and Ceiling", () => {
     const pxPerMm = 800 / (grid.xMax - grid.xMin);
     expect((grid.yMax - grid.yMin) / (grid.xMax - grid.xMin)).toBeLessThan(0.75);
     expect((grid.yMax - 2000) * pxPerMm).toBeGreaterThanOrEqual(76);
+  });
+
+  // 270 is stored as -90: rotation_deg is held to -180..180.
+  for (const [label, rotation] of [["0", 0], ["45", 45], ["90", 90], ["180", 180], ["270", -90]] as const) {
+    it(`fits a ceiling strip turned ${label} degrees around its turned box`, async () => {
+      for (const width of [800, 340]) {
+        const card = await mount(hassOf({ payload: { ...CEILING, rotation_deg: rotation } }));
+        card._cssMapWidth = width;
+        const grid = card._fittedGrid();
+        const spanX = grid.xMax - grid.xMin;
+        const spanY = grid.yMax - grid.yMin;
+        const pxPerMm = width / spanX;
+        const points = card._footprintMapPoints();
+        points.forEach((p: any) => {
+          expect(p.x).toBeGreaterThanOrEqual(grid.xMin);
+          expect(p.x).toBeLessThanOrEqual(grid.xMax);
+          expect(p.y).toBeGreaterThanOrEqual(grid.yMin);
+          expect(p.y).toBeLessThanOrEqual(grid.yMax);
+        });
+        const ys = points.map((p: any) => p.y);
+        const xs = points.map((p: any) => p.x);
+        // The bottom buttons stay clear of the strip.
+        expect((grid.yMax - Math.max(...ys)) * pxPerMm).toBeGreaterThanOrEqual(76 - 1);
+        expect(spanY * pxPerMm).toBeGreaterThanOrEqual(128);
+        expect(spanY / spanX).toBeGreaterThanOrEqual(0.3);
+        expect(spanY / spanX).toBeLessThanOrEqual(1.5 + 1e-9);
+        // Top stays within a margin and a step.
+        expect(Math.min(...ys) - grid.yMin).toBeLessThanOrEqual(0.15 * spanY + grid.step);
+        if (Math.abs(rotation) === 90) {
+          expect(spanY).toBeGreaterThan(spanX);
+          // The radar's wall stays on its edge of the map.
+          const wall = rotation > 0 ? Math.min(...xs) - grid.xMin : grid.xMax - Math.max(...xs);
+          expect(wall).toBeLessThanOrEqual(0.15 * spanX + grid.step);
+        } else if (rotation === 0 || rotation === 180) {
+          expect(spanY / spanX).toBeLessThan(0.75);
+        }
+      }
+    });
+  }
+
+  it("keeps a turned strip within 1.5 after rounding up its height", async () => {
+    const zone = { shape: "rect", data: { x_min: -7000, x_max: 7000, y_min: -10000, y_max: 8500 } };
+    for (const width of [320, 340, 800]) {
+      const card = await mount(hassOf({ payload: { ...CEILING, rotation_deg: 90, zones: { "1": zone } } }));
+      card._cssMapWidth = width;
+      const grid = card._fittedGrid();
+      const spanX = grid.xMax - grid.xMin;
+      expect((grid.yMax - grid.yMin) / spanX).toBeLessThanOrEqual(1.5 + 1e-9);
+      expect((grid.yMax - 8500) * (width / spanX)).toBeGreaterThanOrEqual(76 - 1);
+    }
+  });
+
+  it("bounds a turned strip's fit at a tiny width", async () => {
+    const card = await mount(hassOf({ payload: { ...CEILING, rotation_deg: 90 } }));
+    card._cssMapWidth = 44;
+    const grid = card._fittedGrid();
+    const spanX = grid.xMax - grid.xMin;
+    const spanY = grid.yMax - grid.yMin;
+    expect(spanY / spanX).toBeLessThanOrEqual(1.5 + grid.step / spanX);
+    expect(spanX).toBeLessThan(20000);
+    expect(spanY).toBeLessThan(20000);
+  });
+
+  it("keeps a turned strip sane on Expand at 360x640 under a tall header", async () => {
+    const hass = hassOf({ payload: { ...CEILING, rotation_deg: 90 } });
+    const card = await mount(hass);
+    document.body.appendChild(card);
+    card._openFullWindow();
+    const title = card.shadowRoot.querySelector(".title-row");
+    vi.spyOn(title, "getBoundingClientRect").mockImplementation(() => ({ height: 70 }) as DOMRect);
+    card._cardMapWidth = 293;
+    card._layoutFullWindow({ box: { width: 360, height: 640 } });
+    expect(card._fullLayout).toMatchObject({ layout: "stacked", mapWidth: 293 });
+    const spanX = card.xMax - card.xMin;
+    const spanY = card.yMax - card.yMin;
+    expect(spanY / spanX).toBeLessThanOrEqual(1.5 + 1e-9);
+    expect(spanY).toBeLessThan(20000);
+    card._closeFullWindow({ reason: "user" });
+    card.remove();
+  });
+
+  it("leaves the buttons room at the width the height cap shows a turned strip", async () => {
+    const tall = window.innerHeight;
+    try {
+      Object.defineProperty(window, "innerHeight", { configurable: true, value: 900 });
+      const hass = hassOf({ payload: { ...CEILING, rotation_deg: 90 } });
+      const card = await mount(hass);
+      document.body.appendChild(card);
+      Object.defineProperty($(card, "mapStage"), "clientWidth", { configurable: true, get: () => 606 });
+      card._refitAndDraw();
+      const spanX = card.xMax - card.xMin;
+      const spanY = card.yMax - card.yMin;
+      // The canvas shows narrower than the 606 px stage.
+      const shown = Math.min(606, 700 / (spanY / spanX));
+      expect(shown).toBeLessThan(606);
+      const pxPerMm = shown / spanX;
+      const far = Math.max(...card._footprintMapPoints().map((p: any) => p.y));
+      expect((card.yMax - far) * pxPerMm).toBeGreaterThanOrEqual(76 - 1);
+      // A shorter screen refits for its own cap.
+      Object.defineProperty(window, "innerHeight", { configurable: true, value: 640 });
+      expect(card._refitForWidth()).toBe(true);
+      const shortX = card.xMax - card.xMin;
+      const shortShown = Math.min(606, 440 / ((card.yMax - card.yMin) / shortX));
+      expect((card.yMax - far) * (shortShown / shortX)).toBeGreaterThanOrEqual(76 - 1);
+      card.remove();
+    } finally {
+      Object.defineProperty(window, "innerHeight", { configurable: true, value: tall });
+    }
+  });
+
+  it("fits again when the map is turned, by the slider or the store", async () => {
+    const hass = hassOf({ payload: CEILING });
+    const card = await mount(hass);
+    const wide = { xMin: card.xMin, xMax: card.xMax, yMin: card.yMin, yMax: card.yMax };
+    expect(wide.yMax - wide.yMin).toBeLessThan(wide.xMax - wide.xMin);
+    const slider = $(card, "coneAngleSlider");
+    slider.value = "90";
+    slider.dispatchEvent(new Event("input"));
+    slider.dispatchEvent(new Event("change"));
+    expect(card.yMax - card.yMin).toBeGreaterThan(card.xMax - card.xMin);
+    push(card, hass, { rotation_deg: 180 });
+    expect(card.yMax - card.yMin).toBeLessThan(card.xMax - card.xMin);
+    expect(card.yMin).toBeLessThan(-1000);
   });
 
   it("refits a ceiling strip for the card's width when Expand closes", async () => {

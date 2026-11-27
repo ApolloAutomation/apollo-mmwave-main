@@ -122,6 +122,17 @@ def mount_rule(
     return MOUNT_WALL, SOURCE_DEFAULT
 
 
+def overridden_mount(
+    tracker: str | None, mode_state: str | None, saved: str | None
+) -> str | None:
+    """Return the saved mount a radar report overrides, else None."""
+    mount, source = mount_rule(tracker, mode_state, saved)
+    if source != SOURCE_RADAR:
+        return None
+    kept, kept_source = mount_rule(tracker, None, saved)
+    return kept if kept_source == SOURCE_SAVED and kept != mount else None
+
+
 def mount_geometry(
     tracker: str | None, mode_state: str | None, entry: Any
 ) -> MountGeometry:
