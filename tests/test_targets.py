@@ -8,6 +8,8 @@ from homeassistant.const import ATTR_UNIT_OF_MEASUREMENT
 from custom_components.apollo_mmwave.hold import Reading
 from custom_components.apollo_mmwave.store import ZoneStore
 from custom_components.apollo_mmwave.targets import (
+    LD2450_TIMING,
+    LD2460_TIMING,
     SHAPE_TESTERS,
     TARGET_PAIR_MS,
     AxisPairing,
@@ -442,3 +444,34 @@ async def test_radar_offline_when_every_tracked_state_is_unavailable(
         hass.states.async_set(ids[key], state)
 
     assert radar_offline(hass, pairs) is offline
+
+
+def test_an_ld2460_axis_written_alone_is_whole_at_once() -> None:
+    """The LD2460 writes X and Y of a frame together, so nothing waits."""
+    pairer = ReadingPairer(LD2460_TIMING)
+    assert pairer.pair(0, (100.0, 1000.0), 0) == (100.0, 1000.0)
+    assert pairer.pair(0, (300.0, 1000.0), 100) == (300.0, 1000.0)
+    assert pairer.due() is None
+    assert pairer.pair(0, (300.0, 1400.0), 200) == (300.0, 1400.0)
+    assert pairer.written_at(0) == 200
+
+
+def test_an_ld2460_zero_on_one_axis_is_a_reading_not_half_a_vanish() -> None:
+    """It reports a lost target as unknown, so X = 0 is someone straight ahead."""
+    pairer = ReadingPairer(LD2460_TIMING)
+    pairer.pair(0, (300.0, 1000.0), 0)
+    assert pairer.pair(0, (0.0, 1000.0), 100) == (0.0, 1000.0)
+    assert pairer.written_at(0) == 100
+    # The LD2450's pairer passes the same write on as half of a vanish.
+    ld2450_pairer = ReadingPairer()
+    ld2450_pairer.pair(0, (300.0, 1000.0), 0)
+    ld2450_pairer.pair(0, (0.0, 1000.0), 100)
+    assert ld2450_pairer.written_at(0) is None
+
+
+def test_the_ld2450_timing_is_the_default() -> None:
+    """Every pairer made without a timing pairs as 2.4.2 did."""
+    assert ReadingPairer().timing == LD2450_TIMING
+    assert LD2450_TIMING.window_ms == TARGET_PAIR_MS
+    assert LD2450_TIMING.zero_axis_vanish
+    assert AxisPairing().window_ms == TARGET_PAIR_MS

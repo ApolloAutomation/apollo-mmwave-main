@@ -1,0 +1,471 @@
+{
+  "device_id": "0000000000000000000000000000d246",
+  "device": {
+    "name": "Ceiling Radar",
+    "manufacturer": "ApolloAutomation",
+    "model": "XR-7",
+    "sw_version": "1.0.0 (ESPHome 2026.11.0)"
+  },
+  "entities": [
+    {
+      "entity_id": "button.ceiling_radar_esp_reboot",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "button.ceiling_radar_ld2412_factory_reset",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "binary_sensor.ceiling_radar_ld2412_presence",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_uptime",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2412_detection_distance",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2412_moving_distance",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2412_still_distance",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2412_firmware",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_esphome_version",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "binary_sensor.ceiling_radar_zone_1_presence",
+      "platform": "apollo_mmwave"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_zone_1",
+      "platform": "apollo_mmwave"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_old_ld2460_target_1_x",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_old_ld2460_target_1_y",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_old_ld2460_target_1_distance",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_old_ld2460_target_1_angle",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "update.ceiling_radar_firmware_update",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "select.ceiling_radar_ld2412_baud_rate",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "select.ceiling_radar_ld2412_distance_resolution",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "select.ceiling_radar_ld2412_light_function",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "select.ceiling_radar_ld2412_hardware_output_pin_level",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "button.ceiling_radar_ld2412_query_params",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "button.ceiling_radar_ld2412_restart",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "button.ceiling_radar_ld2412_start_dynamic_background_correction",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "button.ceiling_radar_firmware_update",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2412_light",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2412_move_energy",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2412_still_energy",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2412_g00_move_energy",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2412_g00_still_energy",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2412_g01_move_energy",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2412_g01_still_energy",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2412_g02_move_energy",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2412_g02_still_energy",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2412_g03_move_energy",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2412_g03_still_energy",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2412_g04_move_energy",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2412_g04_still_energy",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2412_g05_move_energy",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2412_g05_still_energy",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2412_g06_move_energy",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2412_g06_still_energy",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2412_g07_move_energy",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2412_g07_still_energy",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2412_g08_move_energy",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2412_g08_still_energy",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2412_g09_move_energy",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2412_g09_still_energy",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2412_g10_move_energy",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2412_g10_still_energy",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2412_g11_move_energy",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2412_g11_still_energy",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2412_g12_move_energy",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2412_g12_still_energy",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2412_g13_move_energy",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2412_g13_still_energy",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2460_presence_target_count",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2460_target_2_x",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2460_target_2_y",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2460_target_2_distance",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2460_target_2_angle",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2460_target_3_x",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2460_target_3_y",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2460_target_3_distance",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2460_target_3_angle",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2460_target_4_x",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2460_target_4_y",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2460_target_4_distance",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2460_target_4_angle",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2460_target_5_x",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2460_target_5_y",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2460_target_5_distance",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ld2460_target_5_angle",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_apollo_firmware_version",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "sensor.ceiling_radar_ip_address",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "switch.ceiling_radar_ld2412_bluetooth",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "switch.ceiling_radar_ld2412_engineering_mode",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "binary_sensor.ceiling_radar_online",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "binary_sensor.ceiling_radar_ld2412_dynamic_background_correction_status",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "binary_sensor.ceiling_radar_ld2412_moving_target",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "binary_sensor.ceiling_radar_ld2412_still_target",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "binary_sensor.ceiling_radar_ld2460_presence",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "binary_sensor.ceiling_radar_combined_presence",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "number.ceiling_radar_ld2412_light_threshold",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "number.ceiling_radar_ld2412_max_distance_gate",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "number.ceiling_radar_ld2412_min_distance_gate",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "number.ceiling_radar_ld2412_g00_move_threshold",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "number.ceiling_radar_ld2412_g00_still_threshold",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "number.ceiling_radar_ld2412_g01_move_threshold",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "number.ceiling_radar_ld2412_g01_still_threshold",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "number.ceiling_radar_ld2412_g02_move_threshold",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "number.ceiling_radar_ld2412_g02_still_threshold",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "number.ceiling_radar_ld2412_g03_move_threshold",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "number.ceiling_radar_ld2412_g03_still_threshold",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "number.ceiling_radar_ld2412_g04_move_threshold",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "number.ceiling_radar_ld2412_g04_still_threshold",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "number.ceiling_radar_ld2412_g05_move_threshold",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "number.ceiling_radar_ld2412_g05_still_threshold",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "number.ceiling_radar_ld2412_g06_move_threshold",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "number.ceiling_radar_ld2412_g06_still_threshold",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "number.ceiling_radar_ld2412_g07_move_threshold",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "number.ceiling_radar_ld2412_g07_still_threshold",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "number.ceiling_radar_ld2412_g08_move_threshold",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "number.ceiling_radar_ld2412_g08_still_threshold",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "number.ceiling_radar_ld2412_g09_move_threshold",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "number.ceiling_radar_ld2412_g09_still_threshold",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "number.ceiling_radar_ld2412_g10_move_threshold",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "number.ceiling_radar_ld2412_g10_still_threshold",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "number.ceiling_radar_ld2412_g11_move_threshold",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "number.ceiling_radar_ld2412_g11_still_threshold",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "number.ceiling_radar_ld2412_g12_move_threshold",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "number.ceiling_radar_ld2412_g12_still_threshold",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "number.ceiling_radar_ld2412_g13_move_threshold",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "number.ceiling_radar_ld2412_g13_still_threshold",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "number.ceiling_radar_ld2412_timeout",
+      "platform": "esphome"
+    },
+    {
+      "entity_id": "light.ceiling_radar_rgb_light",
+      "platform": "esphome"
+    }
+  ]
+}

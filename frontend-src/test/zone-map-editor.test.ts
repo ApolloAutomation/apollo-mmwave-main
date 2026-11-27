@@ -15,7 +15,7 @@
 
 import { describe, it, expect, vi } from "vitest";
 import { ZoneMapCard } from "../src/zone-map/card";
-import { ZoneMapCardEditor, firstLd2450DeviceId } from "../src/zone-map/editor";
+import { ZoneMapCardEditor, firstTrackerDeviceId } from "../src/zone-map/editor";
 
 const CARD_TYPE = "custom:apollo-radar-zone-map-card";
 
@@ -75,14 +75,14 @@ describe("zone map card editor wiring", () => {
 
   it("finds no device when nothing on the system is an LD2450", () => {
     const hass = { states: {}, devices: { lamp: {} }, entities: { "light.hall": { device_id: "lamp" } } } as any;
-    expect(firstLd2450DeviceId(hass)).toBeUndefined();
+    expect(firstTrackerDeviceId(hass)).toBeUndefined();
     expect((ZoneMapCard as any).getStubConfig(hass).device_id).toBe("");
   });
 
   it("finds the radar from the entity registry when hass carries no devices", () => {
     const hass = fakeHass();
     delete hass.devices;
-    expect(firstLd2450DeviceId(hass)).toBe("radar");
+    expect(firstTrackerDeviceId(hass)).toBe("radar");
   });
 });
 

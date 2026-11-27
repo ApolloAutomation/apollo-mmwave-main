@@ -20,7 +20,7 @@ import {
  *  entry is JSON so no name can run into the next field. */
 function radarDeviceKey(hass: HomeAssistant, config: StrategyConfig): string {
   return strategyDevices(hass, config)
-    .map((d) => JSON.stringify([d.deviceId, d.profile?.key ?? "", d.ld2450, d.name, d.base]))
+    .map((d) => JSON.stringify([d.deviceId, d.profile?.key ?? "", d.ld2450, d.ld2460, d.name, d.base]))
     .sort()
     .join(",");
 }

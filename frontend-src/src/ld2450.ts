@@ -1,5 +1,6 @@
 import type { HomeAssistant } from "./types";
 import { entitiesForDevice } from "./entity-index";
+import { LD2460_X, LD2460_Y } from "./ld2460";
 
 /**
  * LD2450 tracking radar support (X/Y target coordinates), used by R-PRO-1 and
@@ -19,9 +20,14 @@ import { entitiesForDevice } from "./entity-index";
 // dedup suffix don't break detection. The target number sits before the dedup
 // digits, so it can't be misread. The R-PRO-1 firmware names the sensors
 // "LD2450 Target-1 X"; the MTR-1 firmware names them "Target-1 X" with no chip
-// prefix, so the prefix is optional. Keep in sync with ld2450.py.
+// prefix, so the prefix is optional. ld2450.py pairs the LD2460's
+// `ld2460_target_<n>_x` too; here isTarget leaves those to ld2460.ts, and
+// tests/test_contracts.py keeps the rest of the two patterns equal. No
+// lookbehind: Safari before 16.4 cannot parse one.
 const TARGET_X = /(?:_ld2450)?_target_(\d+)_x(?:_\d+)?$/;
 const TARGET_Y = /(?:_ld2450)?_target_(\d+)_y(?:_\d+)?$/;
+const isX = (oid: string) => TARGET_X.test(oid) && !LD2460_X.test(oid);
+const isY = (oid: string) => TARGET_Y.test(oid) && !LD2460_Y.test(oid);
 
 /** Every LD2450 target coordinate entity of a device, paired or not (a lone
  *  X with its Y disabled still counts as radar evidence). */
@@ -30,7 +36,7 @@ export function ld2450EntityIds(hass: HomeAssistant, deviceId: string): string[]
   for (const [id] of entitiesForDevice(hass.entities, deviceId)) {
     if (!id.startsWith("sensor.")) continue;
     const oid = id.slice(id.indexOf(".") + 1);
-    if (TARGET_X.test(oid) || TARGET_Y.test(oid)) ids.push(id);
+    if (isX(oid) || isY(oid)) ids.push(id);
   }
   return ids;
 }
@@ -40,7 +46,7 @@ export function ld2450EntityIds(hass: HomeAssistant, deviceId: string): string[]
 export function hasLd2450Device(hass: HomeAssistant, deviceId: string): boolean {
   for (const [id] of entitiesForDevice(hass.entities, deviceId)) {
     if (!id.startsWith("sensor.")) continue;
-    if (TARGET_X.test(id.slice(id.indexOf(".") + 1))) return true;
+    if (isX(id.slice(id.indexOf(".") + 1))) return true;
   }
   return false;
 }

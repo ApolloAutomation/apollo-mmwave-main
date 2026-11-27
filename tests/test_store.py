@@ -26,10 +26,16 @@ from custom_components.apollo_mmwave.const import (
 from custom_components.apollo_mmwave.sensor import ZoneCoordsSensor
 from custom_components.apollo_mmwave.store import (
     SAVE_DELAY_SECONDS,
+    STORAGE_VERSION,
     ZoneStore,
+    ceiling_height_mm,
     device_flag,
+    device_mount,
+    mount_height_mm,
     previous_shape_of,
     shape_of,
+    target_height_mm,
+    tilt_deg,
     zone_hold_s,
     zone_type_of,
 )
@@ -1411,3 +1417,170 @@ async def test_load_v2_skips_malformed_entries(hass, hass_storage) -> None:
         "good": {"zones": {1: {"shape": "rect", "data": {}}}, "rotation_deg": "15"}
     }
     assert store.orphans == {}
+
+
+async def test_only_a_ceiling_mount_and_a_height_the_service_writes_load(
+    hass, hass_storage
+) -> None:
+    """Absent means a wall at 2700 mm; anything else on disk is dropped."""
+    mounts = {"ceiling": "ceiling", "wall": "wall", "true": True, "caps": "Ceiling"}
+    mounts["one"] = 1
+    heights = {"h2000": 2000, "h3100": 3100, "h4000": 4000, "bool": True}
+    heights |= {"text": "2700", "low": 1999, "high": 4001, "default": 2700}
+    heights["fraction"] = 2500.5
+    devices = {
+        f"m_{key}": {"zones": {}, "mount": value} for key, value in mounts.items()
+    }
+    devices |= {
+        key: {"zones": {}, "ceiling_height_mm": value} for key, value in heights.items()
+    }
+    hass_storage[ZONE_STORAGE_KEY] = {"version": 2, "data": {"devices": devices}}
+
+    store = ZoneStore(hass)
+    assert await store.async_load() is True
+
+    assert store.devices["m_ceiling"]["mount"] == "ceiling"
+    for key in ("wall", "true", "caps", "one"):
+        assert "mount" not in store.devices[f"m_{key}"]
+    for key, value in (("h2000", 2000), ("h3100", 3100), ("h4000", 4000)):
+        assert store.devices[key]["ceiling_height_mm"] == value
+        assert ceiling_height_mm(store.devices[key]) == value
+    for key in ("bool", "text", "low", "high", "default", "fraction"):
+        assert "ceiling_height_mm" not in store.devices[key]
+        assert ceiling_height_mm(store.devices[key]) == 2700
+
+
+def test_the_mount_and_height_readers_never_raise_on_a_hand_edit() -> None:
+    """A value the service could not have written reads as the default."""
+    assert device_mount({"mount": "ceiling"}) == "ceiling"
+    for entry in ({"mount": "wall"}, {"mount": ["ceiling"]}, {}, None, "x"):
+        assert device_mount(entry) is None
+    for entry in ({"ceiling_height_mm": 4001}, {"ceiling_height_mm": "3000"}, None):
+        assert ceiling_height_mm(entry) == 2700
+    assert ceiling_height_mm({"ceiling_height_mm": 3100}) == 3100
+
+
+async def test_mount_and_height_survive_a_round_trip(hass, hass_storage) -> None:
+    """A ceiling mount and its height come back after a restart."""
+    store = ZoneStore(hass)
+    store.devices["dev"] = {"zones": {}, "mount": "ceiling", "ceiling_height_mm": 3100}
+    await store.async_save()
+    on_disk = hass_storage[ZONE_STORAGE_KEY]["data"]["devices"]["dev"]
+    assert on_disk["mount"] == "ceiling"
+    assert on_disk["ceiling_height_mm"] == 3100
+
+    reloaded = ZoneStore(hass)
+    assert await reloaded.async_load() is True
+
+    assert reloaded.devices["dev"]["mount"] == "ceiling"
+    assert reloaded.devices["dev"]["ceiling_height_mm"] == 3100
+
+
+async def test_mount_and_height_keep_the_store_readable_by_older_releases(
+    hass, hass_storage
+) -> None:
+    """The keys need no version bump, and a parse that ignores them still loads."""
+    # A higher major version fails setup on every older release.
+    assert STORAGE_VERSION == 2
+    entry = {"zones": {"1": {"shape": "none", "data": None}}, "mirror_x": True}
+    hass_storage[ZONE_STORAGE_KEY] = {
+        "version": 2,
+        "data": {"devices": {"dev": entry | {"mount": "ceiling"}}},
+    }
+    store = ZoneStore(hass)
+    assert await store.async_load() is True
+    assert store.devices["dev"]["mount"] == "ceiling"
+
+    # An older release rebuilds the entry from the keys it knows.
+    older = copy.deepcopy(store.devices["dev"])
+    del older["mount"]
+    hass_storage[ZONE_STORAGE_KEY] = {"version": 2, "data": {"devices": {"dev": older}}}
+    reloaded = ZoneStore(hass)
+    assert await reloaded.async_load() is True
+    assert device_mount(reloaded.devices["dev"]) is None
+    assert ceiling_height_mm(reloaded.devices["dev"]) == 2700
+    assert reloaded.devices["dev"]["mirror_x"] is True
+
+
+async def test_only_mount_settings_the_service_writes_load(hass, hass_storage) -> None:
+    """High and each setting load; defaults, wrong types and caps drop."""
+    values = {
+        "mount": {"high": "high", "caps": "HIGH", "wall": "wall"},
+        "mount_height_mm": {"ok": 2500, "default": 2200, "low": 1199, "text": "2500"},
+        "tilt_deg": {"ok": 45, "default": 30, "high": 61, "bool": True},
+        "target_height_mm": {"ok": 0, "default": 1000, "high": 2001, "half": 800.5},
+        "flip_room_side": {"ok": True, "false": False, "text": "true", "one": 1},
+    }
+    devices = {
+        f"{key}_{name}": {"zones": {}, key: value}
+        for key, cases in values.items()
+        for name, value in cases.items()
+    }
+    hass_storage[ZONE_STORAGE_KEY] = {"version": 2, "data": {"devices": devices}}
+
+    store = ZoneStore(hass)
+    assert await store.async_load() is True
+
+    for key, cases in values.items():
+        for name, value in cases.items():
+            entry = store.devices[f"{key}_{name}"]
+            if name == "ok" or (key, name) == ("mount", "high"):
+                assert entry[key] == value
+            else:
+                assert key not in entry, (key, name)
+    assert mount_height_mm(store.devices["mount_height_mm_ok"]) == 2500
+    assert mount_height_mm(store.devices["mount_height_mm_low"]) == 2200
+    assert tilt_deg(store.devices["tilt_deg_bool"]) == 30
+    assert target_height_mm(store.devices["target_height_mm_ok"]) == 0
+    assert target_height_mm(store.devices["target_height_mm_half"]) == 1000
+    assert device_mount(store.devices["mount_high"]) == "high"
+
+
+async def test_mount_settings_survive_a_round_trip(hass, hass_storage) -> None:
+    """All six keys come back after a restart."""
+    saved = {
+        "mount": "high",
+        "ceiling_height_mm": 3100,
+        "mount_height_mm": 2500,
+        "tilt_deg": 40,
+        "target_height_mm": 800,
+        "flip_room_side": True,
+    }
+    store = ZoneStore(hass)
+    store.devices["dev"] = {"zones": {}, **saved}
+    await store.async_save()
+
+    reloaded = ZoneStore(hass)
+    assert await reloaded.async_load() is True
+    assert {key: reloaded.devices["dev"][key] for key in saved} == saved
+
+
+async def test_mount_settings_keep_the_store_readable_by_242(
+    hass, hass_storage
+) -> None:
+    """Version 2 still; a reader that rebuilds from known keys loads it."""
+    assert STORAGE_VERSION == 2
+    entry = {
+        "zones": {"1": {"shape": "none", "data": None}},
+        "mirror_x": True,
+        "mount": "ceiling",
+        "mount_height_mm": 2500,
+        "tilt_deg": 40,
+        "target_height_mm": 800,
+        "flip_room_side": True,
+        "ceiling_height_mm": 3000,
+    }
+    hass_storage[ZONE_STORAGE_KEY] = {"version": 2, "data": {"devices": {"dev": entry}}}
+    store = ZoneStore(hass)
+    assert await store.async_load() is True
+
+    # 2.4.2 keeps only the keys it knows.
+    known = ("zones", "entities", "rotation_deg", "label", "aliases")
+    known += ("input_units", "display_units", "mirror_x", "movement_history")
+    older = {key: value for key, value in entry.items() if key in known}
+    hass_storage[ZONE_STORAGE_KEY] = {"version": 2, "data": {"devices": {"dev": older}}}
+    reloaded = ZoneStore(hass)
+    assert await reloaded.async_load() is True
+    assert device_mount(reloaded.devices["dev"]) is None
+    assert mount_height_mm(reloaded.devices["dev"]) == 2200
+    assert reloaded.devices["dev"]["mirror_x"] is True

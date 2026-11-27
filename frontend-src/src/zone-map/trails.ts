@@ -34,6 +34,8 @@ export const TRAIL_COALESCE_MS = 60;
  * after a Y, so a longer wait would let a lone Y take in the next X.
  */
 export const TRAIL_PAIR_MS = 550;
+/** The LD2460 writes X and Y of a frame together: targets.LD2460_PAIR_MS. */
+export const LD2460_TRAIL_PAIR_MS = 0;
 
 export interface TrailSample {
   /** ms on the card's clock, of the first push in the sample. */
@@ -67,6 +69,9 @@ const NO_SAMPLES: readonly TrailSample[] = [];
 
 export class TrailBuffer {
   private _slots = new Map<number, SlotTrail>();
+
+  /** `pairMs`: how long a coordinate written alone waits for the other. */
+  constructor(private readonly _pairMs: number = TRAIL_PAIR_MS) {}
 
   /** Record a target's position. Returns true when it was appended, false
    *  when it was merged into the slot's last sample (or was not a number). */
@@ -107,7 +112,7 @@ export class TrailBuffer {
       }
       // The coordinate the sample waits for, and only that one: the second
       // write of a split X and Y update.
-      if (waitedFor && xMoved !== yMoved && at - last.t < TRAIL_PAIR_MS) {
+      if (waitedFor && xMoved !== yMoved && at - last.t < this._pairMs) {
         samples[samples.length - 1] = { ...last, x, y, tLast: at };
         trail.pending = null;
         return false;
@@ -135,7 +140,7 @@ export class TrailBuffer {
       let i = trail.taken;
       while (i < samples.length) {
         const waiting = trail.pending !== null && i === samples.length - 1;
-        if (now - samples[i].t < (waiting ? TRAIL_PAIR_MS : TRAIL_COALESCE_MS)) break;
+        if (now - samples[i].t < (waiting ? this._pairMs : TRAIL_COALESCE_MS)) break;
         taken.push(samples[i]);
         i += 1;
       }
@@ -181,7 +186,7 @@ export class TrailBuffer {
     if (
       trail.pending !== null &&
       samples.length > trail.taken &&
-      now - samples[samples.length - 1].t < TRAIL_PAIR_MS
+      now - samples[samples.length - 1].t < this._pairMs
     ) {
       samples.pop();
     }
