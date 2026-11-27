@@ -16,6 +16,7 @@ import {
   insidePolygon,
   mountGeometry,
   mountRule,
+  overriddenMount,
 } from "../src/mounts";
 import * as mounts from "../src/mounts";
 import { pointInPolygon, rotateToMap } from "../src/zone-map/geometry";
@@ -36,6 +37,7 @@ describe("the mount in effect", () => {
     const saved = c.saved as string | null;
     expect(mountRule(c.tracker, c.mode_state, saved)).toEqual(c.expect);
     expect(ld2460MountRule(c.tracker, c.mode_state, saved)).toEqual(c.expect);
+    expect(overriddenMount(c.tracker, c.mode_state, saved)).toBe(c.overridden);
   });
 });
 

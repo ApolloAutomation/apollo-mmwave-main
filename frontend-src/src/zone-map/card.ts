@@ -298,6 +298,7 @@ import {
   footprintHalfWidth,
   footprintOutline,
   mountGeometry,
+  overriddenMount,
   wholeSetting,
 } from '../mounts';
 import { formatDistance, formatHold, formatSize, zoneSize } from './format';
@@ -3448,7 +3449,7 @@ export class ZoneMapCard extends HTMLElement {
       if (status) status.textContent = this._mountStatusText(info);
       const conflict = root.getElementById('mountConflict');
       if (conflict) {
-        conflict.hidden = !(fromRadar && info.mount === 'wall' && this._storedMount === 'ceiling');
+        conflict.hidden = !overriddenMount(tracker, this._mount, this._storedMount);
       }
     }
     this._renderCeilingHeight(info, admin);

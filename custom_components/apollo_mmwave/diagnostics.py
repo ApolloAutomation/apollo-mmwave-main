@@ -79,7 +79,7 @@ from .models import (  # noqa: F401
     apollo_radars,
     device_radars,
 )
-from .mounts import footprint, mount_geometry
+from .mounts import footprint, mount_geometry, overridden_mount
 from .store import (
     ceiling_height_mm,
     device_flag,
@@ -332,6 +332,7 @@ def _ld2460(
             "firmware": firmware,
             "effective": mount.mount,
             "source": mount.source,
+            "overridden": overridden_mount(tracker, firmware, device_mount(zone_entry)),
             "ceiling_height_mm": mount.height_mm,
             "height_saved": STORE_CEILING_HEIGHT_MM in (zone_entry or {}),
             "coverage_radius_mm": (

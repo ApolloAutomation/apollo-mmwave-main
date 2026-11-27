@@ -114,6 +114,22 @@ export function mountRule(
   return { mount: "wall", source: "default" };
 }
 
+/**
+ * The saved mount a radar report overrides, else null, twin of
+ * overridden_mount: what mountRule gives with no report, when the saved
+ * choice gives it and the report gives another.
+ */
+export function overriddenMount(
+  tracker: string | null | undefined,
+  modeState: string | null | undefined,
+  saved: string | null | undefined
+): Mount | null {
+  const used = mountRule(tracker, modeState, saved);
+  if (used.source !== "radar") return null;
+  const kept = mountRule(tracker, null, saved);
+  return kept.source === "saved" && kept.mount !== used.mount ? kept.mount : null;
+}
+
 /** A stored whole number in bounds, else the default. */
 export function wholeSetting(value: unknown, fallback: number, min: number, max: number): number {
   return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max

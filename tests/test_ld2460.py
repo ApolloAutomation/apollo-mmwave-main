@@ -22,7 +22,7 @@ from pytest_homeassistant_custom_component.components.diagnostics import (
     get_diagnostics_for_config_entry,
 )
 
-from custom_components.apollo_mmwave import get_store, trackers
+from custom_components.apollo_mmwave import get_store, mounts, trackers
 from custom_components.apollo_mmwave.const import (
     DOMAIN,
     SIGNAL_ZONES_UPDATED,
@@ -201,6 +201,10 @@ def test_mount_rule_matches_the_shared_cases(case) -> None:
     assert trackers.mount_rule(case["tracker"], case["mode_state"], case["saved"]) == (
         expect["mount"],
         expect["source"],
+    )
+    assert (
+        mounts.overridden_mount(case["tracker"], case["mode_state"], case["saved"])
+        == case["overridden"]
     )
 
 
@@ -411,6 +415,7 @@ async def test_the_support_file_has_an_ld2460_section(
         "firmware": None,
         "effective": "wall",
         "source": "default",
+        "overridden": None,
         "ceiling_height_mm": 2700,
         "height_saved": False,
         "coverage_radius_mm": None,
@@ -437,6 +442,7 @@ async def test_the_support_file_names_a_saved_mount_and_its_circle(
         "firmware": None,
         "effective": "ceiling",
         "source": "saved",
+        "overridden": None,
         "ceiling_height_mm": 2000,
         "height_saved": True,
         "coverage_radius_mm": 3464.1,
@@ -463,6 +469,7 @@ async def test_the_support_file_shows_the_radars_report_winning(
 
     assert (mount["saved"], mount["firmware"]) == ("ceiling", "side")
     assert (mount["effective"], mount["source"]) == ("wall", "radar")
+    assert mount["overridden"] == "ceiling"
     assert mount["coverage_radius_mm"] is None
 
     hass.states.async_set(mode, "top")
@@ -472,7 +479,18 @@ async def test_the_support_file_shows_the_radars_report_winning(
     )
     assert section["ld2460"]["mount"]["effective"] == "ceiling"
     assert section["ld2460"]["mount"]["source"] == "radar"
+    assert section["ld2460"]["mount"]["overridden"] is None
     assert section["ld2460"]["mount"]["coverage_radius_mm"] == 4000.0
+
+    # The report goes away: the saved ceiling, kept all along, is used.
+    hass.states.async_set(mode, "unavailable")
+    result = await get_diagnostics_for_config_entry(hass, hass_client, entry)
+    section = next(
+        item for item in result["devices"] if item["device_id"] == ld2460_radar.id
+    )
+    assert section["ld2460"]["mount"]["effective"] == "ceiling"
+    assert section["ld2460"]["mount"]["source"] == "saved"
+    assert get_store(hass).device(ld2460_radar.id)["mount"] == "ceiling"
 
 
 async def test_the_support_file_survives_cleared_pairs_on_a_saved_ceiling(

@@ -380,8 +380,11 @@ export const MOUNT_STATUS_SAVED_SILENT =
   "In use: Ceiling, as chosen here. The radar has not reported how it is mounted yet.";
 export const MOUNT_STATUS_DEFAULT =
   "In use: Wall, the default. Choose Ceiling if the sensor is on the ceiling.";
+// A saved Ceiling the radar's side report overrides (overriddenMount).
 export const MOUNT_CONFLICT =
-  "Ceiling was chosen here, but the radar reports a wall mount, and the radar's report is used.";
+  "Ceiling is saved here, but the radar reports a wall mount, so Wall is used. " +
+  "To use Ceiling, set the radar's Installation Mode to top. " +
+  "Ceiling stays saved and is used again if the radar stops reporting its mount.";
 
 /** After the mount switch saved. */
 export function mountSavedToast(mount: string): string {
