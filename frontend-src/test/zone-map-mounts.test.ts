@@ -694,6 +694,59 @@ describe("the fitted map on High and Ceiling", () => {
     expect((grid.yMax - 2000) * pxPerMm).toBeGreaterThanOrEqual(76);
   });
 
+  // 270 is stored as -90: rotation_deg is held to -180..180.
+  for (const [label, rotation] of [["0", 0], ["45", 45], ["90", 90], ["180", 180], ["270", -90]] as const) {
+    it(`fits a ceiling strip turned ${label} degrees around its turned box`, async () => {
+      for (const width of [800, 340]) {
+        const card = await mount(hassOf({ payload: { ...CEILING, rotation_deg: rotation } }));
+        card._cssMapWidth = width;
+        const grid = card._fittedGrid();
+        const spanX = grid.xMax - grid.xMin;
+        const spanY = grid.yMax - grid.yMin;
+        const pxPerMm = width / spanX;
+        const points = card._footprintMapPoints();
+        points.forEach((p: any) => {
+          expect(p.x).toBeGreaterThanOrEqual(grid.xMin);
+          expect(p.x).toBeLessThanOrEqual(grid.xMax);
+          expect(p.y).toBeGreaterThanOrEqual(grid.yMin);
+          expect(p.y).toBeLessThanOrEqual(grid.yMax);
+        });
+        const ys = points.map((p: any) => p.y);
+        const xs = points.map((p: any) => p.x);
+        // The bottom buttons stay clear of the strip.
+        expect((grid.yMax - Math.max(...ys)) * pxPerMm).toBeGreaterThanOrEqual(76 - 1);
+        expect(spanY * pxPerMm).toBeGreaterThanOrEqual(128);
+        expect(spanY / spanX).toBeGreaterThanOrEqual(0.3);
+        expect(spanY / spanX).toBeLessThanOrEqual(1.5 + 1e-9);
+        // The top hugs the strip: no more than a margin and a step.
+        expect(Math.min(...ys) - grid.yMin).toBeLessThanOrEqual(0.15 * spanY + grid.step);
+        if (Math.abs(rotation) === 90) {
+          expect(spanY).toBeGreaterThan(spanX);
+          // The radar's wall stays on its edge of the map.
+          const wall = rotation > 0 ? Math.min(...xs) - grid.xMin : grid.xMax - Math.max(...xs);
+          expect(wall).toBeLessThanOrEqual(0.15 * spanX + grid.step);
+        } else if (rotation === 0 || rotation === 180) {
+          expect(spanY / spanX).toBeLessThan(0.75);
+        }
+      }
+    });
+  }
+
+  it("fits again when the map is turned, by the slider or the store", async () => {
+    const hass = hassOf({ payload: CEILING });
+    const card = await mount(hass);
+    const wide = { xMin: card.xMin, xMax: card.xMax, yMin: card.yMin, yMax: card.yMax };
+    expect(wide.yMax - wide.yMin).toBeLessThan(wide.xMax - wide.xMin);
+    const slider = $(card, "coneAngleSlider");
+    slider.value = "90";
+    slider.dispatchEvent(new Event("input"));
+    slider.dispatchEvent(new Event("change"));
+    expect(card.yMax - card.yMin).toBeGreaterThan(card.xMax - card.xMin);
+    push(card, hass, { rotation_deg: 180 });
+    expect(card.yMax - card.yMin).toBeLessThan(card.xMax - card.xMin);
+    expect(card.yMin).toBeLessThan(-1000);
+  });
+
   it("refits a ceiling strip for the card's width when Expand closes", async () => {
     const hass = hassOf({ payload: CEILING });
     const card = await mount(hass);

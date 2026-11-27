@@ -500,6 +500,10 @@ const FIT_MIN_ASPECT = 0.75;
 // (the unit, undo and lock row and the zoom row over it), so they do not
 // cover the strip's far edge.
 const CEILING_FIT_MIN_ASPECT = 0.3;
+// Turned toward 90 degrees the strip runs down the map. Its map may be
+// this much taller than wide, buttons included: taller would meet the
+// screen height cap (_mapSizeRule) on a phone and narrow the map.
+const CEILING_FIT_MAX_ASPECT = 1.5;
 const SHORT_MAP_MIN_PX = 128;
 const SHORT_MAP_BUTTONS_PX = 76;
 // A fitted edge within this many mm of a grid step stays on that step. The
@@ -5650,7 +5654,8 @@ export class ZoneMapCard extends HTMLElement {
    * out by FIT_MARGIN_FRACTION, grown to take in every stored zone so none is
    * cut off, then rounded out to whole grid steps of the map's unit so the
    * edges land on grid lines. Last, the short side is grown, in whole steps,
-   * to keep the canvas between _fitMinAspect and square. It grows on the
+   * to keep the canvas between FIT_MIN_ASPECT and square (a ceiling strip:
+   * _stripFit). It grows on the
    * side the radar faces, so a wall-mounted radar stays on the edge it is
    * mounted on, and evenly when the radar faces neither way along that axis.
    *
@@ -5687,10 +5692,12 @@ export class ZoneMapCard extends HTMLElement {
       const spanX = Math.max(1, fitted.xMax - fitted.xMin);
       return this._chooseGridStep(CANVAS_WIDTH_PX / spanX, spanX, unit);
     };
+    const strip = this._isCeiling() && !!this._footprint();
+    if (!strip) this._fitWidthSeen = 0;
     const fit = (step) => {
       const rounded = this._roundOut(box, step);
-      const minAspect = this._fitMinAspect(box, rounded);
-      return this._shapeFit(rounded, step, Math.sin(facing), Math.cos(facing), minAspect);
+      if (strip) return this._stripFit(box, rounded, step, Math.sin(facing));
+      return this._shapeFit(rounded, step, Math.sin(facing), Math.cos(facing));
     };
     let step = stepFor(box);
     let fitted = fit(step);
@@ -5731,23 +5738,45 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   /**
-   * The shortest the fitted map may be, as a share of its width:
-   * FIT_MIN_ASPECT, or for an LD2450's ceiling strip as short as
-   * CEILING_FIT_MIN_ASPECT while the map stays SHORT_MAP_MIN_PX tall, and
-   * `box` (the strip and zones) has SHORT_MAP_BUTTONS_PX under it, at the
-   * width the map is shown at (_fitWidthPx). `rounded` is `box` rounded out
-   * to the grid, whose top and width the map keeps.
+   * The fitted extents of an LD2450's ceiling strip, at any rotation.
+   * `box` is the box around the strip as it is turned now (and the zones),
+   * `rounded` that box rounded out to the grid. The map keeps the box's
+   * top, and its height is the box plus SHORT_MAP_BUTTONS_PX under it for
+   * the bottom buttons, at the width the map is shown at (_fitWidthPx),
+   * never under SHORT_MAP_MIN_PX nor CEILING_FIT_MIN_ASPECT of its width.
+   * A strip turned to run down the map (near 90 degrees) widens the map,
+   * in whole steps toward the side the radar faces (`facingX`), until it
+   * is no taller than CEILING_FIT_MAX_ASPECT of its width. The extra
+   * height always goes at the bottom, under the strip, at 180 degrees too.
    */
-  _fitMinAspect(box, rounded = box) {
-    if (!this._isCeiling() || !this._footprint()) {
-      this._fitWidthSeen = 0;
-      return FIT_MIN_ASPECT;
+  _stripFit(box, rounded, step, facingX) {
+    const widthPx = this._fitWidthPx();
+    this._fitWidthSeen = widthPx;
+    const buttons = SHORT_MAP_BUTTONS_PX / widthPx;
+    const needed = box.yMax - rounded.yMin;
+    const fitted = { ...rounded };
+    // Wide enough that the strip and buttons fit the cap.
+    const widest = needed / Math.max(CEILING_FIT_MIN_ASPECT, CEILING_FIT_MAX_ASPECT - buttons);
+    const width0 = rounded.xMax - rounded.xMin;
+    if (width0 < widest) {
+      const steps = Math.ceil((widest - width0) / step - 1e-9);
+      if (Math.abs(facingX) < 1e-6) {
+        const before = Math.floor(steps / 2);
+        fitted.xMin -= before * step;
+        fitted.xMax += (steps - before) * step;
+      } else if (facingX > 0) {
+        fitted.xMax += steps * step;
+      } else {
+        fitted.xMin -= steps * step;
+      }
     }
-    const width = this._fitWidthPx();
-    this._fitWidthSeen = width;
-    const boxAspect = (box.yMax - rounded.yMin) / Math.max(1, rounded.xMax - rounded.xMin);
-    const shortest = Math.max(SHORT_MAP_MIN_PX / width, boxAspect + SHORT_MAP_BUTTONS_PX / width);
-    return Math.min(FIT_MIN_ASPECT, Math.max(CEILING_FIT_MIN_ASPECT, shortest));
+    const width = fitted.xMax - fitted.xMin;
+    const minAspect = Math.max(CEILING_FIT_MIN_ASPECT, SHORT_MAP_MIN_PX / widthPx, needed / width + buttons);
+    const height = rounded.yMax - rounded.yMin;
+    if (height < minAspect * width) {
+      fitted.yMax += Math.ceil((minAspect * width - height) / step - 1e-9) * step;
+    }
+    return fitted;
   }
 
   /**
@@ -5763,7 +5792,7 @@ export class ZoneMapCard extends HTMLElement {
 
   /**
    * Fit again when the width a ceiling strip's shape was fitted at
-   * (_fitMinAspect) is not the width shown now. Returns whether it moved.
+   * (_stripFit) is not the width shown now. Returns whether it moved.
    */
   _refitForWidth() {
     if (!this._fitWidthSeen || this._fitWidthPx() === this._fitWidthSeen) return false;
@@ -5827,11 +5856,11 @@ export class ZoneMapCard extends HTMLElement {
   }
 
   /**
-   * `box` with its short side grown so its height is between `minAspect`
+   * `box` with its short side grown so its height is between FIT_MIN_ASPECT
    * of its width and its width, toward the side the radar faces along that
    * axis (`facingX`, `facingY`), or evenly when it faces neither way.
    */
-  _shapeFit(box, step, facingX, facingY, minAspect = FIT_MIN_ASPECT) {
+  _shapeFit(box, step, facingX, facingY) {
     const grow = (min, max, steps, facing) => {
       if (Math.abs(facing) < 1e-6) {
         const before = Math.floor(steps / 2);
@@ -5845,8 +5874,8 @@ export class ZoneMapCard extends HTMLElement {
     if (height > width) {
       const steps = Math.round((height - width) / step);
       [fitted.xMin, fitted.xMax] = grow(box.xMin, box.xMax, steps, facingX);
-    } else if (height < minAspect * width) {
-      const steps = Math.ceil((minAspect * width - height) / step - 1e-9);
+    } else if (height < FIT_MIN_ASPECT * width) {
+      const steps = Math.ceil((FIT_MIN_ASPECT * width - height) / step - 1e-9);
       [fitted.yMin, fitted.yMax] = grow(box.yMin, box.yMax, steps, facingY);
     }
     return fitted;
@@ -10047,7 +10076,8 @@ export class ZoneMapCard extends HTMLElement {
    * width every px size in the card (labels, lines, dots, the grid's 40 px
    * spacing) was made for. A YAML grid keeps the square 800 px it always
    * had. A fitted grid gets the grid's own shape (_shapeFit keeps it
-   * between _fitMinAspect and square), and the container takes the same
+   * between FIT_MIN_ASPECT and square, _stripFit a ceiling strip between
+   * CEILING_FIT_MIN_ASPECT and CEILING_FIT_MAX_ASPECT), and the container takes the same
    * aspect ratio, so a meter is as long across as it is down and the cone
    * is not stretched. The aspect is the shape at 800 px, never what a
    * rounded store size makes of it, so it cannot move the layout that sizes
