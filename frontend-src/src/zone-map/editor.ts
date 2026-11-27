@@ -20,6 +20,7 @@
 
 import { registerElement } from "../register";
 import { hasLd2450Device } from "../ld2450";
+import { hasLd2460Device } from "../ld2460";
 import { apolloModelInfo, isEsphomeDevice } from "../profiles";
 import type { HomeAssistant } from "../types";
 import { VIEW_ONLY_LABEL } from "./copy";
@@ -109,7 +110,8 @@ interface TextFieldElement extends HTMLElement {
 }
 
 /**
- * The first device on the system with LD2450 target sensors, if any.
+ * The first device on the system with LD2450 target sensors, else the first
+ * with LD2460 target sensors, if any.
  *
  * This auto-fill only picks a device whose LD2450 target sensors are already
  * registered (`hasLd2450Device`). The device picker below is deliberately
@@ -119,7 +121,7 @@ interface TextFieldElement extends HTMLElement {
  * the card opens on the device_id error until the user picks it. The stub never
  * guesses an unproven device, and on a mixed system it prefers the proven one.
  */
-export function firstLd2450DeviceId(hass: HomeAssistant | undefined): string | undefined {
+export function firstTrackerDeviceId(hass: HomeAssistant | undefined): string | undefined {
   if (!hass) return undefined;
   const fromRegistry = Object.keys(hass.devices ?? {});
   // A hass without a device registry still lists every entity's device id, and
@@ -133,7 +135,10 @@ export function firstLd2450DeviceId(hass: HomeAssistant | undefined): string | u
             .filter((id): id is string => !!id)
         )
       );
-  return candidates.find((id) => hasLd2450Device(hass, id));
+  return (
+    candidates.find((id) => hasLd2450Device(hass, id)) ??
+    candidates.find((id) => hasLd2460Device(hass, id))
+  );
 }
 
 const STYLE = `
@@ -217,8 +222,11 @@ export class ZoneMapCardEditor extends HTMLElement {
       !!this._hass &&
       !!device?.id &&
       (hasLd2450Device(this._hass, device.id) ||
+        hasLd2460Device(this._hass, device.id) ||
         (isEsphomeDevice(this._hass, device.id) &&
-          (apolloModelInfo(this._hass.devices?.[device.id])?.ld2450 ?? false)));
+          (apolloModelInfo(this._hass.devices?.[device.id])?.ld2450 ||
+            apolloModelInfo(this._hass.devices?.[device.id])?.ld2460 ||
+            false)));
     // TODO(REVIEW_REPORT.md X49): unlike the two selectors, this value-changed
     // is not stopped. Add stopPropagation (with a test) if symmetry is wanted,
     // and reword the selector comment to call those stops defensive.

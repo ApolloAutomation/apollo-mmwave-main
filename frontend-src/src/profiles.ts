@@ -217,15 +217,24 @@ export interface ApolloModelInfo {
   profile?: RadarProfile;
   /** Whether the model ships an LD2450 tracking radar. */
   ld2450: boolean;
+  /** Whether the model ships an LD2460 tracking radar. */
+  ld2460: boolean;
+  /** Set when read from entities, not a listed model. */
+  derived?: boolean;
 }
 
 /** Known Apollo mmWave models → expected hardware. Matched by prefix because
  *  hardware variants extend the model string (R-PRO-1-W / R-PRO-1-ETH). */
-const APOLLO_MODELS: { prefix: string; profile?: RadarProfile; ld2450: boolean }[] = [
-  { prefix: "msr-1", profile: LD2410_PROFILE, ld2450: false },
-  { prefix: "msr-2", profile: LD2410_PROFILE, ld2450: false },
-  { prefix: "mtr-1", ld2450: true },
-  { prefix: "r-pro-1", profile: LD2412_PROFILE, ld2450: true },
+const APOLLO_MODELS: {
+  prefix: string;
+  profile?: RadarProfile;
+  ld2450: boolean;
+  ld2460: boolean;
+}[] = [
+  { prefix: "msr-1", profile: LD2410_PROFILE, ld2450: false, ld2460: false },
+  { prefix: "msr-2", profile: LD2410_PROFILE, ld2450: false, ld2460: false },
+  { prefix: "mtr-1", ld2450: true, ld2460: false },
+  { prefix: "r-pro-1", profile: LD2412_PROFILE, ld2450: true, ld2460: false },
 ];
 
 /**
@@ -244,7 +253,7 @@ export function apolloModelInfo(device?: {
   if (device.manufacturer.toLowerCase() !== "apolloautomation") return undefined;
   const model = device.model.toLowerCase();
   const hit = APOLLO_MODELS.find((m) => model.startsWith(m.prefix));
-  return hit ? { profile: hit.profile, ld2450: hit.ld2450 } : undefined;
+  return hit ? { profile: hit.profile, ld2450: hit.ld2450, ld2460: hit.ld2460 } : undefined;
 }
 
 /**

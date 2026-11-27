@@ -8,6 +8,9 @@ import {
 } from "./entities";
 import { entitiesForDevice } from "./entity-index";
 import { hasLd2450Device, ld2450EntityIds, zoneMapCard } from "./ld2450";
+import { hasLd2460Device, ld2460EntityIds } from "./ld2460";
+import { ld2460Entities, type Ld2460Entities } from "./ld2460-entities";
+import { ld2460LiveRows } from "./panels/ld2460-rows";
 import {
   LD2450_ZONES,
   ld2450Entities,
@@ -22,7 +25,9 @@ import {
   ld2450LiveRows,
   targetCountText,
 } from "./panels/ld2450-rows";
-import { apolloModelInfo, isEsphomeDevice, type RadarProfile } from "./profiles";
+import { type RadarProfile } from "./profiles";
+import { apolloDeviceInfo } from "./apollo-device";
+import { FIRMWARE_ZONES_NOTE } from "./zone-map/copy";
 import { parseGateSizeMeters } from "./charts/geometry";
 import {
   aboutDistance,
@@ -38,7 +43,12 @@ import {
   type Row,
 } from "./panels/entity-rows";
 import { deviceRows, type DeviceRestart } from "./panels/device-rows";
-import { historyEntities, ld2450HistoryEntities, type HistoryRow } from "./panels/history";
+import {
+  historyEntities,
+  ld2450HistoryEntities,
+  ld2460HistoryEntities,
+  type HistoryRow,
+} from "./panels/history";
 import { gateCheckedIds } from "./cards/gate-setup-checks";
 import { SLIDER_LOCK_ROW_TAG, SLIDER_ROW_TAG, showsSlider } from "./cards/slider-lock";
 
@@ -51,10 +61,17 @@ export interface RadarDevice {
   profile?: RadarProfile;
   /** Whether the device exposes an LD2450 tracking radar (X/Y zones). */
   ld2450: boolean;
+  /** Whether it exposes an LD2460 tracking radar instead. Never both. */
+  ld2460: boolean;
   /** Whether any recognised radar entity currently has a real state. An
    *  offline radar keeps its tab (with a note) so the user can see it is
    *  expected and not silently missing. */
   online: boolean;
+}
+
+/** Whether the device has a tracking radar, an LD2450 or an LD2460. */
+export function hasTracker(dev: RadarDevice): boolean {
+  return dev.ld2450 || dev.ld2460;
 }
 
 export interface StrategyConfig {
@@ -125,7 +142,7 @@ function hasLiveRadarEvidence(
       ...m.still_energy
     );
   }
-  radarIds.push(...ld2450EntityIds(hass, deviceId));
+  radarIds.push(...ld2450EntityIds(hass, deviceId), ...ld2460EntityIds(hass, deviceId));
   if (radarIds.some((id) => isLive(hass, id))) return true;
   if (radarIds.some((id) => id !== undefined)) return false;
 
@@ -156,7 +173,7 @@ function deviceFromId(
   // Registry-first: manufacturer/model survive entity renames and `_2` dedup.
   // Only for an ESPHome device, though: a network integration's copy of the
   // same hardware carries the same strings and must not become a second tab.
-  const reg = isEsphomeDevice(hass, deviceId) ? apolloModelInfo(d) : undefined;
+  const reg = apolloDeviceInfo(hass, deviceId);
   const base = baseNameFromDevice(hass, deviceId);
   if (!forced && !reg && !base) return undefined;
 
@@ -175,11 +192,17 @@ function deviceFromId(
   // LD2450 evidence is device-scoped only. Probing ids built from the base in
   // the global states would let a same-named radar's target sensors flag a
   // gate-only device, and this device's own sensors are in `hass.entities`.
-  const ld2450 = hasLd2450Device(hass, deviceId) || (reg?.ld2450 ?? false);
-  // Include the device if it has either a tunable gate radar or an LD2450 —
-  // a forced device stays even if neither is detectable (offline + unknown
-  // model): its tab explains the situation instead of silently vanishing.
-  if (!forced && !profile && !ld2450) return undefined;
+  // Entities first here too: an LD2460 X wins over stale LD2450 sensors, and
+  // either chip's X over the registry model.
+  const hasLd2460 = hasLd2460Device(hass, deviceId);
+  const hasLd2450 = !hasLd2460 && hasLd2450Device(hass, deviceId);
+  const byEntities = hasLd2460 || hasLd2450;
+  const ld2460 = hasLd2460 || (!byEntities && (reg?.ld2460 ?? false));
+  const ld2450 = hasLd2450 || (!byEntities && !ld2460 && (reg?.ld2450 ?? false));
+  // Include the device if it has either a tunable gate radar or a tracking
+  // radar. A forced device stays even if neither is detectable (offline +
+  // unknown model): its tab explains the situation instead of silently vanishing.
+  if (!forced && !profile && !ld2450 && !ld2460) return undefined;
   return {
     deviceId,
     // The base doubles as the view path, so a registry-matched device whose
@@ -188,6 +211,7 @@ function deviceFromId(
     name: d?.name_by_user || d?.name || base || deviceId,
     profile,
     ld2450,
+    ld2460,
     online,
   };
 }
@@ -312,8 +336,12 @@ interface HelpContext {
   gateDepth: string;
   /** Whether the tab has the gate radar's Radar setup card to point at. */
   gateSetup: boolean;
-  /** Whether the tab has the LD2450's Radar setup card to point at. */
+  /** Whether the tab has the tracking radar's Radar setup card to point at. */
   ld2450Setup: boolean;
+  /** Whether the LD2460's Installation Mode sensor exists. */
+  installationMode: boolean;
+  /** Whether the LD2460 firmware's own presence sensor exists. */
+  ld2460Presence: boolean;
   /** Whether the gate radar's presence sensor exists. An R PRO-1 built
    *  without the optional LD2412 has none to recommend. */
   gatePresence: boolean;
@@ -330,7 +358,7 @@ interface HelpContext {
 
 function helpCard(dev: RadarDevice, ctx: HelpContext): Record<string, any> {
   const card = helpCardBody(dev, ctx);
-  if (!dev.online && (dev.profile || dev.ld2450)) {
+  if (!dev.online && (dev.profile || hasTracker(dev))) {
     card.content = `${card.content}${OFFLINE_NOTE}`;
   }
   return card;
@@ -414,7 +442,7 @@ function gateSteps(p: RadarProfile, ctx: HelpContext, twoRadars: boolean): strin
 
 function helpCardBody(dev: RadarDevice, ctx: HelpContext): Record<string, any> {
   const name = markdownText(dev.name);
-  if (!dev.profile && !dev.ld2450) {
+  if (!dev.profile && !hasTracker(dev)) {
     // Forced (explicitly selected) device with nothing detectable — offline
     // and no registry model to go by.
     return {
@@ -426,12 +454,14 @@ function helpCardBody(dev: RadarDevice, ctx: HelpContext): Record<string, any> {
         deviceLink(dev),
     };
   }
+  if (dev.ld2460) return ld2460HelpBody(dev, ctx, name);
   // An LD2450 alone: an MTR-1, or an R PRO-1 built without the LD2412. A
   // new zone's sensor joins Zone presence only after a page reload.
   if (!dev.profile || (dev.ld2450 && !ctx.gateRadar)) {
     const steps = [
       ...(ctx.ld2450Setup ? ["Fix anything the Radar setup card flags."] : []),
-      "Set **Cone rotation** (under Map settings on the zone map) to match how the sensor is mounted.",
+      LD2450_MOUNT_STEP,
+      LD2460_ROTATION_STEP,
       "Press **Add zone** under the zone map and drag on the map to draw the zone. Reload this" +
         " page, then walk into the zone and watch it turn on under Zone presence.",
     ];
@@ -475,11 +505,89 @@ function helpCardBody(dev: RadarDevice, ctx: HelpContext): Record<string, any> {
       `**Start here**\n` +
       numbered([
         ...gateSteps(p, ctx, true),
-        `For the LD2450, ${setup}set **Cone rotation** (under Map settings on the zone map) to` +
-          " match how the sensor is mounted, then press **Add zone**, draw the zone and walk into it.",
+        `For the LD2450, ${setup}choose **Wall**, **High** or **Ceiling** under Map settings on` +
+          " the zone map, set **Cone rotation** (**Map rotation** on a ceiling) to match how the" +
+          " sensor is mounted, then press **Add zone**, draw the zone and walk into it.",
       ]) +
       `\n\n${automations}\n\n` +
       links,
+  };
+}
+
+/** For automations on an LD2460 tab with no gate radar presence. */
+function ld2460Automations(ctx: HelpContext): string {
+  if (ctx.combinedPresence) return COMBINED_AUTOMATIONS;
+  return ctx.ld2460Presence
+    ? "**In automations**, use a zone's presence sensor, or **LD2460 Presence** for" +
+        " anywhere the radar sees."
+    : "**In automations**, use a zone's presence sensor. For the whole room, draw one" +
+        " zone over it.";
+}
+
+/** The LD2450 help's mount step. */
+export const LD2450_MOUNT_STEP =
+  "Under Map settings on the zone map, choose **Wall**, **High** (high on a wall or in a" +
+  " ceiling corner, tilted down) or **Ceiling** (straight down), and fill in the heights it" +
+  " asks for.";
+
+/** The LD2460 help's mount and rotation steps. */
+export const LD2460_MOUNT_STEP =
+  "Under Map settings on the zone map, choose **Wall** or **Ceiling**. A radar that reports" +
+  " its mount sets this itself.";
+export const LD2460_ROTATION_STEP =
+  "Set **Cone rotation** (**Map rotation** on a ceiling) under Map settings to match how the" +
+  " sensor is mounted.";
+
+/** The help card of an LD2460 tab, alone or beside the LD2412. */
+function ld2460HelpBody(dev: RadarDevice, ctx: HelpContext, name: string): Record<string, any> {
+  const mode = ctx.installationMode
+    ? "check **Installation Mode** under LD2460 Live (side for a wall, top for a ceiling), "
+    : "";
+  const p = dev.profile;
+  if (!p || !ctx.gateRadar) {
+    const steps = [
+      ...(ctx.ld2450Setup ? ["Fix anything the Radar setup card flags."] : []),
+      ...(ctx.installationMode
+        ? ["Check **Installation Mode** under LD2460 Live: side for a wall, top for a ceiling."]
+        : []),
+      LD2460_MOUNT_STEP,
+      LD2460_ROTATION_STEP,
+      "Press **Add zone** under the zone map and drag on the map to draw the zone. Reload this" +
+        " page, then walk into the zone and watch it turn on under Zone presence.",
+    ];
+    return {
+      type: "markdown",
+      content:
+        `**${name}**, Apollo mmWave (LD2460 tracking radar).\n\n` +
+        `Draw occupancy zones over the live target positions below.\n\n` +
+        `**Start here**\n${numbered(steps)}\n\n` +
+        `${ld2460Automations(ctx)}\n\n` +
+        deviceLink(dev),
+    };
+  }
+  const setup = ctx.ld2450Setup ? "fix anything Radar setup flags above the zone map, " : "";
+  const automations = ctx.combinedPresence
+    ? COMBINED_AUTOMATIONS
+    : ctx.gatePresence
+      ? `**In automations**, use **${p.label} Presence** (Radar Target on this tab)` +
+        " for the whole room, or a zone's presence sensor for one part of it."
+      : ld2460Automations(ctx);
+  return {
+    type: "markdown",
+    content:
+      `**${name}**, Apollo mmWave with two radars. The **${p.label}** senses people` +
+      ` anywhere in range, even sitting still. The **LD2460** tracks where up to 5 people` +
+      ` are and drives the zone map.\n\n` +
+      `**Start here**\n` +
+      numbered([
+        ...gateSteps(p, ctx, true),
+        `For the LD2460, ${mode}${setup}choose **Wall** or **Ceiling** under Map settings on` +
+          " the zone map (a radar that reports its mount sets this itself), set **Cone rotation**" +
+          " (**Map rotation** on a ceiling) to match how the sensor is mounted, then press" +
+          " **Add zone**, draw the zone and walk into it.",
+      ]) +
+      `\n\n${automations}\n\n` +
+      `[Full tuning guide →](${p.wikiUrl}) · ${deviceLink(dev)}`,
   };
 }
 
@@ -540,7 +648,7 @@ export const SUPPORT_FILE_NOTE =
 /** The whole-device restart, named for what it takes down with it.
  *  `gateRadar` is whether the device has any of the gate radar's entities. */
 function deviceRestart(dev: RadarDevice, gateRadar: boolean): DeviceRestart {
-  if (dev.profile && gateRadar && dev.ld2450) {
+  if (dev.profile && gateRadar && hasTracker(dev)) {
     return {
       name: "Restart device (both radars)",
       text:
@@ -548,7 +656,7 @@ function deviceRestart(dev: RadarDevice, gateRadar: boolean): DeviceRestart {
         " short while before it reconnects.",
     };
   }
-  if (dev.ld2450) {
+  if (hasTracker(dev)) {
     return {
       name: "Restart device (also restarts the radar)",
       text:
@@ -680,6 +788,7 @@ function builtInZonesCard(
   if (entities.length) cards.push({ type: "entities", show_header_toggle: false, entities });
   // The counts as whole numbers: as entities rows they read "0.0".
   if (counts.length) cards.push({ type: "markdown", content: builtInZoneCountsText(counts) });
+  cards.push({ type: "markdown", content: FIRMWARE_ZONES_NOTE });
   return {
     type: "conditional",
     conditions: [
@@ -705,6 +814,29 @@ function ld2450LiveCard(hass: HomeAssistant, l: Ld2450Entities): Record<string, 
     content: targetCountText(l.presence_target_count),
   };
   return rows ? { type: "vertical-stack", cards: [rows, count] } : count;
+}
+
+/** Under LD2460 Live, when the radar reports its mount. */
+export const LD2460_MOUNT_NOTE =
+  "💡 **Installation Mode** is read from the radar when the device starts: side for a" +
+  " wall, top for a ceiling. If it is missing or unknown, choose **Wall** or **Ceiling**" +
+  " under Map settings on the zone map.";
+
+/** What the LD2460 sees right now, its target count, and what its mount means. */
+function ld2460LiveCard(hass: HomeAssistant, l: Ld2460Entities): Record<string, any> | undefined {
+  const title = "LD2460 Live";
+  const rows = entitiesCard(title, presentRows(hass, ld2460LiveRows(l)), { state_color: true });
+  const cards: Record<string, any>[] = rows ? [rows] : [];
+  if (l.target_count && exists(hass, l.target_count)) {
+    cards.push({
+      type: "markdown",
+      ...(cards.length ? {} : { title }),
+      content: targetCountText(l.target_count),
+    });
+  }
+  if (exists(hass, l.installation_mode)) cards.push(noteCard(LD2460_MOUNT_NOTE));
+  if (cards.length <= 1) return cards[0];
+  return { type: "vertical-stack", cards };
 }
 
 interface DeviceCards {
@@ -734,6 +866,7 @@ interface DeviceCards {
   zoneMap?: Record<string, any>;
   zonePresence?: Record<string, any>;
   ld2450Live?: Record<string, any>;
+  ld2460Live?: Record<string, any>;
   ld2450Controls?: Record<string, any>;
   /** What the LD2450's Radar Timeout holds. */
   ld2450ControlsNote?: Record<string, any>;
@@ -764,7 +897,7 @@ function cardMap(
   const cards: Partial<DeviceCards> = {};
   // On a tab with two radars (R PRO-1) the gate radar's history lines name
   // its chip. The LD2450's presence line names its chip on every tab.
-  const twoRadars = !!dev.profile && dev.ld2450;
+  const twoRadars = !!dev.profile && hasTracker(dev);
   const historyRows: HistoryRow[] = [];
 
   // Gate-radar tuning cards (LD2410 / LD2412), only when the device has a
@@ -895,16 +1028,35 @@ function cardMap(
     historyRows.push(...ld2450HistoryEntities(l, zonePresenceSensors(hass, dev.deviceId)));
   }
 
+  // LD2460 zone map: the same map and presence as the LD2450's, and
+  // none of its settings, which this chip does not have.
+  let l60: Ld2460Entities | undefined;
+  if (dev.ld2460) {
+    cards.zoneHeader = dev.profile ? { type: "heading", heading: "Zone Map" } : undefined;
+    l60 = ld2460Entities(hass, dev.deviceId);
+    // Only the mode and the target count have checks.
+    cards.ld2450Setup =
+      exists(hass, l60.installation_mode) || exists(hass, l60.target_count)
+        ? { type: "custom:apollo-radar-setup-card", device_id: dev.deviceId, radar: "ld2460" }
+        : undefined;
+    cards.zoneMap = zoneMapCard(dev.deviceId, dev.name);
+    cards.zonePresence = zonePresenceCard(hass, dev.deviceId);
+    cards.ld2460Live = ld2460LiveCard(hass, l60);
+    historyRows.push(...ld2460HistoryEntities(l60, zonePresenceSensors(hass, dev.deviceId)));
+  }
+
   // One graph for every radar on the tab. Named for the chip on a gate radar
   // alone, as the tab's other gate-radar cards are.
   cards.history = historyCard(
-    dev.profile && !dev.ld2450 ? `${dev.profile.label} Occupancy History` : "Occupancy History",
+    dev.profile && !hasTracker(dev) ? `${dev.profile.label} Occupancy History` : "Occupancy History",
     presentRows(hass, historyRows)
   );
   cards.help = helpCard(dev, {
     gateDepth: aboutDistance(gateSizeM, unit),
     gateSetup: !!cards.gateSetup,
     ld2450Setup: !!cards.ld2450Setup,
+    installationMode: exists(hass, l60?.installation_mode),
+    ld2460Presence: exists(hass, l60?.presence),
     gatePresence,
     anyZone,
     gateRadar,
@@ -942,6 +1094,7 @@ export function buildDeviceCards(
     c.zoneMap,
     c.zonePresence,
     c.ld2450Live,
+    c.ld2460Live,
     c.history,
     c.ld2450Controls,
     c.ld2450ControlsNote,
@@ -990,6 +1143,7 @@ export function buildDeviceSections(
       zoneColumns.push(wide, [
         c.zonePresence,
         c.ld2450Live,
+        c.ld2460Live,
         c.ld2450Controls,
         c.ld2450ControlsNote,
         c.builtInZones,
@@ -999,7 +1153,7 @@ export function buildDeviceSections(
       wide = [c.ld2450Setup ? c.help : fullWidth(c.help), c.ld2450Setup, fullWidth(c.zoneMap)];
       zoneColumns.push(
         wide,
-        [c.zonePresence, c.ld2450Live, c.history],
+        [c.zonePresence, c.ld2450Live, c.ld2460Live, c.history],
         [c.ld2450Controls, c.ld2450ControlsNote, c.builtInZones]
       );
     }

@@ -92,6 +92,21 @@ export interface ZoneConfig {
   mirror_x?: boolean;
   /** An administrator turned movement history on for this radar. */
   movement_history?: boolean;
+  /**
+   * The saved mount, or null for a wall. A radar that reports its own mount
+   * wins over it. Absent from an older backend.
+   */
+  mount?: "high" | "ceiling" | null;
+  /** The saved ceiling height in mm, or null for the default. */
+  ceiling_height_mm?: number | null;
+  /** An LD2450 on High: its height in mm, null for the default. */
+  mount_height_mm?: number | null;
+  /** An LD2450 on High: degrees down, null for the default. */
+  tilt_deg?: number | null;
+  /** A person's chest height in mm, null for the default. */
+  target_height_mm?: number | null;
+  /** An LD2450 on a ceiling shows everyone on the other side. */
+  flip_room_side?: boolean;
 }
 
 /** A zone's stored geometry; shape "none" has data null. */
