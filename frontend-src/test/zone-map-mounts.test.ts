@@ -642,6 +642,42 @@ describe("the grid line under Map settings", () => {
   });
 });
 
+describe("Add coverage zone and History", () => {
+  it("closes a replay, then adds the zone filled with the footprint", async () => {
+    const hass = hassOf({ payload: { ...CEILING, movement_history: true } });
+    const card = await mount(hass);
+    card._history.open = true;
+    card._history.series = { slots: [] };
+    card._renderHistoryPanel();
+    const button = $(card, "btnRoomZoneAdd");
+    expect(button.hidden).toBe(false);
+    button.click();
+    await settle();
+    expect(card._history.open).toBe(false);
+    expect(card._replayShowing()).toBe(false);
+    expect($(card, "historyPanel").hidden).toBe(true);
+    expect(writes(hass).map((w) => [w.zone_id, w.shape])).toEqual([
+      [1, "none"],
+      [1, "polygon"],
+    ]);
+  });
+
+  it("closes History before the zone is added, not after", async () => {
+    const hass = hassOf({ payload: { ...CEILING, movement_history: true } });
+    const card = await mount(hass);
+    card._history.open = true;
+    card._history.series = { slots: [] };
+    const order: string[] = [];
+    const close = card._closeHistory.bind(card);
+    const add = card._handleAddZone.bind(card);
+    card._closeHistory = () => (order.push(card._history.open ? "close" : "noop"), close());
+    card._handleAddZone = () => (order.push("add"), add());
+    card._addRoomZone();
+    expect(order[0]).toBe("close");
+    expect(order).toContain("add");
+  });
+});
+
 describe("the fitted map on High and Ceiling", () => {
   it("keeps the radar and wall line off the map's edge", async () => {
     for (const payload of [HIGH, CEILING]) {

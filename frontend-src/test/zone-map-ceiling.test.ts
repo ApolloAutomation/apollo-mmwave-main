@@ -667,6 +667,23 @@ describe("whole-room zones", () => {
     expect(card._getZone(1)).toBeFalsy();
   });
 
+  it("closes a replay and adds a filled whole-room zone", async () => {
+    const hass = hassOf({ payload: { mount: "ceiling", movement_history: true } });
+    const card = await mount(hass);
+    card._history.open = true;
+    card._history.series = { slots: [] };
+    card._renderHistoryPanel();
+    expect(card._replayShowing()).toBe(true);
+    expect($(card, "btnRoomZoneAdd").hidden).toBe(false);
+    $(card, "btnRoomZoneAdd").click();
+    expect(card._history.open).toBe(false);
+    expect($(card, "historyPanel").hidden).toBe(true);
+    expect(writes(hass).map((w) => [w.zone_id, w.shape])).toEqual([
+      [1, "none"],
+      [1, "ellipse"],
+    ]);
+  });
+
   it("offers no whole-room zone on a wall map or to a viewer", async () => {
     expect($(await mount(hassOf()), "btnRoomZoneAdd").hidden).toBe(true);
     const viewer = await mount(hassOf({ admin: false, payload: { mount: "ceiling" } }));

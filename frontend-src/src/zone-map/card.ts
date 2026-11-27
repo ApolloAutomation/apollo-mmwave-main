@@ -4169,7 +4169,11 @@ export class ZoneMapCard extends HTMLElement {
     this._commitZoneShape(zoneId, { shape: DRAW_MODES.POLYGON, data: { points } });
   }
 
-  /** Add whole-room zone or Add coverage zone: a new zone, filled. */
+  /**
+   * Add whole-room zone or Add coverage zone: a new zone, filled. History
+   * closes first, as it does for Draw shape and Walk, so the replay never
+   * refuses the fill and leaves a zone with no shape.
+   */
   _addRoomZone() {
     const footprintTool = !!this._footprint();
     if (!this._isAdmin() || !(this._isTopDown() || footprintTool) || this._walk) return;
@@ -4179,6 +4183,8 @@ export class ZoneMapCard extends HTMLElement {
     }
     const next = this._nextZoneId();
     if (next > MAX_ZONE_ID) return;
+    // Like Draw shape and Walk: the replay gives way.
+    this._closeHistory();
     this._handleAddZone();
     if (footprintTool) this._drawCoverageShape(next);
     else this._drawRoomShape(next, 'circle');
