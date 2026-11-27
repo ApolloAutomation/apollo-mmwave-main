@@ -2337,13 +2337,15 @@ async def test_geometry_change_drops_the_hold(
         {ATTR_ROTATION_DEG: 15},
         {STORE_INPUT_UNITS: "cm"},
         {STORE_ENTITIES: [TARGET_1, TARGET_2]},
+        {"mount": "high"},
+        {"mount": "ceiling"},
     ],
-    ids=["rotation", "input-units", "pairs"],
+    ids=["rotation", "input-units", "pairs", "mount-high", "mount-ceiling"],
 )
 async def test_a_change_in_how_targets_are_read_drops_the_hold(
     hass, freezer, entity_registry, setup_entry_with_zone, change
 ) -> None:
-    """The hold ends when the rotation, the units or the tracked pairs change."""
+    """The hold ends when the rotation, units, tracked pairs or mount change."""
     device_id, _ = setup_entry_with_zone
     await _store_zone(hass, device_id)
     presence_id = _presence_id(entity_registry, device_id)

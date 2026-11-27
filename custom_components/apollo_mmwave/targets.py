@@ -1,5 +1,5 @@
 """
-Tracked LD2450 targets, read the same way by presence and the recorder.
+Tracked LD2450 and LD2460 targets, read alike by presence and the recorder.
 
 Zone presence and the movement recorder both turn a radar's tracked X/Y
 sensor pairs into points, and they must never disagree about one: which
@@ -13,6 +13,7 @@ change here has to be made there too.
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -43,6 +44,7 @@ from .const import (
     ZONE_TYPE_IGNORE,
 )
 from .hold import Reading, half_vanished
+from .mounts import LD2450, LD2460, floor_point, mount_geometry
 from .store import zone_type_of
 
 if TYPE_CHECKING:
@@ -67,6 +69,59 @@ type ShapeTester = Callable[[float, float, ShapeData], bool]
 # recorder pair by it, and the zone map card by TRAIL_PAIR_MS in trails.ts,
 # which a contract test keeps equal to it.
 TARGET_PAIR_MS = 550
+# The LD2460 writes X and Y of one frame in the same loop turn, and a
+# repeated value is not written at all, so an axis written alone is a whole
+# reading at once. The zone map card's LD2460_TRAIL_PAIR_MS is this.
+LD2460_PAIR_MS = 0
+
+
+@dataclass(frozen=True, slots=True)
+class TrackerTiming:
+    """How one tracking radar's X and Y writes make a reading."""
+
+    # How long an axis written alone waits for the other's write.
+    window_ms: int
+    # Whether one axis turning exactly 0 can be half of a vanish. The
+    # LD2450 empties a slot as 0/0; the LD2460 reports a lost target as
+    # unknown, so its 0 is a real position on an axis line.
+    zero_axis_vanish: bool
+
+
+LD2450_TIMING = TrackerTiming(TARGET_PAIR_MS, zero_axis_vanish=True)
+LD2460_TIMING = TrackerTiming(LD2460_PAIR_MS, zero_axis_vanish=False)
+
+# Twins of LD2460_X / LD2460_Y in frontend-src/src/ld2460.ts.
+LD2460_X = re.compile(r"(?:^|_)ld2460_target_(\d+)_x(?:_\d+)?$")
+LD2460_Y = re.compile(r"(?:^|_)ld2460_target_(\d+)_y(?:_\d+)?$")
+
+
+def is_ld2460_pair(pair: Any) -> bool:
+    """Return whether both ids of an X/Y pair are the LD2460's."""
+    if not isinstance(pair, dict):
+        return False
+    x_id, y_id = pair.get("x"), pair.get("y")
+    return (
+        isinstance(x_id, str)
+        and isinstance(y_id, str)
+        and LD2460_X.search(x_id.partition(".")[2]) is not None
+        and LD2460_Y.search(y_id.partition(".")[2]) is not None
+    )
+
+
+def pair_tracker(pair: Any) -> str:
+    """Return which radar one X/Y pair belongs to."""
+    return LD2460 if is_ld2460_pair(pair) else LD2450
+
+
+def pairs_tracker(pairs: Any) -> str:
+    """Return the radar a pair list belongs to: LD2460 only when all are."""
+    if (
+        isinstance(pairs, list)
+        and pairs
+        and all(pair_tracker(pair) == LD2460 for pair in pairs)
+    ):
+        return LD2460
+    return LD2450
 
 
 @dataclass(slots=True)
@@ -79,6 +134,8 @@ class AxisPairing:
     lone_axis: int | None = None
     lone_at: int = 0
     solo_axis: int | None = None
+    # The radar's wait (TrackerTiming.window_ms).
+    window_ms: int = TARGET_PAIR_MS
 
     def follow(
         self,
@@ -87,11 +144,15 @@ class AxisPairing:
         at: int,
     ) -> None:
         """Follow which axes changed from previous to raw, written at time at."""
+        if self.window_ms <= 0:
+            # Every write is a whole reading: nothing waits.
+            self.lone_axis = self.solo_axis = None
+            return
         if previous is None:
             # A new reading: neither axis waits for the other.
             self.lone_axis = self.solo_axis = None
             return
-        if self.lone_axis is not None and at - self.lone_at >= TARGET_PAIR_MS:
+        if self.lone_axis is not None and at - self.lone_at >= self.window_ms:
             # The other axis never followed, so it did not change.
             self.lone_axis = None
         x_changed = raw[0] != previous[0]
@@ -118,11 +179,11 @@ class AxisPairing:
 
     def whole(self, at: int) -> bool:
         """Report whether the reading at time at waits for no axis's write."""
-        return self.lone_axis is None or at - self.lone_at >= TARGET_PAIR_MS
+        return self.lone_axis is None or at - self.lone_at >= self.window_ms
 
     def whole_at(self) -> int | None:
         """Return when a reading that waits for an axis counts, or None."""
-        return None if self.lone_axis is None else self.lone_at + TARGET_PAIR_MS
+        return None if self.lone_axis is None else self.lone_at + self.window_ms
 
 
 @dataclass(slots=True)
@@ -152,8 +213,9 @@ class ReadingPairer:
     and waits for nothing. Times are milliseconds of ``time.monotonic()``.
     """
 
-    def __init__(self) -> None:
-        """Start with no slot known."""
+    def __init__(self, timing: TrackerTiming = LD2450_TIMING) -> None:
+        """Start with no slot known, pairing by the radar's timing."""
+        self.timing = timing
         self._slots: dict[int, _PairedSlot] = {}
         # The slots the last pass found gone while their latest write still
         # waited for the other axis's, as readings of that write: the radar
@@ -165,11 +227,13 @@ class ReadingPairer:
         """Return the slot's reading to use at time at: raw once it is whole."""
         state = self._slots.get(slot)
         if state is None:
-            state = self._slots[slot] = _PairedSlot()
-        state.half = half_vanished(state.seen, raw)
+            state = self._slots[slot] = _PairedSlot(
+                split=AxisPairing(window_ms=self.timing.window_ms)
+            )
+        state.half = self.timing.zero_axis_vanish and half_vanished(state.seen, raw)
         if state.half:
             # Nor does an axis written alone before it wait any longer.
-            state.split = AxisPairing()
+            state.split = AxisPairing(window_ms=self.timing.window_ms)
             return raw
         state.split.follow(state.seen, raw, at)
         if raw != state.seen:
@@ -395,13 +459,20 @@ def pair_ids(pairs: Any) -> list[str]:
 
 
 def read_point(
-    hass: HomeAssistant, x_id: str, y_id: str, fallback: float
+    hass: HomeAssistant,
+    x_id: str,
+    y_id: str,
+    fallback: float,
+    *,
+    origin_is_empty: bool = True,
 ) -> tuple[float, float] | None:
     """
     Return one target's position in millimeters, raw sensor frame, or None.
 
     None when either state is missing, unknown, unavailable or not a finite
-    number, and for the (0, 0) the radar reports for an empty slot.
+    number, and for the (0, 0) an LD2450 reports for an empty slot. The
+    LD2460 reports an empty slot as unknown, so with origin_is_empty False
+    its (0, 0) is someone right in front of, or under, the radar.
     """
     x_state = hass.states.get(x_id)
     y_state = hass.states.get(y_id)
@@ -418,7 +489,7 @@ def read_point(
     except TypeError, ValueError:
         return None
     # Ignore origin (0,0) so default or uninitialized readings are skipped.
-    if x_val == 0.0 and y_val == 0.0:
+    if origin_is_empty and x_val == 0.0 and y_val == 0.0:
         return None
     # Zone geometry is millimeters, so each reading is converted by its own
     # unit (see `reading_unit_factor`). The device's input unit is only the
@@ -454,7 +525,9 @@ def iter_slot_points(
         y_id = pair.get("y")
         if not (isinstance(x_id, str) and isinstance(y_id, str)):
             continue
-        point = read_point(hass, x_id, y_id, fallback)
+        point = read_point(
+            hass, x_id, y_id, fallback, origin_is_empty=not is_ld2460_pair(pair)
+        )
         if point is not None:
             yield slot, point[0], point[1]
 
@@ -469,8 +542,9 @@ def masked_readings(
     """
     Return the radar's readings that no ignore zone masks.
 
-    Each is unit converted and rotated into the map frame, where zones are
-    drawn. A target inside any ignore zone of the radar is left out, so no
+    Each is unit converted, placed on the floor for a High or Ceiling
+    LD2450 (``mounts.floor_point``), and rotated into the map frame, where
+    zones are drawn. A target inside any ignore zone of the radar is left out, so no
     detect zone and no recorder sees it. With pairing, a pairer and the time
     in ms, each slot's reading is its whole one then, paired before it is
     masked, so the point between a target's X and Y writes cannot vanish
@@ -479,6 +553,19 @@ def masked_readings(
     """
     device = store.devices.get(device_id) or {}
     rotate = build_point_rotator(device.get(ATTR_ROTATION_DEG))
+    # An LD2460's mode never moves a point: no registry read.
+    geom = mount_geometry(pairs_tracker(pairs), None, device)
+    corrects = geom.dz_mm is not None
+
+    def place(
+        raw: tuple[float, float],
+    ) -> tuple[tuple[float, float], tuple[float, float] | None]:
+        # Map point, and the floor point when it differs from raw.
+        if not corrects:
+            return rotate(*raw), None
+        floor = floor_point(geom, *raw)
+        return rotate(*floor), floor
+
     ignore = [
         (tester, zone_def.get(ATTR_DATA))
         for zone_def in (device.get(STORE_ZONES) or {}).values()
@@ -491,29 +578,44 @@ def masked_readings(
     seen: set[int] = set()
     for slot, x_mm, y_mm in iter_slot_points(hass, pairs, fallback):
         raw = (x_mm, y_mm)
-        written = written_at = None
+        written = written_at = written_floor = None
         if pairer is not None:
             seen.add(slot)
             whole = pairer.pair(slot, raw, at)
             if whole != raw:
                 # The hold still reads the write that waits as a report.
-                written = (raw, rotate(*raw))
+                written_map, written_floor = place(raw)
+                written = (raw, written_map)
                 raw = whole
             if (changed_at := pairer.written_at(slot)) is not None:
                 written_at = changed_at / 1000
-        map_x, map_y = rotate(*raw)
+        (map_x, map_y), floor = place(raw)
         if any(inside(map_x, map_y, data) for inside, data in ignore):
             continue
         readings.append(
-            Reading(slot, raw, (map_x, map_y), written=written, written_at=written_at)
+            Reading(
+                slot,
+                raw,
+                (map_x, map_y),
+                written=written,
+                written_at=written_at,
+                floor=floor,
+                written_floor=written_floor,
+            )
         )
     if pairer is not None:
         pairer.lost = []
         for slot, raw, changed_at in pairer.keep(seen):
-            map_x, map_y = rotate(*raw)
+            (map_x, map_y), floor = place(raw)
             if not any(inside(map_x, map_y, data) for inside, data in ignore):
                 pairer.lost.append(
-                    Reading(slot, raw, (map_x, map_y), written_at=changed_at / 1000)
+                    Reading(
+                        slot,
+                        raw,
+                        (map_x, map_y),
+                        written_at=changed_at / 1000,
+                        floor=floor,
+                    )
                 )
     return readings
 

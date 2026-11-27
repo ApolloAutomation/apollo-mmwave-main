@@ -83,7 +83,7 @@ const DEDUP = "(?:_\\d+)?$";
 
 /** Matched by suffix, a bare (unprefixed) name must not follow another
  *  chip's token: `ld2412_timeout` is the R PRO-1's other radar. */
-const OTHER_CHIP_BEFORE = /(?:^|_)(?:ld2410|ld2412)$/;
+const OTHER_CHIP_BEFORE = /(?:^|_)(?:ld2410|ld2412|ld2460)$/;
 /** Nor may a radar-wide still or moving count follow a built-in zone's
  *  token: `zone_1_still_target_count` is zone 1's count. */
 const ZONE_BEFORE = /(?:^|_)zone_\d+$/;

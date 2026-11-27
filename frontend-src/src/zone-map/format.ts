@@ -35,6 +35,13 @@ export function formatLength(mm: number, family: UnitFamily, decimals = 1): stri
   return `${Number(meters) === 0 ? (0).toFixed(decimals) : meters} m`;
 }
 
+/** "1.2 m" or "3.9 ft": a distance to one decimal, feet as a decimal. */
+export function formatDistance(mm: number, family: UnitFamily): string {
+  const value =
+    family === "ft" ? Math.abs(mm) / (MM_PER_INCH * INCHES_PER_FOOT) : Math.abs(mm) / 1000;
+  return `${value.toFixed(1)} ${family}`;
+}
+
 /** "2.4 m × 1.8 m": width by depth, joined by a multiplication sign, with
  *  `decimals` as formatLength takes them. */
 export function formatSize(

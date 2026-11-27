@@ -26,7 +26,8 @@ left unaccounted for:
    covers from that report to the loss and 0.75 s more, and at most 1.2 m
    on. An edge behind or beside them counts only within 300 mm. Walking
    means two steps in a row of at least 250 mm between their own reports
-   0.9 s or more apart, or one step at 850 mm/s or more. The LD2450's jump
+   0.9 s or more apart, or one step at 850 mm/s or more, measured on the
+   radar's own readings, where its jitter is. The LD2450's jump
    of about 0.5 m in its last report before it loses someone sitting still
    is one slower step, so it holds. Someone first seen inside under 1.2 s
    before counts as moving too, but unless their steps show walking only
@@ -54,10 +55,20 @@ come from their latest write all the same (``Reading.written``): an axis
 written alone is a real report of that axis, often the last one the radar
 sends before it loses someone walking out.
 
+The LD2460 runs the same rules with the same numbers. It reports more often
+than the LD2450, which only makes the steps sparser relative to its
+cadence, so it errs toward holding; retune once there are LD2460 captures.
+It reports a lost target as unknown, never 0/0, so a 0 on one axis is a
+real position there (``HoldTracker(zero_axis_vanish=False)``), and its view
+depends on how it is mounted (``Coverage``): the LD2450's cone on a wall,
+a 4 m circle on a ceiling.
+
 The rules work on ``Reading`` objects: one tracked target as presence and the
 movement recorder see it, with its slot in the radar's pair list, its position
-in millimeters in the raw sensor frame, and the same point rotated into the
-map frame by the radar's ``rotation_deg``. ``targets.masked_readings`` builds
+in millimeters in the raw sensor frame, the floor point a high or ceiling
+LD2450's height correction gives (``mounts.floor_point``), and that point
+rotated into the map frame by the radar's ``rotation_deg``. The edge of
+the radar's view is measured in the floor frame. ``targets.masked_readings`` builds
 them. Nothing here imports Home Assistant and time is passed in, as seconds of
 ``time.monotonic()``, so the rules can be tested with plain numbers.
 """
@@ -144,6 +155,37 @@ HOLD_EXIT_SAMPLE_MM = 100.0
 # from the zone's edge holds for the full hold time.
 COVERAGE_RANGE_MM = 6000.0
 COVERAGE_HALF_FOV_DEG = 60.0
+
+
+@dataclass(frozen=True, slots=True)
+class Coverage:
+    """A radar's view: how far it sees, and how far either side of ahead."""
+
+    range_mm: float
+    # 180 or more is a full circle around the radar.
+    half_fov_deg: float
+
+
+# The LD2450, and an LD2460 mounted on a wall.
+SIDE_COVERAGE = Coverage(COVERAGE_RANGE_MM, COVERAGE_HALF_FOV_DEG)
+# An LD2460 on a ceiling: X and Y each from -4 to 4 m, all around.
+LD2460_TOP_COVERAGE = Coverage(4000.0, 180.0)
+
+
+@dataclass(frozen=True, slots=True)
+class Footprint:
+    """
+    A high or ceiling LD2450's view on the floor (``mounts.footprint``).
+
+    Floor frame: the radar's foot at (0, 0), Y out from the wall. The
+    outline is counter-clockwise; y_near and y_far bound the covered band.
+    """
+
+    y_near: float
+    y_far: float
+    outline: tuple[tuple[float, float], ...]
+
+
 # How long the same half-vanished reading stays one: the second half lands
 # about 0.45 s after the first, and someone who really stands on an axis
 # line counts after a second.
@@ -170,11 +212,21 @@ class Reading:
     # knows it; a write that waited for the other axis counts later.
     written: tuple[tuple[float, float], tuple[float, float]] | None = None
     written_at: float | None = None
+    # Floor frame (mounts.floor_point) of raw and written; None is raw.
+    floor: tuple[float, float] | None = None
+    written_floor: tuple[float, float] | None = None
 
     @property
     def latest(self) -> tuple[tuple[float, float], tuple[float, float]]:
         """Return where the target's latest write puts it: raw, then map."""
         return self.written or (self.raw, self.map)
+
+    @property
+    def latest_floor(self) -> tuple[float, float]:
+        """Return where the target's latest write puts it, floor frame."""
+        if self.written is not None:
+            return self.written_floor or self.written[0]
+        return self.floor or self.raw
 
     def report_t(self, now: float) -> float:
         """Return when the target's latest write landed, read at now."""
@@ -201,6 +253,10 @@ def half_vanished(prev: tuple[float, float] | None, raw: tuple[float, float]) ->
     return prev[0 if x_zero else 1] != 0.0
 
 
+# A report: when, then where in the map, floor and raw frames.
+Report = tuple[float, tuple[float, float], tuple[float, float], tuple[float, float]]
+
+
 @dataclass(slots=True)
 class Occupant:
     """A person inside the zone, as the readings of one slot showed them."""
@@ -211,12 +267,10 @@ class Occupant:
     last_map: tuple[float, float]
     last_raw: tuple[float, float]
     # Each report of this person, oldest first: when their reading changed,
-    # and where to in the map and raw frames, for as long as rule 2 can use
-    # it. Any write starts an evaluation, so an evaluation is no report of
-    # this person.
-    reports: list[tuple[float, tuple[float, float], tuple[float, float]]] = field(
-        default_factory=list
-    )
+    # and where to in the map, floor and raw frames, for as long as rule 2
+    # can use it. Any write starts an evaluation, so an evaluation is no
+    # report of this person.
+    reports: list[Report] = field(default_factory=list)
     # When a carried reading first stood for this person: the first half of
     # a vanish, which is when the zone emptied if the second half follows.
     carried_since: float | None = None
@@ -231,7 +285,7 @@ class Occupant:
             last_t=now,
             last_map=map_,
             last_raw=raw,
-            reports=[(reading.report_t(now), map_, raw)],
+            reports=[(reading.report_t(now), map_, reading.latest_floor, raw)],
         )
 
     @property
@@ -248,13 +302,13 @@ class Occupant:
                 for report in self.reports
                 if now - report[0] <= HOLD_MOTION_WINDOW_S
             ]
-            self.reports.append((reading.report_t(now), map_, raw))
+            self.reports.append(
+                (reading.report_t(now), map_, reading.latest_floor, raw)
+            )
         self.last_t, self.last_map, self.last_raw = now, map_, raw
         self.carried_since = None
 
-    def _report_by(
-        self, t: float
-    ) -> tuple[float, tuple[float, float], tuple[float, float]] | None:
+    def _report_by(self, t: float) -> Report | None:
         # The latest report at or before t.
         return next(
             (report for report in reversed(self.reports) if report[0] <= t), None
@@ -272,13 +326,15 @@ class Occupant:
         return self._walking()
 
     def _walking(self) -> bool:
-        # Whether this person's last reports show steps of walking.
-        seen_t, here, _raw = self.reports[-1]
+        # Whether this person's last reports show steps of walking. Raw
+        # frame: a High or Ceiling floor point blows a still person's
+        # jitter up near the wall line, where Y changes far more than y.
+        seen_t, _map, _floor, here = self.reports[-1]
         before = self._report_by(seen_t - HOLD_ANCHOR_STEP_S)
         if before is None or seen_t - before[0] > HOLD_MOTION_WINDOW_S:
             # Too sparse to measure a step: hold, the safe side.
             return False
-        step = math.dist(here, before[1])
+        step = math.dist(here, before[3])
         if step < HOLD_MOVE_MIN_MM:
             return False
         if step / (seen_t - before[0]) >= HOLD_BRISK_MM_PER_S:
@@ -289,11 +345,11 @@ class Occupant:
         earlier = self._report_by(before[0] - HOLD_ANCHOR_STEP_S)
         if earlier is None or seen_t - earlier[0] > HOLD_MOTION_WINDOW_S:
             return False
-        return math.dist(before[1], earlier[1]) >= HOLD_MOVE_MIN_MM
+        return math.dist(before[3], earlier[3]) >= HOLD_MOVE_MIN_MM
 
     def exit_margin_mm(self, t: float) -> float:
         """Return how near an edge ahead they had to be to walk out, lost at t."""
-        seen_t, here, _raw = self.reports[-1]
+        seen_t, here, _floor, _raw = self.reports[-1]
         before = self._report_by(seen_t - HOLD_ANCHOR_STEP_S)
         if before is None:
             return HOLD_EXIT_MARGIN_MM
@@ -308,35 +364,38 @@ class Occupant:
     def exit_path(
         self, t: float
     ) -> list[tuple[tuple[float, float], tuple[float, float]]]:
-        """Return where this person may have walked to, lost at t: map and raw."""
-        seen_t, here, here_raw = self.reports[-1]
-        path = [(here, here_raw)]
+        """Return where this person may have walked to, lost at t: map and floor."""
+        seen_t, here, here_floor, _raw = self.reports[-1]
+        path = [(here, here_floor)]
         before = self._report_by(seen_t - HOLD_ANCHOR_STEP_S)
         if before is None or not self._walking():
             # Moving only because they were seen inside for under
             # HOLD_FIRST_SEEN_S: their last step, jitter or someone walking
             # in to sit down, is no way to have walked on.
             return path
-        _before_t, before_map, before_raw = before
+        _before_t, before_map, before_floor, _before_raw = before
         step = math.dist(here, before_map)
         # On from their last report the way their last step went, not toward
         # an edge behind or beside them. Each frame moves along its own step,
-        # so the view's edge is still measured in the raw frame whatever the
-        # rotation. Points HOLD_EXIT_SAMPLE_MM apart come within half of it of
+        # so the view's edge is still measured in the floor frame whatever
+        # the rotation. Points HOLD_EXIT_SAMPLE_MM apart come within half of it of
         # any edge the way crosses, also a polygon's, whose distance is
         # unsigned.
         reach = self.exit_margin_mm(t) - HOLD_EXIT_MARGIN_MM
         count = math.ceil(reach / HOLD_EXIT_SAMPLE_MM)
         map_step = (here[0] - before_map[0], here[1] - before_map[1])
-        raw_step = (here_raw[0] - before_raw[0], here_raw[1] - before_raw[1])
+        floor_step = (
+            here_floor[0] - before_floor[0],
+            here_floor[1] - before_floor[1],
+        )
         for index in range(1, count + 1):
             part = reach * index / count / step
             path.append(
                 (
                     (here[0] + map_step[0] * part, here[1] + map_step[1] * part),
                     (
-                        here_raw[0] + raw_step[0] * part,
-                        here_raw[1] + raw_step[1] * part,
+                        here_floor[0] + floor_step[0] * part,
+                        here_floor[1] + floor_step[1] * part,
                     ),
                 )
             )
@@ -444,28 +503,85 @@ def edge_distance_mm(shape: Any, data: Any, x: float, y: float) -> float:
     return math.inf if measure is None else measure(data, x, y)
 
 
-def coverage_edge_distance_mm(x: float, y: float) -> float:
+# How close to Y = 0 counts as on the wall line.
+_WALL_LINE_MM = 1e-6
+
+
+def _inside_outline(
+    outline: tuple[tuple[float, float], ...], x: float, y: float
+) -> bool:
+    inside = False
+    for (ax, ay), (bx, by) in zip(outline, (*outline[1:], outline[0]), strict=True):
+        if (ay > y) != (by > y) and x < (bx - ax) * (y - ay) / (by - ay) + ax:
+            inside = not inside
+    return inside
+
+
+def _wall_side(start: tuple[float, float], end: tuple[float, float]) -> bool:
+    # A side on Y = 0 is the wall line.
+    return abs(start[1]) <= _WALL_LINE_MM and abs(end[1]) <= _WALL_LINE_MM
+
+
+def coverage_edge_distance_mm(
+    x: float, y: float, coverage: Coverage | Footprint = SIDE_COVERAGE
+) -> float:
     """
     Return how far a point is from the edge of the radar's view, in mm.
 
-    Raw sensor frame, so the view is straight ahead along +y whatever the
-    radar's rotation. 0 for a point outside the view.
+    Floor frame (``mounts.floor_point``), which is the raw sensor frame for
+    a wall mount and every LD2460, so the view is straight ahead along +y
+    whatever the radar's rotation. 0 for a point outside the view.
+
+    A footprint side on Y = 0 is the wall line: the wall a High LD2450
+    hangs on, or the line under a ceiling one, which folds everyone onto
+    the room side. Nobody walks out across it, so a point on it counts as
+    inside and the distance is to the other sides. Someone standing right
+    under a ceiling radar is then far from the edge, not on it, and a
+    point past it, where a walker's way on can lead, folds back across it.
     """
+    if isinstance(coverage, Footprint):
+        outline = coverage.outline
+        if len(outline) < POLYGON_MIN_POINTS:
+            return 0.0
+        sides = list(zip(outline, (*outline[1:], outline[0]), strict=True))
+        if any(_wall_side(start, end) for start, end in sides):
+            # Fold onto the room side; flipped outlines lie below.
+            room = max(point[1] for point in outline) > _WALL_LINE_MM
+            y = abs(y) if room else -abs(y)
+        on_wall = abs(y) <= _WALL_LINE_MM and any(
+            _wall_side(start, end)
+            and min(start[0], end[0]) <= x <= max(start[0], end[0])
+            for start, end in sides
+        )
+        if not (on_wall or _inside_outline(outline, x, y)):
+            return 0.0
+        return min(
+            (
+                _segment_distance(x, y, start, end)
+                for start, end in sides
+                if not _wall_side(start, end)
+            ),
+            default=0.0,
+        )
     distance = math.hypot(x, y)
+    if coverage.half_fov_deg >= 180:  # noqa: PLR2004 - a full circle
+        return max(0.0, coverage.range_mm - distance)
     angle = math.degrees(math.atan2(abs(x), y))
-    if distance >= COVERAGE_RANGE_MM or angle >= COVERAGE_HALF_FOV_DEG:
+    if distance >= coverage.range_mm or angle >= coverage.half_fov_deg:
         return 0.0
     return min(
-        COVERAGE_RANGE_MM - distance,
-        distance * math.sin(math.radians(COVERAGE_HALF_FOV_DEG - angle)),
+        coverage.range_mm - distance,
+        distance * math.sin(math.radians(coverage.half_fov_deg - angle)),
     )
 
 
 class HoldTracker:
     """One zone's hold: who was inside, and who is not accounted for yet."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, zero_axis_vanish: bool = True) -> None:
         """Start with nobody inside and nothing held."""
+        # Whether one axis turning 0 can be half of a vanish (LD2450).
+        self.zero_axis_vanish = zero_axis_vanish
         # Who was inside at the last evaluation that found anyone inside.
         self.occupants: dict[int, Occupant] = {}
         # Who is not yet accounted for since the zone emptied.
@@ -530,7 +646,9 @@ class HoldTracker:
         for reading in readings:
             slot = reading.slot
             flag = self._flagged.get(slot)
-            if half_vanished(self._last_raw.get(slot), reading.raw):
+            if self.zero_axis_vanish and half_vanished(
+                self._last_raw.get(slot), reading.raw
+            ):
                 flagged[slot] = (reading.raw, now)
             elif (
                 flag is not None
@@ -550,13 +668,15 @@ class HoldTracker:
         self._last_raw = {reading.slot: reading.raw for reading in readings}
         return kept
 
-    def step(
+    def step(  # noqa: PLR0913 - the view rides along
         self,
         now: float,
         inside: list[Reading],
         outside: list[Reading],
         shape: Any,
         data: Any,
+        *,
+        coverage: Coverage | Footprint = SIDE_COVERAGE,
     ) -> bool:
         """Run one evaluation and report whether the zone reads on."""
         if inside:
@@ -589,7 +709,8 @@ class HoldTracker:
             self.pending = [
                 person
                 for index, person in enumerate(people)
-                if index not in matched and not self._exited(person, shape, data)
+                if index not in matched
+                and not self._exited(person, shape, data, coverage)
             ]
             return bool(self.pending)
         if not self.pending:
@@ -662,12 +783,14 @@ class HoldTracker:
             self.used_slots.add(slot)
         return matched
 
-    def _exited(self, person: Occupant, shape: Any, data: Any) -> bool:
+    def _exited(
+        self, person: Occupant, shape: Any, data: Any, coverage: Coverage | Footprint
+    ) -> bool:
         # Rule 2, read at the moment the zone emptied.
         if self.empty_since is None or not person.moving_at(self.empty_since):
             return False
         return any(
             edge_distance_mm(shape, data, *point) <= HOLD_EXIT_MARGIN_MM
-            or coverage_edge_distance_mm(*raw) <= HOLD_EXIT_MARGIN_MM
-            for point, raw in person.exit_path(self.empty_since)
+            or coverage_edge_distance_mm(*floor, coverage) <= HOLD_EXIT_MARGIN_MM
+            for point, floor in person.exit_path(self.empty_since)
         )

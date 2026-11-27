@@ -9,8 +9,13 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from custom_components.apollo_mmwave import mounts
 from custom_components.apollo_mmwave.hold import (
     HOLD_FIRST_SEEN_S,
+    LD2460_TOP_COVERAGE,
+    SIDE_COVERAGE,
+    Coverage,
+    Footprint,
     HoldTracker,
     Occupant,
     Reading,
@@ -18,6 +23,7 @@ from custom_components.apollo_mmwave.hold import (
     edge_distance_mm,
     half_vanished,
 )
+from custom_components.apollo_mmwave.trackers import ceiling_radius_mm
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -630,7 +636,12 @@ def test_a_write_that_waits_for_its_other_axis_is_a_report_from_when_it_landed()
         written_at=1.0,
     )
     assert tracker.step(1.2, [waiting], [], "rect", RECT)
-    assert tracker.occupants[0].reports[-1] == (1.0, (900, 1000), (900, 1000))
+    assert tracker.occupants[0].reports[-1] == (
+        1.0,
+        (900, 1000),
+        (900, 1000),
+        (900, 1000),
+    )
     assert tracker.occupants[0].last_map == (900, 1000)
 
     # Lost then: 900 mm/s is walking, 100 mm from the edge. They walked out.
@@ -776,3 +787,206 @@ def test_reset_forgets_everyone() -> None:
     # No good reading is left to carry for half of a vanish, and none to
     # judge the next reading by: (500, 0) is half of an appearance.
     assert tracker.usable([_reading(0, 500, 0)], 10.5) == []
+
+
+@pytest.mark.parametrize(
+    ("point", "expected"),
+    [
+        ((0, 1000), 3000),
+        ((0, -1000), 3000),
+        ((-3000, 0), 1000),
+        ((2000, -2000), 4000 - math.hypot(2000, 2000)),
+        ((0, 4000), 0),
+        ((3000, -3000), 0),
+    ],
+)
+def test_a_ceiling_ld2460_sees_a_circle(point, expected) -> None:
+    """Top mount: the view's edge is 4 m from the radar, behind it too."""
+    assert coverage_edge_distance_mm(*point, LD2460_TOP_COVERAGE) == pytest.approx(
+        expected, abs=1e-6
+    )
+
+
+@pytest.mark.parametrize(
+    "point", [(0, 1000), _polar(2000, 75), (0, 6500), (300, -200), _polar(3000, 30)]
+)
+def test_the_side_coverage_is_the_ld2450_view(point) -> None:
+    """The default view, and an LD2460 on a wall, measure as 2.4.2 did."""
+    assert coverage_edge_distance_mm(*point, SIDE_COVERAGE) == (
+        coverage_edge_distance_mm(*point)
+    )
+
+
+def test_an_ld2460_tracker_keeps_a_reading_on_an_axis_line() -> None:
+    """No half-vanish filter: the LD2460 never empties a slot as 0/0."""
+    tracker = HoldTracker(zero_axis_vanish=False)
+    first = _reading(0, 300, 1000)
+    on_axis = _reading(0, 0, 1000)
+    assert tracker.usable([first], 10.0) == [first]
+    assert tracker.usable([on_axis], 10.2) == [on_axis]
+    assert tracker.flag_expiry() is None
+    # The LD2450's tracker carries the old reading in its place.
+    ld2450 = HoldTracker()
+    ld2450.usable([first], 10.0)
+    assert ld2450.usable([on_axis], 10.2) == [dataclasses.replace(first, carried=True)]
+
+
+def test_a_ceiling_ld2460_has_no_cone_edge_to_walk_out_of() -> None:
+    """Rule 2 measures the view's edge by the coverage passed in."""
+    # Toward the wall view's right edge, far from the zone's and a ceiling's.
+    walk = [(-200 + 150 * step, 600) for step in range(8)]
+    zone = {"x_min": -3000, "x_max": 3000, "y_min": -3000, "y_max": 3000}
+
+    def held(coverage) -> bool:
+        tracker = HoldTracker(zero_axis_vanish=False)
+        for index, point in enumerate(walk):
+            tracker.step(index * STEP_S, [_reading(0, *point)], [], "rect", zone)
+        return tracker.step(len(walk) * STEP_S, [], [], "rect", zone, coverage=coverage)
+
+    assert held(SIDE_COVERAGE) is False
+    assert held(LD2460_TOP_COVERAGE) is True
+
+
+@pytest.mark.parametrize(("height_mm", "held"), [(2000, False), (2700, True)])
+def test_a_low_ceiling_brings_the_circles_edge_in(height_mm, held) -> None:
+    """At 2 m the edge is 3464 mm out, so leaving from 3.3 m is leaving."""
+    # Just seen counts as moving, from that spot.
+    zone = {"x_min": -6000, "x_max": 6000, "y_min": -6000, "y_max": 6000}
+    coverage = Coverage(ceiling_radius_mm(height_mm), 180.0)
+    tracker = HoldTracker(zero_axis_vanish=False)
+    tracker.step(0.0, [_reading(0, 0, 3300)], [], "rect", zone)
+    assert tracker.step(STEP_S, [], [], "rect", zone, coverage=coverage) is held
+
+
+def _floor_reading(slot: int, floor: tuple[float, float], dz: float) -> Reading:
+    """Return a High LD2450 reading: raw y is sqrt(Y^2 + dz^2)."""
+    raw = (floor[0], math.hypot(floor[1], dz))
+    return Reading(slot, raw, floor, floor=floor)
+
+
+def test_a_high_mount_releases_someone_walking_under_its_view() -> None:
+    """The footprint's near edge, measured on the floor, is an exit."""
+    geom = mounts.mount_geometry("ld2450", None, {"mount": "high"})
+    footprint = mounts.coverage_for(geom)
+    # Toward the radar: near edge 560 mm, last seen 750.
+    walk = [(0, 1800 - 150 * step) for step in range(8)]
+    zone = {"x_min": -3000, "x_max": 3000, "y_min": -3000, "y_max": 5000}
+
+    def held(coverage, *, floor: bool) -> bool:
+        tracker = HoldTracker()
+        for index, point in enumerate(walk):
+            reading = _floor_reading(0, point, 1200)
+            if not floor:
+                reading = dataclasses.replace(reading, floor=None)
+            tracker.step(index * STEP_S, [reading], [], "rect", zone)
+        return tracker.step(len(walk) * STEP_S, [], [], "rect", zone, coverage=coverage)
+
+    assert held(footprint, floor=True) is False
+    # Raw y keeps them a meter inside the view.
+    assert held(footprint, floor=False) is True
+    # As a wall mount, raw in the cone, they hold.
+    assert held(SIDE_COVERAGE, floor=False) is True
+
+
+@pytest.mark.parametrize(("point", "held"), [((2900, 600), False), ((1500, 600), True)])
+def test_a_ceiling_strip_ends_along_the_wall(point, held) -> None:
+    """2.7 m up, the strip reaches 2.94 m either way along the wall."""
+    geom = mounts.mount_geometry("ld2450", None, {"mount": "ceiling"})
+    zone = {"x_min": -6000, "x_max": 6000, "y_min": -6000, "y_max": 6000}
+    tracker = HoldTracker()
+    # Just seen counts as moving, from that spot.
+    tracker.step(0.0, [_floor_reading(0, point, 1700)], [], "rect", zone)
+    coverage = mounts.coverage_for(geom)
+    assert tracker.step(STEP_S, [], [], "rect", zone, coverage=coverage) is held
+
+
+@pytest.mark.parametrize("flip", [False, True])
+def test_someone_under_a_ceiling_ld2450_is_held(flip) -> None:
+    """The wall line is no exit: right under the radar is mid view."""
+    geom = mounts.mount_geometry(
+        "ld2450", None, {"mount": "ceiling", "flip_room_side": flip}
+    )
+    zone = {"x_min": -6000, "x_max": 6000, "y_min": -6000, "y_max": 6000}
+    tracker = HoldTracker()
+    # Raw y under dz: floor Y is 0, on the wall line.
+    under = (0.0, -0.0 if flip else 0.0)
+    tracker.step(0.0, [Reading(0, (0, 1500), under, floor=under)], [], "rect", zone)
+    coverage = mounts.coverage_for(geom)
+    assert coverage_edge_distance_mm(*under, coverage) == pytest.approx(1190.4, abs=1)
+    assert tracker.step(STEP_S, [], [], "rect", zone, coverage=coverage) is True
+
+
+def test_a_footprint_with_too_few_points_is_no_view() -> None:
+    """A degenerate outline measures 0, like a point outside."""
+    assert coverage_edge_distance_mm(0, 100, Footprint(0, 0, ((0, 0), (1, 1)))) == 0
+
+
+def _ceiling_wobble(geom: mounts.MountGeometry) -> list[Reading]:
+    """Return a still person under the radar: raw y wobbles 20 mm."""
+    readings = []
+    for index in range(7):
+        raw = (0.0, 1720.0 if index % 2 else 1700.0)
+        floor = mounts.floor_point(geom, *raw)
+        readings.append(Reading(0, raw, floor, floor=floor))
+    return readings
+
+
+def _held_after(readings: list[Reading], shape: str, zone: dict, coverage) -> bool:
+    tracker = HoldTracker()
+    for index, reading in enumerate(readings):
+        assert tracker.step(float(index), [reading], [], shape, zone)
+    return tracker.step(float(len(readings)), [], [], shape, zone, coverage=coverage)
+
+
+def test_jitter_under_a_ceiling_ld2450_is_no_walk_out() -> None:
+    """Floor Y swings 0 to 262 mm on 20 mm of raw jitter: still held."""
+    geom = mounts.mount_geometry("ld2450", None, {"mount": "ceiling"})
+    readings = _ceiling_wobble(geom)
+    assert readings[-1].floor == (0.0, 0.0)
+    zone = {"x_min": -2000, "x_max": 2000, "y_min": -2000, "y_max": 2500}
+    assert _held_after(readings, "rect", zone, mounts.coverage_for(geom)) is True
+
+
+@pytest.mark.parametrize("flip", [False, True])
+def test_jitter_under_a_ceiling_ld2450_holds_its_coverage_zone(flip) -> None:
+    """The coverage zone's wall side is no exit for someone sitting there."""
+    geom = mounts.mount_geometry(
+        "ld2450", None, {"mount": "ceiling", "flip_room_side": flip}
+    )
+    zone = {
+        "points": [
+            {"x": round(x), "y": round(y)}
+            for x, y in mounts.coverage_zone_outline(geom)
+        ]
+    }
+    readings = _ceiling_wobble(geom)
+    assert _held_after(readings, "polygon", zone, mounts.coverage_for(geom)) is True
+
+
+def test_a_way_on_past_the_wall_line_folds_back_into_view() -> None:
+    """A walker heading across the line under the radar stays in view."""
+    geom = mounts.mount_geometry("ld2450", None, {"mount": "ceiling"})
+    coverage = mounts.coverage_for(geom)
+    assert coverage_edge_distance_mm(0, -100, coverage) == pytest.approx(
+        coverage_edge_distance_mm(0, 100, coverage)
+    )
+    zone = {"x_min": -3000, "x_max": 3000, "y_min": -3000, "y_max": 3000}
+    # Walking toward the line at 600 mm a second.
+    walk = [(0, 3000 - 600 * step) for step in range(5)]
+    tracker = HoldTracker()
+    for index, point in enumerate(walk):
+        tracker.step(float(index), [_floor_reading(0, point, 1700)], [], "rect", zone)
+    assert tracker.step(5.0, [], [], "rect", zone, coverage=coverage) is True
+
+
+def test_a_walk_toward_the_line_under_a_ceiling_ld2450_is_held() -> None:
+    """Lost heading across the wall line, 50 mm short of it: no exit."""
+    geom = mounts.mount_geometry("ld2450", None, {"mount": "ceiling"})
+    zone = {"x_min": -3000, "x_max": 3000, "y_min": -3000, "y_max": 3000}
+    walk = [(100, 1100 - 150 * step) for step in range(8)]
+    tracker = HoldTracker()
+    for index, point in enumerate(walk):
+        reading = _floor_reading(0, point, 1700)
+        tracker.step(index * STEP_S, [reading], [], "rect", zone)
+    coverage = mounts.coverage_for(geom)
+    assert tracker.step(len(walk) * STEP_S, [], [], "rect", zone, coverage=coverage)

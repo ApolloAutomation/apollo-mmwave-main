@@ -27,24 +27,34 @@ import pytest
 import yaml
 
 from custom_components.apollo_mmwave import (
+    UPDATE_ZONE_SERVICE_SCHEMA,
     binary_sensor,
+    const,
+    hold,
     ld2450,
     movement,
     target_units,
     targets,
+    trackers,
     websocket,
 )
 from custom_components.apollo_mmwave.const import (
     CARD_TYPE,
+    CEILING_HEIGHT_DEFAULT_MM,
+    CEILING_HEIGHT_MAX_MM,
+    CEILING_HEIGHT_MIN_MM,
     DASHBOARD_STRATEGY_TYPE,
     DASHBOARD_TITLE,
     DATA_MOVEMENT,
     DOMAIN,
     FRONTEND_DIR,
     HOLD_S_MAX,
+    MOUNTS,
     RESTORE_SHAPE_MAX_ZONES,
     SENSOR_UNIT_FACTORS,
+    STORE_CEILING_HEIGHT_MM,
     STORE_HOLD_S,
+    STORE_MOUNT,
     STORE_MOVEMENT_HISTORY,
     STORE_ZONE_TYPE,
     STORE_ZONES,
@@ -89,11 +99,27 @@ def _movement_example() -> dict[str, Any]:
 
 
 def test_ld2450_target_regexes_match_the_frontend() -> None:
-    """ld2450.ts detects LD2450 targets with the same patterns as ld2450.py."""
-    source = _read(FRONTEND_SRC / "ld2450.ts")
+    """
+    ld2450.ts detects LD2450 targets with ld2450.py's patterns, minus the LD2460.
 
-    assert f"const TARGET_X = /{ld2450.TARGET_X.pattern}/;" in source
-    assert f"const TARGET_Y = /{ld2450.TARGET_Y.pattern}/;" in source
+    ld2450.py pairs both chips' targets for zones; ld2450.ts leaves the
+    LD2460's to ld2460.ts, which matches them as trackers.py does.
+    """
+    source = _read(FRONTEND_SRC / "ld2450.ts")
+    for python in (ld2450.TARGET_X.pattern, ld2450.TARGET_Y.pattern):
+        typescript = python.replace("(?:_ld24[56]0)?", "(?:_ld2450)?")
+        assert typescript != python
+        assert f" = /{typescript}/;" in source
+    assert "!LD2460_X.test(oid)" in source
+    assert "!LD2460_Y.test(oid)" in source
+
+    ld2460 = _read(FRONTEND_SRC / "ld2460.ts")
+    assert f"const LD2460_X = /{trackers.LD2460_X.pattern}/;" in ld2460
+    assert f"const LD2460_Y = /{trackers.LD2460_Y.pattern}/;" in ld2460
+    assert (
+        f"const LD2460_INSTALLATION_MODE = /{trackers.INSTALLATION_MODE.pattern}/;"
+        in ld2460
+    )
 
 
 def test_dashboard_strategy_element_matches_the_strategy_type() -> None:
@@ -440,3 +466,112 @@ def test_update_zone_picker_stops_where_add_zone_does() -> None:
     )
     assert card is not None
     assert picker["max"] == int(card[1])
+
+
+def test_the_ld2460_pairs_and_draws_as_the_backend_reads_it() -> None:
+    """No pair wait for the LD2460, and the top mount's circle, on both sides."""
+    trails = _read(TRAILS_TS)
+    window = re.search(
+        r"^export const LD2460_TRAIL_PAIR_MS = (\d+);$", trails, re.MULTILINE
+    )
+    assert window is not None
+    assert int(window[1]) == targets.LD2460_PAIR_MS == 0
+    assert targets.LD2460_TIMING.window_ms == targets.LD2460_PAIR_MS
+    assert trackers.LD2460_TOP_COVERAGE.range_mm == 4000
+    assert trackers.LD2460_TOP_COVERAGE.half_fov_deg * 2 == 360
+    cone = re.search(
+        r"LD2460_TOP_CONE = Object\.freeze\(\{ yMax: (\d+), fovDeg: (\d+) \}\)",
+        _read(FRONTEND_SRC / "ld2460.ts"),
+    )
+    assert cone is not None
+    assert (int(cone[1]), int(cone[2])) == (4000, 360)
+
+
+def test_the_ceiling_view_is_sized_alike_on_both_sides() -> None:
+    """ld2460.ts carries the look-down angle, top range and height bounds."""
+    source = _read(FRONTEND_SRC / "ld2460.ts")
+    angle = re.search(
+        r"^export const LD2460_LOOK_DOWN_HALF_DEG = (\d+);$", source, re.MULTILINE
+    )
+    top = re.search(
+        r"^export const LD2460_TOP_RANGE_MM = (\d+);$", source, re.MULTILINE
+    )
+    height = re.search(
+        r"CEILING_HEIGHT = Object\.freeze\(\{ minMm: (\d+), defaultMm: (\d+),"
+        r" maxMm: (\d+) \}\)",
+        source,
+    )
+    assert angle is not None
+    assert top is not None
+    assert height is not None
+    assert float(angle[1]) == trackers.LD2460_LOOK_DOWN_HALF_DEG
+    assert float(top[1]) == trackers.LD2460_TOP_RANGE_MM
+    assert tuple(map(int, height.groups())) == (
+        CEILING_HEIGHT_MIN_MM,
+        CEILING_HEIGHT_DEFAULT_MM,
+        CEILING_HEIGHT_MAX_MM,
+    )
+    assert trackers.LD2460_TOP_COVERAGE.range_mm == trackers.LD2460_TOP_RANGE_MM
+    # The card's test mode edge band.
+    assert hold.HOLD_EXIT_MARGIN_MM == 300
+
+
+def test_update_zone_documents_the_mount_and_ceiling_height() -> None:
+    """services.yaml and the schema take both, with the same bounds."""
+    services = yaml.safe_load(
+        _read(REPO_ROOT / "custom_components" / DOMAIN / "services.yaml")
+    )
+    fields = services["update_zone"]["fields"]
+    assert fields[STORE_MOUNT]["selector"]["select"]["options"] == list(MOUNTS)
+    number = fields[STORE_CEILING_HEIGHT_MM]["selector"]["number"]
+    assert (number["min"], number["max"]) == (
+        CEILING_HEIGHT_MIN_MM,
+        CEILING_HEIGHT_MAX_MM,
+    )
+    keys = {str(key) for key in UPDATE_ZONE_SERVICE_SCHEMA.validators[1].schema}
+    assert {STORE_MOUNT, STORE_CEILING_HEIGHT_MM} <= keys
+
+
+@pytest.mark.parametrize(
+    ("field", "low", "high"),
+    [
+        ("ceiling_height_mm", "CEILING_HEIGHT_MIN_MM", "CEILING_HEIGHT_MAX_MM"),
+        ("mount_height_mm", "MOUNT_HEIGHT_MIN_MM", "MOUNT_HEIGHT_MAX_MM"),
+        ("tilt_deg", "TILT_MIN_DEG", "TILT_MAX_DEG"),
+        ("target_height_mm", "TARGET_HEIGHT_MIN_MM", "TARGET_HEIGHT_MAX_MM"),
+    ],
+)
+def test_update_zone_documents_each_mount_setting(field, low, high) -> None:
+    """services.yaml bounds match const.py; the schema takes the field."""
+    services = yaml.safe_load(
+        _read(REPO_ROOT / "custom_components" / DOMAIN / "services.yaml")
+    )
+    spec = services["update_zone"]["fields"][field]
+    number = spec["selector"]["number"]
+    assert (number["min"], number["max"]) == (
+        getattr(const, low),
+        getattr(const, high),
+    )
+    assert "not stored" in spec["description"]
+    assert field in services["update_zone"]["description"]
+    keys = {str(key) for key in UPDATE_ZONE_SERVICE_SCHEMA.validators[1].schema}
+    assert field in keys
+
+
+def test_update_zone_documents_flip_room_side() -> None:
+    """A boolean the service description lists as device-wide."""
+    services = yaml.safe_load(
+        _read(REPO_ROOT / "custom_components" / DOMAIN / "services.yaml")
+    )
+    spec = services["update_zone"]["fields"]["flip_room_side"]
+    assert spec["selector"] == {"boolean": {}}
+    assert "flip_room_side" in services["update_zone"]["description"]
+
+
+def test_no_bundle_uses_a_regexp_lookbehind() -> None:
+    """Safari 14, a build target, throws on one and loads nothing."""
+    www = REPO_ROOT / "custom_components" / "apollo_mmwave" / "www"
+    for bundle in sorted(www.glob("*.js")):
+        text = bundle.read_text(encoding="utf-8")
+        assert "(?<!" not in text, bundle.name
+        assert "(?<=" not in text, bundle.name

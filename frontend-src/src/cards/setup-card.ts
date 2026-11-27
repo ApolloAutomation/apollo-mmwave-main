@@ -21,6 +21,10 @@
  * radar setting: the change goes to Home Assistant's entity registry, so it
  * never joins "Use recommended settings".
  *
+ * "ld2460" checks an LD2460 (`tracker-setup-checks.ts`): whether it reported
+ * its installation mode, and whether Home Assistant has X and Y for every
+ * target it sees. It has nothing to fix from here and no units note.
+ *
  * Being on every tab of the dashboard, it also shows the page's version
  * notice (`version-check.ts`) above the checks: a Reload button when this
  * page runs older cards than the Apollo mmWave Home Assistant runs, a line
@@ -33,6 +37,7 @@ import { property, state } from "lit/decorators.js";
 import type { HomeAssistant, Ld2410CardConfig, SetupCardConfig } from "../types";
 import { registerCustomCard, registerElement } from "../register";
 import { hasLd2450Device } from "../ld2450";
+import { hasLd2460Device } from "../ld2460";
 import { detectProfileFromEntities } from "../entities";
 import {
   ERR_NOT_FOUND,
@@ -76,6 +81,11 @@ import {
   type SetupStatus,
   type TargetUnitRow,
 } from "./setup-checks";
+import {
+  LD2460_NOTHING_TO_CHECK_LINE,
+  ld2460SetupStatus,
+  ld2460WatchedIds,
+} from "./tracker-setup-checks";
 import {
   CHECKING_LINE,
   GATE_NOTHING_TO_CHECK_LINE,
@@ -168,6 +178,8 @@ export class ApolloRadarSetupCard extends LitElement {
     const ids = Object.keys(hass.devices ?? {});
     const ld2450 = ids.find((id) => hasLd2450Device(hass, id));
     if (ld2450) return { type, device_id: ld2450 };
+    const ld2460 = ids.find((id) => hasLd2460Device(hass, id));
+    if (ld2460) return { type, device_id: ld2460, radar: "ld2460" };
     // From the device's own entities only: a registry model match alone can
     // be another integration's copy of the device (`isEsphomeDevice`).
     const gate = ids.find((id) => detectProfileFromEntities(hass, id) !== undefined);
@@ -200,6 +212,10 @@ export class ApolloRadarSetupCard extends LitElement {
     return this._config?.radar === "gate";
   }
 
+  private _isLd2460(): boolean {
+    return this._config?.radar === "ld2460";
+  }
+
   /** Gate mode only: the device's resolved entity map and profile. */
   private _resolve(): ResolvedRadar | undefined {
     if (!this._isGate() || !this.hass || !this._radarConfig) return undefined;
@@ -217,6 +233,7 @@ export class ApolloRadarSetupCard extends LitElement {
 
   private _status(): SetupStatus {
     const deviceId = this._config?.device_id;
+    if (this._isLd2460()) return ld2460SetupStatus(this.hass!, deviceId);
     const resolved = this._resolve();
     if (!resolved) return setupStatus(this.hass!, deviceId);
     return gateSetupStatus(
@@ -237,6 +254,7 @@ export class ApolloRadarSetupCard extends LitElement {
       !hass ||
       !deviceId ||
       this._isGate() ||
+      this._isLd2460() ||
       hass.user?.is_admin !== true ||
       typeof hass.callWS !== "function"
     ) {
@@ -293,6 +311,7 @@ export class ApolloRadarSetupCard extends LitElement {
   }
 
   private _watchedIds(): string[] {
+    if (this._isLd2460()) return ld2460WatchedIds(this.hass!, this._config?.device_id);
     const resolved = this._resolve();
     if (resolved) return gateWatchedIds(resolved.map, resolved.profile);
     return watchedSetupIds(this.hass!, this._config?.device_id);
@@ -450,7 +469,8 @@ export class ApolloRadarSetupCard extends LitElement {
     const device = deviceId ? this.hass?.devices[deviceId] : undefined;
     const name = device?.name_by_user || device?.name;
     if (!this._isGate()) {
-      return name ? html`<div class="subtitle">LD2450 · ${name}</div>` : nothing;
+      const chip = this._isLd2460() ? "LD2460" : "LD2450";
+      return name ? html`<div class="subtitle">${chip} · ${name}</div>` : nothing;
     }
     const text = [this._resolve()?.profile?.label, name].filter(Boolean).join(" · ");
     return text ? html`<div class="subtitle">${text}</div>` : nothing;
@@ -461,7 +481,11 @@ export class ApolloRadarSetupCard extends LitElement {
       case "no_device":
         return html`<p class="hint">${NO_DEVICE_LINE}</p>`;
       case "nothing_to_check": {
-        const line = this._isGate() ? GATE_NOTHING_TO_CHECK_LINE : NOTHING_TO_CHECK_LINE;
+        const line = this._isGate()
+          ? GATE_NOTHING_TO_CHECK_LINE
+          : this._isLd2460()
+            ? LD2460_NOTHING_TO_CHECK_LINE
+            : NOTHING_TO_CHECK_LINE;
         return html`<p class="hint">${line}</p>`;
       }
       case "offline":
@@ -481,7 +505,12 @@ export class ApolloRadarSetupCard extends LitElement {
    *  an administrator, while Home Assistant shows any of them in another
    *  unit than mm by its own pick. */
   private _renderUnits(status: SetupStatus): TemplateResult | typeof nothing {
-    if (this._isGate() || status.kind === "no_device" || status.kind === "nothing_to_check") {
+    if (
+      this._isGate() ||
+      this._isLd2460() ||
+      status.kind === "no_device" ||
+      status.kind === "nothing_to_check"
+    ) {
       return nothing;
     }
     if (this.hass?.user?.is_admin !== true) return nothing;
@@ -513,7 +542,7 @@ export class ApolloRadarSetupCard extends LitElement {
     const fixable = problems.filter((p) => p.fix);
     // More than one LD2450 fix: one button for all of them instead of one
     // each. A gate radar's fixes (a switch, a read) stay apart.
-    const combined = !this._isGate() && fixable.length > 1;
+    const combined = !this._isGate() && !this._isLd2460() && fixable.length > 1;
     const canCall = !!this.hass?.callService && !this._busy;
     return html`
       <div class="problems">

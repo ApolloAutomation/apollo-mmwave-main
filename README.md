@@ -48,6 +48,9 @@ Apollo mmWave, until you rename them: the entry from its ⋮ menu under
   window with one press and snaps corners to round values. A **Radar
   setup** card above it checks the radar's settings and fixes them with one
   tap.
+- **Mounted high or on the ceiling.** Tell the zone map the radar is
+  high on a wall or looking straight down from the ceiling, and it places
+  people on the floor where they really are.
 - **Zones you can watch.** Zones light up while someone is in them, a zone
   can stay on for someone sitting still or ignore a fan, and administrators
   can turn on movement history to replay up to 24 hours on the map.
@@ -74,6 +77,10 @@ Apollo mmWave, until you rename them: the entry from its ⋮ menu under
 | MSR-1, MSR-2 | Yes (LD2410) | No |
 | R PRO-1 | With the optional LD2412 | Yes (LD2450) |
 | MTR-1 | No | Yes (LD2450) |
+
+Supported radars: LD2410 and LD2412 (radar tuning), LD2450 (zone map:
+Wall, High or Ceiling) and LD2460 (zone map: Wall or Ceiling). An LD2460
+is found by its sensors, as ESPHome's ld2460 component names them.
 
 The radar splits the room into distance steps called gates, 0.75 m each by
 default. Each gate has a threshold: how strong a signal must be to count as
@@ -308,6 +315,43 @@ including what each HACS box says.
    ![The zone map card on an R PRO-1 in feet, unlocked, with zones inside other zones and Couch picked: the Couch zone is bright with a dot on each corner and its name at its top, clear of Couch, middle seat, which is centered on the seat inside it. The other zones are faint, with Living room's name along its top edge and Rug's name above Coffee table, so no two names overlap. Expand sits in the map's top-right corner and the Shapes icon in its bottom-left corner. Under the map: a Coverage button, then Zones with an Add zone button, a chip with a color dot for each zone with ✎ joined to Couch, and Couch's editor with its Name, Size 4 ft 3 in × 7 ft 10 in, Restore previous shape with Replaced 5 min ago beside it, Type Detect, Hold 5 min, Now Nobody is in this zone, the hint that starts Press Redraw shape, then drag on the map to give this zone a new rectangle. Shapes, at the map's bottom left, offers an ellipse or a polygon., a Redraw shape button and Delete zone, above Map settings](https://raw.githubusercontent.com/ApolloAutomation/apollo-mmwave-main/main/docs/images/apollo-mmwave-zone-map-zones-2.4.2.png)
 
    ![The live zone map in feet, locked, with the Shapes icon in its bottom-left corner: target 1 walks from the Doorway zone to the Couch zone and back with a short fading trail behind its numbered dot, moving in steps as the radar reports about once a second, and each zone turns solid while the dot is inside it and pale and dashed once it leaves; target 2 sits still in the Desk zone, which stays lit, and the Fan zone is hatched and labeled Fan (ignored); under the map, a Coverage button, then Zones with an Add zone button and the chips Desk, Couch, Doorway and Fan, each with its zone's color dot, with Couch picked](https://raw.githubusercontent.com/ApolloAutomation/apollo-mmwave-main/main/docs/images/apollo-mmwave-zone-map-live-2.4.2b.gif)
+
+## Mounting an LD2450 high or on the ceiling
+
+The LD2450 measures how far away someone is, not how far below it they
+are, so a radar mounted up high sees everyone a little farther out than
+they are. Tell the zone map how it is mounted and it takes the height out.
+
+1. Open **Map settings** under the zone map and pick **Mounted on**:
+   **Wall** (the default, about chest height), **High** (high on a wall or
+   in a ceiling corner, tilted down) or **Ceiling** (straight down).
+2. On **High**, enter **Mount height**, set **Tilt down** to how far the
+   sensor points down, and leave **Person height** at 1 m (3.3 ft) unless
+   the room is mostly seated. The map draws what the radar covers and
+   says how far, such as "Covers from about 0.6 m to 5.9 m out from the
+   wall."
+3. On **Ceiling**, enter **Ceiling height**. Looking straight down, the
+   radar cannot tell which side of it someone is on, so mount it near a
+   wall, turned so walking along the wall moves your dot left and right.
+   Everyone then shows on the room side; if they show past the wall line,
+   turn on **Flip room side**. A ceiling LD2450 sees a strip about 6 m
+   along the wall and 1.2 m into the room (at 2.7 m), which suits a hallway
+   or a bedside; for a whole room, choose High.
+4. Press **Test near and far edge** (High) or **Test wall line and edge**
+   (Ceiling) and walk to check, then **Add coverage zone** or draw your
+   zones.
+
+Zone presence, hold times, Walk and History all use the corrected
+positions. The radar's own built-in zones (Zone Type) cannot be corrected,
+so keep Zone Type on **Disabled** and draw zones on the map. Positions are
+least accurate right under the radar and for people sitting or lying down.
+See [Mounting: Wall, High or Ceiling](docs/configuration.md#mounting-wall-high-or-ceiling).
+
+![The zone map card in feet for an LD2450 on a high mount: the map shows what the radar covers, a shape that starts a little out from the wall line at the top and widens to a rounded far edge, with target 1 near the top and target 2 further out to the left; Expand sits in the map's top-right corner. Under the map: Coverage and Test near and far edge, Zones with Add zone and Add coverage zone, then Map settings open with Mounted on set to High among Wall, High and Ceiling, In use: High, as chosen here., Mount height 7.2 ft, the Tilt down: 30° slider with its hint, Person height 3.3 ft with its hint, and Covers from about 1.8 ft to 19.3 ft out from the wall.](https://raw.githubusercontent.com/ApolloAutomation/apollo-mmwave-main/main/docs/images/apollo-mmwave-zone-map-mounts-2.5.0.png)
+
+![The zone map card in feet for an LD2450, Map settings open: the map first shows the wall cone with Mounted on set to Wall and target 1 inside the cone. Ceiling is clicked: the cone becomes a wide, shallow strip under a horizontal wall line with the radar on it, and Ceiling height 8.9 ft, Person height 3.3 ft, the box that explains why everyone shows on one side, and an unticked Flip room side appear. Target 1 walks along the strip from left to right with a fading trail. Flip room side is ticked: the strip moves to the other side of the wall line and target 1 follows it, then walks on.](https://raw.githubusercontent.com/ApolloAutomation/apollo-mmwave-main/main/docs/images/apollo-mmwave-zone-map-ceiling-2.5.0.gif)
+
+![The zone map card in feet for an LD2460 on a ceiling: a circle centered on the radar with targets 1 and 2 inside it. Add whole-room zone is clicked and Zone 1 fills the circle. Test center and edge is clicked: with two people in view it asks that only the person testing stay in the room, then target 1 walks to the center and the Right under the radar check is ticked with You are right under the radar. It sees you here., then walks out toward the edge, the message giving the distance from the spot under the radar and from the edge, until At the edge is ticked too.](https://raw.githubusercontent.com/ApolloAutomation/apollo-mmwave-main/main/docs/images/apollo-mmwave-ld2460-ceiling-2.5.0.gif)
 
 ## If something is wrong
 

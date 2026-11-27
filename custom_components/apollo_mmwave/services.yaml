@@ -1,6 +1,6 @@
 update_zone:
   name: Update Zone
-  description: "Create, update, clear, or delete a zone. Geometry is in millimeters (Y-down). To clear a zone set shape: none (data may be omitted or null); data without a shape is ignored. Set delete: true to remove the zone and its entities. Rotation, tracked entities, map units, mirror_x and movement_history are device-wide and can be updated without zone_id."
+  description: "Create, update, clear, or delete a zone. Geometry is in millimeters (Y-down). To clear a zone set shape: none (data may be omitted or null); data without a shape is ignored. Set delete: true to remove the zone and its entities. Rotation, tracked entities, map units, mirror_x, movement_history, mount, ceiling_height_mm, mount_height_mm, tilt_deg, target_height_mm and flip_room_side are device-wide and can be updated without zone_id."
   fields:
     device_id:
       name: Radar Device
@@ -109,6 +109,66 @@ update_zone:
     movement_history:
       name: Movement History
       description: "Keep up to 24 hours of this radar's target positions so an administrator can replay them on the zone map. Stored in Home Assistant's .storage folder, so backups include them, and never in the support file. Turning it off deletes this radar's history from Home Assistant; backups made while it was on keep their copy. Device-wide."
+      required: false
+      selector:
+        boolean: {}
+    mount:
+      name: Mounted On
+      description: "wall (the default), high or ceiling. High is an LD2450 on a high wall or in a ceiling corner, tilted down; ceiling is straight down. Sets how this radar's targets are placed on the zone map and how zone hold times find the edge of its view. An LD2460 uses wall or ceiling, and its own Installation Mode report wins. Wall is the default and is not stored. Device-wide."
+      required: false
+      selector:
+        select:
+          options:
+            - wall
+            - high
+            - ceiling
+    ceiling_height_mm:
+      name: Ceiling Height
+      description: "Floor to radar on a ceiling mount, in millimeters, 2000 to 4000. 2700 is the default and is not stored. Device-wide."
+      required: false
+      example: 2700
+      selector:
+        number:
+          min: 2000
+          max: 4000
+          step: 10
+          unit_of_measurement: mm
+    mount_height_mm:
+      name: Mount Height
+      description: "Floor to radar on a high mount (LD2450), in millimeters, 1200 to 4000. 2200 is the default and is not stored. Device-wide."
+      required: false
+      example: 2200
+      selector:
+        number:
+          min: 1200
+          max: 4000
+          step: 10
+          unit_of_measurement: mm
+    tilt_deg:
+      name: Tilt Down
+      description: "How far a high mounted LD2450 points down from level, in degrees, 0 to 60. It changes what the radar covers, not where it places people. 30 is the default and is not stored. Device-wide."
+      required: false
+      example: 30
+      selector:
+        number:
+          min: 0
+          max: 60
+          step: 5
+          unit_of_measurement: "°"
+    target_height_mm:
+      name: Person Height
+      description: "The height of a person's chest, where an LD2450 sees them best, in millimeters, 0 to 2000. A high or ceiling mount uses it to place people on the floor. 1000 is the default and is not stored. Device-wide."
+      required: false
+      example: 1000
+      selector:
+        number:
+          min: 0
+          max: 2000
+          step: 10
+          unit_of_measurement: mm
+    flip_room_side:
+      name: Flip Room Side
+      description: "Looking straight down, an LD2450 cannot tell which side of it someone is on, so a ceiling mount shows everyone on one side. Mount it near a wall and turn this on if people show up past the wall line. Off is the default and is not stored. Device-wide."
       required: false
       selector:
         boolean: {}

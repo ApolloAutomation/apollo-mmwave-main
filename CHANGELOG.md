@@ -4,6 +4,78 @@ What changed in each release of Apollo mmWave Dashboard, newest first. Setup
 and everyday use are in [README.md](README.md) and
 [docs/configuration.md](docs/configuration.md).
 
+## What changed in 2.5.2
+
+- **A turned ceiling strip fits its map.** With **Map rotation** turned on
+  a ceiling LD2450, the map now fits the strip as it is turned. Near 90
+  degrees the strip runs down the map, and the map is taller than wide
+  (at most 1.5 times its width) instead of a big square that was mostly
+  empty. At 180 degrees the room for the buttons in the map's bottom
+  corners is under the strip again, not above it. The map fits again when
+  the rotation changes, and keeps that room where a short screen narrows
+  the map. On a phone, **Expand** keeps a turned strip's map above its
+  panel instead of squeezing it beside it.
+- **Add whole-room zone closes History first.** **Add whole-room zone**
+  and **Add coverage zone** now close History first, as **Draw shape**
+  and Walk do, instead of relying on arming the new zone to close it.
+- **Map settings say how to use a saved Ceiling.** When an LD2460 reports
+  a side mount, its report still decides, since the radar's own readings
+  follow its mode. If **Ceiling** was saved, Map settings now says that
+  Wall is used, that Ceiling is used once the radar reports top (ceiling),
+  that the **Installation Mode** is set on the radar itself and only read
+  under **LD2460 Live**, and that the saved Ceiling is used again if the
+  radar reports no mode at all. While the radar is unavailable, the card
+  keeps its last report. The support file shows it as `overridden`.
+
+## What changed in 2.5.1
+
+- **A ceiling LD2450's map fits its strip.** On **Mounted on: Ceiling**, an
+  LD2450 covers a strip about 5.9 m along the wall and 1.2 m into the room
+  (at a 2.7 m ceiling), but the zone map stayed nearly square, so the strip
+  filled only its top part and the rest was empty. The map is now short and
+  wide around the strip, with just enough room under it for the buttons in
+  the map's bottom corners, on a phone and on a computer. It fits again
+  when the mount, the ceiling height or the person height changes, when
+  the card's width does, and when **Expand** opens or closes. Wall, High, the LD2460 and a grid set in YAML are
+  unchanged.
+
+## What changed in 2.5.0
+
+An LD2450 can now be mounted high on a wall or on the ceiling, and LD2460
+tracking radars are supported. Nothing needs changing by hand: an LD2450
+stays on **Wall**, as before, until you choose otherwise. Lovelace resources
+managed in YAML need both `?v=` URLs replaced (see
+[Lovelace resources](docs/configuration.md#lovelace-resources)).
+
+- **High and Ceiling mounts for the LD2450.** Under **Map settings** on the
+  zone map, **Mounted on** offers **Wall**, **High** and **Ceiling**. High
+  is for a radar high on a wall or in a ceiling corner, tilted down: enter
+  its height, its tilt and a person's chest height, and the map takes the
+  height out of every position, so someone 1 m from the wall shows 1 m out
+  instead of about 1.6 m. Ceiling looks straight down and covers a strip
+  along a wall, about 1.7 times the drop either way and 0.7 times it into
+  the room. Looking down, the radar cannot tell which side of it someone
+  is on, so it shows everyone on the room side, and **Flip room side**
+  turns that around. Zone presence, hold times, the live map, trails,
+  History, Walk and ignore zones all use the corrected positions. Each
+  mount draws what the radar covers, offers **Add coverage zone** and its
+  own test (**Test near and far edge**, **Test wall line and edge**). The
+  radar's own built-in zones work in its uncorrected coordinates and
+  cannot be corrected, so draw zones on the map instead. See
+  [Mounting: Wall, High or Ceiling](docs/configuration.md#mounting-wall-high-or-ceiling).
+- **LD2460 tracking radars.** A device that uses ESPHome's ld2460
+  component gets a tab with the zone map for up to 5 people, **Wall** or
+  **Ceiling** (the radar's own **Installation Mode** decides when it
+  reports one), the ceiling height, **Add whole-room zone** and **Test
+  center and edge**.
+- **Devices found by their radars.** An Apollo device whose model this
+  release does not list is set up from the radar entities it has, and the
+  options flow's device list includes it.
+- **Support file.** It shows each radar's mount and the settings in use.
+- **Settings are per radar.** The mount settings are saved for each radar,
+  like Flip the map left to right. Going back to 2.4.2 reads every radar
+  as a wall and forgets the new settings the next time it saves.
+
 ## What changed in 2.4.2
 
 Apollo mmWave is now called Apollo mmWave Dashboard, the zone map's shape
