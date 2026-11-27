@@ -754,7 +754,7 @@ describe("the fitted map on High and Ceiling", () => {
         expect(spanY * pxPerMm).toBeGreaterThanOrEqual(128);
         expect(spanY / spanX).toBeGreaterThanOrEqual(0.3);
         expect(spanY / spanX).toBeLessThanOrEqual(1.5 + 1e-9);
-        // The top hugs the strip: no more than a margin and a step.
+        // Top stays within a margin and a step.
         expect(Math.min(...ys) - grid.yMin).toBeLessThanOrEqual(0.15 * spanY + grid.step);
         if (Math.abs(rotation) === 90) {
           expect(spanY).toBeGreaterThan(spanX);
@@ -767,6 +767,64 @@ describe("the fitted map on High and Ceiling", () => {
       }
     });
   }
+
+  it("bounds a turned strip's fit at a tiny width", async () => {
+    const card = await mount(hassOf({ payload: { ...CEILING, rotation_deg: 90 } }));
+    card._cssMapWidth = 44;
+    const grid = card._fittedGrid();
+    const spanX = grid.xMax - grid.xMin;
+    const spanY = grid.yMax - grid.yMin;
+    expect(spanY / spanX).toBeLessThanOrEqual(1.5 + grid.step / spanX);
+    expect(spanX).toBeLessThan(20000);
+    expect(spanY).toBeLessThan(20000);
+  });
+
+  it("keeps a turned strip sane on Expand at 360x640 under a tall header", async () => {
+    const hass = hassOf({ payload: { ...CEILING, rotation_deg: 90 } });
+    const card = await mount(hass);
+    document.body.appendChild(card);
+    card._openFullWindow();
+    const title = card.shadowRoot.querySelector(".title-row");
+    vi.spyOn(title, "getBoundingClientRect").mockImplementation(() => ({ height: 70 }) as DOMRect);
+    card._cardMapWidth = 293;
+    card._layoutFullWindow({ box: { width: 360, height: 640 } });
+    expect(card._fullLayout).toMatchObject({ layout: "stacked", mapWidth: 293 });
+    const spanX = card.xMax - card.xMin;
+    const spanY = card.yMax - card.yMin;
+    expect(spanY / spanX).toBeLessThanOrEqual(1.5 + 1e-9);
+    expect(spanY).toBeLessThan(20000);
+    card._closeFullWindow({ reason: "user" });
+    card.remove();
+  });
+
+  it("leaves the buttons room at the width the height cap shows a turned strip", async () => {
+    const tall = window.innerHeight;
+    try {
+      Object.defineProperty(window, "innerHeight", { configurable: true, value: 900 });
+      const hass = hassOf({ payload: { ...CEILING, rotation_deg: 90 } });
+      const card = await mount(hass);
+      document.body.appendChild(card);
+      Object.defineProperty($(card, "mapStage"), "clientWidth", { configurable: true, get: () => 606 });
+      card._refitAndDraw();
+      const spanX = card.xMax - card.xMin;
+      const spanY = card.yMax - card.yMin;
+      // The canvas shows narrower than the 606 px stage.
+      const shown = Math.min(606, 700 / (spanY / spanX));
+      expect(shown).toBeLessThan(606);
+      const pxPerMm = shown / spanX;
+      const far = Math.max(...card._footprintMapPoints().map((p: any) => p.y));
+      expect((card.yMax - far) * pxPerMm).toBeGreaterThanOrEqual(76 - 1);
+      // A shorter screen refits for its own cap.
+      Object.defineProperty(window, "innerHeight", { configurable: true, value: 640 });
+      expect(card._refitForWidth()).toBe(true);
+      const shortX = card.xMax - card.xMin;
+      const shortShown = Math.min(606, 440 / ((card.yMax - card.yMin) / shortX));
+      expect((card.yMax - far) * (shortShown / shortX)).toBeGreaterThanOrEqual(76 - 1);
+      card.remove();
+    } finally {
+      Object.defineProperty(window, "innerHeight", { configurable: true, value: tall });
+    }
+  });
 
   it("fits again when the map is turned, by the slider or the store", async () => {
     const hass = hassOf({ payload: CEILING });

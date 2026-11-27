@@ -312,7 +312,8 @@ describe("the Wall / Ceiling switch", () => {
     const card = await mount(hass);
     const note = $(card, "mountConflict").textContent;
     expect(note).toContain("so Wall is used");
-    expect(note).toContain("set the radar's Installation Mode to top");
+    expect(note).toContain("set on the radar itself and only read here, under LD2460 Live");
+    expect(note).toContain("reports top (ceiling)");
     expect(note).toContain("Ceiling stays saved");
     expect($(card, "btnMountCeiling").disabled).toBe(true);
     // The radar stops reporting: the saved Ceiling is used, unwritten.

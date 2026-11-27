@@ -68,7 +68,9 @@ function clamp(value: number, min: number, max: number): number {
  * wins a tie. On a short window, such as a phone held sideways, those two
  * floors can leave a stacked panel under FULL_WINDOW_PANEL_MIN_PX, where
  * the zone chips, the zone editor and Map settings cannot be reached: then
- * the panel goes beside the map whenever there is any width left for it.
+ * the panel goes beside the map whenever there is any width left for it,
+ * unless the map is taller than wide and would be under
+ * FULL_WINDOW_MAP_MIN_PX beside it: then it stays stacked.
  */
 export function fullWindowLayout({
   width,
@@ -93,7 +95,9 @@ export function fullWindowLayout({
       (height - headerPx - FULL_WINDOW_ROOM_PX) * shape,
     ),
   );
-  const cramped = height - headerPx - stackW / shape < FULL_WINDOW_PANEL_MIN_PX;
+  // A tall map stays stacked rather than squeezed.
+  const tallSqueeze = shape < 1 && sideW < FULL_WINDOW_MAP_MIN_PX;
+  const cramped = !tallSqueeze && height - headerPx - stackW / shape < FULL_WINDOW_PANEL_MIN_PX;
   if ((room >= FULL_WINDOW_MAP_MIN_PX || (cramped && room > 0)) && (sideW >= stackW || cramped)) {
     return { layout: 'side', mapWidth: Math.max(0, Math.floor(sideW)), sideWidth: side };
   }

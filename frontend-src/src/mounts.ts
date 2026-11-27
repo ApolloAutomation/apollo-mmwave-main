@@ -114,11 +114,7 @@ export function mountRule(
   return { mount: "wall", source: "default" };
 }
 
-/**
- * The saved mount a radar report overrides, else null, twin of
- * overridden_mount: what mountRule gives with no report, when the saved
- * choice gives it and the report gives another.
- */
+/** The saved mount a radar report overrides, else null. */
 export function overriddenMount(
   tracker: string | null | undefined,
   modeState: string | null | undefined,

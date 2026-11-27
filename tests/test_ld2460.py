@@ -482,7 +482,7 @@ async def test_the_support_file_shows_the_radars_report_winning(
     assert section["ld2460"]["mount"]["overridden"] is None
     assert section["ld2460"]["mount"]["coverage_radius_mm"] == 4000.0
 
-    # The report goes away: the saved ceiling, kept all along, is used.
+    # Report gone: the kept saved ceiling is used.
     hass.states.async_set(mode, "unavailable")
     result = await get_diagnostics_for_config_entry(hass, hass_client, entry)
     section = next(

@@ -125,13 +125,7 @@ def mount_rule(
 def overridden_mount(
     tracker: str | None, mode_state: str | None, saved: str | None
 ) -> str | None:
-    """
-    Return the saved mount a radar report overrides, else None.
-
-    That is the mount ``mount_rule`` gives with no report, when the saved
-    choice gives it and the report gives another. It stays saved, and is
-    used again when the report goes away.
-    """
+    """Return the saved mount a radar report overrides, else None."""
     mount, source = mount_rule(tracker, mode_state, saved)
     if source != SOURCE_RADAR:
         return None

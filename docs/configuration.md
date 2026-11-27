@@ -865,9 +865,10 @@ mount or person height. When it reports its **Installation Mode** (side or
 top), that decides, because the radar's own readings follow its mode;
 otherwise the saved choice does. Then **Wall** and **Ceiling** are grayed
 out, and if **Ceiling** was saved but the radar reports side, Map settings
-says so: Wall is used, and setting the radar's Installation Mode to top
-uses Ceiling. The saved Ceiling is kept, and is used again if the radar
-stops reporting its mode. On a ceiling it sees a
+says so: Wall is used, and Ceiling is used once the radar reports top
+(ceiling). The Installation Mode is set on the radar itself; Home
+Assistant only reads it, under **LD2460 Live**. The saved Ceiling is kept,
+and is used again if the radar stops reporting its mode. On a ceiling it sees a
 circle under it, up to 4 m out, set by **Ceiling height**; the map then
 puts the radar in the middle, turns with **Map rotation**, and offers **Add
 whole-room zone** (a square or a circle) and **Test center and edge**.

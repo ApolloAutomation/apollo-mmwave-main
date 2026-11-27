@@ -59,6 +59,14 @@ describe("fullWindowLayout", () => {
     });
   });
 
+  it("keeps a tall map stacked on a phone rather than 44 px beside the panel", () => {
+    // A ceiling strip turned 90 degrees, under a tall header.
+    for (const headerPx of [64, 90, 120]) {
+      const layout = fullWindowLayout({ width: 360, height: 640, aspect: 0.667, headerPx, cardMapWidth: 293 });
+      expect(layout).toMatchObject({ layout: "stacked", mapWidth: 293 });
+    }
+  });
+
   // The zone map's fitted shape, the measured header and the card's map, in
   // content boxes inside the full window's 8 px padding.
   const PHONE_MAP = { aspect: 800 / 622, headerPx: 64, cardMapWidth: 310.7 };

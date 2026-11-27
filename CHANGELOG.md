@@ -12,17 +12,19 @@ and everyday use are in [README.md](README.md) and
   (at most 1.5 times its width) instead of a big square that was mostly
   empty. At 180 degrees the room for the buttons in the map's bottom
   corners is under the strip again, not above it. The map fits again when
-  the rotation changes.
-- **Add whole-room zone closes History.** While a History replay was on
-  the map, **Add whole-room zone** and **Add coverage zone** relied on
-  arming the new zone to close it. They now close History first, as
-  **Draw shape** and Walk do, so the new zone is always filled.
+  the rotation changes, and keeps that room where a short screen narrows
+  the map. On a phone, **Expand** keeps a turned strip's map above its
+  panel instead of squeezing it beside it.
+- **Add whole-room zone closes History first.** **Add whole-room zone**
+  and **Add coverage zone** now close History first, as **Draw shape**
+  and Walk do, instead of relying on arming the new zone to close it.
 - **Map settings say how to use a saved Ceiling.** When an LD2460 reports
   a side mount, its report still decides, since the radar's own readings
   follow its mode. If **Ceiling** was saved, Map settings now says that
-  Wall is used, that setting the radar's **Installation Mode** to top uses
-  Ceiling, and that the saved Ceiling is used again if the radar stops
-  reporting. The support file shows it as `overridden`.
+  Wall is used, that Ceiling is used once the radar reports top (ceiling),
+  that the **Installation Mode** is set on the radar itself and only read
+  under **LD2460 Live**, and that the saved Ceiling is used again if the
+  radar stops reporting. The support file shows it as `overridden`.
 
 ## What changed in 2.5.1
 
