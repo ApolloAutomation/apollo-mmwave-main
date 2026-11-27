@@ -375,6 +375,36 @@ async def test_a_new_sensor_that_is_not_an_apollo_ld2450s_is_untouched(
         assert _options(entity_registry, entity_id) == IN_PRIVATE
 
 
+@pytest.mark.parametrize(
+    "case",
+    [("ApolloAutomation", True), ("Espressif", False)],
+    ids=["apollo", "diy"],
+)
+@pytest.mark.usefixtures("loaded")
+async def test_an_unlisted_model_with_ld2450_targets_is_decided_like_an_mtr_1(
+    hass, advance, entity_registry, device_registry, case
+) -> None:
+    """An Apollo device's own LD2450 sensors decide it; another maker's never."""
+    manufacturer, switched = case
+    device = _radar(
+        hass,
+        device_registry,
+        serial="den_radar",
+        name="Den Radar",
+        manufacturer=manufacturer,
+        model="XR-7",
+    )
+    targets = _targets(entity_registry, device, "den_radar", chip="")
+
+    await advance(int(TARGET_UNITS_DELAY_S) + 1)
+
+    for entity_id in targets:
+        if switched:
+            assert _unit(entity_registry, entity_id) == "mm"
+        else:
+            assert _options(entity_registry, entity_id) == IN_PRIVATE
+
+
 async def test_a_sensor_with_no_distance_device_class_is_not_decided(
     hass, advance, entity_registry, device_registry, loaded
 ) -> None:
@@ -1031,3 +1061,79 @@ async def test_diagnostics_say_whether_a_unit_was_picked_and_by_whom(
         (False, None),
         (False, None),
     ]
+
+
+# ---------------------------------------------------------------------------
+# An LD2460 radar
+# ---------------------------------------------------------------------------
+
+LD2460_SERIAL = "den_radar"
+
+
+def _ld2460_radar(
+    hass, entity_registry, device_registry, model: str = "XR-7"
+) -> tuple[DeviceEntry, list[str]]:
+    """Register an LD2460 radar and its five targets' X and Y."""
+    room = _radar(
+        hass,
+        device_registry,
+        serial=LD2460_SERIAL,
+        name="Den Radar",
+        model=model,
+    )
+    targets = [
+        _sensor(
+            entity_registry,
+            room,
+            f"{LD2460_SERIAL}_ld2460_target_{target}_{axis}",
+            name=f"LD2460 Target-{target} {axis.upper()}",
+        )
+        for target in range(1, 6)
+        for axis in ("x", "y")
+    ]
+    return room, targets
+
+
+# A model whose registry says LD2450 still never switches an LD2460.
+@pytest.mark.parametrize("model", ["XR-7", "MTR-1"])
+@pytest.mark.usefixtures("loaded")
+async def test_a_new_ld2460_is_never_switched(
+    hass, advance, entity_registry, device_registry, model
+) -> None:
+    """Its native unit is m, with no built-in zones in mm to match."""
+    _room, targets = _ld2460_radar(hass, entity_registry, device_registry, model)
+    rpro = _radar(hass, device_registry)
+    rpro_targets = _targets(entity_registry, rpro, RPRO_SERIAL)
+
+    await advance(int(TARGET_UNITS_DELAY_S) + 1)
+
+    for entity_id in targets:
+        assert _options(entity_registry, entity_id) == IN_PRIVATE, entity_id
+    for entity_id in rpro_targets:
+        assert _unit(entity_registry, entity_id) == "mm"
+
+
+async def test_existing_ld2460_sensors_are_left_once_started(
+    hass, entity_registry, device_registry, booting
+) -> None:
+    """The pass over existing sensors leaves them too, and names none of them."""
+    _room, targets = _ld2460_radar(hass, entity_registry, device_registry)
+    for entity_id in targets:
+        hass.states.async_set(entity_id, "9.8", {ATTR_UNIT_OF_MEASUREMENT: "ft"})
+    await setup_integration(hass, make_entry())
+
+    await booting()
+
+    for entity_id in targets:
+        assert _options(entity_registry, entity_id) == IN_PRIVATE
+    assert _notification(hass) is None
+
+
+async def test_target_unit_rows_leave_out_the_ld2460(
+    hass, entity_registry, device_registry
+) -> None:
+    """The Radar setup card offers no mm button for an LD2460."""
+    room, _ = _ld2460_radar(hass, entity_registry, device_registry)
+    await setup_integration(hass, make_entry())
+
+    assert target_unit_rows(hass, room.id) == []

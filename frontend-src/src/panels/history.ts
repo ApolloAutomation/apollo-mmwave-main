@@ -1,5 +1,6 @@
 import type { EntityMap } from "../types";
 import type { Ld2450Entities } from "../ld2450-entities";
+import type { Ld2460Entities } from "../ld2460-entities";
 import { row } from "./entity-rows";
 
 /** A history line. A drawn zone's line carries no name, so HA shows the
@@ -30,6 +31,15 @@ export function historyEntities(m: EntityMap, chip?: string): HistoryRow[] {
 export function ld2450HistoryEntities(l: Ld2450Entities, zoneSensors: string[]): HistoryRow[] {
   return [
     ...row(l.presence, "LD2450 Presence"),
+    ...zoneSensors.map((entity) => ({ entity })),
+  ];
+}
+
+/** The LD2460's presence and this integration's drawn zone sensors, named
+ *  for the chip as on LD2450 tabs. */
+export function ld2460HistoryEntities(l: Ld2460Entities, zoneSensors: string[]): HistoryRow[] {
+  return [
+    ...row(l.presence, "LD2460 Presence"),
     ...zoneSensors.map((entity) => ({ entity })),
   ];
 }

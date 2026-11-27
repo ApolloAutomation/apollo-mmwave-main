@@ -23,6 +23,7 @@ from homeassistant.const import (
     EVENT_HOMEASSISTANT_FINAL_WRITE,
     EVENT_HOMEASSISTANT_STOP,
     STATE_UNAVAILABLE,
+    STATE_UNKNOWN,
 )
 from homeassistant.core import CoreState
 from homeassistant.helpers import device_registry as dr
@@ -908,6 +909,30 @@ async def test_points_are_unit_converted_and_not_rotated(hass, history_on) -> No
     assert _points(hass, device_id) == [(0, 254, 1270)]
 
 
+async def test_a_high_mount_records_raw_points_and_masks_by_floor(
+    hass, clock, history_on
+) -> None:
+    """The file keeps raw y 1562; the ignore zone tests the floor's 1000."""
+    device_id = history_on
+    await _update_zone(hass, {"device_id": device_id, "mount": "high"})
+    await _report(hass, TARGET_1, 100, 1562)
+    assert _points(hass, device_id) == [(0, 100, 1562)]
+    await _advance(hass, clock, 1)
+
+    await _update_zone(
+        hass,
+        {
+            "device_id": device_id,
+            "zone_id": 1,
+            "shape": "rect",
+            "data": {"x_min": -500, "x_max": 500, "y_min": 800, "y_max": 1200},
+            "zone_type": "ignore",
+        },
+    )
+    await _report(hass, TARGET_1, 150, 1600)
+    assert _records(hass, device_id)[-1][1:] == (-1, 0, 0)
+
+
 # ---------------------------------------------------------------------------
 # The file
 # ---------------------------------------------------------------------------
@@ -1720,3 +1745,73 @@ async def test_diagnostics_never_carry_points(
     assert not any(columns[key] in dumped for key in ("dt", "s", "x", "y"))
     save.assert_not_called()
     delay_save.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# An LD2460 radar
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def ld2460_on(hass, clock, init_integration) -> tuple[str, dict[str, str]]:
+    """Add an LD2460 radar with one target, its history on; return both."""
+    _ = (clock, init_integration)
+    serial = "ceiling_radar"
+    esphome_entry = MockConfigEntry(domain="esphome", title=serial)
+    esphome_entry.add_to_hass(hass)
+    device = dr.async_get(hass).async_get_or_create(
+        config_entry_id=esphome_entry.entry_id,
+        identifiers={("esphome", serial)},
+        name=serial,
+    )
+    pair = {
+        axis: er.async_get(hass)
+        .async_get_or_create(
+            "sensor",
+            "esphome",
+            f"{serial}_target_1_{axis}",
+            device_id=device.id,
+            suggested_object_id=f"{serial}_ld2460_target_1_{axis}",
+        )
+        .entity_id
+        for axis in ("x", "y")
+    }
+    await _update_zone(hass, {"device_id": device.id, STORE_MOVEMENT_HISTORY: True})
+    return device.id, pair
+
+
+async def test_an_ld2460_axis_written_alone_is_recorded_at_once(
+    hass, clock, ld2460_on
+) -> None:
+    """It writes X and Y of a frame together, so a lone X waits for nothing."""
+    device_id, pair = ld2460_on
+    await _report(hass, pair, 1000, 2000)
+    await _run_until(hass, clock, 1)
+    hass.states.async_set(pair["x"], "1300")
+    await hass.async_block_till_done()
+
+    assert _records(hass, device_id) == [
+        (START_MS, 0, 1000, 2000),
+        (START_MS + 1000, 0, 1300, 2000),
+    ]
+
+
+async def test_an_ld2460_point_on_an_axis_line_is_recorded(
+    hass, clock, ld2460_on
+) -> None:
+    """X = 0 is someone straight ahead: the LD2460 loses a target as unknown."""
+    device_id, pair = ld2460_on
+    await _report(hass, pair, 1000, 2000)
+    await _run_until(hass, clock, 1)
+    hass.states.async_set(pair["x"], "0")
+    await hass.async_block_till_done()
+    await _run_until(hass, clock, 2)
+    hass.states.async_set(pair["x"], STATE_UNKNOWN)
+    hass.states.async_set(pair["y"], STATE_UNKNOWN)
+    await hass.async_block_till_done()
+
+    assert _records(hass, device_id) == [
+        (START_MS, 0, 1000, 2000),
+        (START_MS + 1000, 0, 0, 2000),
+        (START_MS + 2000, -1, 0, 0),
+    ]

@@ -52,7 +52,9 @@ export type SettingKey =
   | "settings_unread"
   | "zone_order"
   | "zone_reach"
-  | "gate_range";
+  | "gate_range"
+  | "installation_mode"
+  | "target_count";
 
 /** The one service call that fixes a problem, and how the card names it. */
 export interface SettingFix {

@@ -80,7 +80,8 @@ from .const import (
     TARGET_UNITS_NOTIFICATION_ID,
 )
 from .ld2450 import _is_target_sensor, resolve_target_pairs
-from .models import apollo_radars
+from .models import device_radars
+from .trackers import LD2460, LD2460_X, LD2460_Y, pair_tracker
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator
@@ -269,7 +270,7 @@ def _is_apollo_ld2450(hass: HomeAssistant, entry: er.RegistryEntry) -> bool:
     if entry.device_id is None:
         return False
     device = dr.async_get(hass).async_get(entry.device_id)
-    return "ld2450" in (apollo_radars(device) or [])
+    return "ld2450" in (device_radars(hass, device) or [])
 
 
 def _decidable(hass: HomeAssistant, entry: er.RegistryEntry | None) -> bool:
@@ -288,6 +289,11 @@ def _decidable(hass: HomeAssistant, entry: er.RegistryEntry | None) -> bool:
         or decision(entry) is not None
         or _device_class(entry) != SensorDeviceClass.DISTANCE
     ):
+        return False
+    object_id = entry.entity_id.partition(".")[2]
+    if LD2460_X.search(object_id) or LD2460_Y.search(object_id):
+        # Native unit m, and no built-in zone corners to match in mm.
+        _LOGGER.debug("Leaving %s as it is: an LD2460 target", entry.entity_id)
         return False
     if not _is_apollo_ld2450(hass, entry):
         _LOGGER.debug("Leaving %s as it is: not an Apollo LD2450", entry.entity_id)
@@ -524,6 +530,9 @@ def target_unit_rows(hass: HomeAssistant, device_id: str) -> list[dict[str, Any]
     users = _Users(hass)
     rows: list[dict[str, Any]] = []
     for pair in resolve_target_pairs(hass, device_id):
+        if pair_tracker(pair) == LD2460:
+            # Never switched: the card offers no mm button for it.
+            continue
         for entity_id in (pair["x"], pair["y"]):
             entry = registry.async_get(entity_id)
             state = hass.states.get(entity_id)
