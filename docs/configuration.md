@@ -20,6 +20,7 @@ install the integration and run your first calibration.
   - [The calibration services](#the-calibration-services)
 - [The zone map and its cards](#the-zone-map-and-its-cards)
   - [Radar setup](#radar-setup)
+  - [Mounting: Wall, High or Ceiling](#mounting-wall-high-or-ceiling)
   - [What the map shows](#what-the-map-shows)
   - [Zoom and pan](#zoom-and-pan)
   - [Expand the map](#expand-the-map)
@@ -161,13 +162,13 @@ Copy the URLs from the warning exactly and add each one once, as a module:
 lovelace:
   resource_mode: yaml
   resources:
-    - url: /apollo_mmwave/apollo-radar-tuning.js?v=2.4.2
+    - url: /apollo_mmwave/apollo-radar-tuning.js?v=2.5.2
       type: module
-    - url: /apollo_mmwave/apollo-radar-zone-map-card.js?v=2.4.2
+    - url: /apollo_mmwave/apollo-radar-zone-map-card.js?v=2.5.2
       type: module
 ```
 
-The `?v=` is the integration version, such as `?v=2.4.2`, and nothing else,
+The `?v=` is the integration version, such as `?v=2.5.2`, and nothing else,
 so a bundle's URL changes only when the version does. After every upgrade,
 replace each row's URL with the new one from the warning instead of adding a
 second row. An out-of-date row makes the browser run the bundle twice, once
@@ -185,7 +186,7 @@ Any signed-in user can ask, so the check works for everyone. When the two
 differ, the card says so (the versions here are examples):
 
 - **The page runs older cards:** "Apollo mmWave Dashboard was updated to
-  2.4.3, but this page still runs 2.4.2." (a page from 2.4.1 or earlier
+  2.5.3, but this page still runs 2.5.2." (a page from 2.4.1 or earlier
   says "Apollo mmWave was updated to ...") with a **Reload** button, and
   under it "In the Home Assistant app, if Reload does not help, close the
   app fully and open it again." If the app still shows the old cards after
@@ -194,8 +195,8 @@ differ, the card says so (the versions here are examples):
     cache**.
   - iPhone and iPad: **Settings → Companion app → Debugging → Clear web view
     cache**.
-- **The page runs newer cards:** "Apollo mmWave Dashboard 2.4.2 is
-  installed, but Home Assistant still runs 2.4.1. Restart Home Assistant to
+- **The page runs newer cards:** "Apollo mmWave Dashboard 2.5.2 is
+  installed, but Home Assistant still runs 2.5.1. Restart Home Assistant to
   finish updating." There is no button: restart Home Assistant (Settings →
   System, the power icon in the top right).
 
@@ -773,6 +774,111 @@ title: Radar setup   # optional
 ```
 
 Add `radar: gate` to check the device's LD2410 or LD2412 instead.
+
+### Mounting: Wall, High or Ceiling
+
+**Mounted on**, under **Map settings** on the zone map, tells the map how
+the radar is mounted. An administrator changes it; it is saved for that
+radar and applies on every device that opens the map.
+
+An LD2450 offers three mounts:
+
+- **Wall** (the default): on a wall at about chest height, looking straight
+  out. The map shows the radar's own readings, as before 2.5.0.
+- **High**: high on a wall or in a ceiling corner, tilted down. Enter
+  **Mount height** (1.2 to 4 m), **Tilt down** (0 to 60 degrees, locked
+  with the map like Cone rotation) and **Person height** (default 1 m,
+  3.3 ft).
+- **Ceiling**: on the ceiling, looking straight down. Enter **Ceiling
+  height** (2 to 4 m) and **Person height**, and use **Flip room side** if
+  needed (below).
+
+Why heights matter: the LD2450 measures how far away someone is and their
+angle left or right, but not whether they are above or below it. From up
+high, the distance it reports includes the drop from the radar down to the
+person. With the radar at height h and a person's chest at height p, the
+map takes that drop out: the distance out across the floor is the square
+root of (reported y squared minus (h minus p) squared). The left and right
+offset needs no change. Tilt changes what the radar covers, never where it
+places someone, so the tilt is only used to draw the covered area.
+
+For a radar 2.2 m up and a person 1 m tall at the chest (a 1.2 m drop):
+
+| Out from the wall | The radar reports | High shows |
+| --- | --- | --- |
+| 0.5 m | 1.30 m | 0.50 m |
+| 1 m | 1.56 m | 1.00 m |
+| 2 m | 2.33 m | 2.00 m |
+| 3 m | 3.23 m | 3.00 m |
+| 5 m | 5.14 m | 5.00 m |
+
+What each mount covers, worked out from the radar's beam (60 degrees
+either side, 35 degrees up and down, 6 m), is drawn on the map in place of
+the cone, with a line such as "Covers from about 0.6 m to 5.9 m out from
+the wall." The edge of a radar beam is soft, so these numbers are about
+right, not exact.
+
+| Mount | Height | Tilt | Covers |
+| --- | --- | --- | --- |
+| High | 2.2 m | 0 | 1.7 m to 5.9 m out |
+| High | 2.2 m | 30 | 0.6 m to 5.9 m out |
+| High | 2.2 m | 60 | 0 to 2.6 m out |
+| High | 2.7 m | 30 | 0.8 m to 5.8 m out |
+| Ceiling | 2.4 m | | a strip 4.8 m along the wall, 1.0 m into the room |
+| Ceiling | 2.7 m | | a strip 5.9 m along the wall, 1.2 m into the room |
+| Ceiling | 3.0 m | | a strip 6.9 m along the wall, 1.4 m into the room |
+
+Closer than the near edge, people are under the radar's view: tilt it down
+more to see closer. A ceiling LD2450 sees a narrow strip, good for a
+hallway, a bedside or a doorway; for a whole room, mount it high on a wall
+and choose High.
+
+**One side only, on a ceiling.** Looking straight down, the LD2450 cannot
+tell which side of it someone is on, so the map shows everyone on one side,
+the room side, with a dashed wall line under the radar. Mount it near a
+wall, turned so that walking along the wall moves your dot left and right.
+Everyone in the room is then on the room side. If people show up past the
+wall line, turn on **Flip room side**. Zones stay where they are when you
+flip it, so redraw any zone drawn for the other side.
+
+**How accurate.** Positions are least accurate close under the radar,
+where a small error in the reading becomes a larger one on the floor, and
+for people sitting or lying down, whose chest is lower than the person
+height. Someone seated (chest about 0.7 m) under a radar 2.7 m up with the
+default 1 m shows about 1.2 m out when they are 0.5 m out, and about 2.3 m
+when they are 2 m out. Lower Person height if the room is mostly seated.
+
+**Built-in zones.** The radar's own built-in zones (the R PRO-1 and MTR-1
+**Zone Type** setting) work in its uncorrected coordinates, so on a High or
+Ceiling mount they do not line up with the map. Leave Zone Type on
+**Disabled** and draw zones on the map instead.
+
+**Tools.** High and Ceiling each offer **Add coverage zone**, which saves a
+zone shaped like everything the radar covers, and a test chip: **Test near
+and far edge** on High, **Test wall line and edge** on Ceiling. Walk and
+History use the corrected positions too; History is drawn with the mount
+settings in use now, not the ones in use when it was recorded.
+
+A radar that uses ESPHome's ld2460 component offers **Wall** and
+**Ceiling**. It corrects its own readings for its mount, so it needs no
+mount or person height. When it reports its **Installation Mode** (side or
+top), that decides, because the radar's own readings follow its mode;
+otherwise the saved choice does. Then **Wall** and **Ceiling** are grayed
+out, and if **Ceiling** was saved but the radar reports side, Map settings
+says so: Wall is used, and Ceiling is used once the radar reports top
+(ceiling). The Installation Mode is set on the radar itself; Home
+Assistant only reads it, under **LD2460 Live**. The saved Ceiling is kept,
+and is used again if the radar reports no mode at all. While the radar is
+unavailable (a restart, for example), the card keeps its last report. On a
+ceiling it sees a
+circle under it, up to 4 m out, set by **Ceiling height**; the map then
+puts the radar in the middle, turns with **Map rotation**, and offers **Add
+whole-room zone** (a square or a circle) and **Test center and edge**.
+
+The settings are also fields of the `apollo_mmwave.update_zone` service:
+`mount` (`wall`, `high` or `ceiling`), `ceiling_height_mm`,
+`mount_height_mm`, `tilt_deg`, `target_height_mm` and `flip_room_side`.
+Sending a default value removes the saved value.
 
 ### What the map shows
 

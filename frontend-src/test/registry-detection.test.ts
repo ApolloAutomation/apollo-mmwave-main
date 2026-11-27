@@ -71,12 +71,12 @@ describe("MMWAVE_MODELS parity with apolloModelInfo", () => {
   const tuple = /^MMWAVE_MODELS\b[^=\n]*=\s*\(([^)]*)\)/m.exec(configFlowSource);
   const models = [...(tuple?.[1] ?? "").matchAll(/"([^"]+)"/g)].map((m) => m[1]);
 
-  // [profile key, ld2450] each model family should resolve to.
-  const expected = (model: string): [string | undefined, boolean] | undefined => {
+  // [profile key, ld2450, ld2460] each model family should resolve to.
+  const expected = (model: string): [string | undefined, boolean, boolean] | undefined => {
     const m = model.toLowerCase();
-    if (m.startsWith("msr-")) return ["ld2410", false];
-    if (m.startsWith("r-pro-1")) return ["ld2412", true];
-    if (m.startsWith("mtr-1")) return [undefined, true];
+    if (m.startsWith("msr-")) return ["ld2410", false, false];
+    if (m.startsWith("r-pro-1")) return ["ld2412", true, false];
+    if (m.startsWith("mtr-1")) return [undefined, true, false];
     return undefined;
   };
 
@@ -90,7 +90,9 @@ describe("MMWAVE_MODELS parity with apolloModelInfo", () => {
     for (const model of models) {
       const info = apolloModelInfo({ manufacturer: "ApolloAutomation", model });
       expect(expected(model), `no expected hardware for ${model}`).toBeDefined();
-      expect(info && [info.profile?.key, info.ld2450], model).toEqual(expected(model));
+      expect(info && [info.profile?.key, info.ld2450, info.ld2460], model).toEqual(
+        expected(model)
+      );
     }
   });
 });

@@ -5,7 +5,13 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { formatHold, formatLength, formatSize, zoneSize } from "../src/zone-map/format";
+import {
+  formatDistance,
+  formatHold,
+  formatLength,
+  formatSize,
+  zoneSize,
+} from "../src/zone-map/format";
 
 describe("formatLength", () => {
   it("formats meters to 0.1 m", () => {
@@ -215,5 +221,16 @@ describe("formatHold", () => {
   it("reads anything but a positive number as no hold", () => {
     expect(formatHold(-30)).toBe("Off");
     expect(formatHold(NaN)).toBe("Off");
+  });
+});
+
+describe("formatDistance", () => {
+  it("reads a distance to 0.1 in either family", () => {
+    expect(formatDistance(1234, "m")).toBe("1.2 m");
+    expect(formatDistance(4000, "m")).toBe("4.0 m");
+    expect(formatDistance(4000, "ft")).toBe("13.1 ft");
+    expect(formatDistance(0, "ft")).toBe("0.0 ft");
+    // A distance has no side.
+    expect(formatDistance(-1500, "m")).toBe("1.5 m");
   });
 });

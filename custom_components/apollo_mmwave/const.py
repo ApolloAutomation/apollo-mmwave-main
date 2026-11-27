@@ -145,6 +145,43 @@ HOLD_S_MAX = 3600
 # administrator can replay.
 STORE_MIRROR_X = "mirror_x"
 STORE_MOVEMENT_HISTORY = "movement_history"
+# Device-wide; stored only as "high" or "ceiling".
+STORE_MOUNT = "mount"
+MOUNT_WALL = "wall"
+MOUNT_HIGH = "high"
+MOUNT_CEILING = "ceiling"
+MOUNTS = (MOUNT_WALL, MOUNT_HIGH, MOUNT_CEILING)
+# Mount settings; twins in frontend-src/src/mounts.ts.
+STORE_CEILING_HEIGHT_MM = "ceiling_height_mm"
+CEILING_HEIGHT_DEFAULT_MM = 2700
+CEILING_HEIGHT_MIN_MM = 2000
+CEILING_HEIGHT_MAX_MM = 4000
+STORE_MOUNT_HEIGHT_MM = "mount_height_mm"
+MOUNT_HEIGHT_DEFAULT_MM = 2200
+MOUNT_HEIGHT_MIN_MM = 1200
+MOUNT_HEIGHT_MAX_MM = 4000
+STORE_TILT_DEG = "tilt_deg"
+TILT_DEFAULT_DEG = 30
+TILT_MIN_DEG = 0
+TILT_MAX_DEG = 60
+STORE_TARGET_HEIGHT_MM = "target_height_mm"
+TARGET_HEIGHT_DEFAULT_MM = 1000
+TARGET_HEIGHT_MIN_MM = 0
+TARGET_HEIGHT_MAX_MM = 2000
+# Stored only as True.
+STORE_FLIP_ROOM_SIDE = "flip_room_side"
+# Least drop from radar to person.
+MIN_DROP_MM = 500
+# LD2450 beam, from the HLK-LD2450 manual.
+LD2450_RANGE_MM = 6000
+LD2450_AZIMUTH_HALF_DEG = 60
+LD2450_ELEVATION_HALF_DEG = 35
+CEILING_TILT_DEG = 90
+FOOTPRINT_STEPS = 24
+# Fits POLYGON_MAX_POINTS: 2 * (15 + 1) points.
+COVERAGE_ZONE_STEPS = 15
+# A coverage zone reaches this far past the wall line.
+COVERAGE_ZONE_WALL_MARGIN_MM = 50
 
 # Attribute / data keys. Persisted coordinates are rounded to whole mm
 ATTR_SHAPE = "shape"
