@@ -4,6 +4,26 @@ What changed in each release of Apollo mmWave Dashboard, newest first. Setup
 and everyday use are in [README.md](README.md) and
 [docs/configuration.md](docs/configuration.md).
 
+## What changed in 2.5.2
+
+- **A turned ceiling strip fits its map.** With **Map rotation** turned on
+  a ceiling LD2450, the map now fits the strip as it is turned. Near 90
+  degrees the strip runs down the map, and the map is taller than wide
+  (at most 1.5 times its width) instead of a big square that was mostly
+  empty. At 180 degrees the room for the buttons in the map's bottom
+  corners is under the strip again, not above it. The map fits again when
+  the rotation changes.
+- **Add whole-room zone closes History.** While a History replay was on
+  the map, **Add whole-room zone** and **Add coverage zone** relied on
+  arming the new zone to close it. They now close History first, as
+  **Draw shape** and Walk do, so the new zone is always filled.
+- **Map settings say how to use a saved Ceiling.** When an LD2460 reports
+  a side mount, its report still decides, since the radar's own readings
+  follow its mode. If **Ceiling** was saved, Map settings now says that
+  Wall is used, that setting the radar's **Installation Mode** to top uses
+  Ceiling, and that the saved Ceiling is used again if the radar stops
+  reporting. The support file shows it as `overridden`.
+
 ## What changed in 2.5.1
 
 - **A ceiling LD2450's map fits its strip.** On **Mounted on: Ceiling**, an

@@ -5,4 +5,4 @@
  */
 
 // Keep in sync with custom_components/apollo_mmwave/manifest.json.
-export const CARD_VERSION = "2.5.1";
+export const CARD_VERSION = "2.5.2";
